@@ -40,7 +40,7 @@
   .log-entry { font-size: 13px; padding: 8px 12px; border-left: 3px solid #127a7a; background: #fff; margin-bottom: 6px; border-radius: 0 6px 6px 0; }
   .log-entry.out { border-left-color: #c0392b; }
   .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
-  .pill.in { background: #eafaf1; color: #1e8449; } .pill.out { background: #fdf0ee; color: #c0392b; }
+  .pill.in { background: #eafaf1; color: #1e8449; } .pill.out { background: #fdf0ee; color: #c0392b; } .pill.checkin { background: #e6eff8; color: #2563a8; }
   .hint { font-size: 12px; color: #5a6472; margin-top: 8px; line-height: 1.5; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1e8449; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 100; }
   .toast.show { opacity: 1; } .toast.err { background: #c0392b; }
@@ -105,7 +105,10 @@
       <div class="card"><div class="n" id="totUnits">0</div><div class="l">On Hand</div></div>
       <div class="card"><div class="n" id="totTransit">0</div><div class="l">In Transit</div></div>
     </div>
-    <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+      <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="flex:1;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
+      <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
+    </div>
     <div style="height:12px"></div>
     <table><thead><tr><th>Product</th><th>ASIN</th><th>UPC</th><th>On Hand</th><th>Transit</th></tr></thead><tbody id="onhandBody"></tbody></table>
   </div>
@@ -258,9 +261,17 @@ function renderOnhand(){
   });
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
 }
+function syncFba(){
+  const btn=document.getElementById('syncBtn'); btn.textContent='Syncing...'; btn.disabled=true;
+  api('/api/sync-fba',{method:'POST'}).then(d=>{
+    btn.textContent='↻ Sync FBA Check-ins'; btn.disabled=false;
+    if(d.ok){ toast(`Synced: ${d.shipments} shipments, ${d.cleared} units cleared from transit`); loadProducts(); }
+    else { toast('Sync failed: '+(d.error||'check SP-API credentials'), true); }
+  }).catch(()=>{ btn.textContent='↻ Sync FBA Check-ins'; btn.disabled=false; toast('Sync error',true); });
+}
 function renderLog(){ api('/api/activity').then(rows=>{ const b=document.getElementById('logBody');
   if(!rows.length){b.innerHTML='<div class="hint">No activity yet.</div>';return;}
-  b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':'– OUT'}</span> <b>${a.qty}</b> ${a.name} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
+  b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction==='out'?'out':''}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT')}</span> <b>${a.qty}</b> ${a.name} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
 });}
 </script>
 </body>
