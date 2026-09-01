@@ -308,6 +308,10 @@ app.post('/api/add-product', auth, async (req, res) => {
   await pool.query('INSERT INTO inv_products(asin,name,sku,upc,upc_norm) VALUES($1,$2,$3,$4,$5) ON CONFLICT (asin) DO UPDATE SET name=$2, sku=$3, upc=$4, upc_norm=$5',
     [asin.trim(), name || '', sku || '', upc || '', normCode(upc||'')]);
   await pool.query('INSERT INTO inv_stock(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [asin.trim()]);
+  if (upc && upc.trim()) {
+    await pool.query('INSERT INTO inv_upcs(upc_norm, upc_raw, asin) VALUES($1,$2,$3) ON CONFLICT (upc_norm) DO UPDATE SET asin=$3',
+      [normCode(upc), upc.trim(), asin.trim()]);
+  }
   res.json({ ok: true });
 });
 
