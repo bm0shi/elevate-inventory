@@ -131,6 +131,24 @@
       <div class="card"><div class="n" id="totUnits">0</div><div class="l">On Hand</div></div>
       <div class="card"><div class="n" id="totTransit">0</div><div class="l">In Transit</div></div>
     </div>
+    <div style="margin-bottom:12px">
+      <button class="action" onclick="toggleAddProduct()" id="addProdBtn" style="width:100%;padding:12px;font-size:14px;background:#1a2b4a">+ Add a Product to Catalog</button>
+      <div id="addProductBox" style="display:none;background:#fff;border-radius:10px;padding:16px;margin-top:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+        <label>ASIN (required)</label>
+        <input type="text" id="npAsin" placeholder="B07DXL29H6" autocomplete="off">
+        <div style="height:8px"></div>
+        <label>Product name</label>
+        <input type="text" id="npName" placeholder="Tea Tree Special Color Conditioner 33.8 oz" autocomplete="off">
+        <div style="height:8px"></div>
+        <label>SKU (optional)</label>
+        <input type="text" id="npSku" placeholder="your seller SKU" autocomplete="off">
+        <div style="height:8px"></div>
+        <label>UPC (optional)</label>
+        <input type="text" id="npUpc" placeholder="009531128542" autocomplete="off">
+        <div style="height:12px"></div>
+        <button class="action full" onclick="addProduct()">Add Product</button>
+      </div>
+    </div>
     <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
       <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="flex:1;min-width:180px;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
       <select id="sortOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
@@ -471,6 +489,25 @@ function markReceived(sid){
   });
 }
 
+function toggleAddProduct(){
+  const b=document.getElementById('addProductBox');
+  b.style.display = b.style.display==='none' ? 'block' : 'none';
+}
+function addProduct(){
+  const asin=document.getElementById('npAsin').value.trim();
+  const name=document.getElementById('npName').value.trim();
+  const sku=document.getElementById('npSku').value.trim();
+  const upc=document.getElementById('npUpc').value.trim();
+  if(!asin){toast('ASIN is required',true);return;}
+  api('/api/add-product',{method:'POST',body:JSON.stringify({asin,name,sku,upc})}).then(d=>{
+    if(d.ok){ toast('Added '+(name||asin).slice(0,24));
+      document.getElementById('npAsin').value=''; document.getElementById('npName').value='';
+      document.getElementById('npSku').value=''; document.getElementById('npUpc').value='';
+      document.getElementById('addProductBox').style.display='none';
+      loadProducts();
+    } else toast('Add failed',true);
+  });
+}
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
   const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'name';
