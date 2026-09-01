@@ -212,7 +212,7 @@ document.getElementById('scanIn').addEventListener('keydown', e=>{
     } else {
       currentIn=null; pendingUpc=code;
       box.className='matched show notfound';
-      box.innerHTML=`<div class="pname">New barcode: ${code}</div><div class="pmeta">Pick which product this is — saved permanently.</div>`;
+      box.innerHTML=`<div class="pname">New barcode</div><div class="pmeta">Scanned: <b>${code}</b> — pick the product this belongs to. (A product can have several barcodes — old + new bottle designs both work.)</div>`;
       document.getElementById('qtyRowIn').style.display='none';
       document.getElementById('scanIn').value='';   // clear so it doesn't block next scan
       showPicker('In');
@@ -235,7 +235,7 @@ function filterPicker(which){
 function assignPick(which, asin){
   const p=products.find(x=>x.asin===asin);
   if(which==='In'){
-    if(pendingUpc){ api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin,upc:pendingUpc})}).then(()=>{ p.upc=pendingUpc; if(window._resetScan)window._resetScan('In'); loadProducts(); toast('Barcode saved to '+p.name.slice(0,24)); }); }
+    if(pendingUpc){ const savedUpc=pendingUpc; api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin,upc:savedUpc})}).then(()=>{ if(window._resetScan)window._resetScan('In'); loadProducts(); toast('Barcode '+savedUpc+' linked to '+p.name.slice(0,20)); }); }
     currentIn=p;
     document.getElementById('pickerInWrap').style.display='none';
     document.getElementById('matchIn').innerHTML=`<div class="pname">${p.name}</div><div class="pmeta">ASIN ${p.asin} · UPC ${pendingUpc||p.upc||'—'}</div>`;
