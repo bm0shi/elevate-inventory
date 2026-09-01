@@ -14,6 +14,9 @@ app.use(express.json({ limit: '2mb' }));
 
 // ---- Simple password gate (set APP_PASSWORD in Railway) ----
 const APP_PASSWORD = process.env.APP_PASSWORD || 'changeme';
+// Set AUTH_DISABLED=true in Railway to turn off the password gate (e.g. while testing).
+// Remove it or set to false to re-enable. No code change needed.
+const AUTH_DISABLED = String(process.env.AUTH_DISABLED || '').toLowerCase() === 'true';
 
 // Normalize a scanned/typed code so 12 vs 13 digit UPC/EAN variants of the SAME
 // barcode match. Strips leading zeros for numeric codes; leaves ASIN/SKU alone.
@@ -125,6 +128,7 @@ async function initDb() {
 
 // ---- Auth middleware (very simple header check) ----
 function auth(req, res, next) {
+  if (AUTH_DISABLED) return next();
   if (req.headers['x-app-password'] === APP_PASSWORD) return next();
   return res.status(401).json({ error: 'unauthorized' });
 }
@@ -133,8 +137,14 @@ function auth(req, res, next) {
 
 // login check
 app.post('/api/login', (req, res) => {
+  if (AUTH_DISABLED) return res.json({ ok: true, disabled: true });
   if (req.body.password === APP_PASSWORD) return res.json({ ok: true });
   res.status(401).json({ ok: false });
+});
+
+// Tell the UI whether auth is disabled (so it can skip the login screen)
+app.get('/api/auth-status', (req, res) => {
+  res.json({ disabled: AUTH_DISABLED });
 });
 
 // find product by scanned code (UPC, ASIN, or SKU)
