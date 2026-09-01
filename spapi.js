@@ -43,6 +43,7 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 async function getReceivedShipments(sinceDays = 45) {
   const token = await getAccessToken();
   const after = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
+  const before = new Date().toISOString();
 
   const results = [];
   let nextToken = null;
@@ -55,6 +56,7 @@ async function getReceivedShipments(sinceDays = 45) {
     } else {
       params.QueryType = 'DATE_RANGE';
       params.LastUpdatedAfter = after;
+      params.LastUpdatedBefore = before;
       // ShipmentStatusList must be repeated params: ?ShipmentStatusList=WORKING&ShipmentStatusList=...
       params.ShipmentStatusList = ['RECEIVING', 'CLOSED'];
     }
