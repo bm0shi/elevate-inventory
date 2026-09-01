@@ -215,6 +215,13 @@
         <button class="action full" onclick="saveBundle()">Save Bundle</button>
       </div>
     </div>
+    <div class="box">
+      <div style="font-weight:700;margin-bottom:4px">Bulk Import (fastest)</div>
+      <div class="hint" style="margin-bottom:10px">Paste one duo per line: <b>duoASIN, shampooSingleASIN, conditionerSingleASIN</b>. Example:<br><code>B07T5TQ269, B000MD65FO, B000AQI2EK</code></div>
+      <textarea id="bulkBundles" placeholder="B07T5TQ269, B000MD65FO, B000AQI2EK&#10;B07T1KSY2N, B000W5K1E8, B001Q1YFE4"></textarea>
+      <div style="height:10px"></div>
+      <button class="action full" onclick="bulkImportBundles()">Import All</button>
+    </div>
     <div style="font-weight:700;margin:16px 0 8px">Defined Bundles</div>
     <div id="bundlesList"></div>
   </div>
@@ -398,6 +405,15 @@ function renderBundles(){
       <div class="pmeta" style="margin:4px 0">${bn.bundle_asin} → deducts: ${bn.components.map(c=>`${c.qty}× ${c.name}`).join(' + ')}</div>
       <button class="action danger" style="padding:6px 12px;font-size:12px" onclick="deleteBundle('${bn.bundle_asin}')">Remove</button>
     </div>`).join('');
+  });
+}
+function bulkImportBundles(){
+  const text=document.getElementById('bulkBundles').value.trim();
+  if(!text){toast('Paste some bundles first',true);return;}
+  api('/api/bundles/bulk',{method:'POST',body:JSON.stringify({text})}).then(d=>{
+    toast('Imported '+d.done+' bundles'+(d.errors.length?', '+d.errors.length+' errors':''));
+    if(d.errors.length) alert('Some lines had issues:\n\n'+d.errors.join('\n'));
+    document.getElementById('bulkBundles').value=''; renderBundles();
   });
 }
 function deleteBundle(asin){
