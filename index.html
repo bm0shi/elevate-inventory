@@ -106,8 +106,16 @@
       <div class="card"><div class="n" id="totUnits">0</div><div class="l">On Hand</div></div>
       <div class="card"><div class="n" id="totTransit">0</div><div class="l">In Transit</div></div>
     </div>
-    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
-      <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="flex:1;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
+    <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+      <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="flex:1;min-width:180px;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
+      <select id="sortOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
+        <option value="name">Name A→Z</option>
+        <option value="name_desc">Name Z→A</option>
+        <option value="onhand_desc">On Hand: high→low</option>
+        <option value="onhand_asc">On Hand: low→high</option>
+        <option value="transit_desc">In Transit: high→low</option>
+        <option value="nostock">Out of stock first</option>
+      </select>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
     </div>
     <div style="height:12px"></div>
@@ -285,11 +293,28 @@ function markReceived(sid){
 
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
-  const body=document.getElementById('onhandBody'); let tU=0,tT=0,sk=0; body.innerHTML='';
-  products.forEach(p=>{ const oh=p.onhand||0, tr=p.transit||0; tU+=oh; tT+=tr; sk++;
-    if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q))return;
-    body.innerHTML+=`<tr><td>${p.name}</td><td>${p.asin}</td><td>${p.upc||'<span style="color:#c0392b">—</span>'}</td><td class="onhand-num${oh<=0?' low':''}">${oh}</td><td>${tr||''}</td></tr>`;
+  const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'name';
+  const body=document.getElementById('onhandBody');
+  // totals across ALL products (not just filtered)
+  let tU=0,tT=0,sk=0;
+  products.forEach(p=>{ tU+=(p.onhand||0); tT+=(p.transit||0); sk++; });
+  // filter
+  let list=products.filter(p=> !q || p.name.toLowerCase().includes(q) || (p.asin||'').toLowerCase().includes(q));
+  // sort
+  const oh=p=>p.onhand||0, tr=p=>p.transit||0;
+  list.sort((a,b)=>{
+    switch(sort){
+      case 'name_desc': return b.name.localeCompare(a.name);
+      case 'onhand_desc': return oh(b)-oh(a) || a.name.localeCompare(b.name);
+      case 'onhand_asc': return oh(a)-oh(b) || a.name.localeCompare(b.name);
+      case 'transit_desc': return tr(b)-tr(a) || a.name.localeCompare(b.name);
+      case 'nostock': return (oh(a)>0?1:0)-(oh(b)>0?1:0) || a.name.localeCompare(b.name);
+      default: return a.name.localeCompare(b.name);
+    }
   });
+  body.innerHTML = list.map(p=>{ const o=oh(p), t=tr(p);
+    return `<tr><td>${p.name}</td><td>${p.asin}</td><td>${p.upc||'<span style="color:#c0392b">—</span>'}</td><td class="onhand-num${o<=0?' low':''}">${o}</td><td>${t||''}</td></tr>`;
+  }).join('');
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
 }
 function syncFba(){
