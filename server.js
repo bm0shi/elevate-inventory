@@ -68,6 +68,13 @@ async function initDb() {
       asin TEXT REFERENCES inv_products(asin)
     );
     CREATE INDEX IF NOT EXISTS idx_upcs_asin ON inv_upcs(asin);
+    -- Bundles: a duo/kit ASIN maps to component single ASINs (with qty each)
+    CREATE TABLE IF NOT EXISTS inv_bundles (
+      bundle_asin TEXT,
+      component_asin TEXT,
+      qty INTEGER DEFAULT 1,
+      PRIMARY KEY (bundle_asin, component_asin)
+    );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -208,7 +215,7 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
      ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
     [shipmentId, shipmentName]);
 
-  let done = 0, notfound = [];
+  let done = 0, notfound = [], expandedNote = [];
   for (const it of items) {
     const code = String(it.code).trim();
     const q = parseInt(it.qty);
@@ -219,15 +226,21 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
           OR UPPER(p.asin)=UPPER($2) OR UPPER(p.sku)=UPPER($2)
           OR p.upc_norm=$1 LIMIT 1`, [normCode(code), code]);
     if (rows.length) {
-      const asin = rows[0].asin;
-      await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, asin]);
-      await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, asin, q]);
-      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-        ['out', asin, rows[0].name, q, 'Shipment ' + shipmentId]);
+      const matchedAsin = rows[0].asin;
+      // expand bundles -> component singles (or itself if not a bundle)
+      const parts = await expandToComponents(matchedAsin, q);
+      for (const part of parts) {
+        await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
+        await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
+        const note = part.fromBundle ? ('Shipment ' + shipmentId + ' (from ' + rows[0].name.slice(0,20) + ' duo)') : ('Shipment ' + shipmentId);
+        await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['out', part.asin, part.name, part.qty, note]);
+      }
+      if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${code} → ${parts.length} singles`);
       done++;
     } else { notfound.push(code); }
   }
-  res.json({ ok: true, done, notfound, shipmentId });
+  res.json({ ok: true, done, notfound, shipmentId, expanded: expandedNote });
 });
 
 // List shipments currently in transit (with their items)
@@ -379,6 +392,55 @@ const RECONCILE_INTERVAL_MS = 3 * 60 * 60 * 1000;
 setInterval(() => {
   reconcileInTransit().catch(e => console.error('[SP-API] scheduled reconcile error:', e.message));
 }, RECONCILE_INTERVAL_MS);
+
+// Given a product ASIN + quantity, expand into actual stock deductions.
+// If it's a bundle, return component singles; else return itself.
+async function expandToComponents(asin, qty) {
+  const comps = await pool.query(
+    `SELECT b.component_asin AS asin, b.qty AS per, p.name
+     FROM inv_bundles b JOIN inv_products p ON p.asin = b.component_asin
+     WHERE b.bundle_asin = $1`, [asin]);
+  if (comps.rows.length) {
+    return comps.rows.map(c => ({ asin: c.asin, qty: qty * c.per, name: c.name, fromBundle: true }));
+  }
+  const self = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+  return [{ asin, qty, name: self.rows[0]?.name || '', fromBundle: false }];
+}
+
+// ---- Bundle management endpoints ----
+app.get('/api/bundles', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT b.bundle_asin, bp.name AS bundle_name, b.component_asin, cp.name AS component_name, b.qty
+     FROM inv_bundles b
+     JOIN inv_products bp ON bp.asin = b.bundle_asin
+     JOIN inv_products cp ON cp.asin = b.component_asin
+     ORDER BY bp.name`);
+  // group by bundle
+  const map = {};
+  for (const r of rows) {
+    (map[r.bundle_asin] = map[r.bundle_asin] || { bundle_asin: r.bundle_asin, bundle_name: r.bundle_name, components: [] })
+      .components.push({ asin: r.component_asin, name: r.component_name, qty: r.qty });
+  }
+  res.json(Object.values(map));
+});
+
+app.post('/api/bundles', auth, async (req, res) => {
+  // { bundle_asin, components: [{asin, qty}] }  — replaces existing definition
+  const { bundle_asin, components } = req.body;
+  if (!bundle_asin || !Array.isArray(components) || !components.length)
+    return res.status(400).json({ error: 'bundle_asin and components required' });
+  await pool.query('DELETE FROM inv_bundles WHERE bundle_asin=$1', [bundle_asin]);
+  for (const c of components) {
+    await pool.query('INSERT INTO inv_bundles(bundle_asin, component_asin, qty) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',
+      [bundle_asin, c.asin, parseInt(c.qty) || 1]);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/bundles/delete', auth, async (req, res) => {
+  await pool.query('DELETE FROM inv_bundles WHERE bundle_asin=$1', [req.body.bundle_asin]);
+  res.json({ ok: true });
+});
 
 // serve the UI
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
