@@ -51,6 +51,20 @@ async function initDb() {
       processed_at TIMESTAMPTZ DEFAULT now(),
       units_cleared INTEGER DEFAULT 0
     );
+    -- Shipments the app created (only these can be auto-cleared)
+    CREATE TABLE IF NOT EXISTS inv_shipments (
+      shipment_id TEXT PRIMARY KEY,
+      shipment_name TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      status TEXT DEFAULT 'in_transit'
+    );
+    -- Per-shipment line items (what we sent, tagged to a shipment)
+    CREATE TABLE IF NOT EXISTS inv_shipment_items (
+      id SERIAL PRIMARY KEY,
+      shipment_id TEXT REFERENCES inv_shipments(shipment_id),
+      asin TEXT,
+      qty INTEGER
+    );
   `);
 
   // Seed products once (only if table empty)
@@ -134,9 +148,19 @@ app.post('/api/ship', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// bulk ship (paste pack slip) — accepts array of {code, qty}
+// bulk ship (paste pack slip) — requires a shipment ID; tags units to it
 app.post('/api/bulk-ship', auth, async (req, res) => {
   const items = req.body.items || [];
+  const shipmentId = (req.body.shipmentId || '').trim();
+  const shipmentName = (req.body.shipmentName || '').trim();
+  if (!shipmentId) return res.status(400).json({ error: 'Shipment ID required' });
+
+  // Register the shipment (so the sync knows this one belongs to us)
+  await pool.query(
+    `INSERT INTO inv_shipments(shipment_id, shipment_name) VALUES($1,$2)
+     ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
+    [shipmentId, shipmentName]);
+
   let done = 0, notfound = [];
   for (const it of items) {
     const code = String(it.code).trim();
@@ -145,13 +169,43 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
     const { rows } = await pool.query(
       `SELECT asin, name FROM inv_products WHERE upc=$1 OR UPPER(asin)=UPPER($1) OR sku=$1 LIMIT 1`, [code]);
     if (rows.length) {
-      await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, rows[0].asin]);
+      const asin = rows[0].asin;
+      await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, asin]);
+      await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, asin, q]);
       await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-        ['out', rows[0].asin, rows[0].name, q, 'bulk pack-slip']);
+        ['out', asin, rows[0].name, q, 'Shipment ' + shipmentId]);
       done++;
     } else { notfound.push(code); }
   }
-  res.json({ ok: true, done, notfound });
+  res.json({ ok: true, done, notfound, shipmentId });
+});
+
+// List shipments currently in transit (with their items)
+app.get('/api/shipments', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT s.shipment_id, s.shipment_name, s.status, s.created_at,
+            COALESCE(SUM(i.qty),0)::int AS units
+     FROM inv_shipments s LEFT JOIN inv_shipment_items i ON i.shipment_id = s.shipment_id
+     WHERE s.status = 'in_transit'
+     GROUP BY s.shipment_id, s.shipment_name, s.status, s.created_at
+     ORDER BY s.created_at DESC`);
+  res.json(rows);
+});
+
+// Manually mark a shipment received (clear its units from transit)
+app.post('/api/receive-shipment', auth, async (req, res) => {
+  const shipmentId = (req.body.shipmentId || '').trim();
+  if (!shipmentId) return res.status(400).json({ error: 'shipmentId required' });
+  const items = await pool.query('SELECT asin, qty FROM inv_shipment_items WHERE shipment_id=$1', [shipmentId]);
+  let cleared = 0;
+  for (const it of items.rows) {
+    await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+    cleared += it.qty;
+  }
+  await pool.query("UPDATE inv_shipments SET status='received' WHERE shipment_id=$1", [shipmentId]);
+  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+    ['checkin', '', 'Shipment ' + shipmentId, cleared, 'manually marked received']);
+  res.json({ ok: true, cleared });
 });
 
 // mark transit as received at FBA (clears transit) — optional housekeeping
@@ -187,7 +241,10 @@ async function reconcileInTransit() {
   console.log('[SP-API] Starting in-transit reconcile...');
   let shipments;
   try {
-    shipments = await getReceivedShipments(45);
+    // Only look back a short window so we ignore shipments that predate this app.
+    // Set RECONCILE_LOOKBACK_DAYS in Railway to control (default 2).
+    const lookback = parseInt(process.env.RECONCILE_LOOKBACK_DAYS, 10) || 2;
+    shipments = await getReceivedShipments(lookback);
   } catch (err) {
     console.error('[SP-API] reconcile aborted:', err.message);
     return { ok: false, error: err.message };
@@ -199,32 +256,30 @@ async function reconcileInTransit() {
 
   for (const s of shipments) {
     const sid = s.ShipmentId;
+    // ONLY process shipments the app itself created (matched by ID).
+    // This ignores all legacy / externally-created shipments entirely.
+    const known = await pool.query("SELECT 1 FROM inv_shipments WHERE shipment_id=$1 AND status='in_transit'", [sid]);
+    if (!known.rows.length) continue;
+
     // skip if already processed
     const seen = await pool.query('SELECT 1 FROM inv_processed_shipments WHERE shipment_id=$1', [sid]);
     if (seen.rows.length) continue;
 
-    const items = await getShipmentReceivedItems(sid);
+    // Clear based on what WE recorded for this shipment (not Amazon's per-sku),
+    // so it exactly reverses what we added to transit.
+    const ourItems = await pool.query('SELECT asin, qty FROM inv_shipment_items WHERE shipment_id=$1', [sid]);
     let clearedThis = 0;
-
-    for (const it of items) {
-      if (!it.received || it.received < 1) continue;
-      // match SKU -> our product -> clear received qty from transit (floor at 0)
-      const p = await pool.query('SELECT asin FROM inv_products WHERE sku=$1 LIMIT 1', [it.sku]);
-      if (!p.rows.length) {
-        console.log(`[SP-API] SKU ${it.sku} not in our catalog — skipping.`);
-        continue;
-      }
-      const asin = p.rows[0].asin;
-      await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.received, asin]);
-      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
-        ['checkin', asin, it.received, `FBA check-in ${sid}`]);
-      clearedThis += it.received;
+    for (const it of ourItems.rows) {
+      await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+      clearedThis += it.qty;
     }
-
+    await pool.query("UPDATE inv_shipments SET status='received' WHERE shipment_id=$1", [sid]);
+    await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['checkin', '', 'Shipment ' + sid, clearedThis, 'Amazon checked in']);
     await pool.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
     clearedTotal += clearedThis;
     shipmentsDone++;
-    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units from transit.`);
+    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units (app-created).`);
   }
 
   console.log(`[SP-API] Reconcile done. ${shipmentsDone} new shipments, ${clearedTotal} units cleared.`);
