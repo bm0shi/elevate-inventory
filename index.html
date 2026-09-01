@@ -96,6 +96,7 @@
     <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
     <button class="tab" onclick="showTab('transit',event)">In Transit</button>
     <button class="tab" onclick="showTab('shipments',event)">Shipments</button>
+    <button class="tab" onclick="showTab('bundles',event)">Bundles</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
   </div>
 
@@ -194,6 +195,29 @@
     </div>
     <div id="shipmentsBody"></div>
   </div>
+  <div id="bundles" class="panel">
+    <div class="box">
+      <div style="font-weight:700;margin-bottom:4px">Define a Duo / Bundle</div>
+      <div class="hint" style="margin-bottom:12px">Pick the duo, then its two component singles. When the duo ships, the app deducts the singles instead. Set once per duo.</div>
+      <label>Duo / Bundle product</label>
+      <input type="text" id="bundlePick" placeholder="Search duo by name or ASIN..." onkeyup="filterBundlePick()" autocomplete="off">
+      <div class="picker" id="bundlePickList" style="display:none"></div>
+      <div id="bundleChosen" style="display:none">
+        <div style="margin:10px 0;padding:10px;background:#eef2f8;border-radius:8px;font-weight:700" id="bundleChosenName"></div>
+        <label>Component 1 (e.g. the shampoo single)</label>
+        <input type="text" id="comp1Pick" placeholder="Search single..." onkeyup="filterComp(1)" autocomplete="off">
+        <div class="picker" id="comp1List" style="display:none"></div>
+        <div id="comp1Chosen" class="pmeta" style="margin:4px 0 12px"></div>
+        <label>Component 2 (e.g. the conditioner single)</label>
+        <input type="text" id="comp2Pick" placeholder="Search single..." onkeyup="filterComp(2)" autocomplete="off">
+        <div class="picker" id="comp2List" style="display:none"></div>
+        <div id="comp2Chosen" class="pmeta" style="margin:4px 0 12px"></div>
+        <button class="action full" onclick="saveBundle()">Save Bundle</button>
+      </div>
+    </div>
+    <div style="font-weight:700;margin:16px 0 8px">Defined Bundles</div>
+    <div id="bundlesList"></div>
+  </div>
   <div id="log" class="panel"><div id="logBody"></div></div>
 </div>
 <div class="toast" id="toast"></div>
@@ -221,7 +245,7 @@ document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -315,10 +339,70 @@ function doBulkShip(){
   const items=[]; lines.forEach(l=>{ const parts=l.trim().split(/[\s,\t]+/); if(parts.length>=2){ items.push({code:parts[0], qty:parts[parts.length-1]}); } });
   if(!items.length){toast('Nothing to deduct',true);return;}
   api('/api/bulk-ship',{method:'POST',body:JSON.stringify({items,shipmentId,shipmentName})}).then(d=>{
-    toast('Shipment '+d.shipmentId+': deducted '+d.done+' lines'+(d.notfound.length?', '+d.notfound.length+' not found':''), d.notfound.length>0);
+    toast('Shipment '+d.shipmentId+': '+d.done+' lines'+(d.expanded&&d.expanded.length?' ('+d.expanded.length+' duo→singles)':'')+(d.notfound.length?', '+d.notfound.length+' not found':''), d.notfound.length>0);
     if(d.notfound.length) alert('Not found (add these barcodes/ASINs first):\n'+d.notfound.join('\n'));
     document.getElementById('packSlip').value=''; document.getElementById('shipmentId').value=''; document.getElementById('shipmentName').value=''; loadProducts();
   });
+}
+// ---- BUNDLES ----
+let bundleSel = { asin:null, name:null, c1:null, c1name:null, c2:null, c2name:null };
+function filterBundlePick(){
+  const q=(document.getElementById('bundlePick').value||'').toLowerCase();
+  const el=document.getElementById('bundlePickList');
+  if(!q){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML=products.filter(p=>p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
+    .map(p=>`<div class="picker-item" onclick="pickBundle('${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+}
+function pickBundle(asin){
+  const p=products.find(x=>x.asin===asin); bundleSel.asin=asin; bundleSel.name=p.name;
+  document.getElementById('bundlePick').value=p.name;
+  document.getElementById('bundlePickList').style.display='none';
+  document.getElementById('bundleChosen').style.display='block';
+  document.getElementById('bundleChosenName').textContent='Duo: '+p.name;
+}
+function filterComp(n){
+  const q=(document.getElementById('comp'+n+'Pick').value||'').toLowerCase();
+  const el=document.getElementById('comp'+n+'List');
+  if(!q){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML=products.filter(p=>p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
+    .map(p=>`<div class="picker-item" onclick="pickComp(${n},'${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+}
+function pickComp(n,asin){
+  const p=products.find(x=>x.asin===asin);
+  document.getElementById('comp'+n+'Pick').value=p.name;
+  document.getElementById('comp'+n+'List').style.display='none';
+  document.getElementById('comp'+n+'Chosen').textContent='✓ '+p.name+' ('+p.asin+')';
+  if(n===1){ bundleSel.c1=asin; bundleSel.c1name=p.name; } else { bundleSel.c2=asin; bundleSel.c2name=p.name; }
+}
+function saveBundle(){
+  if(!bundleSel.asin||!bundleSel.c1||!bundleSel.c2){ toast('Pick the duo and both singles',true); return; }
+  const components=[{asin:bundleSel.c1,qty:1},{asin:bundleSel.c2,qty:1}];
+  api('/api/bundles',{method:'POST',body:JSON.stringify({bundle_asin:bundleSel.asin,components})}).then(d=>{
+    if(d.ok){ toast('Bundle saved'); 
+      document.getElementById('bundlePick').value=''; document.getElementById('comp1Pick').value=''; document.getElementById('comp2Pick').value='';
+      document.getElementById('comp1Chosen').textContent=''; document.getElementById('comp2Chosen').textContent='';
+      document.getElementById('bundleChosen').style.display='none';
+      bundleSel={asin:null,name:null,c1:null,c1name:null,c2:null,c2name:null};
+      renderBundles();
+    } else toast('Save failed',true);
+  });
+}
+function renderBundles(){
+  api('/api/bundles').then(list=>{
+    const b=document.getElementById('bundlesList');
+    if(!list.length){ b.innerHTML='<div class="hint">No bundles defined yet.</div>'; return; }
+    b.innerHTML=list.map(bn=>`<div class="box" style="margin-bottom:8px">
+      <div style="font-weight:700">${bn.bundle_name}</div>
+      <div class="pmeta" style="margin:4px 0">${bn.bundle_asin} → deducts: ${bn.components.map(c=>`${c.qty}× ${c.name}`).join(' + ')}</div>
+      <button class="action danger" style="padding:6px 12px;font-size:12px" onclick="deleteBundle('${bn.bundle_asin}')">Remove</button>
+    </div>`).join('');
+  });
+}
+function deleteBundle(asin){
+  if(!confirm('Remove this bundle definition?'))return;
+  api('/api/bundles/delete',{method:'POST',body:JSON.stringify({bundle_asin:asin})}).then(()=>{ toast('Removed'); renderBundles(); });
 }
 function renderShipments(){
   const filter=document.getElementById('shipFilter').value;
