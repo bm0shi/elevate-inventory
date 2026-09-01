@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Elevate Inventory</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1b2d; color: #1f2733; }
+  .app { max-width: 900px; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
+  header { background: #0f1b2d; color: #fff; padding: 16px 20px; position: sticky; top: 0; z-index: 10; }
+  header h1 { font-size: 18px; font-weight: 700; }
+  header .sub { font-size: 12px; color: #9db0c9; margin-top: 2px; }
+  .tabs { display: flex; background: #1a2b4a; }
+  .tab { flex: 1; padding: 14px; text-align: center; color: #9db0c9; font-weight: 600; font-size: 13px; cursor: pointer; border: none; background: none; }
+  .tab.active { color: #fff; background: #127a7a; }
+  .panel { padding: 20px; display: none; }
+  .panel.active { display: block; }
+  .box { background: #fff; border-radius: 12px; padding: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin-bottom: 16px; }
+  label { display: block; font-size: 12px; font-weight: 700; color: #5a6472; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  input[type=text], input[type=number], input[type=password] { width: 100%; padding: 14px; font-size: 18px; border: 2px solid #e2e8f0; border-radius: 8px; outline: none; }
+  input:focus { border-color: #127a7a; }
+  .matched { margin-top: 14px; padding: 14px; border-radius: 8px; display: none; }
+  .matched.show { display: block; }
+  .matched.ok { background: #eafaf1; border: 1px solid #1e8449; }
+  .matched.notfound { background: #fdf6e3; border: 1px solid #b7791f; }
+  .pname { font-weight: 700; font-size: 15px; }
+  .pmeta { font-size: 12px; color: #5a6472; margin-top: 4px; }
+  .qty-row { display: flex; gap: 10px; margin-top: 14px; align-items: flex-end; }
+  .qty-row > div { flex: 1; }
+  button.action { background: #127a7a; color: #fff; border: none; padding: 14px 20px; font-size: 16px; font-weight: 700; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  button.action:hover { background: #0e6363; }
+  button.action.danger { background: #c0392b; }
+  button.action.full { width: 100%; }
+  table { width: 100%; background: #fff; border-radius: 12px; overflow: hidden; border-collapse: collapse; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  th { background: #0f1b2d; color: #fff; font-size: 11px; text-transform: uppercase; padding: 10px; text-align: left; }
+  td { padding: 10px; border-bottom: 1px solid #eef2f6; font-size: 13px; }
+  .onhand-num { font-weight: 700; font-size: 15px; }
+  .low { color: #c0392b; }
+  .log-entry { font-size: 13px; padding: 8px 12px; border-left: 3px solid #127a7a; background: #fff; margin-bottom: 6px; border-radius: 0 6px 6px 0; }
+  .log-entry.out { border-left-color: #c0392b; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+  .pill.in { background: #eafaf1; color: #1e8449; } .pill.out { background: #fdf0ee; color: #c0392b; }
+  .hint { font-size: 12px; color: #5a6472; margin-top: 8px; line-height: 1.5; }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1e8449; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 100; }
+  .toast.show { opacity: 1; } .toast.err { background: #c0392b; }
+  .cards { display: flex; gap: 12px; margin-bottom: 16px; }
+  .card { flex: 1; background: #fff; border-radius: 10px; padding: 14px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  .card .n { font-size: 22px; font-weight: 700; color: #0f1b2d; } .card .l { font-size: 11px; color: #5a6472; text-transform: uppercase; }
+  textarea { width: 100%; min-height: 120px; padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-family: monospace; font-size: 13px; }
+  .picker { max-height: 240px; overflow-y: auto; margin-top: 10px; border: 1px solid #e2e8f0; border-radius: 8px; }
+  .picker-item { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; cursor: pointer; font-size: 13px; }
+  .picker-item:hover { background: #eafaf1; }
+  #login { position: fixed; inset: 0; background: #0f1b2d; display: flex; align-items: center; justify-content: center; z-index: 200; }
+  #login .lbox { background: #fff; padding: 30px; border-radius: 12px; width: 320px; }
+  #login h2 { margin-bottom: 16px; color: #0f1b2d; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <div class="lbox">
+    <h2>📦 Elevate Inventory</h2>
+    <label>Password</label>
+    <input type="password" id="pw" placeholder="Enter password">
+    <div style="height:12px"></div>
+    <button class="action full" onclick="doLogin()">Log In</button>
+    <div class="hint" id="loginErr" style="color:#c0392b"></div>
+  </div>
+</div>
+
+<div class="app" style="display:none" id="mainApp">
+  <header>
+    <h1>📦 Elevate Inventory</h1>
+    <div class="sub">Scan receiving · live on-hand · FBA deduction</div>
+  </header>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('receive',event)">Receive In</button>
+    <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
+    <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
+    <button class="tab" onclick="showTab('log',event)">Activity</button>
+  </div>
+
+  <div id="receive" class="panel active">
+    <div class="box">
+      <label>Scan UPC (or type ASIN/SKU + Enter)</label>
+      <input type="text" id="scanIn" placeholder="Scan barcode..." autocomplete="off">
+      <div id="matchIn" class="matched"></div>
+      <div id="pickerInWrap" style="display:none">
+        <label style="margin-top:14px">New barcode — which product is this?</label>
+        <input type="text" id="pickerInSearch" placeholder="Search product name or ASIN..." onkeyup="filterPicker('In')">
+        <div class="picker" id="pickerIn"></div>
+      </div>
+      <div class="qty-row" id="qtyRowIn" style="display:none">
+        <div><label>Quantity received</label><input type="number" id="qtyIn" placeholder="100" min="1"></div>
+        <button class="action" onclick="doReceive()">Add to Stock</button>
+      </div>
+      <div class="hint">Scan a product → if it's a new barcode, pick which product it is (once) and it's remembered forever → enter quantity → Add.</div>
+    </div>
+  </div>
+
+  <div id="onhand" class="panel">
+    <div class="cards">
+      <div class="card"><div class="n" id="totSkus">0</div><div class="l">SKUs</div></div>
+      <div class="card"><div class="n" id="totUnits">0</div><div class="l">On Hand</div></div>
+      <div class="card"><div class="n" id="totTransit">0</div><div class="l">In Transit</div></div>
+    </div>
+    <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
+    <div style="height:12px"></div>
+    <table><thead><tr><th>Product</th><th>ASIN</th><th>UPC</th><th>On Hand</th><th>Transit</th></tr></thead><tbody id="onhandBody"></tbody></table>
+  </div>
+
+  <div id="ship" class="panel">
+    <div class="box">
+      <label>Paste FBA pack slip (ASIN or UPC, then qty, one per line)</label>
+      <textarea id="packSlip" placeholder="B0007CXY5E 200&#10;B00B59LCIE 150&#10;009531136929 96"></textarea>
+      <div style="height:10px"></div>
+      <button class="action danger full" onclick="doBulkShip()">Deduct Entire Shipment from On Hand</button>
+      <div class="hint">Paste your shipment contents. Each line: product code (ASIN or UPC) then quantity. Deducts all at once and moves them to In Transit — accurate the moment you ship, before Amazon checks in.</div>
+    </div>
+    <div class="box">
+      <label>Or scan one item out</label>
+      <input type="text" id="scanOut" placeholder="Scan barcode..." autocomplete="off">
+      <div id="matchOut" class="matched"></div>
+      <div class="qty-row" id="qtyRowOut" style="display:none">
+        <div><label>Qty to FBA</label><input type="number" id="qtyOut" placeholder="50" min="1"></div>
+        <button class="action danger" onclick="doShip()">Ship</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="log" class="panel"><div id="logBody"></div></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let PW = '';
+let products = [];
+let currentIn = null, currentOut = null, pendingUpc = null;
+
+function api(path, opts={}) {
+  opts.headers = Object.assign({'Content-Type':'application/json','x-app-password':PW}, opts.headers||{});
+  return fetch(path, opts).then(r => r.json());
+}
+function toast(m, err) { const t=document.getElementById('toast'); t.textContent=m; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',1800); }
+
+function doLogin() {
+  const pw = document.getElementById('pw').value;
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok){ PW=pw; document.getElementById('login').style.display='none'; document.getElementById('mainApp').style.display='block'; loadProducts(); document.getElementById('scanIn').focus(); }
+      else document.getElementById('loginErr').textContent='Wrong password';
+    });
+}
+document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+
+function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
+
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+
+// RECEIVING
+document.getElementById('scanIn').addEventListener('keydown', e=>{
+  if(e.key!=='Enter') return;
+  const code = e.target.value.trim(); if(!code) return;
+  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+    const box=document.getElementById('matchIn');
+    document.getElementById('pickerInWrap').style.display='none';
+    if(d.found){
+      currentIn=d.product; pendingUpc=null;
+      box.className='matched show ok';
+      box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">ASIN ${d.product.asin} · UPC ${d.product.upc||'—'} · On hand ${d.product.onhand||0}</div>`;
+      document.getElementById('qtyRowIn').style.display='flex'; document.getElementById('qtyIn').focus();
+    } else {
+      // Unknown barcode - learn it. If it's numeric, treat as UPC to assign.
+      currentIn=null; pendingUpc=code;
+      box.className='matched show notfound';
+      box.innerHTML=`<div class="pname">New barcode: ${code}</div><div class="pmeta">Pick which product this is — saved permanently.</div>`;
+      document.getElementById('qtyRowIn').style.display='none';
+      showPicker('In');
+    }
+    e.target.select();
+  });
+});
+document.getElementById('qtyIn').addEventListener('keydown',e=>{if(e.key==='Enter')doReceive();});
+
+function showPicker(which){
+  document.getElementById('picker'+which+'Wrap').style.display='block';
+  filterPicker(which);
+  document.getElementById('picker'+which+'Search').focus();
+}
+function filterPicker(which){
+  const q=(document.getElementById('picker'+which+'Search').value||'').toLowerCase();
+  const el=document.getElementById('picker'+which);
+  el.innerHTML = products.filter(p=>!q || p.name.toLowerCase().includes(q) || (p.asin||'').toLowerCase().includes(q))
+    .slice(0,40).map(p=>`<div class="picker-item" onclick="assignPick('${which}','${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+}
+function assignPick(which, asin){
+  const p=products.find(x=>x.asin===asin);
+  if(which==='In'){
+    if(pendingUpc){ api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin,upc:pendingUpc})}).then(()=>{ p.upc=pendingUpc; toast('Barcode saved to '+p.name.slice(0,24)); }); }
+    currentIn=p;
+    document.getElementById('pickerInWrap').style.display='none';
+    document.getElementById('matchIn').innerHTML=`<div class="pname">${p.name}</div><div class="pmeta">ASIN ${p.asin} · UPC ${pendingUpc||p.upc||'—'}</div>`;
+    document.getElementById('qtyRowIn').style.display='flex'; document.getElementById('qtyIn').focus();
+  }
+}
+
+function doReceive(){
+  const qty=parseInt(document.getElementById('qtyIn').value);
+  if(!currentIn||!qty||qty<1){toast('Scan product + enter qty',true);return;}
+  api('/api/receive',{method:'POST',body:JSON.stringify({asin:currentIn.asin,qty})}).then(()=>{
+    toast('+'+qty+' '+currentIn.name.slice(0,26));
+    document.getElementById('qtyIn').value=''; document.getElementById('scanIn').value='';
+    document.getElementById('matchIn').className='matched'; document.getElementById('qtyRowIn').style.display='none';
+    currentIn=null; loadProducts(); document.getElementById('scanIn').focus();
+  });
+}
+
+// SHIP single
+document.getElementById('scanOut').addEventListener('keydown', e=>{
+  if(e.key!=='Enter')return; const code=e.target.value.trim(); if(!code)return;
+  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+    const box=document.getElementById('matchOut');
+    if(d.found){ currentOut=d.product; box.className='matched show ok';
+      box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">On hand ${d.product.onhand||0}</div>`;
+      document.getElementById('qtyRowOut').style.display='flex'; document.getElementById('qtyOut').focus();
+    } else { currentOut=null; box.className='matched show notfound'; box.innerHTML=`<div class="pname">Not found: ${code}</div><div class="pmeta">Receive it first to assign the barcode.</div>`; document.getElementById('qtyRowOut').style.display='none'; }
+    e.target.select();
+  });
+});
+document.getElementById('qtyOut').addEventListener('keydown',e=>{if(e.key==='Enter')doShip();});
+function doShip(){
+  const qty=parseInt(document.getElementById('qtyOut').value);
+  if(!currentOut||!qty||qty<1){toast('Scan + qty',true);return;}
+  api('/api/ship',{method:'POST',body:JSON.stringify({asin:currentOut.asin,qty})}).then(()=>{
+    toast('Shipped '+qty); document.getElementById('qtyOut').value=''; document.getElementById('scanOut').value='';
+    document.getElementById('matchOut').className='matched'; document.getElementById('qtyRowOut').style.display='none'; currentOut=null; loadProducts();
+  });
+}
+
+function doBulkShip(){
+  const lines=document.getElementById('packSlip').value.trim().split('\n');
+  const items=[]; lines.forEach(l=>{ const parts=l.trim().split(/[\s,\t]+/); if(parts.length>=2){ items.push({code:parts[0], qty:parts[parts.length-1]}); } });
+  if(!items.length){toast('Nothing to deduct',true);return;}
+  api('/api/bulk-ship',{method:'POST',body:JSON.stringify({items})}).then(d=>{
+    toast('Deducted '+d.done+' lines'+(d.notfound.length?', '+d.notfound.length+' not found':''), d.notfound.length>0);
+    if(d.notfound.length) alert('Not found (add these barcodes/ASINs first):\n'+d.notfound.join('\n'));
+    document.getElementById('packSlip').value=''; loadProducts();
+  });
+}
+
+function renderOnhand(){
+  const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
+  const body=document.getElementById('onhandBody'); let tU=0,tT=0,sk=0; body.innerHTML='';
+  products.forEach(p=>{ const oh=p.onhand||0, tr=p.transit||0; tU+=oh; tT+=tr; sk++;
+    if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q))return;
+    body.innerHTML+=`<tr><td>${p.name}</td><td>${p.asin}</td><td>${p.upc||'<span style="color:#c0392b">—</span>'}</td><td class="onhand-num${oh<=0?' low':''}">${oh}</td><td>${tr||''}</td></tr>`;
+  });
+  document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
+}
+function renderLog(){ api('/api/activity').then(rows=>{ const b=document.getElementById('logBody');
+  if(!rows.length){b.innerHTML='<div class="hint">No activity yet.</div>';return;}
+  b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':'– OUT'}</span> <b>${a.qty}</b> ${a.name} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
+});}
+</script>
+</body>
+</html>
