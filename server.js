@@ -15,6 +15,18 @@ app.use(express.json({ limit: '2mb' }));
 // ---- Simple password gate (set APP_PASSWORD in Railway) ----
 const APP_PASSWORD = process.env.APP_PASSWORD || 'changeme';
 
+// Normalize a scanned/typed code so 12 vs 13 digit UPC/EAN variants of the SAME
+// barcode match. Strips leading zeros for numeric codes; leaves ASIN/SKU alone.
+function normCode(raw) {
+  if (raw == null) return '';
+  let c = String(raw).trim();
+  // numeric barcodes: strip leading zeros so 009531136929 == 9531136929 == 0009531136929
+  if (/^[0-9]+$/.test(c)) {
+    c = c.replace(/^0+/, '');
+  }
+  return c.toUpperCase();
+}
+
 // ---- Postgres ----
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -29,7 +41,8 @@ async function initDb() {
       asin TEXT PRIMARY KEY,
       sku TEXT,
       name TEXT,
-      upc TEXT
+      upc TEXT,
+      upc_norm TEXT
     );
     CREATE TABLE IF NOT EXISTS inv_stock (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
@@ -45,7 +58,9 @@ async function initDb() {
       qty INTEGER,
       note TEXT
     );
+    ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS upc_norm TEXT;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
+    CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -99,11 +114,13 @@ app.post('/api/login', (req, res) => {
 
 // find product by scanned code (UPC, ASIN, or SKU)
 app.get('/api/find/:code', auth, async (req, res) => {
-  const code = req.params.code.trim();
+  const raw = req.params.code.trim();
+  const norm = normCode(raw);
   const { rows } = await pool.query(
     `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
-     WHERE p.upc = $1 OR UPPER(p.asin) = UPPER($1) OR p.sku = $1 LIMIT 1`, [code]);
+     WHERE p.upc_norm = $1 OR UPPER(p.asin) = UPPER($2) OR UPPER(p.sku) = UPPER($2) LIMIT 1`,
+    [norm, raw]);
   if (rows.length) return res.json({ found: true, product: rows[0] });
   res.json({ found: false });
 });
@@ -120,7 +137,8 @@ app.get('/api/products', auth, async (req, res) => {
 // assign a UPC to a product (learn-as-you-scan)
 app.post('/api/assign-upc', auth, async (req, res) => {
   const { asin, upc } = req.body;
-  await pool.query('UPDATE inv_products SET upc=$1 WHERE asin=$2', [upc.trim(), asin]);
+  const raw = (upc||'').trim();
+  await pool.query('UPDATE inv_products SET upc=$1, upc_norm=$2 WHERE asin=$3', [raw, normCode(raw), asin]);
   res.json({ ok: true });
 });
 
@@ -167,7 +185,7 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
     const q = parseInt(it.qty);
     if (!q || q < 1) continue;
     const { rows } = await pool.query(
-      `SELECT asin, name FROM inv_products WHERE upc=$1 OR UPPER(asin)=UPPER($1) OR sku=$1 LIMIT 1`, [code]);
+      `SELECT asin, name FROM inv_products WHERE upc_norm=$1 OR UPPER(asin)=UPPER($2) OR UPPER(sku)=UPPER($2) LIMIT 1`, [normCode(code), code]);
     if (rows.length) {
       const asin = rows[0].asin;
       await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, asin]);
@@ -226,8 +244,8 @@ app.get('/api/activity', auth, async (req, res) => {
 app.post('/api/add-product', auth, async (req, res) => {
   const { asin, name, sku, upc } = req.body;
   if (!asin) return res.status(400).json({ error: 'asin required' });
-  await pool.query('INSERT INTO inv_products(asin,name,sku,upc) VALUES($1,$2,$3,$4) ON CONFLICT (asin) DO UPDATE SET name=$2, sku=$3, upc=$4',
-    [asin.trim(), name || '', sku || '', upc || '']);
+  await pool.query('INSERT INTO inv_products(asin,name,sku,upc,upc_norm) VALUES($1,$2,$3,$4,$5) ON CONFLICT (asin) DO UPDATE SET name=$2, sku=$3, upc=$4, upc_norm=$5',
+    [asin.trim(), name || '', sku || '', upc || '', normCode(upc||'')]);
   await pool.query('INSERT INTO inv_stock(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [asin.trim()]);
   res.json({ ok: true });
 });
