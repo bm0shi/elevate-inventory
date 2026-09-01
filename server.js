@@ -7,6 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
+const { getReceivedShipments, getShipmentReceivedItems } = require('./spapi');
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -45,6 +46,11 @@ async function initDb() {
       note TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
+    CREATE TABLE IF NOT EXISTS inv_processed_shipments (
+      shipment_id TEXT PRIMARY KEY,
+      processed_at TIMESTAMPTZ DEFAULT now(),
+      units_cleared INTEGER DEFAULT 0
+    );
   `);
 
   // Seed products once (only if table empty)
@@ -171,6 +177,71 @@ app.post('/api/add-product', auth, async (req, res) => {
   await pool.query('INSERT INTO inv_stock(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [asin.trim()]);
   res.json({ ok: true });
 });
+
+
+// ============================================================
+// SP-API AUTO-CLEAR: when Amazon checks in a shipment, clear
+// those units from in-transit. Matches by SKU.
+// ============================================================
+async function reconcileInTransit() {
+  console.log('[SP-API] Starting in-transit reconcile...');
+  let shipments;
+  try {
+    shipments = await getReceivedShipments(45);
+  } catch (err) {
+    console.error('[SP-API] reconcile aborted:', err.message);
+    return { ok: false, error: err.message };
+  }
+  console.log(`[SP-API] Found ${shipments.length} received/closed shipments in last 45 days.`);
+
+  let clearedTotal = 0;
+  let shipmentsDone = 0;
+
+  for (const s of shipments) {
+    const sid = s.ShipmentId;
+    // skip if already processed
+    const seen = await pool.query('SELECT 1 FROM inv_processed_shipments WHERE shipment_id=$1', [sid]);
+    if (seen.rows.length) continue;
+
+    const items = await getShipmentReceivedItems(sid);
+    let clearedThis = 0;
+
+    for (const it of items) {
+      if (!it.received || it.received < 1) continue;
+      // match SKU -> our product -> clear received qty from transit (floor at 0)
+      const p = await pool.query('SELECT asin FROM inv_products WHERE sku=$1 LIMIT 1', [it.sku]);
+      if (!p.rows.length) {
+        console.log(`[SP-API] SKU ${it.sku} not in our catalog — skipping.`);
+        continue;
+      }
+      const asin = p.rows[0].asin;
+      await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.received, asin]);
+      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+        ['checkin', asin, it.received, `FBA check-in ${sid}`]);
+      clearedThis += it.received;
+    }
+
+    await pool.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
+    clearedTotal += clearedThis;
+    shipmentsDone++;
+    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units from transit.`);
+  }
+
+  console.log(`[SP-API] Reconcile done. ${shipmentsDone} new shipments, ${clearedTotal} units cleared.`);
+  return { ok: true, shipments: shipmentsDone, cleared: clearedTotal };
+}
+
+// Manual trigger from the UI
+app.post('/api/sync-fba', auth, async (req, res) => {
+  const result = await reconcileInTransit();
+  res.json(result);
+});
+
+// Auto-run every 3 hours
+const RECONCILE_INTERVAL_MS = 3 * 60 * 60 * 1000;
+setInterval(() => {
+  reconcileInTransit().catch(e => console.error('[SP-API] scheduled reconcile error:', e.message));
+}, RECONCILE_INTERVAL_MS);
 
 // serve the UI
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
