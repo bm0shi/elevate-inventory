@@ -268,6 +268,17 @@ function doLogin() {
 }
 document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 
+// If auth is disabled on the server, skip the login screen automatically
+fetch('/api/auth-status').then(r=>r.json()).then(d=>{
+  if(d.disabled){
+    PW='';  // no password needed
+    document.getElementById('login').style.display='none';
+    document.getElementById('mainApp').style.display='block';
+    loadProducts();
+    setTimeout(()=>{ const s=document.getElementById('scanIn'); if(s) s.focus(); }, 100);
+  }
+}).catch(()=>{});
+
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
