@@ -206,16 +206,17 @@ document.getElementById('scanIn').addEventListener('keydown', e=>{
       currentIn=d.product; pendingUpc=null;
       box.className='matched show ok';
       box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">ASIN ${d.product.asin} · UPC ${d.product.upc||'—'} · On hand ${d.product.onhand||0}</div>`;
-      document.getElementById('qtyRowIn').style.display='flex'; document.getElementById('qtyIn').focus();
+      document.getElementById('qtyRowIn').style.display='flex';
+      document.getElementById('scanIn').value='';   // clear the scan box now that we captured it
+      document.getElementById('qtyIn').focus();
     } else {
-      // Unknown barcode - learn it. If it's numeric, treat as UPC to assign.
       currentIn=null; pendingUpc=code;
       box.className='matched show notfound';
       box.innerHTML=`<div class="pname">New barcode: ${code}</div><div class="pmeta">Pick which product this is — saved permanently.</div>`;
       document.getElementById('qtyRowIn').style.display='none';
+      document.getElementById('scanIn').value='';   // clear so it doesn't block next scan
       showPicker('In');
     }
-    e.target.select();
   });
 });
 document.getElementById('qtyIn').addEventListener('keydown',e=>{if(e.key==='Enter')doReceive();});
@@ -234,7 +235,7 @@ function filterPicker(which){
 function assignPick(which, asin){
   const p=products.find(x=>x.asin===asin);
   if(which==='In'){
-    if(pendingUpc){ api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin,upc:pendingUpc})}).then(()=>{ p.upc=pendingUpc; toast('Barcode saved to '+p.name.slice(0,24)); }); }
+    if(pendingUpc){ api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin,upc:pendingUpc})}).then(()=>{ p.upc=pendingUpc; if(window._resetScan)window._resetScan('In'); loadProducts(); toast('Barcode saved to '+p.name.slice(0,24)); }); }
     currentIn=p;
     document.getElementById('pickerInWrap').style.display='none';
     document.getElementById('matchIn').innerHTML=`<div class="pname">${p.name}</div><div class="pmeta">ASIN ${p.asin} · UPC ${pendingUpc||p.upc||'—'}</div>`;
@@ -262,9 +263,10 @@ document.getElementById('scanOut').addEventListener('keydown', e=>{
     const box=document.getElementById('matchOut');
     if(d.found){ currentOut=d.product; box.className='matched show ok';
       box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">On hand ${d.product.onhand||0}</div>`;
-      document.getElementById('qtyRowOut').style.display='flex'; document.getElementById('qtyOut').focus();
-    } else { currentOut=null; box.className='matched show notfound'; box.innerHTML=`<div class="pname">Not found: ${code}</div><div class="pmeta">Receive it first to assign the barcode.</div>`; document.getElementById('qtyRowOut').style.display='none'; }
-    e.target.select();
+      document.getElementById('qtyRowOut').style.display='flex';
+      document.getElementById('scanOut').value='';
+      document.getElementById('qtyOut').focus();
+    } else { currentOut=null; box.className='matched show notfound'; box.innerHTML=`<div class="pname">Not found: ${code}</div><div class="pmeta">Receive it first to assign the barcode.</div>`; document.getElementById('qtyRowOut').style.display='none'; document.getElementById('scanOut').value=''; }
   });
 });
 document.getElementById('qtyOut').addEventListener('keydown',e=>{if(e.key==='Enter')doShip();});
@@ -426,7 +428,7 @@ async function toggleCamera(which) {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
       // resume scanning after a short cooldown, ready for the NEXT item
-      setTimeout(() => { paused = false; }, 1200);
+      setTimeout(() => { paused = false; }, 900);
     });
   } catch (e) {
     toast('Camera error — check permissions', true);
