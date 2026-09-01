@@ -61,6 +61,13 @@ async function initDb() {
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS upc_norm TEXT;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
+    -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
+    CREATE TABLE IF NOT EXISTS inv_upcs (
+      upc_norm TEXT PRIMARY KEY,
+      upc_raw TEXT,
+      asin TEXT REFERENCES inv_products(asin)
+    );
+    CREATE INDEX IF NOT EXISTS idx_upcs_asin ON inv_upcs(asin);
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -71,14 +78,20 @@ async function initDb() {
       shipment_id TEXT PRIMARY KEY,
       shipment_name TEXT,
       created_at TIMESTAMPTZ DEFAULT now(),
-      status TEXT DEFAULT 'in_transit'
+      status TEXT DEFAULT 'in_transit',
+      received_at TIMESTAMPTZ,
+      has_discrepancy BOOLEAN DEFAULT false
     );
+    ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS qty_received INTEGER;
+    ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
+    ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS has_discrepancy BOOLEAN DEFAULT false;
     -- Per-shipment line items (what we sent, tagged to a shipment)
     CREATE TABLE IF NOT EXISTS inv_shipment_items (
       id SERIAL PRIMARY KEY,
       shipment_id TEXT REFERENCES inv_shipments(shipment_id),
       asin TEXT,
-      qty INTEGER
+      qty INTEGER,
+      qty_received INTEGER
     );
   `);
 
@@ -95,6 +108,11 @@ async function initDb() {
     }
     console.log(`[Inventory] Seeded ${seed.length} products.`);
   }
+  // migrate existing single-UPC assignments into the multi-UPC table
+  await pool.query(`INSERT INTO inv_upcs(upc_norm, upc_raw, asin)
+    SELECT upc_norm, upc, asin FROM inv_products
+    WHERE upc_norm IS NOT NULL AND upc_norm <> ''
+    ON CONFLICT (upc_norm) DO NOTHING`);
   console.log('[Inventory] DB ready.');
 }
 
@@ -116,11 +134,18 @@ app.post('/api/login', (req, res) => {
 app.get('/api/find/:code', auth, async (req, res) => {
   const raw = req.params.code.trim();
   const norm = normCode(raw);
-  const { rows } = await pool.query(
+  // 1) check the multi-UPC table (a product can have many barcodes)
+  let { rows } = await pool.query(
+    `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit
+     FROM inv_upcs u JOIN inv_products p ON p.asin = u.asin
+     LEFT JOIN inv_stock s ON s.asin = p.asin
+     WHERE u.upc_norm = $1 LIMIT 1`, [norm]);
+  if (rows.length) return res.json({ found: true, product: rows[0] });
+  // 2) fall back to ASIN/SKU direct match
+  ({ rows } = await pool.query(
     `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
-     WHERE p.upc_norm = $1 OR UPPER(p.asin) = UPPER($2) OR UPPER(p.sku) = UPPER($2) LIMIT 1`,
-    [norm, raw]);
+     WHERE UPPER(p.asin) = UPPER($1) OR UPPER(p.sku) = UPPER($1) LIMIT 1`, [raw]));
   if (rows.length) return res.json({ found: true, product: rows[0] });
   res.json({ found: false });
 });
@@ -138,7 +163,11 @@ app.get('/api/products', auth, async (req, res) => {
 app.post('/api/assign-upc', auth, async (req, res) => {
   const { asin, upc } = req.body;
   const raw = (upc||'').trim();
-  await pool.query('UPDATE inv_products SET upc=$1, upc_norm=$2 WHERE asin=$3', [raw, normCode(raw), asin]);
+  const norm = normCode(raw);
+  // add to the multi-UPC table (a product can have several barcodes)
+  await pool.query('INSERT INTO inv_upcs(upc_norm, upc_raw, asin) VALUES($1,$2,$3) ON CONFLICT (upc_norm) DO UPDATE SET asin=$3, upc_raw=$2', [norm, raw, asin]);
+  // also keep the primary upc field populated (first/most-recent) for display
+  await pool.query('UPDATE inv_products SET upc=COALESCE(NULLIF(upc,\'\'),$1), upc_norm=COALESCE(NULLIF(upc_norm,\'\'),$2) WHERE asin=$3', [raw, norm, asin]);
   res.json({ ok: true });
 });
 
@@ -185,7 +214,10 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
     const q = parseInt(it.qty);
     if (!q || q < 1) continue;
     const { rows } = await pool.query(
-      `SELECT asin, name FROM inv_products WHERE upc_norm=$1 OR UPPER(asin)=UPPER($2) OR UPPER(sku)=UPPER($2) LIMIT 1`, [normCode(code), code]);
+      `SELECT p.asin, p.name FROM inv_products p
+       WHERE p.asin IN (SELECT asin FROM inv_upcs WHERE upc_norm=$1)
+          OR UPPER(p.asin)=UPPER($2) OR UPPER(p.sku)=UPPER($2)
+          OR p.upc_norm=$1 LIMIT 1`, [normCode(code), code]);
     if (rows.length) {
       const asin = rows[0].asin;
       await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, asin]);
@@ -208,6 +240,22 @@ app.get('/api/shipments', auth, async (req, res) => {
      GROUP BY s.shipment_id, s.shipment_name, s.status, s.created_at
      ORDER BY s.created_at DESC`);
   res.json(rows);
+});
+
+// All shipments with their line items (for the Shipments page)
+app.get('/api/all-shipments', auth, async (req, res) => {
+  const ships = await pool.query(
+    `SELECT shipment_id, shipment_name, status, created_at, received_at, has_discrepancy
+     FROM inv_shipments ORDER BY created_at DESC LIMIT 200`);
+  const items = await pool.query(
+    `SELECT si.shipment_id, si.asin, si.qty, si.qty_received, p.name
+     FROM inv_shipment_items si JOIN inv_products p ON p.asin = si.asin`);
+  const byShip = {};
+  for (const it of items.rows) {
+    (byShip[it.shipment_id] = byShip[it.shipment_id] || []).push(it);
+  }
+  const out = ships.rows.map(s => ({ ...s, items: byShip[s.shipment_id] || [] }));
+  res.json(out);
 });
 
 // Manually mark a shipment received (clear its units from transit)
@@ -283,21 +331,37 @@ async function reconcileInTransit() {
     const seen = await pool.query('SELECT 1 FROM inv_processed_shipments WHERE shipment_id=$1', [sid]);
     if (seen.rows.length) continue;
 
-    // Clear based on what WE recorded for this shipment (not Amazon's per-sku),
-    // so it exactly reverses what we added to transit.
-    const ourItems = await pool.query('SELECT asin, qty FROM inv_shipment_items WHERE shipment_id=$1', [sid]);
+    // Pull Amazon's actual per-SKU received quantities
+    const amazonItems = await getShipmentReceivedItems(sid);
+    // Map SKU -> received qty from Amazon
+    const recvBySku = {};
+    for (const ai of amazonItems) { recvBySku[ai.sku] = (recvBySku[ai.sku]||0) + (ai.received||0); }
+
+    // Our recorded items for this shipment
+    const ourItems = await pool.query(
+      `SELECT si.asin, si.qty, p.sku, p.name FROM inv_shipment_items si
+       JOIN inv_products p ON p.asin = si.asin WHERE si.shipment_id=$1`, [sid]);
+
     let clearedThis = 0;
+    let anyDiscrepancy = false;
     for (const it of ourItems.rows) {
+      // match Amazon's received by this product's SKU
+      const received = recvBySku[it.sku] != null ? recvBySku[it.sku] : it.qty; // fallback: assume all received
+      // clear what we sent from transit (transit reflects what left our warehouse)
       await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+      // record what Amazon received on the line
+      await pool.query('UPDATE inv_shipment_items SET qty_received=$1 WHERE shipment_id=$2 AND asin=$3', [received, sid, it.asin]);
+      if (received < it.qty) anyDiscrepancy = true;
       clearedThis += it.qty;
     }
-    await pool.query("UPDATE inv_shipments SET status='received' WHERE shipment_id=$1", [sid]);
+
+    await pool.query("UPDATE inv_shipments SET status='received', received_at=now(), has_discrepancy=$2 WHERE shipment_id=$1", [sid, anyDiscrepancy]);
     await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-      ['checkin', '', 'Shipment ' + sid, clearedThis, 'Amazon checked in']);
+      ['checkin', '', 'Shipment ' + sid, clearedThis, anyDiscrepancy ? 'Checked in — DISCREPANCY' : 'Checked in — all received']);
     await pool.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
     clearedTotal += clearedThis;
     shipmentsDone++;
-    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units (app-created).`);
+    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units, discrepancy=${anyDiscrepancy}.`);
   }
 
   console.log(`[SP-API] Reconcile done. ${shipmentsDone} new shipments, ${clearedTotal} units cleared.`);
