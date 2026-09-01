@@ -282,7 +282,7 @@ document.getElementById('scanIn').addEventListener('keydown', e=>{
     if(d.found){
       currentIn=d.product; pendingUpc=null;
       box.className='matched show ok';
-      box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">ASIN ${d.product.asin} · UPC ${d.product.upc||'—'} · On hand ${d.product.onhand||0}</div>`;
+      box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">ASIN ${d.product.asin} · Scanned ${d.scanned||code} · On hand ${d.product.onhand||0}</div>`;
       document.getElementById('qtyRowIn').style.display='flex';
       document.getElementById('scanIn').value='';   // clear the scan box now that we captured it
       document.getElementById('qtyIn').focus();
@@ -580,6 +580,10 @@ let _scanState = { In: {last:'', time:0}, Out: {last:'', time:0} };
 window._resetScan = function(which){ if(_scanState[which]){ _scanState[which].last=''; _scanState[which].time=0; } };
 
 // Master reset — return a scanner to a clean, ready state for the NEXT item.
+function hardClearBox(which){
+  const m=document.getElementById('match'+which);
+  if(m){ m.className='matched'; m.innerHTML=''; }
+}
 function resetScanner(which){
   const cap = which; // 'In' or 'Out'
   document.getElementById('scan'+cap).value = '';
