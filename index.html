@@ -345,6 +345,32 @@ function renderLog(){ api('/api/activity').then(rows=>{ const b=document.getElem
   b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction==='out'?'out':''}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT')}</span> <b>${a.qty}</b> ${a.name} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
 });}
 
+// ---- SCAN FEEDBACK: vibrate + beep + flash ----
+let _audioCtx = null;
+function scanFeedback() {
+  // 1. Vibrate (works on Android; ignored on iPhone)
+  try { navigator.vibrate && navigator.vibrate(80); } catch(e){}
+  // 2. Beep (works on all phones, incl. iPhone)
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = _audioCtx.createOscillator();
+    const g = _audioCtx.createGain();
+    o.connect(g); g.connect(_audioCtx.destination);
+    o.frequency.value = 880; o.type = 'sine';
+    g.gain.setValueAtTime(0.25, _audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, _audioCtx.currentTime + 0.15);
+    o.start(); o.stop(_audioCtx.currentTime + 0.15);
+  } catch(e){}
+  // 3. Green flash on screen (visual confirmation)
+  try {
+    const f = document.createElement('div');
+    f.style.cssText = 'position:fixed;inset:0;background:#1e8449;opacity:0.55;z-index:999;pointer-events:none;transition:opacity 0.35s';
+    document.body.appendChild(f);
+    requestAnimationFrame(()=>{ f.style.opacity='0'; });
+    setTimeout(()=>f.remove(), 400);
+  } catch(e){}
+}
+
 // ---- PHONE CAMERA SCANNING (ZXing) ----
 let codeReader = null;
 let scanning = { In: false, Out: false };
@@ -384,8 +410,7 @@ async function toggleCamera(which) {
         // debounce: ignore same code within 2.5s
         if (code === lastCode && now - lastTime < 2500) return;
         lastCode = code; lastTime = now;
-        // beep + haptic feedback
-        try { navigator.vibrate && navigator.vibrate(80); } catch(e){}
+        scanFeedback();  // vibrate (Android) + beep + flash (all phones)
         // feed the scanned code into the text input and trigger the Enter handler
         const input = document.getElementById('scan' + which);
         input.value = code;
