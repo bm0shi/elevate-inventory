@@ -246,13 +246,12 @@ function assignPick(which, asin){
 function doReceive(){
   const qty=parseInt(document.getElementById('qtyIn').value);
   if(!currentIn||!qty||qty<1){toast('Scan product + enter qty',true);return;}
+  const nm=currentIn.name.slice(0,26);
   api('/api/receive',{method:'POST',body:JSON.stringify({asin:currentIn.asin,qty})}).then(()=>{
-    toast('+'+qty+' '+currentIn.name.slice(0,26));
-    document.getElementById('qtyIn').value=''; document.getElementById('scanIn').value='';
-    document.getElementById('matchIn').className='matched'; document.getElementById('qtyRowIn').style.display='none';
-    currentIn=null; loadProducts(); document.getElementById('scanIn').focus();
-    // allow the same product to be scanned again next
-    if(window._resetScan) window._resetScan('In');
+    toast('+'+qty+' '+nm);
+    resetScanner('In');
+    loadProducts();
+    if(!scanning['In']) document.getElementById('scanIn').focus();
   });
 }
 
@@ -274,8 +273,9 @@ function doShip(){
   const qty=parseInt(document.getElementById('qtyOut').value);
   if(!currentOut||!qty||qty<1){toast('Scan + qty',true);return;}
   api('/api/ship',{method:'POST',body:JSON.stringify({asin:currentOut.asin,qty})}).then(()=>{
-    toast('Shipped '+qty); document.getElementById('qtyOut').value=''; document.getElementById('scanOut').value='';
-    document.getElementById('matchOut').className='matched'; document.getElementById('qtyRowOut').style.display='none'; currentOut=null; loadProducts();
+    toast('Shipped '+qty);
+    resetScanner('Out');
+    loadProducts();
   });
 }
 
@@ -381,6 +381,21 @@ let scanning = { In: false, Out: false };
 let _scanState = { In: {last:'', time:0}, Out: {last:'', time:0} };
 window._resetScan = function(which){ if(_scanState[which]){ _scanState[which].last=''; _scanState[which].time=0; } };
 
+// Master reset — return a scanner to a clean, ready state for the NEXT item.
+function resetScanner(which){
+  const cap = which; // 'In' or 'Out'
+  document.getElementById('scan'+cap).value = '';
+  const m = document.getElementById('match'+cap); if(m){ m.className='matched'; m.innerHTML=''; }
+  const qr = document.getElementById('qtyRow'+cap); if(qr){ qr.style.display='none'; }
+  const qi = document.getElementById('qty'+cap); if(qi){ qi.value=''; }
+  if(cap==='In'){ const pw=document.getElementById('pickerInWrap'); if(pw) pw.style.display='none'; currentIn=null; pendingUpc=null; }
+  if(cap==='Out'){ currentOut=null; }
+  // clear debounce so the SAME or a NEW item scans right away
+  if(window._resetScan) window._resetScan(cap);
+  // make sure camera detection is not stuck paused
+  if(window._unpause) window._unpause(cap);
+}
+
 function getReader() {
   if (!codeReader) {
     codeReader = new ZXing.BrowserMultiFormatReader();
@@ -408,10 +423,13 @@ async function toggleCamera(which) {
   scanning[which] = true;
   const st = _scanState[which];
 
-  let paused = false;
+  let pausedObj = { v: false };
+  window._pauseRefs = window._pauseRefs || {};
+  window._pauseRefs[which] = pausedObj;
+  window._unpause = function(w){ if(window._pauseRefs && window._pauseRefs[w]) window._pauseRefs[w].v = false; };
   try {
     await getReader().decodeFromVideoDevice(null, video, (result, err) => {
-      if (!result || paused) return;
+      if (!result || pausedObj.v) return;
       const code = result.getText();
       const now = Date.now();
       // ignore repeat of same code within 3s
@@ -419,7 +437,7 @@ async function toggleCamera(which) {
       st.last = code; st.time = now;
 
       // Pause detection briefly so this scan fully processes before the next
-      paused = true;
+      pausedObj.v = true;
       scanFeedback();  // vibrate + beep + flash
 
       // feed the scanned code into the input and fire the Enter handler
@@ -428,7 +446,7 @@ async function toggleCamera(which) {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
       // resume scanning after a short cooldown, ready for the NEXT item
-      setTimeout(() => { paused = false; }, 900);
+      setTimeout(() => { pausedObj.v = false; }, 700);
     });
   } catch (e) {
     toast('Camera error — check permissions', true);
