@@ -46,19 +46,17 @@ async function getReceivedShipments(sinceDays = 45) {
 
   const results = [];
   let nextToken = null;
-  // statuses that mean Amazon has checked units in
-  const statuses = ['RECEIVING', 'CLOSED'];
 
   do {
-    const params = {
-      MarketplaceId: MARKETPLACE_ID,
-      QueryType: nextToken ? 'NEXT_TOKEN' : 'DATE_RANGE',
-    };
+    const params = { MarketplaceId: MARKETPLACE_ID };
     if (nextToken) {
+      params.QueryType = 'NEXT_TOKEN';
       params.NextToken = nextToken;
     } else {
+      params.QueryType = 'DATE_RANGE';
       params.LastUpdatedAfter = after;
-      params.ShipmentStatusList = statuses.join(',');
+      // ShipmentStatusList must be repeated params: ?ShipmentStatusList=WORKING&ShipmentStatusList=...
+      params.ShipmentStatusList = ['RECEIVING', 'CLOSED'];
     }
 
     let resp;
@@ -66,10 +64,21 @@ async function getReceivedShipments(sinceDays = 45) {
       resp = await axios.get(`${SP_API_BASE}/fba/inbound/v0/shipments`, {
         headers: { 'x-amz-access-token': token },
         params,
+        // serialize arrays as repeated keys (SP-API requirement)
+        paramsSerializer: p => {
+          const parts = [];
+          for (const k in p) {
+            const v = p[k];
+            if (Array.isArray(v)) v.forEach(x => parts.push(`${k}=${encodeURIComponent(x)}`));
+            else parts.push(`${k}=${encodeURIComponent(v)}`);
+          }
+          return parts.join('&');
+        }
       });
     } catch (err) {
-      console.error('[SP-API] shipments list failed:', err.response?.status, JSON.stringify(err.response?.data || err.message));
-      throw err;
+      const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      console.error('[SP-API] shipments list failed:', err.response?.status, body);
+      throw new Error(`SP-API ${err.response?.status}: ${body}`);
     }
 
     const shipments = resp.data.payload?.ShipmentData || [];
@@ -98,7 +107,8 @@ async function getShipmentReceivedItems(shipmentId) {
         params,
       });
     } catch (err) {
-      console.error(`[SP-API] items for ${shipmentId} failed:`, err.response?.status, JSON.stringify(err.response?.data || err.message));
+      const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      console.error(`[SP-API] items for ${shipmentId} failed:`, err.response?.status, body);
       return items;
     }
 
