@@ -437,6 +437,26 @@ app.post('/api/bundles', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Bulk import bundles: lines of "duoAsin, singleAsin1, singleAsin2"
+app.post('/api/bundles/bulk', auth, async (req, res) => {
+  const lines = (req.body.text || '').split('\n');
+  let done = 0, errors = [];
+  for (const line of lines) {
+    const parts = line.split(/[,\t]+/).map(x => x.trim()).filter(Boolean);
+    if (parts.length < 3) { if(line.trim()) errors.push(line.trim() + ' (need 3 ASINs)'); continue; }
+    const [dASIN, c1, c2] = parts;
+    // verify all three exist
+    const check = await pool.query('SELECT asin FROM inv_products WHERE asin IN ($1,$2,$3)', [dASIN, c1, c2]);
+    const found = check.rows.map(r => r.asin);
+    const missing = [dASIN, c1, c2].filter(a => !found.includes(a));
+    if (missing.length) { errors.push(line.trim() + ' — not in catalog: ' + missing.join(', ')); continue; }
+    await pool.query('DELETE FROM inv_bundles WHERE bundle_asin=$1', [dASIN]);
+    await pool.query('INSERT INTO inv_bundles(bundle_asin, component_asin, qty) VALUES($1,$2,1),($1,$3,1) ON CONFLICT DO NOTHING', [dASIN, c1, c2]);
+    done++;
+  }
+  res.json({ ok: true, done, errors });
+});
+
 app.post('/api/bundles/delete', auth, async (req, res) => {
   await pool.query('DELETE FROM inv_bundles WHERE bundle_asin=$1', [req.body.bundle_asin]);
   res.json({ ok: true });
