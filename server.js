@@ -147,14 +147,14 @@ app.get('/api/find/:code', auth, async (req, res) => {
      FROM inv_upcs u JOIN inv_products p ON p.asin = u.asin
      LEFT JOIN inv_stock s ON s.asin = p.asin
      WHERE u.upc_norm = $1 LIMIT 1`, [norm]);
-  if (rows.length) return res.json({ found: true, product: rows[0] });
+  if (rows.length) return res.json({ found: true, product: rows[0], scanned: raw });
   // 2) fall back to ASIN/SKU direct match
   ({ rows } = await pool.query(
     `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
      WHERE UPPER(p.asin) = UPPER($1) OR UPPER(p.sku) = UPPER($1) LIMIT 1`, [raw]));
-  if (rows.length) return res.json({ found: true, product: rows[0] });
-  res.json({ found: false });
+  if (rows.length) return res.json({ found: true, product: rows[0], scanned: raw });
+  res.json({ found: false, scanned: raw });
 });
 
 // full product list (for the "which product?" picker + on-hand view)
