@@ -250,6 +250,8 @@ function doReceive(){
     document.getElementById('qtyIn').value=''; document.getElementById('scanIn').value='';
     document.getElementById('matchIn').className='matched'; document.getElementById('qtyRowIn').style.display='none';
     currentIn=null; loadProducts(); document.getElementById('scanIn').focus();
+    // allow the same product to be scanned again next
+    if(window._resetScan) window._resetScan('In');
   });
 }
 
@@ -374,6 +376,8 @@ function scanFeedback() {
 // ---- PHONE CAMERA SCANNING (ZXing) ----
 let codeReader = null;
 let scanning = { In: false, Out: false };
+let _scanState = { In: {last:'', time:0}, Out: {last:'', time:0} };
+window._resetScan = function(which){ if(_scanState[which]){ _scanState[which].last=''; _scanState[which].time=0; } };
 
 function getReader() {
   if (!codeReader) {
@@ -400,22 +404,29 @@ async function toggleCamera(which) {
   wrap.style.display = 'block';
   btn.textContent = '✕ Stop';
   scanning[which] = true;
-  let lastCode = '', lastTime = 0;
+  const st = _scanState[which];
 
+  let paused = false;
   try {
     await getReader().decodeFromVideoDevice(null, video, (result, err) => {
-      if (result) {
-        const code = result.getText();
-        const now = Date.now();
-        // debounce: ignore same code within 2.5s
-        if (code === lastCode && now - lastTime < 2500) return;
-        lastCode = code; lastTime = now;
-        scanFeedback();  // vibrate (Android) + beep + flash (all phones)
-        // feed the scanned code into the text input and trigger the Enter handler
-        const input = document.getElementById('scan' + which);
-        input.value = code;
-        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      }
+      if (!result || paused) return;
+      const code = result.getText();
+      const now = Date.now();
+      // ignore repeat of same code within 3s
+      if (code === st.last && now - st.time < 3000) return;
+      st.last = code; st.time = now;
+
+      // Pause detection briefly so this scan fully processes before the next
+      paused = true;
+      scanFeedback();  // vibrate + beep + flash
+
+      // feed the scanned code into the input and fire the Enter handler
+      const input = document.getElementById('scan' + which);
+      input.value = code;
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+
+      // resume scanning after a short cooldown, ready for the NEXT item
+      setTimeout(() => { paused = false; }, 1200);
     });
   } catch (e) {
     toast('Camera error — check permissions', true);
