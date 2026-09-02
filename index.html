@@ -91,7 +91,8 @@
     <div class="sub">Scan receiving · live on-hand · FBA deduction</div>
   </header>
   <div class="tabs">
-    <button class="tab active" onclick="showTab('reconcile',event)">Order Check-In</button>
+    <button class="tab active" onclick="showTab('dashboard',event)">Dashboard</button>
+    <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
     <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
     <button class="tab" onclick="showTab('transit',event)">In Transit</button>
@@ -103,7 +104,6 @@
     <button class="tab" onclick="showTab('velocity',event)">📊 Velocity 🔒</button>
     <button class="tab" onclick="showTab('value',event)">💰 Value 🔒</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
-    <button class="tab" onclick="showTab('dashboard',event)">Dashboard</button>
   </div>
 
   <div id="receive" class="panel">
@@ -171,7 +171,7 @@
     <table><thead><tr><th>Product</th><th>ASIN</th><th>UPC</th><th>On Hand</th><th>Transit</th></tr></thead><tbody id="onhandBody"></tbody></table>
   </div>
 
-  <div id="reconcile" class="panel active">
+  <div id="reconcile" class="panel">
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Add Cosmoprof Invoice(s)</div>
       <div class="hint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
@@ -348,7 +348,7 @@
     </div>
   </div>
 
-  <div id="dashboard" class="panel">
+  <div id="dashboard" class="panel active">
     <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
   </div>
 
@@ -392,8 +392,10 @@ function loadProducts(){ return api('/api/products').then(d=>{ products=d; rende
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='dashboard')loadDashboard();
-  if(t==='history')loadHistory();
-  if(t==='value' && OWNER_PW)loadValue(); if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='history'){ if(!window._histLoaded) loadHistory(); }
+  if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); }
+  if(t==='velocity' && OWNER_PW){ if(window._velData) renderVelocity(); }
+  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); else loadValue(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -549,6 +551,13 @@ function loadDashboard(){
 
 // ---- Received Log ----
 function loadHistory(){
+  window._histLoaded=true;
+  // default dates to last 30 days if empty
+  if(!document.getElementById('histFrom').value){
+    const d30=new Date(Date.now()-30*24*60*60*1000);
+    document.getElementById('histFrom').value=d30.toISOString().slice(0,10);
+    document.getElementById('histTo').value=new Date().toISOString().slice(0,10);
+  }
   const from=document.getElementById('histFrom').value||'2000-01-01';
   const to=document.getElementById('histTo').value||'2999-12-31';
   api('/api/receiving-history?from='+from+'&to='+to).then(d=>{
@@ -569,7 +578,7 @@ function loadFbaInv(){
   api('/api/fba-inventory').then(d=>{
     btn.textContent='Load FBA Inventory'; btn.disabled=false;
     if(d.error){ document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    window._fbaData=d; window._fbaSort={col:'grand_total',dir:-1};
+    window._fbaData=d; window._fbaSort={col:'grand_total',dir:-1}; window._fbaLoadedAt=new Date();
     renderFbaInv();
   });
 }
@@ -607,7 +616,7 @@ function loadVelocity(){
   ownerApi('/api/velocity?days='+days).then(d=>{
     btn.textContent='Load'; btn.disabled=false;
     if(d.error){ document.getElementById('velocityBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    window._velData=d.items; window._velDays=d.days; window._velSort={col:'sold',dir:-1};
+    window._velData=d.items; window._velDays=d.days; window._velSort={col:'sold',dir:-1}; window._velLoadedAt=new Date();
     renderVelocity();
   });
 }
@@ -638,17 +647,17 @@ function renderVelocity(){
     const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
     return `<tr><td style="max-width:340px">${link}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;
   }).join('');
-  h+='</tbody></table><div class="hint">Click a product name to open its Amazon listing. Red = under 21 days of stock left. Based on last '+window._velDays+' days of Amazon sales.</div>';
+  h+='</tbody></table><div class="hint">Click a product name to open its Amazon listing. Red = under 21 days of stock left. Based on last '+window._velDays+' days of Amazon sales.'+(window._velLoadedAt?' · Last loaded: '+window._velLoadedAt.toLocaleString():'')+'</div>';
   b.innerHTML=h;
 }
 
 // ---- Value (owner) ----
-function loadValue(){
-  ownerApi('/api/inventory-value').then(d=>{
+function loadValue(withRetail){
+  const url='/api/inventory-value'+(withRetail?'?retail=true':'');
+  ownerApi(url).then(d=>{
     if(d.error){ document.getElementById('valueBody').innerHTML='<div class="hint">Error</div>'; return; }
-    // precompute value per row
-    d.forEach(x=>{ x._cost=x.last_cost?parseFloat(x.last_cost):0; x._val=x._cost*x.onhand; });
-    window._valData=d; window._valSort={col:'_val',dir:-1};
+    d.forEach(x=>{ x._cost=x.last_cost?parseFloat(x.last_cost):0; x._val=x._cost*x.onhand; x._retail=x.amazon_price?parseFloat(x.amazon_price):0; x._retailVal=x._retail*x.onhand; });
+    window._valData=d; window._valSort={col:'_val',dir:-1}; window._valLoadedAt=new Date();
     renderValue();
   });
 }
@@ -665,16 +674,31 @@ function renderValue(){
     return ((a[s.col]||0)-(b2[s.col]||0))*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
-  let total=d.reduce((sum,x)=>sum+x._val,0);
-  let h='<div class="hint">Cost captured from invoice check-ins. Items without a cost yet show blank — they fill in as you receive orders.</div>';
-  h+='<div class="box" style="margin-bottom:10px"><b style="font-size:16px">Total inventory value (at cost): $'+total.toLocaleString(undefined,{maximumFractionDigits:0})+'</b></div>';
+  const totalCost=d.reduce((sum,x)=>sum+x._val,0);
+  const totalRetail=d.reduce((sum,x)=>sum+(x._retailVal||0),0);
+  const hasRetail=d.some(x=>x._retail>0);
+  let h='<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
+  h+='<button class="action" onclick="loadValue(false)" style="padding:10px 14px;font-size:13px">↻ Refresh Costs</button>';
+  h+='<button class="action" onclick="loadValue(true)" style="padding:10px 14px;font-size:13px;background:#b7791f">+ Pull Amazon Retail Prices</button>';
+  h+='</div>';
+  h+='<div class="cards"><div class="card"><div class="n">$'+totalCost.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Value @ COGS</div></div>';
+  if(hasRetail) h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Value @ Amazon Retail</div></div><div class="card"><div class="n">$'+(totalRetail-totalCost).toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Unrealized Gross</div></div>';
+  h+='</div>';
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="valSort(\'name\')">Product'+arrow('name')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
-     '<th style="cursor:pointer" onclick="valSort(\'_cost\')">Unit Cost'+arrow('_cost')+'</th>'+
-     '<th style="cursor:pointer" onclick="valSort(\'_val\')">Value'+arrow('_val')+'</th></tr></thead><tbody>';
-  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');return `<tr><td style="max-width:340px">${link}</td><td>${x.onhand}</td><td>${x._cost?'$'+x._cost.toFixed(2):'—'}</td><td class="onhand-num">${x._val?'$'+x._val.toFixed(0):'—'}</td></tr>`;}).join('');
+     '<th style="cursor:pointer" onclick="valSort(\'_cost\')">COGS'+arrow('_cost')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'_val\')">COGS Value'+arrow('_val')+'</th>'+
+     (hasRetail?'<th style="cursor:pointer" onclick="valSort(\'_retail\')">Amz Price'+arrow('_retail')+'</th><th style="cursor:pointer" onclick="valSort(\'_retailVal\')">Retail Value'+arrow('_retailVal')+'</th>':'')+
+     '</tr></thead><tbody>';
+  h+=sorted.map(x=>{
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
+    let row=`<tr><td style="max-width:320px">${link}</td><td>${x.onhand}</td><td>${x._cost?'$'+x._cost.toFixed(2):'—'}</td><td class="onhand-num">${x._val?'$'+x._val.toFixed(0):'—'}</td>`;
+    if(hasRetail) row+=`<td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td>`;
+    return row+'</tr>';
+  }).join('');
   h+='</tbody></table>';
+  if(window._valLoadedAt) h+='<div class="hint">Last loaded: '+window._valLoadedAt.toLocaleString()+'. COGS from invoice history. Retail pulled live from Amazon when you click the button.</div>';
   b.innerHTML=h;
 }
 
