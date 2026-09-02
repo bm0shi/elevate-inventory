@@ -461,24 +461,31 @@ function renderReconLines(){
   if(!currentInvoice)return;
   api('/api/invoices/'+currentInvoice).then(lines=>{
     const b=document.getElementById('reconLines');
-    b.innerHTML=lines.map(l=>{
+    b.innerHTML='<div class="hint" style="margin-bottom:8px">Confirm the expected quantity for each item (from your paper invoice), then scan to receive. Tap the expected number to edit it.</div>'+
+    lines.map(l=>{
       const exp=l.qty_expected, rec=l.qty_received;
       let cls='', status='';
       if(!l.asin){ cls='style="background:#fdf6e3"'; status='<span style="color:#b7791f">⚠ needs mapping</span>'; }
-      else if(rec===exp){ cls='style="background:#eafaf1"'; status='<span style="color:#1e8449">✓ match</span>'; }
+      else if(rec===exp && rec>0){ cls='style="background:#eafaf1"'; status='<span style="color:#1e8449">✓ match</span>'; }
       else if(rec>exp){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">over +'+(rec-exp)+'</span>'; }
       else if(rec>0){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">short '+(exp-rec)+'</span>'; }
       else { status='<span style="color:#9db0c9">not scanned</span>'; }
       const nm=l.name||l.description;
       return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
         <div style="font-weight:700;font-size:13px">${nm}</div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-          <span class="pmeta">Cosmo# ${l.cosmo_num} · expected ${exp}</span>
-          <span style="font-weight:700">${rec} / ${exp} &nbsp; ${status}</span>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
+          <span class="pmeta">Cosmo# ${l.cosmo_num} · expected: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:70px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px"></span>
+          <span style="font-weight:700">rec: ${rec} &nbsp; ${status}</span>
         </div>
       </div>`;
     }).join('');
   });
+}
+function updateExpected(inp){
+  const qty=parseInt(inp.value)||0;
+  const asin=inp.getAttribute('data-asin');
+  const cosmo=inp.getAttribute('data-cosmo');
+  api('/api/invoices/'+currentInvoice+'/set-expected',{method:'POST',body:JSON.stringify({asin:asin||null,cosmo_num:cosmo,qty_expected:qty})}).then(()=>{ renderReconLines(); });
 }
 document.getElementById('scanRecon').addEventListener('keydown', e=>{
   if(e.key!=='Enter')return; const code=e.target.value.trim(); if(!code)return;
