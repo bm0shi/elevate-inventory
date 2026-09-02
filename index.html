@@ -595,7 +595,7 @@ function renderFbaInv(){
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
-  h+=sorted.map(x=>`<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`).join('');
+  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');return `<tr><td style="max-width:340px">${link}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
 }
@@ -606,13 +606,40 @@ function loadVelocity(){
   const btn=document.getElementById('velBtn'); btn.textContent='Loading...'; btn.disabled=true;
   ownerApi('/api/velocity?days='+days).then(d=>{
     btn.textContent='Load'; btn.disabled=false;
-    const b=document.getElementById('velocityBody');
-    if(d.error){ b.innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    let h='<table><thead><tr><th>Product</th><th>Sold</th><th>/day</th><th>On Hand</th><th>Days Left</th></tr></thead><tbody>';
-    h+=d.items.map(x=>{const dl=x.daysLeft===null?'—':(x.daysLeft+'d');const col=x.daysLeft!==null&&x.daysLeft<21?'style="color:#c0392b;font-weight:700"':'';return `<tr><td>${(x.name||'').slice(0,38)}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;}).join('');
-    h+='</tbody></table><div class="hint">Red = under 21 days of stock left. Based on last '+d.days+' days of Amazon sales.</div>';
-    b.innerHTML=h;
+    if(d.error){ document.getElementById('velocityBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    window._velData=d.items; window._velDays=d.days; window._velSort={col:'sold',dir:-1};
+    renderVelocity();
   });
+}
+function velSort(col){
+  const s=window._velSort;
+  if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=-1; }
+  renderVelocity();
+}
+function renderVelocity(){
+  const d=window._velData||[]; const s=window._velSort;
+  const b=document.getElementById('velocityBody');
+  const sorted=[...d].sort((a,b2)=>{
+    if(s.col==='name'){ const av=(a.name||'').toLowerCase(),bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    // daysLeft nulls go last
+    if(s.col==='daysLeft'){ const av=a.daysLeft===null?1e9:a.daysLeft, bv=b2.daysLeft===null?1e9:b2.daysLeft; return (av-bv)*s.dir; }
+    return ((a[s.col]||0)-(b2[s.col]||0))*s.dir;
+  });
+  const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
+  let h='<table><thead><tr>'+
+    '<th style="cursor:pointer" onclick="velSort(\'name\')">Product'+arrow('name')+'</th>'+
+    '<th style="cursor:pointer" onclick="velSort(\'sold\')">Sold'+arrow('sold')+'</th>'+
+    '<th style="cursor:pointer" onclick="velSort(\'perDay\')">/day'+arrow('perDay')+'</th>'+
+    '<th style="cursor:pointer" onclick="velSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
+    '<th style="cursor:pointer" onclick="velSort(\'daysLeft\')">Days Left'+arrow('daysLeft')+'</th></tr></thead><tbody>';
+  h+=sorted.map(x=>{
+    const dl=x.daysLeft===null?'—':(x.daysLeft+'d');
+    const col=x.daysLeft!==null&&x.daysLeft<21?'style="color:#c0392b;font-weight:700"':'';
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
+    return `<tr><td style="max-width:340px">${link}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;
+  }).join('');
+  h+='</tbody></table><div class="hint">Click a product name to open its Amazon listing. Red = under 21 days of stock left. Based on last '+window._velDays+' days of Amazon sales.</div>';
+  b.innerHTML=h;
 }
 
 // ---- Value (owner) ----
@@ -646,7 +673,7 @@ function renderValue(){
      '<th style="cursor:pointer" onclick="valSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'_cost\')">Unit Cost'+arrow('_cost')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'_val\')">Value'+arrow('_val')+'</th></tr></thead><tbody>';
-  h+=sorted.map(x=>`<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.onhand}</td><td>${x._cost?'$'+x._cost.toFixed(2):'—'}</td><td class="onhand-num">${x._val?'$'+x._val.toFixed(0):'—'}</td></tr>`).join('');
+  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');return `<tr><td style="max-width:340px">${link}</td><td>${x.onhand}</td><td>${x._cost?'$'+x._cost.toFixed(2):'—'}</td><td class="onhand-num">${x._val?'$'+x._val.toFixed(0):'—'}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
 }
