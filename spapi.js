@@ -214,4 +214,30 @@ async function getSalesVelocity(days = 30) {
   return skuUnits;
 }
 
-module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity };
+// Get YOUR listing prices per SKU via the Pricing API (getPricing for seller's own offers)
+async function getMyPrices(skus) {
+  const token = await getAccessToken();
+  const prices = {};
+  // getPricing accepts up to 20 SKUs per call
+  for (let i=0;i<skus.length;i+=20){
+    const batch = skus.slice(i,i+20);
+    try {
+      const params = { MarketplaceId: MARKETPLACE_ID, ItemType: 'Sku' };
+      const qs = batch.map(s=>'Skus='+encodeURIComponent(s)).join('&');
+      const resp = await axios.get(`${SP_API_BASE}/products/pricing/v0/price?${qs}&MarketplaceId=${MARKETPLACE_ID}&ItemType=Sku`, {
+        headers: { 'x-amz-access-token': token }
+      });
+      const list = resp.data.payload || [];
+      for (const p of list) {
+        const sku = p.SellerSKU;
+        const amt = p.Product?.Offers?.[0]?.BuyingPrice?.ListingPrice?.Amount
+                 || p.Product?.Offers?.[0]?.RegularPrice?.Amount;
+        if (sku && amt) prices[sku] = amt;
+      }
+    } catch(e) { /* skip batch on error */ }
+    await sleep(1200);
+  }
+  return prices;
+}
+
+module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices };
