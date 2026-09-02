@@ -98,7 +98,12 @@
     <button class="tab" onclick="showTab('shipments',event)">Shipments</button>
     <button class="tab" onclick="showTab('bundles',event)">Bundles</button>
     <button class="tab" onclick="showTab('receive',event)">Receiving (Manual)</button>
+    <button class="tab" onclick="showTab('history',event)">Received Log</button>
+    <button class="tab" onclick="showTab('fbainv',event)">FBA Inventory</button>
+    <button class="tab" onclick="showTab('velocity',event)">📊 Velocity 🔒</button>
+    <button class="tab" onclick="showTab('value',event)">💰 Value 🔒</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
+    <button class="tab" onclick="showTab('dashboard',event)">Dashboard</button>
   </div>
 
   <div id="receive" class="panel">
@@ -285,6 +290,68 @@
     <div style="font-weight:700;margin:16px 0 8px">Defined Bundles</div>
     <div id="bundlesList"></div>
   </div>
+  <div id="history" class="panel">
+    <div class="box">
+      <div style="font-weight:700;margin-bottom:8px">Received Log</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <label style="margin:0">From <input type="date" id="histFrom" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px"></label>
+        <label style="margin:0">To <input type="date" id="histTo" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px"></label>
+        <button class="action" onclick="loadHistory()" style="padding:10px 16px">Show</button>
+      </div>
+    </div>
+    <div id="historyBody"></div>
+  </div>
+
+  <div id="fbainv" class="panel">
+    <div class="box">
+      <div style="font-weight:700">FBA + Warehouse Inventory</div>
+      <div class="hint">Total units across your warehouse, in-transit, and Amazon FBA. Pulls live from Amazon.</div>
+      <button class="action full" onclick="loadFbaInv()" id="fbaInvBtn" style="margin-top:8px">Load FBA Inventory</button>
+    </div>
+    <div id="fbaInvBody"></div>
+  </div>
+
+  <div id="velocity" class="panel">
+    <div id="velocityGate" class="box">
+      <div style="font-weight:700;margin-bottom:8px">🔒 Owner Access Required</div>
+      <input type="password" id="ownerPwVel" placeholder="Owner password">
+      <div style="height:8px"></div>
+      <button class="action full" onclick="ownerUnlock('velocity')">Unlock</button>
+    </div>
+    <div id="velocityContent" style="display:none">
+      <div class="box">
+        <div style="font-weight:700">Sales Velocity &amp; Days of Stock</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+          <select id="velDays" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="60">Last 60 days</option>
+          </select>
+          <button class="action" onclick="loadVelocity()" id="velBtn" style="padding:10px 16px">Load</button>
+        </div>
+        <div class="hint">Pulls live sales from Amazon (may take 30-60 sec).</div>
+      </div>
+      <div id="velocityBody"></div>
+    </div>
+  </div>
+
+  <div id="value" class="panel">
+    <div id="valueGate" class="box">
+      <div style="font-weight:700;margin-bottom:8px">🔒 Owner Access Required</div>
+      <input type="password" id="ownerPwVal" placeholder="Owner password">
+      <div style="height:8px"></div>
+      <button class="action full" onclick="ownerUnlock('value')">Unlock</button>
+    </div>
+    <div id="valueContent" style="display:none">
+      <div class="box"><div style="font-weight:700">Inventory Value</div><div class="hint">Units on hand valued at cost. Add costs in the Cosmoprof mapping to see values.</div></div>
+      <div id="valueBody"></div>
+    </div>
+  </div>
+
+  <div id="dashboard" class="panel">
+    <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
+  </div>
+
   <div id="log" class="panel"><div id="logBody"></div></div>
 </div>
 <div class="toast" id="toast"></div>
@@ -323,7 +390,10 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='reconcile'){loadInvoiceList();} if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='reconcile'){loadInvoiceList();}
+  if(t==='dashboard')loadDashboard();
+  if(t==='history')loadHistory();
+  if(t==='value' && OWNER_PW)loadValue(); if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -422,6 +492,121 @@ function doBulkShip(){
     document.getElementById('packSlip').value=''; document.getElementById('shipmentId').value=''; document.getElementById('shipmentName').value=''; loadProducts();
   });
 }
+
+// ==================== DATA TABS ====================
+let OWNER_PW = '';
+function ownerUnlock(which){
+  const pw = document.getElementById(which==='velocity'?'ownerPwVel':'ownerPwVal').value;
+  fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
+    .then(r=>r.json()).then(d=>{
+      if(d.ok){ OWNER_PW=pw;
+        document.getElementById(which+'Gate').style.display='none';
+        document.getElementById(which+'Content').style.display='block';
+        toast('Unlocked');
+      } else toast('Wrong owner password',true);
+    });
+}
+function ownerApi(path){
+  return fetch(path,{headers:{'x-app-password':PW,'x-owner-password':OWNER_PW}}).then(r=>r.json());
+}
+
+// ---- Dashboard ----
+function loadDashboard(){
+  api('/api/dashboard').then(d=>{
+    const b=document.getElementById('dashBody');
+    const card=(n,l,color)=>`<div class="card" style="border-top:3px solid ${color||'#127a7a'}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
+    let h='<div class="cards" style="flex-wrap:wrap">';
+    h+=card(d.onhand.toLocaleString(),'Units On Hand','#1e8449');
+    h+=card(d.transit.toLocaleString(),'In Transit','#b7791f');
+    h+=card(d.skus,'SKUs','#127a7a');
+    h+='</div><div class="cards" style="flex-wrap:wrap">';
+    h+=card(d.pendingInvoices,'Pending Check-Ins','#2563a8');
+    h+=card(d.openShipments,'Open FBA Shipments','#2563a8');
+    h+=card(d.lowStock,'Low Stock','#c0392b');
+    h+=card(d.outStock,'Out of Stock','#c0392b');
+    h+='</div>';
+    // low stock list
+    if(d.lowList && d.lowList.length){
+      h+='<div class="box"><div style="font-weight:700;color:#c0392b;margin-bottom:6px">⚠ Low Stock (≤20 units)</div>';
+      h+=d.lowList.map(x=>`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>${x.name.slice(0,44)}</span><b>${x.onhand}</b></div>`).join('');
+      h+='</div>';
+    }
+    // top stock
+    if(d.topStock && d.topStock.length){
+      h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">📦 Most Stocked</div>';
+      h+=d.topStock.map(x=>`<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>${x.name.slice(0,44)}</span><b>${x.onhand}</b></div>`).join('');
+      h+='</div>';
+    }
+    // recent activity
+    if(d.recent && d.recent.length){
+      h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">🕐 Recent Activity ('+d.todayActivity+' today)</div>';
+      h+=d.recent.map(a=>{const tag=a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT');const col=a.direction==='in'?'#1e8449':(a.direction==='checkin'?'#2563a8':'#c0392b');return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #f0f0f0"><span><b style="color:${col}">${tag}</b> ${a.qty} ${(a.name||'').slice(0,30)}</span><span style="color:#9db0c9">${new Date(a.ts).toLocaleString()}</span></div>`;}).join('');
+      h+='</div>';
+    }
+    b.innerHTML=h;
+  });
+}
+
+// ---- Received Log ----
+function loadHistory(){
+  const from=document.getElementById('histFrom').value||'2000-01-01';
+  const to=document.getElementById('histTo').value||'2999-12-31';
+  api('/api/receiving-history?from='+from+'&to='+to).then(d=>{
+    const b=document.getElementById('historyBody');
+    let h='<div class="cards"><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units Received</div></div><div class="card"><div class="n">'+d.invoices.length+'</div><div class="l">Orders Checked In</div></div></div>';
+    if(d.invoices.length){
+      h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">Orders in range</div>';
+      h+=d.invoices.map(i=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>#${i.order_number} · ${i.invoice_date||''}</span><b>${i.units} units</b></div>`).join('');
+      h+='</div>';
+    } else h+='<div class="hint">No completed check-ins in this range.</div>';
+    b.innerHTML=h;
+  });
+}
+
+// ---- FBA Inventory ----
+function loadFbaInv(){
+  const btn=document.getElementById('fbaInvBtn'); btn.textContent='Loading from Amazon...'; btn.disabled=true;
+  api('/api/fba-inventory').then(d=>{
+    btn.textContent='Load FBA Inventory'; btn.disabled=false;
+    const b=document.getElementById('fbaInvBody');
+    if(d.error){ b.innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    let tot={w:0,t:0,f:0,g:0}; d.forEach(x=>{tot.w+=x.warehouse;tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
+    let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Warehouse</div></div><div class="card"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div><div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL</div></div></div>';
+    h+='<table><thead><tr><th>Product</th><th>Wh</th><th>Transit</th><th>FBA</th><th>Total</th></tr></thead><tbody>';
+    h+=d.map(x=>`<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`).join('');
+    h+='</tbody></table>';
+    b.innerHTML=h;
+  });
+}
+
+// ---- Velocity (owner) ----
+function loadVelocity(){
+  const days=document.getElementById('velDays').value;
+  const btn=document.getElementById('velBtn'); btn.textContent='Loading...'; btn.disabled=true;
+  ownerApi('/api/velocity?days='+days).then(d=>{
+    btn.textContent='Load'; btn.disabled=false;
+    const b=document.getElementById('velocityBody');
+    if(d.error){ b.innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    let h='<table><thead><tr><th>Product</th><th>Sold</th><th>/day</th><th>On Hand</th><th>Days Left</th></tr></thead><tbody>';
+    h+=d.items.map(x=>{const dl=x.daysLeft===null?'—':(x.daysLeft+'d');const col=x.daysLeft!==null&&x.daysLeft<21?'style="color:#c0392b;font-weight:700"':'';return `<tr><td>${(x.name||'').slice(0,38)}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;}).join('');
+    h+='</tbody></table><div class="hint">Red = under 21 days of stock left. Based on last '+d.days+' days of Amazon sales.</div>';
+    b.innerHTML=h;
+  });
+}
+
+// ---- Value (owner) ----
+function loadValue(){
+  ownerApi('/api/inventory-value').then(d=>{
+    const b=document.getElementById('valueBody');
+    if(d.error){ b.innerHTML='<div class="hint">Error</div>'; return; }
+    let h='<div class="hint">Cost data comes from invoice history. Items without a recorded cost show blank.</div><table><thead><tr><th>Product</th><th>On Hand</th><th>Unit Cost</th><th>Value</th></tr></thead><tbody>';
+    let total=0;
+    h+=d.map(x=>{const cost=x.last_cost?parseFloat(x.last_cost):0;const val=cost*x.onhand;total+=val;return `<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.onhand}</td><td>${cost?'$'+cost.toFixed(2):'—'}</td><td>${val?'$'+val.toFixed(0):'—'}</td></tr>`;}).join('');
+    h+='</tbody></table><div class="box" style="margin-top:10px"><b>Total inventory value (at cost): $'+total.toLocaleString()+'</b></div>';
+    b.innerHTML=h;
+  });
+}
+
 // ---- RECONCILE ----
 let currentInvoice = null;
 function importCosmoMap(){
