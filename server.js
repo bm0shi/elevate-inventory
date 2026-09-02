@@ -546,7 +546,8 @@ app.post('/api/invoices/add', auth, async (req, res) => {
   await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [parsed.orderNumber]);
   let mapped = 0, unmapped = [];
   for (const it of parsed.items) {
-    const m = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1', [it.cosmo_num]);
+    const c6 = (it.cosmo_num.length===7 && it.cosmo_num[0]==='1') ? it.cosmo_num.slice(1) : it.cosmo_num;
+    const m = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
     const asin = m.rows[0]?.asin || null;
     if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
     await pool.query(
@@ -615,6 +616,29 @@ app.post('/api/cosmo-map', auth, async (req, res) => {
   // backfill any invoice lines using this cosmo_num
   await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2 AND asin IS NULL', [asin, cosmo_num]);
   res.json({ ok: true });
+});
+
+// Bulk import Cosmoprof# -> ASIN mappings (lines of "cosmoNum, ASIN")
+app.post('/api/cosmo-map/bulk', auth, async (req, res) => {
+  const lines = (req.body.text || '').split('\n');
+  let done=0, errors=[];
+  for (const line of lines) {
+    const parts = line.split(/[,\t]+/).map(x=>x.trim()).filter(Boolean);
+    if (parts.length < 2) { if(line.trim()) errors.push(line.trim()); continue; }
+    const [cnum, asin] = parts;
+    const check = await pool.query('SELECT 1 FROM inv_products WHERE asin=$1', [asin]);
+    if (!check.rows.length) { errors.push(line.trim()+' — ASIN not in catalog'); continue; }
+    await pool.query('INSERT INTO inv_cosmo_map(cosmo_num, asin) VALUES($1,$2) ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2', [cnum, asin]);
+    done++;
+  }
+  res.json({ ok:true, done, errors });
+});
+
+// List current cosmo mappings
+app.get('/api/cosmo-map', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT c.cosmo_num, c.asin, p.name FROM inv_cosmo_map c LEFT JOIN inv_products p ON p.asin=c.asin ORDER BY p.name`);
+  res.json(rows);
 });
 
 // Complete an invoice -> push RECEIVED quantities into on-hand
