@@ -24,9 +24,9 @@ async function processInvoiceText(text) {
     const items = [];
     for (const line of body.split(/\r?\n/)) {
       let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
-      if (m) { items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]) }); continue; }
+      if (m) { items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]), unit_cost: parseFloat(m[4]) }); continue; }
       let m2 = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s*$/);
-      if (m2) { items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), incomplete: true }); }
+      if (m2) { items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), incomplete: true }); }
     }
     if (!items.length) { errors.push(`Order ${orderNumber}: no items parsed`); continue; }
     await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending') ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [orderNumber, date]);
@@ -37,8 +37,12 @@ async function processInvoiceText(text) {
       const mm = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
       const asin = mm.rows[0]?.asin || null;
       if (asin) mapped++; else unmapped++;
-      await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES($1,$2,$3,$4,$5,0)`,
-        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped]);
+      await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,0,$6)`,
+        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, it.unit_cost || null]);
+      // update product's latest known cost
+      if (asin && it.unit_cost) {
+        await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2', [it.unit_cost, asin]);
+      }
     }
     created.push({ orderNumber, items: items.length, mapped, unmapped, date });
   }
@@ -100,6 +104,8 @@ async function initDb() {
       note TEXT
     );
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS upc_norm TEXT;
+    ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
@@ -869,18 +875,18 @@ app.get('/api/fba-discrepancies', auth, async (req, res) => {
 
 // Inventory value (owner) — units on hand × cost, needs cost per item
 app.get('/api/inventory-value', ownerAuth, async (req, res) => {
-  // cost comes from most recent invoice line price if available; else 0
   const rows = await pool.query(
-    `SELECT p.asin, p.name, s.onhand, s.transit,
-       (SELECT price FROM (
-          SELECT ii.qty_expected, i.invoice_date,
-            NULL::numeric AS price
-          FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number=ii.order_number
-          WHERE ii.asin=p.asin ORDER BY i.created_at DESC LIMIT 1
-       ) x) AS last_cost
+    `SELECT p.asin, p.name, s.onhand, s.transit, p.unit_cost AS last_cost
      FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
-     WHERE s.onhand > 0 ORDER BY s.onhand DESC`);
+     WHERE s.onhand > 0 ORDER BY (s.onhand * COALESCE(p.unit_cost,0)) DESC`);
   res.json(rows.rows);
+});
+
+// Manually set/override a product's unit cost (owner)
+app.post('/api/set-cost', ownerAuth, async (req, res) => {
+  const { asin, cost } = req.body;
+  await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2', [parseFloat(cost)||null, asin]);
+  res.json({ ok: true });
 });
 
 // FBA inventory (what Amazon holds) — combined with our warehouse on-hand
