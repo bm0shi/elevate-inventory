@@ -618,14 +618,37 @@ function loadVelocity(){
 // ---- Value (owner) ----
 function loadValue(){
   ownerApi('/api/inventory-value').then(d=>{
-    const b=document.getElementById('valueBody');
-    if(d.error){ b.innerHTML='<div class="hint">Error</div>'; return; }
-    let h='<div class="hint">Cost data comes from invoice history. Items without a recorded cost show blank.</div><table><thead><tr><th>Product</th><th>On Hand</th><th>Unit Cost</th><th>Value</th></tr></thead><tbody>';
-    let total=0;
-    h+=d.map(x=>{const cost=x.last_cost?parseFloat(x.last_cost):0;const val=cost*x.onhand;total+=val;return `<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.onhand}</td><td>${cost?'$'+cost.toFixed(2):'—'}</td><td>${val?'$'+val.toFixed(0):'—'}</td></tr>`;}).join('');
-    h+='</tbody></table><div class="box" style="margin-top:10px"><b>Total inventory value (at cost): $'+total.toLocaleString()+'</b></div>';
-    b.innerHTML=h;
+    if(d.error){ document.getElementById('valueBody').innerHTML='<div class="hint">Error</div>'; return; }
+    // precompute value per row
+    d.forEach(x=>{ x._cost=x.last_cost?parseFloat(x.last_cost):0; x._val=x._cost*x.onhand; });
+    window._valData=d; window._valSort={col:'_val',dir:-1};
+    renderValue();
   });
+}
+function valSort(col){
+  const s=window._valSort;
+  if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=-1; }
+  renderValue();
+}
+function renderValue(){
+  const d=window._valData||[]; const s=window._valSort;
+  const b=document.getElementById('valueBody');
+  const sorted=[...d].sort((a,b2)=>{
+    if(s.col==='name'){ const av=(a.name||'').toLowerCase(),bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    return ((a[s.col]||0)-(b2[s.col]||0))*s.dir;
+  });
+  const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
+  let total=d.reduce((sum,x)=>sum+x._val,0);
+  let h='<div class="hint">Cost captured from invoice check-ins. Items without a cost yet show blank — they fill in as you receive orders.</div>';
+  h+='<div class="box" style="margin-bottom:10px"><b style="font-size:16px">Total inventory value (at cost): $'+total.toLocaleString(undefined,{maximumFractionDigits:0})+'</b></div>';
+  h+='<table><thead><tr>'+
+     '<th style="cursor:pointer" onclick="valSort(\'name\')">Product'+arrow('name')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'_cost\')">Unit Cost'+arrow('_cost')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'_val\')">Value'+arrow('_val')+'</th></tr></thead><tbody>';
+  h+=sorted.map(x=>`<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.onhand}</td><td>${x._cost?'$'+x._cost.toFixed(2):'—'}</td><td class="onhand-num">${x._val?'$'+x._val.toFixed(0):'—'}</td></tr>`).join('');
+  h+='</tbody></table>';
+  b.innerHTML=h;
 }
 
 // ---- RECONCILE ----
