@@ -299,6 +299,13 @@ app.get('/api/shipments', auth, async (req, res) => {
   res.json(rows);
 });
 
+// Delete an invoice (and its line items)
+app.post('/api/invoices/:orderNumber/delete', auth, async (req, res) => {
+  await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [req.params.orderNumber]);
+  await pool.query('DELETE FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
+  res.json({ ok: true });
+});
+
 // All shipments with their line items (for the Shipments page)
 app.get('/api/all-shipments', auth, async (req, res) => {
   const ships = await pool.query(
