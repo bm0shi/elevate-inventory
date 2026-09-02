@@ -514,21 +514,53 @@ app.post('/api/bundles/delete', auth, async (req, res) => {
 
 // Parse pasted Cosmoprof invoice text into {orderNumber, date, items[]}
 function parseCosmoInvoice(text) {
-  const orderMatch = text.match(/ORDER NUMBER:\s*(\d+)/i);
-  const dateMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
-  const orderNumber = orderMatch ? orderMatch[1] : null;
+  // Order number: try "ORDER NUMBER: X" (old) or "OMS Order ID: DXXXX" / "Xstore Order ID" (new)
+  let orderNumber = null;
+  let m1 = text.match(/ORDER NUMBER:\s*(\d+)/i);
+  if (m1) orderNumber = m1[1];
+  if (!orderNumber) {
+    // new format: OMS Order ID: D 0 7 1 5 6 9 1 2  (spaces between digits)
+    let m2 = text.match(/OMS\s*Order\s*ID:\s*([D0-9\s]+)/i);
+    if (m2) orderNumber = m2[1].replace(/\s+/g,'').trim();
+  }
+  if (!orderNumber) {
+    let m3 = text.match(/Transaction:\s*(\d+)/i);
+    if (m3) orderNumber = 'T' + m3[1];
+  }
+  const dateMatch = text.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i) || text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
   const date = dateMatch ? dateMatch[1] : '';
-  // line format: ITEM# DESCRIPTION QTY_ORD PRICE QTY_SHIP EXT N
+
   const items = [];
-  const re = /(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    items.push({
-      cosmo_num: m[1],
-      description: m[2].trim(),
-      qty_ordered: parseInt(m[3]),
-      qty_shipped: parseInt(m[5]),  // what they shipped = expected to arrive
-    });
+  const lines = text.split(/\r?\n/);
+
+  // FORMAT A (old): "ITEM# DESCRIPTION QTY PRICE QTY EXT N" all on one line
+  const reA = /(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N/;
+  // FORMAT B (new): a line "ITEM# QTY $price ..." with description on the previous non-empty line
+  const reB = /^\s*(\d{6,7})\s+(\d+)\s+\$/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const a = line.match(reA);
+    if (a) {
+      items.push({ cosmo_num: a[1], description: a[2].trim(), qty_ordered: parseInt(a[3]), qty_shipped: parseInt(a[5]) });
+      continue;
+    }
+    const b = line.match(reB);
+    if (b) {
+      let cnum = b[1];
+      // normalize 7-digit (leading 1) to 6-digit
+      if (cnum.length === 7 && cnum[0] === '1') cnum = cnum.slice(1);
+      const qty = parseInt(b[2]);
+      // description = previous non-empty line that isn't a total/disc line
+      let desc = '';
+      for (let j = i - 1; j >= 0; j--) {
+        const t = lines[j].trim();
+        if (!t) continue;
+        if (/^(item ordered|disc|fp_|shipping|payment|subtotal|total|order deposit|tax|fee)/i.test(t)) continue;
+        desc = t; break;
+      }
+      items.push({ cosmo_num: cnum, description: desc, qty_ordered: qty, qty_shipped: qty });
+    }
   }
   return { orderNumber, date, items };
 }
