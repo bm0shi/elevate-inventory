@@ -166,45 +166,51 @@ async function getFbaInventory() {
   return results;
 }
 
-// Sales velocity — units sold per SKU over last N days, via Orders API
+// Sales velocity via the ALL ORDERS report (one report, not per-order calls = fast)
 async function getSalesVelocity(days = 30) {
   const token = await getAccessToken();
+  const zlib = require('zlib');
   const after = new Date(Date.now() - days*24*60*60*1000).toISOString();
+
+  // 1. Request the flat-file all-orders report
+  const createResp = await axios.post(`${SP_API_BASE}/reports/2021-06-30/reports`, {
+    reportType: 'GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL',
+    marketplaceIds: [MARKETPLACE_ID],
+    dataStartTime: after,
+  }, { headers: { 'x-amz-access-token': token, 'Content-Type': 'application/json' } });
+
+  const reportId = createResp.data.reportId;
+  // 2. Poll for completion (up to ~90s)
+  let docId = null;
+  for (let i=0;i<18;i++){
+    await sleep(5000);
+    const st = await axios.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`, { headers:{'x-amz-access-token':token} });
+    const status = st.data.processingStatus;
+    if (status==='DONE'){ docId = st.data.reportDocumentId; break; }
+    if (status==='CANCELLED'||status==='FATAL') throw new Error('Report '+status);
+  }
+  if(!docId) throw new Error('Report timed out — try again in a moment');
+
+  // 3. Download + parse
+  const doc = await axios.get(`${SP_API_BASE}/reports/2021-06-30/documents/${docId}`, { headers:{'x-amz-access-token':token} });
+  const dl = await axios.get(doc.data.url, { responseType:'arraybuffer' });
+  let body = doc.data.compressionAlgorithm==='GZIP' ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8') : Buffer.from(dl.data).toString('utf-8');
+
+  const lines = body.split(/\r?\n/).filter(l=>l);
+  if(!lines.length) return {};
+  const headers = lines[0].split('\t');
+  const skuIdx = headers.indexOf('sku');
+  const qtyIdx = headers.indexOf('quantity');
+  const statusIdx = headers.indexOf('item-status');
   const skuUnits = {};
-  let nextToken = null;
-  let pages = 0;
-  do {
-    const params = nextToken
-      ? { NextToken: nextToken }
-      : { MarketplaceIds: MARKETPLACE_ID, CreatedAfter: after };
-    let resp;
-    try {
-      resp = await axios.get(`${SP_API_BASE}/orders/v0/orders`, {
-        headers: { 'x-amz-access-token': token }, params,
-      });
-    } catch (err) {
-      const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-      throw new Error(`Orders ${err.response?.status}: ${body}`);
-    }
-    const orders = resp.data.payload?.Orders || [];
-    for (const o of orders) {
-      // fetch items for each order
-      try {
-        await sleep(700);
-        const ir = await axios.get(`${SP_API_BASE}/orders/v0/orders/${o.AmazonOrderId}/orderItems`, {
-          headers: { 'x-amz-access-token': token },
-        });
-        const items = ir.data.payload?.OrderItems || [];
-        for (const it of items) {
-          const sku = it.SellerSKU;
-          skuUnits[sku] = (skuUnits[sku]||0) + (it.QuantityOrdered||0);
-        }
-      } catch(e) { /* skip */ }
-    }
-    nextToken = resp.data.payload?.NextToken || null;
-    pages++;
-    await sleep(1500);
-  } while (nextToken && pages < 20);
+  for(let i=1;i<lines.length;i++){
+    const c = lines[i].split('\t');
+    const sku = c[skuIdx];
+    const qty = parseInt(c[qtyIdx])||0;
+    const st = (c[statusIdx]||'').toLowerCase();
+    if(!sku || qty<=0 || st==='cancelled') continue;
+    skuUnits[sku] = (skuUnits[sku]||0) + qty;
+  }
   return skuUnits;
 }
 
