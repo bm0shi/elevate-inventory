@@ -78,6 +78,29 @@ async function initDb() {
       qty INTEGER DEFAULT 1,
       PRIMARY KEY (bundle_asin, component_asin)
     );
+    -- Cosmoprof item number -> our ASIN
+    CREATE TABLE IF NOT EXISTS inv_cosmo_map (
+      cosmo_num TEXT PRIMARY KEY,
+      asin TEXT
+    );
+    -- Pending/received Cosmoprof invoices
+    CREATE TABLE IF NOT EXISTS inv_invoices (
+      order_number TEXT PRIMARY KEY,
+      invoice_date TEXT,
+      status TEXT DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT now(),
+      completed_at TIMESTAMPTZ
+    );
+    -- Invoice line items: expected (from invoice) vs received (scanned)
+    CREATE TABLE IF NOT EXISTS inv_invoice_items (
+      id SERIAL PRIMARY KEY,
+      order_number TEXT REFERENCES inv_invoices(order_number),
+      cosmo_num TEXT,
+      description TEXT,
+      asin TEXT,
+      qty_expected INTEGER,
+      qty_received INTEGER DEFAULT 0
+    );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -123,6 +146,17 @@ async function initDb() {
     SELECT upc_norm, upc, asin FROM inv_products
     WHERE upc_norm IS NOT NULL AND upc_norm <> ''
     ON CONFLICT (upc_norm) DO NOTHING`);
+  // seed Cosmoprof# -> ASIN map (only if empty)
+  const cm = await pool.query('SELECT COUNT(*)::int AS n FROM inv_cosmo_map');
+  if (cm.rows[0].n === 0) {
+    try {
+      const seedMap = JSON.parse(fs.readFileSync(path.join(__dirname, 'cosmo_map.json'), 'utf8'));
+      for (const [cnum, asin] of Object.entries(seedMap)) {
+        await pool.query('INSERT INTO inv_cosmo_map(cosmo_num, asin) VALUES($1,$2) ON CONFLICT (cosmo_num) DO NOTHING', [cnum, asin]);
+      }
+      console.log(`[Inventory] Seeded ${Object.keys(seedMap).length} Cosmoprof mappings.`);
+    } catch(e) { console.error('cosmo_map seed skipped:', e.message); }
+  }
   console.log('[Inventory] DB ready.');
 }
 
@@ -474,6 +508,134 @@ app.post('/api/bundles/bulk', auth, async (req, res) => {
 app.post('/api/bundles/delete', auth, async (req, res) => {
   await pool.query('DELETE FROM inv_bundles WHERE bundle_asin=$1', [req.body.bundle_asin]);
   res.json({ ok: true });
+});
+
+// ---- RECONCILE / INVOICES ----
+
+// Parse pasted Cosmoprof invoice text into {orderNumber, date, items[]}
+function parseCosmoInvoice(text) {
+  const orderMatch = text.match(/ORDER NUMBER:\s*(\d+)/i);
+  const dateMatch = text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
+  const orderNumber = orderMatch ? orderMatch[1] : null;
+  const date = dateMatch ? dateMatch[1] : '';
+  // line format: ITEM# DESCRIPTION QTY_ORD PRICE QTY_SHIP EXT N
+  const items = [];
+  const re = /(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    items.push({
+      cosmo_num: m[1],
+      description: m[2].trim(),
+      qty_ordered: parseInt(m[3]),
+      qty_shipped: parseInt(m[5]),  // what they shipped = expected to arrive
+    });
+  }
+  return { orderNumber, date, items };
+}
+
+// Upload/paste an invoice -> store as pending
+app.post('/api/invoices/add', auth, async (req, res) => {
+  const parsed = parseCosmoInvoice(req.body.text || '');
+  if (!parsed.orderNumber) return res.status(400).json({ error: 'Could not find order number in invoice' });
+  if (!parsed.items.length) return res.status(400).json({ error: 'No line items found' });
+
+  await pool.query(
+    `INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending')
+     ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [parsed.orderNumber, parsed.date]);
+  // clear old items for this invoice, re-add
+  await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [parsed.orderNumber]);
+  let mapped = 0, unmapped = [];
+  for (const it of parsed.items) {
+    const m = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1', [it.cosmo_num]);
+    const asin = m.rows[0]?.asin || null;
+    if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
+    await pool.query(
+      `INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received)
+       VALUES($1,$2,$3,$4,$5,0)`,
+      [parsed.orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped]);
+  }
+  res.json({ ok: true, orderNumber: parsed.orderNumber, items: parsed.items.length, mapped, unmapped });
+});
+
+// List invoices (pending + recent)
+app.get('/api/invoices', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT i.order_number, i.invoice_date, i.status,
+            COUNT(ii.id)::int AS lines,
+            COALESCE(SUM(ii.qty_expected),0)::int AS expected,
+            COALESCE(SUM(ii.qty_received),0)::int AS received
+     FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
+     GROUP BY i.order_number, i.invoice_date, i.status
+     ORDER BY i.created_at DESC LIMIT 100`);
+  res.json(rows);
+});
+
+// Get one invoice's line items (with mapping + progress)
+app.get('/api/invoices/:orderNumber', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT ii.cosmo_num, ii.description, ii.asin, p.name, ii.qty_expected, ii.qty_received
+     FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin = ii.asin
+     WHERE ii.order_number=$1 ORDER BY ii.id`, [req.params.orderNumber]);
+  res.json(rows);
+});
+
+// Scan an item against an open invoice -> increment received for that line
+app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
+  const order = req.params.orderNumber;
+  const code = (req.body.code || '').trim();
+  const qty = parseInt(req.body.qty) || 1;
+  // resolve scanned code -> asin (via multi-upc, asin, or sku)
+  let r = await pool.query('SELECT asin FROM inv_upcs WHERE upc_norm=$1 LIMIT 1', [normCode(code)]);
+  let asin = r.rows[0]?.asin;
+  if (!asin) {
+    r = await pool.query('SELECT asin FROM inv_products WHERE UPPER(asin)=UPPER($1) OR UPPER(sku)=UPPER($1) LIMIT 1', [code]);
+    asin = r.rows[0]?.asin;
+  }
+  if (!asin) return res.json({ ok: false, reason: 'unknown_code', code });
+  // find the matching invoice line
+  const line = await pool.query('SELECT id, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1 AND asin=$2 LIMIT 1', [order, asin]);
+  if (!line.rows.length) return res.json({ ok: false, reason: 'not_on_invoice', asin });
+  await pool.query('UPDATE inv_invoice_items SET qty_received = qty_received + $1 WHERE id=$2', [qty, line.rows[0].id]);
+  const np = await pool.query('SELECT p.name, ii.qty_expected, ii.qty_received FROM inv_invoice_items ii JOIN inv_products p ON p.asin=ii.asin WHERE ii.id=$1', [line.rows[0].id]);
+  res.json({ ok: true, asin, line: np.rows[0] });
+});
+
+// Manually set a received qty on a line (corrections)
+app.post('/api/invoices/:orderNumber/set-line', auth, async (req, res) => {
+  const { asin, qty_received } = req.body;
+  await pool.query('UPDATE inv_invoice_items SET qty_received=$1 WHERE order_number=$2 AND asin=$3',
+    [parseInt(qty_received)||0, req.params.orderNumber, asin]);
+  res.json({ ok: true });
+});
+
+// Assign a Cosmoprof number to a product (for unmapped lines)
+app.post('/api/cosmo-map', auth, async (req, res) => {
+  const { cosmo_num, asin } = req.body;
+  await pool.query('INSERT INTO inv_cosmo_map(cosmo_num, asin) VALUES($1,$2) ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2', [cosmo_num, asin]);
+  // backfill any invoice lines using this cosmo_num
+  await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2 AND asin IS NULL', [asin, cosmo_num]);
+  res.json({ ok: true });
+});
+
+// Complete an invoice -> push RECEIVED quantities into on-hand
+app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
+  const order = req.params.orderNumber;
+  const lines = await pool.query('SELECT asin, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1', [order]);
+  let added = 0, discrepancies = [];
+  for (const l of lines.rows) {
+    if (!l.asin) continue; // unmapped lines skipped
+    if (l.qty_received > 0) {
+      await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
+      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+        ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
+      added += l.qty_received;
+    }
+    if (l.qty_received !== l.qty_expected) {
+      discrepancies.push({ description: l.description, expected: l.qty_expected, received: l.qty_received });
+    }
+  }
+  await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
+  res.json({ ok: true, added, discrepancies });
 });
 
 // serve the UI
