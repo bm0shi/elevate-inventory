@@ -129,4 +129,83 @@ async function getShipmentReceivedItems(shipmentId) {
   return items;
 }
 
-module.exports = { getReceivedShipments, getShipmentReceivedItems };
+// Get current FBA inventory (what Amazon holds) via FBA Inventory API
+async function getFbaInventory() {
+  const token = await getAccessToken();
+  const results = {};
+  let nextToken = null;
+  do {
+    const params = {
+      granularityType: 'Marketplace',
+      granularityId: MARKETPLACE_ID,
+      marketplaceIds: MARKETPLACE_ID,
+      details: true,
+    };
+    if (nextToken) params.nextToken = nextToken;
+    let resp;
+    try {
+      resp = await axios.get(`${SP_API_BASE}/fba/inventory/v1/summaries`, {
+        headers: { 'x-amz-access-token': token }, params,
+      });
+    } catch (err) {
+      const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`FBA inventory ${err.response?.status}: ${body}`);
+    }
+    const sums = resp.data.payload?.inventorySummaries || [];
+    for (const s of sums) {
+      results[s.sellerSku] = {
+        sku: s.sellerSku, asin: s.asin, fnSku: s.fnSku,
+        total: s.totalQuantity || 0,
+        fulfillable: s.inventoryDetails?.fulfillableQuantity || 0,
+        inbound: (s.inventoryDetails?.inboundWorkingQuantity||0) + (s.inventoryDetails?.inboundShippedQuantity||0) + (s.inventoryDetails?.inboundReceivingQuantity||0),
+      };
+    }
+    nextToken = resp.data.payload?.nextToken || null;
+    await sleep(1000);
+  } while (nextToken);
+  return results;
+}
+
+// Sales velocity — units sold per SKU over last N days, via Orders API
+async function getSalesVelocity(days = 30) {
+  const token = await getAccessToken();
+  const after = new Date(Date.now() - days*24*60*60*1000).toISOString();
+  const skuUnits = {};
+  let nextToken = null;
+  let pages = 0;
+  do {
+    const params = nextToken
+      ? { NextToken: nextToken }
+      : { MarketplaceIds: MARKETPLACE_ID, CreatedAfter: after };
+    let resp;
+    try {
+      resp = await axios.get(`${SP_API_BASE}/orders/v0/orders`, {
+        headers: { 'x-amz-access-token': token }, params,
+      });
+    } catch (err) {
+      const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+      throw new Error(`Orders ${err.response?.status}: ${body}`);
+    }
+    const orders = resp.data.payload?.Orders || [];
+    for (const o of orders) {
+      // fetch items for each order
+      try {
+        await sleep(700);
+        const ir = await axios.get(`${SP_API_BASE}/orders/v0/orders/${o.AmazonOrderId}/orderItems`, {
+          headers: { 'x-amz-access-token': token },
+        });
+        const items = ir.data.payload?.OrderItems || [];
+        for (const it of items) {
+          const sku = it.SellerSKU;
+          skuUnits[sku] = (skuUnits[sku]||0) + (it.QuantityOrdered||0);
+        }
+      } catch(e) { /* skip */ }
+    }
+    nextToken = resp.data.payload?.NextToken || null;
+    pages++;
+    await sleep(1500);
+  } while (nextToken && pages < 20);
+  return skuUnits;
+}
+
+module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity };
