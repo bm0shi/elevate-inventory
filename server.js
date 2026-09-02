@@ -8,6 +8,42 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const { getReceivedShipments, getShipmentReceivedItems } = require('./spapi');
+const multer = require('multer');
+const pdfParse = require('pdf-parse');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+
+// Shared: parse Cosmoprof invoice text (multi-order) into created invoices.
+async function processInvoiceText(text) {
+  const parts = text.split(/FOR ORDER NUMBER:\s*(\d+)/);
+  const created = [], errors = [];
+  for (let i = 1; i < parts.length; i += 2) {
+    const orderNumber = parts[i].trim();
+    const body = parts[i+1] || '';
+    const dateM = (parts[i-1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
+    const date = dateM ? dateM[dateM.length-1] : '';
+    const items = [];
+    for (const line of body.split(/\r?\n/)) {
+      let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
+      if (m) { items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]) }); continue; }
+      let m2 = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s*$/);
+      if (m2) { items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), incomplete: true }); }
+    }
+    if (!items.length) { errors.push(`Order ${orderNumber}: no items parsed`); continue; }
+    await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending') ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [orderNumber, date]);
+    await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
+    let mapped = 0, unmapped = 0;
+    for (const it of items) {
+      const c6 = (it.cosmo_num.length===7 && it.cosmo_num[0]==='1') ? it.cosmo_num.slice(1) : it.cosmo_num;
+      const mm = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
+      const asin = mm.rows[0]?.asin || null;
+      if (asin) mapped++; else unmapped++;
+      await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES($1,$2,$3,$4,$5,0)`,
+        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped]);
+    }
+    created.push({ orderNumber, items: items.length, mapped, unmapped, date });
+  }
+  return { created, errors };
+}
 
 const app = express();
 app.use(express.json({ limit: '2mb' }));
@@ -600,51 +636,7 @@ function parseCosmoInvoice(text) {
 
 // Multi-order: split pasted text by "FOR ORDER NUMBER:" and create each invoice
 app.post('/api/invoices/add-multi', auth, async (req, res) => {
-  const text = req.body.text || '';
-  const parts = text.split(/FOR ORDER NUMBER:\s*(\d+)/);
-  const created = [];
-  const errors = [];
-  // parts[0] = preamble; then [orderNum, body, orderNum, body, ...]
-  for (let i = 1; i < parts.length; i += 2) {
-    const orderNumber = parts[i].trim();
-    const body = parts[i+1] || '';
-    // date: look for M/D/YY near this section (in body or just before)
-    const dateM = (parts[i-1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
-    const date = dateM ? dateM[dateM.length-1] : '';
-    // parse line items (clean one-line format)
-    const items = [];
-    for (const line of body.split(/\r?\n/)) {
-      // full: ITEM# DESC ORDERED PRICE SHIPPED EXT N
-      let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
-      if (m) {
-        items.push({ cosmo_num: m[1], description: m[2].trim(), qty_ordered: parseInt(m[3]), qty_shipped: parseInt(m[5]) });
-        continue;
-      }
-      // incomplete: ITEM# DESC ORDERED PRICE  (no shipped) — use ordered, flag
-      let m2 = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s*$/);
-      if (m2) {
-        items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_ordered: parseInt(m2[3]), qty_shipped: parseInt(m2[3]), incomplete: true });
-      }
-    }
-    if (!items.length) { errors.push(`Order ${orderNumber}: no items parsed`); continue; }
-
-    await pool.query(
-      `INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending')
-       ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [orderNumber, date]);
-    await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
-    let mapped = 0, unmapped = [];
-    for (const it of items) {
-      const c6 = (it.cosmo_num.length===7 && it.cosmo_num[0]==='1') ? it.cosmo_num.slice(1) : it.cosmo_num;
-      const mm = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
-      const asin = mm.rows[0]?.asin || null;
-      if (asin) mapped++; else unmapped.push(it.cosmo_num);
-      await pool.query(
-        `INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received)
-         VALUES($1,$2,$3,$4,$5,0)`,
-        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped]);
-    }
-    created.push({ orderNumber, items: items.length, mapped, unmapped: unmapped.length, date });
-  }
+  const { created, errors } = await processInvoiceText(req.body.text || '');
   if (!created.length) return res.status(400).json({ error: 'No orders found. Text needs "FOR ORDER NUMBER:" headers.', errors });
   res.json({ ok: true, created, errors });
 });
@@ -788,6 +780,24 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   }
   await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
   res.json({ ok: true, added, discrepancies });
+});
+
+// PDF upload -> extract text -> process (multi-order)
+app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  let text;
+  try {
+    const data = await pdfParse(req.file.buffer);
+    text = data.text || '';
+  } catch (err) {
+    return res.status(400).json({ error: 'Could not read PDF: ' + err.message });
+  }
+  if (!/FOR ORDER NUMBER:/i.test(text)) {
+    return res.status(400).json({ error: 'No "FOR ORDER NUMBER:" found in PDF. It may be a different format — try the paste option.' });
+  }
+  const { created, errors } = await processInvoiceText(text);
+  if (!created.length) return res.status(400).json({ error: 'Found order headers but no line items parsed. Try paste as backup.', errors });
+  res.json({ ok: true, created, errors });
 });
 
 // serve the UI
