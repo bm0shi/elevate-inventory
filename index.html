@@ -7,11 +7,11 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1b2d; color: #1f2733; }
-  .app { max-width: 900px; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
+  .app { max-width: 1100px; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
   header { background: #0f1b2d; color: #fff; padding: 16px 20px; position: sticky; top: 0; z-index: 10; }
   header h1 { font-size: 18px; font-weight: 700; }
   header .sub { font-size: 12px; color: #9db0c9; margin-top: 2px; }
-  .tabs { display: flex; background: #1a2b4a; }
+  .tabs { display: flex; flex-wrap: wrap; background: #1a2b4a; }
   .tab { flex: 1; padding: 14px; text-align: center; color: #9db0c9; font-weight: 600; font-size: 13px; cursor: pointer; border: none; background: none; }
   .tab.active { color: #fff; background: #127a7a; }
   .panel { padding: 20px; display: none; }
@@ -568,15 +568,36 @@ function loadFbaInv(){
   const btn=document.getElementById('fbaInvBtn'); btn.textContent='Loading from Amazon...'; btn.disabled=true;
   api('/api/fba-inventory').then(d=>{
     btn.textContent='Load FBA Inventory'; btn.disabled=false;
-    const b=document.getElementById('fbaInvBody');
-    if(d.error){ b.innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    let tot={w:0,t:0,f:0,g:0}; d.forEach(x=>{tot.w+=x.warehouse;tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
-    let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Warehouse</div></div><div class="card"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div><div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL</div></div></div>';
-    h+='<table><thead><tr><th>Product</th><th>Wh</th><th>Transit</th><th>FBA</th><th>Total</th></tr></thead><tbody>';
-    h+=d.map(x=>`<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`).join('');
-    h+='</tbody></table>';
-    b.innerHTML=h;
+    if(d.error){ document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    window._fbaData=d; window._fbaSort={col:'grand_total',dir:-1};
+    renderFbaInv();
   });
+}
+function fbaSort(col){
+  const s=window._fbaSort;
+  if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=-1; }
+  renderFbaInv();
+}
+function renderFbaInv(){
+  const d=window._fbaData||[]; const s=window._fbaSort;
+  const b=document.getElementById('fbaInvBody');
+  let tot={w:0,t:0,f:0,g:0}; d.forEach(x=>{tot.w+=x.warehouse;tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
+  const sorted=[...d].sort((a,b2)=>{
+    let av,bv;
+    if(s.col==='name'){ av=(a.name||'').toLowerCase(); bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    av=a[s.col]||0; bv=b2[s.col]||0; return (av-bv)*s.dir;
+  });
+  const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
+  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Warehouse</div></div><div class="card"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div><div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL</div></div></div>';
+  h+='<table><thead><tr>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'name\')">Product'+arrow('name')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'warehouse\')">Wh'+arrow('warehouse')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
+  h+=sorted.map(x=>`<tr><td>${(x.name||'').slice(0,40)}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`).join('');
+  h+='</tbody></table>';
+  b.innerHTML=h;
 }
 
 // ---- Velocity (owner) ----
