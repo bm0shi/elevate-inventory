@@ -175,6 +175,13 @@
       <button class="action full" onclick="addInvoice()">Add Invoice</button>
     </div>
     <div class="box">
+      <div style="font-weight:700;margin-bottom:4px">Cosmoprof# → Product Mapping (bulk)</div>
+      <div class="hint" style="margin-bottom:8px">Paste lines: <b>cosmoNum, ASIN</b>. Maps invoice items to products so they auto-match.</div>
+      <textarea id="cosmoBulk" placeholder="573244, B000MD65FO&#10;573261, B000AQI2EK" style="min-height:80px"></textarea>
+      <div style="height:8px"></div>
+      <button class="action full" onclick="importCosmoMap()">Import Mappings</button>
+    </div>
+    <div class="box">
       <label>Select a pending invoice to receive</label>
       <select id="invoicePick" onchange="loadInvoice()" style="width:100%;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;background:#fff">
         <option value="">— pick an invoice —</option>
@@ -413,6 +420,15 @@ function doBulkShip(){
 }
 // ---- RECONCILE ----
 let currentInvoice = null;
+function importCosmoMap(){
+  const text=document.getElementById('cosmoBulk').value.trim();
+  if(!text){toast('Paste mappings first',true);return;}
+  api('/api/cosmo-map/bulk',{method:'POST',body:JSON.stringify({text})}).then(d=>{
+    toast('Mapped '+d.done+(d.errors.length?', '+d.errors.length+' errors':''));
+    if(d.errors.length) alert('Issues:\n'+d.errors.join('\n'));
+    document.getElementById('cosmoBulk').value='';
+  });
+}
 function addInvoice(){
   const text=document.getElementById('invoiceText').value.trim();
   if(!text){toast('Paste an invoice first',true);return;}
