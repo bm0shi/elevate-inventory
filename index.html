@@ -91,17 +91,17 @@
     <div class="sub">Scan receiving · live on-hand · FBA deduction</div>
   </header>
   <div class="tabs">
-    <button class="tab active" onclick="showTab('receive',event)">Receive In</button>
+    <button class="tab active" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
-    <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
     <button class="tab" onclick="showTab('transit',event)">In Transit</button>
     <button class="tab" onclick="showTab('shipments',event)">Shipments</button>
     <button class="tab" onclick="showTab('bundles',event)">Bundles</button>
+    <button class="tab" onclick="showTab('receive',event)">Receiving (Manual)</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
   </div>
 
-  <div id="receive" class="panel active">
+  <div id="receive" class="panel">
     <div class="box">
       <label>Scan UPC (or type ASIN/SKU + Enter)</label>
       <div style="display:flex;gap:8px">
@@ -166,7 +166,7 @@
     <table><thead><tr><th>Product</th><th>ASIN</th><th>UPC</th><th>On Hand</th><th>Transit</th></tr></thead><tbody id="onhandBody"></tbody></table>
   </div>
 
-  <div id="reconcile" class="panel">
+  <div id="reconcile" class="panel active">
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Add Cosmoprof Invoice(s)</div>
       <div class="hint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
@@ -524,11 +524,21 @@ function updateExpected(inp){
 }
 document.getElementById('scanRecon').addEventListener('keydown', e=>{
   if(e.key!=='Enter')return; const code=e.target.value.trim(); if(!code)return;
-  api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty:1})}).then(d=>{
-    if(d.ok){ scanFeedback(); toast('+1 '+(d.line.name||'').slice(0,22)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')'); renderReconLines(); }
-    else if(d.reason==='not_on_invoice'){ toast('That item is not on this invoice',true); }
-    else { toast('Unknown barcode — assign it in Receive first',true); }
-    e.target.value=''; if(window._resetScan)window._resetScan('Recon');
+  e.target.value='';
+  // First, look up what product this is (qty 0 = just identify, don't add yet)
+  api('/api/find/'+encodeURIComponent(code)).then(f=>{
+    if(!f.found){ toast('Unknown barcode — assign it in Receiving (Manual) first',true); if(window._resetScan)window._resetScan('Recon'); return; }
+    // pop up quantity entry
+    const qtyStr = prompt('How many of "'+(f.product.name||'').slice(0,40)+'" did you receive?', '1');
+    if(qtyStr===null){ if(window._resetScan)window._resetScan('Recon'); return; } // cancelled
+    const qty = parseInt(qtyStr);
+    if(!qty || qty<1){ toast('Enter a valid quantity',true); if(window._resetScan)window._resetScan('Recon'); return; }
+    api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+      if(d.ok){ scanFeedback(); toast('+'+qty+' '+(d.line.name||'').slice(0,20)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')'); renderReconLines(); }
+      else if(d.reason==='not_on_invoice'){ toast('That item is not on this invoice',true); }
+      else { toast('Could not add',true); }
+      if(window._resetScan)window._resetScan('Recon');
+    });
   });
 });
 function deleteInvoice(){
