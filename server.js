@@ -927,7 +927,7 @@ app.get('/api/velocity', ownerAuth, async (req, res) => {
     const sold = sales[r.sku] || 0;
     const perDay = sold/days;
     const daysLeft = perDay>0 ? Math.round(r.onhand/perDay) : null;
-    out.push({ name:r.name, sku:r.sku, sold, perDay: Math.round(perDay*10)/10, onhand:r.onhand, daysLeft });
+    out.push({ asin:r.asin, name:r.name, sku:r.sku, sold, perDay: Math.round(perDay*10)/10, onhand:r.onhand, daysLeft });
   }
   out.sort((a,b)=>b.sold-a.sold);
   res.json({ days, items: out });
