@@ -659,6 +659,18 @@ app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
   res.json({ ok: true, asin, line: np.rows[0] });
 });
 
+// Set the EXPECTED quantity on a line (fix scrambled parse)
+app.post('/api/invoices/:orderNumber/set-expected', auth, async (req, res) => {
+  const { asin, cosmo_num, qty_expected } = req.body;
+  const q = parseInt(qty_expected) || 0;
+  if (asin) {
+    await pool.query('UPDATE inv_invoice_items SET qty_expected=$1 WHERE order_number=$2 AND asin=$3', [q, req.params.orderNumber, asin]);
+  } else if (cosmo_num) {
+    await pool.query('UPDATE inv_invoice_items SET qty_expected=$1 WHERE order_number=$2 AND cosmo_num=$3', [q, req.params.orderNumber, cosmo_num]);
+  }
+  res.json({ ok: true });
+});
+
 // Manually set a received qty on a line (corrections)
 app.post('/api/invoices/:orderNumber/set-line', auth, async (req, res) => {
   const { asin, qty_received } = req.body;
