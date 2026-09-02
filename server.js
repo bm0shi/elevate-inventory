@@ -562,6 +562,32 @@ function parseCosmoInvoice(text) {
       items.push({ cosmo_num: cnum, description: desc, qty_ordered: qty, qty_shipped: qty });
     }
   }
+  // FORMAT C (fallback): copy-paste from PDF scrambles columns into separate
+  // groups (all item#s together, all descriptions together, all quantities together).
+  // If A and B found nothing, try zipping the groups back together.
+  if (items.length === 0) {
+    const itemNums = [];
+    const descs = [];
+    const qtys = [];
+    for (const raw of lines) {
+      const t = raw.trim();
+      if (/^\d{6}$/.test(t)) itemNums.push(t);
+      else if (/^\d{7}$/.test(t) && t[0]==='1') itemNums.push(t.slice(1));
+      else if (/^[A-Z]/.test(t) && /(PM |PAUL|COLOR|TEA TREE|AWAPUHI|MITCH|LAVENDER)/i.test(t)
+               && !/(TOTAL|MEMO|DISCOUNT|SHIPPED|ORDERED|CUSTOMER|BALANCE|PAYMENT|HANDLING)/i.test(t)) {
+        descs.push(t);
+      }
+      else if (/^\d{1,4}$/.test(t)) qtys.push(parseInt(t));
+    }
+    if (itemNums.length > 0 && itemNums.length === descs.length) {
+      // qtys usually contains ordered then shipped (duplicated). Use the first block.
+      for (let i = 0; i < itemNums.length; i++) {
+        const q = qtys[i] != null ? qtys[i] : 0;
+        items.push({ cosmo_num: itemNums[i], description: descs[i], qty_ordered: q, qty_shipped: q });
+      }
+    }
+  }
+
   return { orderNumber, date, items };
 }
 
