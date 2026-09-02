@@ -93,6 +93,7 @@
   <div class="tabs">
     <button class="tab active" onclick="showTab('receive',event)">Receive In</button>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
+    <button class="tab" onclick="showTab('reconcile',event)">Reconcile</button>
     <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
     <button class="tab" onclick="showTab('transit',event)">In Transit</button>
     <button class="tab" onclick="showTab('shipments',event)">Shipments</button>
@@ -165,6 +166,36 @@
     <table><thead><tr><th>Product</th><th>ASIN</th><th>UPC</th><th>On Hand</th><th>Transit</th></tr></thead><tbody id="onhandBody"></tbody></table>
   </div>
 
+  <div id="reconcile" class="panel">
+    <div class="box">
+      <div style="font-weight:700;margin-bottom:4px">Add a Cosmoprof Invoice</div>
+      <div class="hint" style="margin-bottom:10px">Paste the invoice text (order #, date, and line items). It becomes a pending order to receive against.</div>
+      <textarea id="invoiceText" placeholder="Paste Cosmoprof invoice here..."></textarea>
+      <div style="height:10px"></div>
+      <button class="action full" onclick="addInvoice()">Add Invoice</button>
+    </div>
+    <div class="box">
+      <label>Select a pending invoice to receive</label>
+      <select id="invoicePick" onchange="loadInvoice()" style="width:100%;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;background:#fff">
+        <option value="">— pick an invoice —</option>
+      </select>
+    </div>
+    <div id="reconcileWork" style="display:none">
+      <div class="box">
+        <label>Scan items as you unpack</label>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="scanRecon" placeholder="Scan barcode..." autocomplete="off" style="flex:1">
+          <button class="action" onclick="toggleCamera('Recon')" id="camBtnRecon" style="padding:14px 16px;white-space:nowrap">📷</button>
+        </div>
+        <div id="camWrapRecon" style="display:none;margin-top:12px">
+          <video id="videoRecon" style="width:100%;max-height:300px;border-radius:8px;background:#000"></video>
+        </div>
+        <div class="hint">Each scan adds 1 to that item's received count. Discrepancies show below in real time.</div>
+      </div>
+      <div id="reconLines"></div>
+      <button class="action full" onclick="completeInvoice()" style="margin-top:12px">Mark Complete → Add to On Hand</button>
+    </div>
+  </div>
   <div id="ship" class="panel">
     <div class="box">
       <label>Amazon Shipment ID (required)</label>
@@ -281,7 +312,7 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='reconcile'){loadInvoiceList();} if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -380,6 +411,82 @@ function doBulkShip(){
     document.getElementById('packSlip').value=''; document.getElementById('shipmentId').value=''; document.getElementById('shipmentName').value=''; loadProducts();
   });
 }
+// ---- RECONCILE ----
+let currentInvoice = null;
+function addInvoice(){
+  const text=document.getElementById('invoiceText').value.trim();
+  if(!text){toast('Paste an invoice first',true);return;}
+  api('/api/invoices/add',{method:'POST',body:JSON.stringify({text})}).then(d=>{
+    if(d.ok){
+      toast('Invoice '+d.orderNumber+' added ('+d.mapped+'/'+d.items+' mapped)');
+      if(d.unmapped && d.unmapped.length) alert('These items need a Cosmoprof#→product mapping (assign them once):\n\n'+d.unmapped.join('\n')+'\n\nYou can still receive the rest.');
+      document.getElementById('invoiceText').value='';
+      loadInvoiceList();
+    } else toast(d.error||'Failed',true);
+  });
+}
+function loadInvoiceList(){
+  api('/api/invoices').then(list=>{
+    const sel=document.getElementById('invoicePick');
+    const pending=list.filter(i=>i.status==='pending');
+    sel.innerHTML='<option value="">— pick an invoice —</option>'+
+      pending.map(i=>`<option value="${i.order_number}">#${i.order_number} · ${i.invoice_date} · ${i.received}/${i.expected} received</option>`).join('');
+  });
+}
+function loadInvoice(){
+  const order=document.getElementById('invoicePick').value;
+  currentInvoice=order;
+  if(!order){ document.getElementById('reconcileWork').style.display='none'; return; }
+  document.getElementById('reconcileWork').style.display='block';
+  renderReconLines();
+  setTimeout(()=>document.getElementById('scanRecon').focus(),100);
+}
+function renderReconLines(){
+  if(!currentInvoice)return;
+  api('/api/invoices/'+currentInvoice).then(lines=>{
+    const b=document.getElementById('reconLines');
+    b.innerHTML=lines.map(l=>{
+      const exp=l.qty_expected, rec=l.qty_received;
+      let cls='', status='';
+      if(!l.asin){ cls='style="background:#fdf6e3"'; status='<span style="color:#b7791f">⚠ needs mapping</span>'; }
+      else if(rec===exp){ cls='style="background:#eafaf1"'; status='<span style="color:#1e8449">✓ match</span>'; }
+      else if(rec>exp){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">over +'+(rec-exp)+'</span>'; }
+      else if(rec>0){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">short '+(exp-rec)+'</span>'; }
+      else { status='<span style="color:#9db0c9">not scanned</span>'; }
+      const nm=l.name||l.description;
+      return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
+        <div style="font-weight:700;font-size:13px">${nm}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+          <span class="pmeta">Cosmo# ${l.cosmo_num} · expected ${exp}</span>
+          <span style="font-weight:700">${rec} / ${exp} &nbsp; ${status}</span>
+        </div>
+      </div>`;
+    }).join('');
+  });
+}
+document.getElementById('scanRecon').addEventListener('keydown', e=>{
+  if(e.key!=='Enter')return; const code=e.target.value.trim(); if(!code)return;
+  api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty:1})}).then(d=>{
+    if(d.ok){ scanFeedback(); toast('+1 '+(d.line.name||'').slice(0,22)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')'); renderReconLines(); }
+    else if(d.reason==='not_on_invoice'){ toast('That item is not on this invoice',true); }
+    else { toast('Unknown barcode — assign it in Receive first',true); }
+    e.target.value=''; if(window._resetScan)window._resetScan('Recon');
+  });
+});
+function completeInvoice(){
+  if(!currentInvoice)return;
+  if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
+  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST'}).then(d=>{
+    let msg='Added '+d.added+' units to on hand.';
+    if(d.discrepancies && d.discrepancies.length){
+      msg+='\n\nDISCREPANCIES:\n'+d.discrepancies.map(x=>`${x.description}: expected ${x.expected}, received ${x.received}`).join('\n');
+    }
+    alert(msg);
+    currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
+    loadInvoiceList(); loadProducts();
+  });
+}
+
 // ---- BUNDLES ----
 let bundleSel = { asin:null, name:null, c1:null, c1name:null, c2:null, c2name:null };
 function filterBundlePick(){
@@ -586,8 +693,8 @@ function scanFeedback() {
 
 // ---- PHONE CAMERA SCANNING (ZXing) ----
 let codeReader = null;
-let scanning = { In: false, Out: false };
-let _scanState = { In: {last:'', time:0}, Out: {last:'', time:0} };
+let scanning = { In: false, Out: false, Recon: false };
+let _scanState = { In: {last:'', time:0}, Out: {last:'', time:0}, Recon: {last:'', time:0} };
 window._resetScan = function(which){ if(_scanState[which]){ _scanState[which].last=''; _scanState[which].time=0; } };
 
 // Master reset — return a scanner to a clean, ready state for the NEXT item.
@@ -672,7 +779,7 @@ async function toggleCamera(which) {
 // Stop camera when switching tabs
 const _origShowTab = showTab;
 showTab = function(t, ev) {
-  ['In','Out'].forEach(w => { if (scanning[w]) toggleCamera(w); });
+  ['In','Out','Recon'].forEach(w => { if (scanning[w]) toggleCamera(w); });
   _origShowTab(t, ev);
 };
 
