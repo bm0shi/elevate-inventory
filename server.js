@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity } = require('./spapi');
+const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices } = require('./spapi');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -201,6 +201,14 @@ async function initDb() {
       console.log(`[Inventory] Seeded ${Object.keys(seedMap).length} Cosmoprof mappings.`);
     } catch(e) { console.error('cosmo_map seed skipped:', e.message); }
   }
+  // seed unit costs from historical invoices (only fills blanks)
+  try {
+    const seedCosts = JSON.parse(fs.readFileSync(path.join(__dirname, 'seed_costs.json'), 'utf8'));
+    for (const [asin, cost] of Object.entries(seedCosts)) {
+      await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [cost, asin]);
+    }
+    console.log(`[Inventory] Seeded costs for ${Object.keys(seedCosts).length} products (blanks only).`);
+  } catch(e) { console.error('cost seed skipped:', e.message); }
   console.log('[Inventory] DB ready.');
 }
 
@@ -876,10 +884,17 @@ app.get('/api/fba-discrepancies', auth, async (req, res) => {
 // Inventory value (owner) — units on hand × cost, needs cost per item
 app.get('/api/inventory-value', ownerAuth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT p.asin, p.name, s.onhand, s.transit, p.unit_cost AS last_cost
+    `SELECT p.asin, p.sku, p.name, s.onhand, s.transit, p.unit_cost AS last_cost
      FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
      WHERE s.onhand > 0 ORDER BY (s.onhand * COALESCE(p.unit_cost,0)) DESC`);
-  res.json(rows.rows);
+  // optionally fetch amazon retail prices
+  let retail = {};
+  if (req.query.retail === 'true') {
+    const skus = rows.rows.map(r => r.sku).filter(Boolean);
+    try { retail = await getMyPrices(skus); } catch(e) {}
+  }
+  const out = rows.rows.map(r => ({ ...r, amazon_price: retail[r.sku] || null }));
+  res.json(out);
 });
 
 // Manually set/override a product's unit cost (owner)
