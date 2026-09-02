@@ -201,6 +201,7 @@
       </div>
       <div id="reconLines"></div>
       <button class="action full" onclick="completeInvoice()" style="margin-top:12px">Mark Complete → Add to On Hand</button>
+      <button class="action danger full" onclick="deleteInvoice()" style="margin-top:8px">Delete This Invoice</button>
     </div>
   </div>
   <div id="ship" class="panel">
@@ -496,6 +497,16 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
     e.target.value=''; if(window._resetScan)window._resetScan('Recon');
   });
 });
+function deleteInvoice(){
+  if(!currentInvoice)return;
+  if(!confirm('Delete invoice '+currentInvoice+'? This removes it entirely (nothing added to on-hand). Use this to clear a bad/scrambled import.'))return;
+  api('/api/invoices/'+currentInvoice+'/delete',{method:'POST'}).then(()=>{
+    toast('Invoice deleted');
+    currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
+    document.getElementById('invoicePick').value='';
+    loadInvoiceList();
+  });
+}
 function completeInvoice(){
   if(!currentInvoice)return;
   if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
