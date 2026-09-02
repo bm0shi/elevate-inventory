@@ -168,11 +168,11 @@
 
   <div id="reconcile" class="panel">
     <div class="box">
-      <div style="font-weight:700;margin-bottom:4px">Add a Cosmoprof Invoice</div>
-      <div class="hint" style="margin-bottom:10px">Paste the invoice text (order #, date, and line items). It becomes a pending order to receive against.</div>
-      <textarea id="invoiceText" placeholder="Paste Cosmoprof invoice here..."></textarea>
+      <div style="font-weight:700;margin-bottom:4px">Add Cosmoprof Invoice(s)</div>
+      <div class="hint" style="margin-bottom:10px">Paste the invoice text. If several orders are in one file, they'll be split into separate invoices automatically (it looks for "FOR ORDER NUMBER:").</div>
+      <textarea id="invoiceText" placeholder="Paste Cosmoprof invoice text here (one or many orders)..."></textarea>
       <div style="height:10px"></div>
-      <button class="action full" onclick="addInvoice()">Add Invoice</button>
+      <button class="action full" onclick="addInvoiceMulti()">Add Invoice(s)</button>
     </div>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Cosmoprof# → Product Mapping (bulk)</div>
@@ -428,6 +428,19 @@ function importCosmoMap(){
     toast('Mapped '+d.done+(d.errors.length?', '+d.errors.length+' errors':''));
     if(d.errors.length) alert('Issues:\n'+d.errors.join('\n'));
     document.getElementById('cosmoBulk').value='';
+  });
+}
+function addInvoiceMulti(){
+  const text=document.getElementById('invoiceText').value.trim();
+  if(!text){toast('Paste an invoice first',true);return;}
+  api('/api/invoices/add-multi',{method:'POST',body:JSON.stringify({text})}).then(d=>{
+    if(d.ok){
+      let msg=d.created.map(c=>`#${c.orderNumber}: ${c.items} items (${c.mapped} mapped${c.unmapped?', '+c.unmapped+' need mapping':''})`).join('\n');
+      toast('Added '+d.created.length+' order(s)');
+      alert('Created '+d.created.length+' invoice(s):\n\n'+msg);
+      document.getElementById('invoiceText').value='';
+      loadInvoiceList();
+    } else { toast(d.error||'Failed',true); alert(d.error||'Failed'); }
   });
 }
 function addInvoice(){
