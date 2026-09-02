@@ -153,12 +153,12 @@
     <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
       <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="flex:1;min-width:180px;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
       <select id="sortOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
-        <option value="name">Name A→Z</option>
-        <option value="name_desc">Name Z→A</option>
         <option value="onhand_desc">On Hand: high→low</option>
         <option value="onhand_asc">On Hand: low→high</option>
-        <option value="transit_desc">In Transit: high→low</option>
         <option value="nostock">Out of stock first</option>
+        <option value="name">Name A→Z</option>
+        <option value="name_desc">Name Z→A</option>
+        <option value="transit_desc">In Transit: high→low</option>
       </select>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
     </div>
@@ -696,7 +696,7 @@ function addProduct(){
 }
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
-  const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'name';
+  const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'onhand_desc';
   const body=document.getElementById('onhandBody');
   // totals across ALL products (not just filtered)
   let tU=0,tT=0,sk=0;
