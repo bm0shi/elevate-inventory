@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getReceivedShipments, getShipmentReceivedItems } = require('./spapi');
+const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity } = require('./spapi');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -53,6 +53,8 @@ const APP_PASSWORD = process.env.APP_PASSWORD || 'changeme';
 // Set AUTH_DISABLED=true in Railway to turn off the password gate (e.g. while testing).
 // Remove it or set to false to re-enable. No code change needed.
 const AUTH_DISABLED = String(process.env.AUTH_DISABLED || '').toLowerCase() === 'true';
+// Separate password for owner-only data tabs (velocity, profit, inventory value).
+const OWNER_PASSWORD = process.env.OWNER_PASSWORD || APP_PASSWORD;
 
 // Normalize a scanned/typed code so 12 vs 13 digit UPC/EAN variants of the SAME
 // barcode match. Strips leading zeros for numeric codes; leaves ASIN/SKU alone.
@@ -202,6 +204,14 @@ function auth(req, res, next) {
   if (req.headers['x-app-password'] === APP_PASSWORD) return next();
   return res.status(401).json({ error: 'unauthorized' });
 }
+function ownerAuth(req, res, next) {
+  if (req.headers['x-owner-password'] === OWNER_PASSWORD) return next();
+  return res.status(403).json({ error: 'owner access required' });
+}
+app.post('/api/owner-login', (req, res) => {
+  if (req.body.password === OWNER_PASSWORD) return res.json({ ok: true });
+  res.status(403).json({ ok: false });
+});
 
 // ---- API ROUTES ----
 
@@ -798,6 +808,128 @@ app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res
   const { created, errors } = await processInvoiceText(text);
   if (!created.length) return res.status(400).json({ error: 'Found order headers but no line items parsed. Try paste as backup.', errors });
   res.json({ ok: true, created, errors });
+});
+
+// ============================================================
+// DATA / DASHBOARD ENDPOINTS
+// ============================================================
+
+// Dashboard summary — everything at a glance (uses data we already have)
+app.get('/api/dashboard', auth, async (req, res) => {
+  const stock = await pool.query('SELECT COALESCE(SUM(onhand),0)::int AS onhand, COALESCE(SUM(transit),0)::int AS transit FROM inv_stock');
+  const skus = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products');
+  const lowStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand > 0 AND onhand <= 20');
+  const outStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand <= 0');
+  const pendingInv = await pool.query("SELECT COUNT(*)::int AS n FROM inv_invoices WHERE status='pending'");
+  const openShip = await pool.query("SELECT COUNT(*)::int AS n FROM inv_shipments WHERE status='in_transit'");
+  const todayAct = await pool.query("SELECT COUNT(*)::int AS n FROM inv_activity WHERE ts::date = CURRENT_DATE");
+  // recent activity
+  const recent = await pool.query('SELECT direction, name, qty, ts FROM inv_activity ORDER BY ts DESC LIMIT 8');
+  // top on-hand
+  const topStock = await pool.query('SELECT p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 ORDER BY s.onhand DESC LIMIT 8');
+  // low stock list
+  const lowList = await pool.query('SELECT p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 AND s.onhand<=20 ORDER BY s.onhand ASC LIMIT 10');
+  res.json({
+    onhand: stock.rows[0].onhand, transit: stock.rows[0].transit,
+    skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
+    pendingInvoices: pendingInv.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
+    recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows
+  });
+});
+
+// Receiving history — filterable by date range. Amount received + spent.
+app.get('/api/receiving-history', auth, async (req, res) => {
+  const from = req.query.from || '2000-01-01';
+  const to = req.query.to || '2999-12-31';
+  // completed invoices in range
+  const invs = await pool.query(
+    `SELECT order_number, invoice_date, completed_at,
+       (SELECT COALESCE(SUM(qty_received),0)::int FROM inv_invoice_items WHERE order_number=i.order_number) AS units
+     FROM inv_invoices i WHERE status='received' AND completed_at::date BETWEEN $1 AND $2
+     ORDER BY completed_at DESC`, [from, to]);
+  // total units received in range (from activity 'in')
+  const totalIn = await pool.query(
+    "SELECT COALESCE(SUM(qty),0)::int AS units, COUNT(*)::int AS events FROM inv_activity WHERE direction='in' AND ts::date BETWEEN $1 AND $2", [from, to]);
+  res.json({ invoices: invs.rows, totalUnits: totalIn.rows[0].units, events: totalIn.rows[0].events });
+});
+
+// Discrepancy tab — FBA (Amazon) shipment discrepancies only
+app.get('/api/fba-discrepancies', auth, async (req, res) => {
+  const ships = await pool.query(
+    `SELECT s.shipment_id, s.shipment_name, s.received_at,
+       ii.asin, p.name, ii.qty AS sent, ii.qty_received AS received
+     FROM inv_shipments s JOIN inv_shipment_items ii ON ii.shipment_id=s.shipment_id
+     JOIN inv_products p ON p.asin=ii.asin
+     WHERE s.has_discrepancy=true AND ii.qty_received IS NOT NULL AND ii.qty_received < ii.qty
+     ORDER BY s.received_at DESC`);
+  res.json(ships.rows);
+});
+
+// ---- OWNER-ONLY endpoints ----
+
+// Inventory value (owner) — units on hand × cost, needs cost per item
+app.get('/api/inventory-value', ownerAuth, async (req, res) => {
+  // cost comes from most recent invoice line price if available; else 0
+  const rows = await pool.query(
+    `SELECT p.asin, p.name, s.onhand, s.transit,
+       (SELECT price FROM (
+          SELECT ii.qty_expected, i.invoice_date,
+            NULL::numeric AS price
+          FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number=ii.order_number
+          WHERE ii.asin=p.asin ORDER BY i.created_at DESC LIMIT 1
+       ) x) AS last_cost
+     FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
+     WHERE s.onhand > 0 ORDER BY s.onhand DESC`);
+  res.json(rows.rows);
+});
+
+// FBA inventory (what Amazon holds) — combined with our warehouse on-hand
+app.get('/api/fba-inventory', auth, async (req, res) => {
+  let fba;
+  try { fba = await getFbaInventory(); }
+  catch(err){ return res.status(400).json({ error: err.message }); }
+  // join with our warehouse on-hand by ASIN
+  const ours = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p JOIN inv_stock s ON s.asin=p.asin');
+  const byAsin = {}; for(const r of ours.rows) byAsin[r.asin]=r;
+  const out = [];
+  const seen = new Set();
+  for (const sku in fba) {
+    const f = fba[sku];
+    const o = byAsin[f.asin] || {};
+    seen.add(f.asin);
+    out.push({ asin: f.asin, name: o.name || sku, warehouse: o.onhand||0, transit: o.transit||0,
+      fba_total: f.total, fba_fulfillable: f.fulfillable, fba_inbound: f.inbound,
+      grand_total: (o.onhand||0)+(o.transit||0)+f.total });
+  }
+  // add our items not in FBA
+  for (const r of ours.rows) {
+    if (!seen.has(r.asin)) out.push({ asin:r.asin, name:r.name, warehouse:r.onhand, transit:r.transit, fba_total:0, fba_fulfillable:0, fba_inbound:0, grand_total:r.onhand+r.transit });
+  }
+  out.sort((a,b)=>b.grand_total-a.grand_total);
+  res.json(out);
+});
+
+// Sales velocity (OWNER only) — units sold per SKU + days of stock left
+app.get('/api/velocity', ownerAuth, async (req, res) => {
+  const days = parseInt(req.query.days) || 30;
+  let sales;
+  try { sales = await getSalesVelocity(days); }
+  catch(err){ return res.status(400).json({ error: err.message }); }
+  const ours = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p JOIN inv_stock s ON s.asin=p.asin');
+  const out = [];
+  for (const r of ours.rows) {
+    const sold = sales[r.sku] || 0;
+    const perDay = sold/days;
+    const daysLeft = perDay>0 ? Math.round(r.onhand/perDay) : null;
+    out.push({ name:r.name, sku:r.sku, sold, perDay: Math.round(perDay*10)/10, onhand:r.onhand, daysLeft });
+  }
+  out.sort((a,b)=>b.sold-a.sold);
+  res.json({ days, items: out });
+});
+
+app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
+  // placeholder for owner financial summary (velocity/profit come from SP-API tabs)
+  res.json({ ok: true });
 });
 
 // serve the UI
