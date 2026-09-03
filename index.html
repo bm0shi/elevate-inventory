@@ -370,7 +370,7 @@ function doLogin() {
   const pw = document.getElementById('pw').value;
   fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
     .then(r=>r.json()).then(d=>{
-      if(d.ok){ PW=pw; document.getElementById('login').style.display='none'; document.getElementById('mainApp').style.display='block'; loadProducts(); document.getElementById('scanIn').focus(); }
+      if(d.ok){ PW=pw; document.getElementById('login').style.display='none'; document.getElementById('mainApp').style.display='block'; loadProducts(); loadDashboard(); }
       else document.getElementById('loginErr').textContent='Wrong password';
     });
 }
@@ -383,7 +383,7 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
     document.getElementById('login').style.display='none';
     document.getElementById('mainApp').style.display='block';
     loadProducts();
-    setTimeout(()=>{ const s=document.getElementById('scanIn'); if(s) s.focus(); }, 100);
+    loadDashboard();
   }
 }).catch(()=>{});
 
