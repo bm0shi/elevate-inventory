@@ -847,9 +847,37 @@ app.get('/api/dashboard', auth, async (req, res) => {
   // recent activity
   const recent = await pool.query('SELECT direction, name, qty, ts FROM inv_activity ORDER BY ts DESC LIMIT 8');
   // top on-hand
-  const topStock = await pool.query('SELECT p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 ORDER BY s.onhand DESC LIMIT 8');
+  const topStock = await pool.query('SELECT p.asin, p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 ORDER BY s.onhand DESC LIMIT 10');
   // low stock list
-  const lowList = await pool.query('SELECT p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 AND s.onhand<=20 ORDER BY s.onhand ASC LIMIT 10');
+  const lowList = await pool.query('SELECT p.asin, p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 AND s.onhand<=20 ORDER BY s.onhand ASC LIMIT 10');
+  // Under-stocked ranked by recent sales (from cached velocity + retail price if available)
+  let underStocked = [];
+  try {
+    const velCache = await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'");
+    const valCache = await pool.query("SELECT data FROM inv_cache WHERE cache_key='inventory_value'");
+    const priceByAsin = {};
+    if (valCache.rows.length) for (const x of (valCache.rows[0].data||[])) if (x.amazon_price) priceByAsin[x.asin] = x.amazon_price;
+    if (velCache.rows.length) {
+      const items = velCache.rows[0].data?.items || [];
+      // map sku->sold, then join to products for asin/onhand
+      const bySku = {}; for (const it of items) bySku[it.sku] = it;
+      const prods = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p JOIN inv_stock s ON s.asin=p.asin');
+      const rows = [];
+      for (const p of prods.rows) {
+        const v = bySku[p.sku];
+        const sold = v ? v.sold : 0;
+        if (sold <= 0) continue;              // only items actually selling
+        if (p.onhand > 100) continue;          // only low/under stocked (threshold 100)
+        const price = priceByAsin[p.asin] || 0;
+        const revenue = sold * price;          // recent revenue (sold units × price)
+        rows.push({ asin: p.asin, name: p.name, onhand: p.onhand, sold, price, revenue });
+      }
+      // rank by revenue (falls back to units sold when no price)
+      rows.sort((a,b) => (b.revenue - a.revenue) || (b.sold - a.sold));
+      underStocked = rows.slice(0, 10);
+    }
+  } catch(e) {}
+
   // retail value from the last cached pull (if available)
   let retailValue = null, retailAsOf = null;
   try {
@@ -864,7 +892,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
     onhand: stock.rows[0].onhand, transit: stock.rows[0].transit,
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
     pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
-    recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows,
+    recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows, underStocked,
     retailValue, retailAsOf
   });
 });
