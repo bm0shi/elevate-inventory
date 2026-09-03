@@ -214,38 +214,41 @@ async function getSalesVelocity(days = 30) {
   return skuUnits;
 }
 
-// Get Amazon prices per ASIN via the Pricing API (by ASIN = more reliable than SKU)
-// Returns { asin: price }
+// Get Amazon prices per ASIN. Uses the getItemOffers endpoint per-ASIN which is
+// more reliable for returning a current price than the batch price endpoint.
+// Returns { asin: price }. Also returns diagnostics via a global.
 async function getMyPrices(asins) {
   const token = await getAccessToken();
   const prices = {};
   const unique = [...new Set(asins.filter(Boolean))];
-  for (let i=0;i<unique.length;i+=20){
-    const batch = unique.slice(i,i+20);
+  let errors = 0, noPrice = 0, ok = 0;
+  for (const asin of unique) {
     try {
-      const qs = batch.map(a=>'Asins='+encodeURIComponent(a)).join('&');
-      const resp = await axios.get(`${SP_API_BASE}/products/pricing/v0/price?${qs}&MarketplaceId=${MARKETPLACE_ID}&ItemType=Asin`, {
-        headers: { 'x-amz-access-token': token }
-      });
-      const list = resp.data.payload || [];
-      for (const p of list) {
-        const asin = p.ASIN;
-        // try several price locations in the response
-        const offers = p.Product?.Offers || [];
-        let amt = null;
-        if (offers.length) {
-          amt = offers[0].BuyingPrice?.ListingPrice?.Amount || offers[0].RegularPrice?.Amount;
-        }
-        // also check competitive pricing
-        if (!amt) {
-          const cp = p.Product?.CompetitivePricing?.CompetitivePrices?.[0];
-          amt = cp?.Price?.ListingPrice?.Amount;
-        }
-        if (asin && amt) prices[asin] = amt;
+      const resp = await axios.get(
+        `${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
+        { headers: { 'x-amz-access-token': token } });
+      const payload = resp.data.payload || {};
+      let amt = null;
+      // 1. Buy Box price
+      const bb = payload.Summary?.BuyBoxPrices?.[0];
+      if (bb) amt = bb.ListingPrice?.Amount;
+      // 2. Lowest price
+      if (!amt) {
+        const lp = payload.Summary?.LowestPrices?.[0];
+        if (lp) amt = lp.ListingPrice?.Amount;
       }
-    } catch(e) { console.error('[Pricing] batch failed:', e.response?.status, JSON.stringify(e.response?.data||e.message)); }
-    await sleep(1200);
+      // 3. First offer
+      if (!amt && payload.Offers?.length) {
+        amt = payload.Offers[0].ListingPrice?.Amount;
+      }
+      if (amt) { prices[asin] = amt; ok++; } else { noPrice++; }
+    } catch(e) {
+      errors++;
+      if (errors <= 3) console.error('[Pricing]', asin, e.response?.status, JSON.stringify(e.response?.data||e.message).slice(0,200));
+    }
+    await sleep(600); // ~1.6/sec, under the typical 2/sec limit
   }
+  console.log(`[Pricing] Done: ${ok} priced, ${noPrice} no-price, ${errors} errors of ${unique.length}`);
   return prices;
 }
 
