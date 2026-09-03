@@ -343,7 +343,7 @@
       <button class="action full" onclick="ownerUnlock('value')">Unlock</button>
     </div>
     <div id="valueContent" style="display:none">
-      <div class="box"><div style="font-weight:700">Inventory Value</div><div class="hint">Units on hand valued at cost. Add costs in the Cosmoprof mapping to see values.</div></div>
+      <div class="box"><div style="font-weight:700">Retail Value On Hand</div><div class="hint">Total value of your warehouse inventory at current Amazon selling prices. Click Refresh to pull live prices.</div></div>
       <div id="valueBody"></div>
     </div>
   </div>
@@ -395,7 +395,7 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='history'){ if(window._histData) renderHistory(); else loadHistory(); }
   if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
   if(t==='velocity' && OWNER_PW){ if(window._velData) renderVelocity(); else loadVelCache(); }
-  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); else loadValCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -506,7 +506,7 @@ function ownerUnlock(which){
         document.getElementById(which+'Content').style.display='block';
         toast('Unlocked');
         // auto-load the data now that we're unlocked
-        if(which==='value'){ if(window._valData) renderValue(); else loadValue(false); }
+        if(which==='value'){ if(window._valData) renderValue(); else loadValCache(); }
         if(which==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
       } else toast('Wrong owner password',true);
     });
@@ -678,13 +678,23 @@ function renderVelocity(){
 }
 
 // ---- Value (owner) ----
-function loadValue(withRetail){
-  const url='/api/inventory-value'+(withRetail?'?retail=true':'');
-  ownerApi(url).then(d=>{
+function loadValue(){
+  const btn=document.getElementById('valLoadBtn'); if(btn){btn.textContent='Pulling Amazon prices...';btn.disabled=true;}
+  ownerApi('/api/inventory-value').then(d=>{
+    if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;}
     if(d.error){ document.getElementById('valueBody').innerHTML='<div class="hint">Error</div>'; return; }
-    d.forEach(x=>{ x._cost=x.last_cost?parseFloat(x.last_cost):0; x._val=x._cost*x.onhand; x._retail=x.amazon_price?parseFloat(x.amazon_price):0; x._retailVal=x._retail*x.onhand; });
-    window._valData=d; window._valSort={col:'_val',dir:-1}; window._valLoadedAt=new Date();
+    d.forEach(x=>{ x._retail=x.amazon_price?parseFloat(x.amazon_price):0; x._retailVal=x._retail*x.onhand; });
+    window._valData=d; window._valSort={col:'_retailVal',dir:-1}; window._valLoadedAt=new Date();
     renderValue();
+  });
+}
+function loadValCache(){
+  ownerApi('/api/cache/inventory_value').then(c=>{
+    if(c.cached && c.data){
+      c.data.forEach(x=>{ x._retail=x.amazon_price?parseFloat(x.amazon_price):0; x._retailVal=x._retail*x.onhand; });
+      window._valData=c.data; window._valSort={col:'_retailVal',dir:-1}; window._valLoadedAt=new Date(c.updated_at);
+      renderValue();
+    }
   });
 }
 function valSort(col){
@@ -694,7 +704,6 @@ function valSort(col){
 }
 function renderValue(){
   let d=window._valData||[]; const s=window._valSort;
-  // dedupe by asin (prevents overlapping duplicate rows)
   const seen=new Set(); d=d.filter(x=>{ if(seen.has(x.asin))return false; seen.add(x.asin); return true; });
   const b=document.getElementById('valueBody');
   const sorted=[...d].sort((a,b2)=>{
@@ -702,41 +711,25 @@ function renderValue(){
     return ((a[s.col]||0)-(b2[s.col]||0))*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
-  const totalCost=d.reduce((sum,x)=>sum+x._val,0);
   const totalRetail=d.reduce((sum,x)=>sum+(x._retailVal||0),0);
-  const hasRetail=d.some(x=>x._retail>0);
-  // gross only meaningful where BOTH cost and retail exist
-  const bothItems=d.filter(x=>x._cost>0 && x._retail>0);
-  const bothCost=bothItems.reduce((s,x)=>s+x._val,0);
-  const bothRetail=bothItems.reduce((s,x)=>s+x._retailVal,0);
-  const gross=bothRetail-bothCost;
-  let h='<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
-  h+='<button class="action" onclick="loadValue(false)" style="padding:10px 14px;font-size:13px">↻ Refresh Costs</button>';
-  h+='<button class="action" onclick="loadValue(true)" style="padding:10px 14px;font-size:13px;background:#b7791f">+ Pull Amazon Retail Prices</button>';
-  h+='</div>';
-  h+='<div class="cards"><div class="card"><div class="n">$'+totalCost.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Value @ COGS</div></div>';
-  if(hasRetail) h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Retail Value ('+bothItems.length+' priced)</div></div><div class="card" style="border-top:3px solid '+(gross>=0?'#1e8449':'#c0392b')+'"><div class="n">$'+gross.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Gross (priced items only)</div></div>';
-  h+='</div>';
+  const priced=d.filter(x=>x._retail>0).length;
+  let h='<div style="margin-bottom:10px"><button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:10px 16px;background:#b7791f">↻ Refresh Amazon Prices</button></div>';
+  h+='<div class="cards"><div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Retail Value On Hand</div></div><div class="card"><div class="n">'+priced+' / '+d.length+'</div><div class="l">Products Priced</div></div></div>';
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="valSort(\'name\')">Product'+arrow('name')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
-     '<th style="cursor:pointer" onclick="valSort(\'_cost\')">COGS'+arrow('_cost')+'</th>'+
-     '<th style="cursor:pointer" onclick="valSort(\'_val\')">COGS Value'+arrow('_val')+'</th>'+
-     (hasRetail?'<th style="cursor:pointer" onclick="valSort(\'_retail\')">Amz Price'+arrow('_retail')+'</th><th style="cursor:pointer" onclick="valSort(\'_retailVal\')">Retail Value'+arrow('_retailVal')+'</th>':'')+
-     '</tr></thead><tbody>';
+     '<th style="cursor:pointer" onclick="valSort(\'_retail\')">Amazon Price'+arrow('_retail')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'_retailVal\')">Retail Value'+arrow('_retailVal')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
     const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
-    let row=`<tr><td style="max-width:320px">${link}</td><td>${x.onhand}</td><td>${x._cost?'$'+x._cost.toFixed(2):'—'}</td><td class="onhand-num">${x._val?'$'+x._val.toFixed(0):'—'}</td>`;
-    if(hasRetail) row+=`<td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td>`;
-    return row+'</tr>';
+    return `<tr><td style="max-width:360px">${link}</td><td>${x.onhand}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  if(window._valLoadedAt) h+='<div class="hint">Last loaded: '+window._valLoadedAt.toLocaleString()+'. COGS from invoice history. Retail pulled live from Amazon when you click the button.</div>';
+  h+='<div class="hint">Retail value = units on hand × current Amazon price. Blank price = no active/available Amazon price for that item.';
+  if(window._valLoadedAt) h+=' Last loaded: '+window._valLoadedAt.toLocaleString()+'.';
+  h+='</div>';
   b.innerHTML=h;
 }
-
-// ---- RECONCILE ----
-let currentInvoice = null;
 function importCosmoMap(){
   const text=document.getElementById('cosmoBulk').value.trim();
   if(!text){toast('Paste mappings first',true);return;}
