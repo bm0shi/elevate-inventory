@@ -525,7 +525,7 @@ function loadDashboard(){
     h+=card(d.skus,'SKUs','#127a7a');
     if(d.retailValue){ const asof=d.retailAsOf?' (as of '+new Date(d.retailAsOf).toLocaleDateString()+' '+new Date(d.retailAsOf).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+')':''; h+=card('$'+Math.round(d.retailValue).toLocaleString(),'Retail Value On Hand'+asof,'#1e8449'); }
     h+='</div><div class="cards" style="flex-wrap:wrap">';
-    h+=card(d.pendingInvoices,'Pending Check-Ins','#2563a8');
+    h+=card(d.pendingInvoices+(d.pendingUnits?' · '+d.pendingUnits.toLocaleString()+' units':''),'Pending Check-Ins','#2563a8');
     h+=card(d.openShipments,'Open FBA Shipments','#2563a8');
     h+=card(d.lowStock,'Low Stock','#c0392b');
     h+=card(d.outStock,'Out of Stock','#c0392b');
