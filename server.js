@@ -900,16 +900,16 @@ async function saveCache(key, data) {
 // Inventory value (owner) — units on hand × cost, needs cost per item
 app.get('/api/inventory-value', ownerAuth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT p.asin, p.sku, p.name, s.onhand, s.transit, p.unit_cost AS last_cost
+    `SELECT p.asin, p.sku, p.name, s.onhand, s.transit
      FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
-     WHERE s.onhand > 0 ORDER BY (s.onhand * COALESCE(p.unit_cost,0)) DESC`);
-  // optionally fetch amazon retail prices (by ASIN)
+     WHERE s.onhand > 0`);
+  // always pull current Amazon prices (by ASIN)
   let retail = {};
-  if (req.query.retail === 'true') {
-    const asins = rows.rows.map(r => r.asin).filter(Boolean);
-    try { retail = await getMyPrices(asins); } catch(e) { console.error('retail fetch failed:', e.message); }
-  }
+  const asins = rows.rows.map(r => r.asin).filter(Boolean);
+  try { retail = await getMyPrices(asins); } catch(e) { console.error('retail fetch failed:', e.message); }
   const out = rows.rows.map(r => ({ ...r, amazon_price: retail[r.asin] || null }));
+  out.sort((a,b)=>((b.amazon_price||0)*b.onhand)-((a.amazon_price||0)*a.onhand));
+  await saveCache('inventory_value', out);
   res.json(out);
 });
 
