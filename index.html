@@ -505,6 +505,9 @@ function ownerUnlock(which){
         document.getElementById(which+'Gate').style.display='none';
         document.getElementById(which+'Content').style.display='block';
         toast('Unlocked');
+        // auto-load the data now that we're unlocked
+        if(which==='value'){ if(window._valData) renderValue(); else loadValue(false); }
+        if(which==='velocity'){ if(window._velData) renderVelocity(); }
       } else toast('Wrong owner password',true);
     });
 }
@@ -667,7 +670,9 @@ function valSort(col){
   renderValue();
 }
 function renderValue(){
-  const d=window._valData||[]; const s=window._valSort;
+  let d=window._valData||[]; const s=window._valSort;
+  // dedupe by asin (prevents overlapping duplicate rows)
+  const seen=new Set(); d=d.filter(x=>{ if(seen.has(x.asin))return false; seen.add(x.asin); return true; });
   const b=document.getElementById('valueBody');
   const sorted=[...d].sort((a,b2)=>{
     if(s.col==='name'){ const av=(a.name||'').toLowerCase(),bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
@@ -677,12 +682,17 @@ function renderValue(){
   const totalCost=d.reduce((sum,x)=>sum+x._val,0);
   const totalRetail=d.reduce((sum,x)=>sum+(x._retailVal||0),0);
   const hasRetail=d.some(x=>x._retail>0);
+  // gross only meaningful where BOTH cost and retail exist
+  const bothItems=d.filter(x=>x._cost>0 && x._retail>0);
+  const bothCost=bothItems.reduce((s,x)=>s+x._val,0);
+  const bothRetail=bothItems.reduce((s,x)=>s+x._retailVal,0);
+  const gross=bothRetail-bothCost;
   let h='<div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">';
   h+='<button class="action" onclick="loadValue(false)" style="padding:10px 14px;font-size:13px">↻ Refresh Costs</button>';
   h+='<button class="action" onclick="loadValue(true)" style="padding:10px 14px;font-size:13px;background:#b7791f">+ Pull Amazon Retail Prices</button>';
   h+='</div>';
   h+='<div class="cards"><div class="card"><div class="n">$'+totalCost.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Value @ COGS</div></div>';
-  if(hasRetail) h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Value @ Amazon Retail</div></div><div class="card"><div class="n">$'+(totalRetail-totalCost).toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Unrealized Gross</div></div>';
+  if(hasRetail) h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Retail Value ('+bothItems.length+' priced)</div></div><div class="card" style="border-top:3px solid '+(gross>=0?'#1e8449':'#c0392b')+'"><div class="n">$'+gross.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Gross (priced items only)</div></div>';
   h+='</div>';
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="valSort(\'name\')">Product'+arrow('name')+'</th>'+
