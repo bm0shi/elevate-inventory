@@ -887,13 +887,13 @@ app.get('/api/inventory-value', ownerAuth, async (req, res) => {
     `SELECT p.asin, p.sku, p.name, s.onhand, s.transit, p.unit_cost AS last_cost
      FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
      WHERE s.onhand > 0 ORDER BY (s.onhand * COALESCE(p.unit_cost,0)) DESC`);
-  // optionally fetch amazon retail prices
+  // optionally fetch amazon retail prices (by ASIN)
   let retail = {};
   if (req.query.retail === 'true') {
-    const skus = rows.rows.map(r => r.sku).filter(Boolean);
-    try { retail = await getMyPrices(skus); } catch(e) {}
+    const asins = rows.rows.map(r => r.asin).filter(Boolean);
+    try { retail = await getMyPrices(asins); } catch(e) { console.error('retail fetch failed:', e.message); }
   }
-  const out = rows.rows.map(r => ({ ...r, amazon_price: retail[r.sku] || null }));
+  const out = rows.rows.map(r => ({ ...r, amazon_price: retail[r.asin] || null }));
   res.json(out);
 });
 
