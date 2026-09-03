@@ -842,18 +842,29 @@ app.get('/api/dashboard', auth, async (req, res) => {
   const outStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand <= 0');
   const pendingInv = await pool.query("SELECT COUNT(*)::int AS n FROM inv_invoices WHERE status='pending'");
   const openShip = await pool.query("SELECT COUNT(*)::int AS n FROM inv_shipments WHERE status='in_transit'");
-  const todayAct = await pool.query("SELECT COUNT(*)::int AS n FROM inv_activity WHERE ts::date = CURRENT_DATE");
+  const todayAct = await pool.query("SELECT COUNT(*)::int AS n FROM inv_activity WHERE (ts AT TIME ZONE 'America/Phoenix')::date = (now() AT TIME ZONE 'America/Phoenix')::date");
   // recent activity
   const recent = await pool.query('SELECT direction, name, qty, ts FROM inv_activity ORDER BY ts DESC LIMIT 8');
   // top on-hand
   const topStock = await pool.query('SELECT p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 ORDER BY s.onhand DESC LIMIT 8');
   // low stock list
   const lowList = await pool.query('SELECT p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 AND s.onhand<=20 ORDER BY s.onhand ASC LIMIT 10');
+  // retail value from the last cached pull (if available)
+  let retailValue = null, retailAsOf = null;
+  try {
+    const rv = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='inventory_value'");
+    if (rv.rows.length) {
+      const items = rv.rows[0].data || [];
+      retailValue = items.reduce((sum, x) => sum + ((x.amazon_price||0) * (x.onhand||0)), 0);
+      retailAsOf = rv.rows[0].updated_at;
+    }
+  } catch(e) {}
   res.json({
     onhand: stock.rows[0].onhand, transit: stock.rows[0].transit,
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
     pendingInvoices: pendingInv.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
-    recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows
+    recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows,
+    retailValue, retailAsOf
   });
 });
 
