@@ -724,7 +724,8 @@ function renderValue(){
   const totalRetail=d.reduce((sum,x)=>sum+(x._retailVal||0),0);
   const priced=d.filter(x=>x._retail>0).length;
   let h='<div style="margin-bottom:10px"><button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:10px 16px;background:#b7791f">↻ Refresh Amazon Prices</button></div>';
-  h+='<div class="cards"><div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Retail Value On Hand</div></div><div class="card"><div class="n">'+priced+' / '+d.length+'</div><div class="l">Products Priced</div></div></div>';
+  const netProfit=totalRetail*0.15;
+  h+='<div class="cards" style="flex-wrap:wrap"><div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Retail Value On Hand</div></div><div class="card" style="border-top:3px solid #b7791f"><div class="n">$'+netProfit.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Est. Net Profit @ 15%</div></div><div class="card"><div class="n">'+priced+' / '+d.length+'</div><div class="l">Products Priced</div></div></div>';
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="valSort(\'name\')">Product'+arrow('name')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
