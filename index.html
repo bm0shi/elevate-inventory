@@ -314,7 +314,7 @@
   <div id="velocity" class="panel">
     <div id="velocityGate" class="box">
       <div style="font-weight:700;margin-bottom:8px">🔒 Owner Access Required</div>
-      <input type="password" id="ownerPwVel" placeholder="Owner password">
+      <input type="password" id="ownerPwVel" placeholder="Owner password" onkeydown="if(event.key==='Enter')ownerUnlock('velocity')">
       <div style="height:8px"></div>
       <button class="action full" onclick="ownerUnlock('velocity')">Unlock</button>
     </div>
@@ -338,7 +338,7 @@
   <div id="value" class="panel">
     <div id="valueGate" class="box">
       <div style="font-weight:700;margin-bottom:8px">🔒 Owner Access Required</div>
-      <input type="password" id="ownerPwVal" placeholder="Owner password">
+      <input type="password" id="ownerPwVal" placeholder="Owner password" onkeydown="if(event.key==='Enter')ownerUnlock('value')">
       <div style="height:8px"></div>
       <button class="action full" onclick="ownerUnlock('value')">Unlock</button>
     </div>
@@ -524,6 +524,7 @@ function loadDashboard(){
     h+=card(d.onhand.toLocaleString(),'Units On Hand','#1e8449');
     h+=card(d.transit.toLocaleString(),'In Transit','#b7791f');
     h+=card(d.skus,'SKUs','#127a7a');
+    if(d.retailValue){ const asof=d.retailAsOf?' (as of '+new Date(d.retailAsOf).toLocaleDateString()+' '+new Date(d.retailAsOf).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+')':''; h+=card('$'+Math.round(d.retailValue).toLocaleString(),'Retail Value On Hand'+asof,'#1e8449'); }
     h+='</div><div class="cards" style="flex-wrap:wrap">';
     h+=card(d.pendingInvoices,'Pending Check-Ins','#2563a8');
     h+=card(d.openShipments,'Open FBA Shipments','#2563a8');
