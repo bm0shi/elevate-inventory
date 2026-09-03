@@ -214,27 +214,36 @@ async function getSalesVelocity(days = 30) {
   return skuUnits;
 }
 
-// Get YOUR listing prices per SKU via the Pricing API (getPricing for seller's own offers)
-async function getMyPrices(skus) {
+// Get Amazon prices per ASIN via the Pricing API (by ASIN = more reliable than SKU)
+// Returns { asin: price }
+async function getMyPrices(asins) {
   const token = await getAccessToken();
   const prices = {};
-  // getPricing accepts up to 20 SKUs per call
-  for (let i=0;i<skus.length;i+=20){
-    const batch = skus.slice(i,i+20);
+  const unique = [...new Set(asins.filter(Boolean))];
+  for (let i=0;i<unique.length;i+=20){
+    const batch = unique.slice(i,i+20);
     try {
-      const params = { MarketplaceId: MARKETPLACE_ID, ItemType: 'Sku' };
-      const qs = batch.map(s=>'Skus='+encodeURIComponent(s)).join('&');
-      const resp = await axios.get(`${SP_API_BASE}/products/pricing/v0/price?${qs}&MarketplaceId=${MARKETPLACE_ID}&ItemType=Sku`, {
+      const qs = batch.map(a=>'Asins='+encodeURIComponent(a)).join('&');
+      const resp = await axios.get(`${SP_API_BASE}/products/pricing/v0/price?${qs}&MarketplaceId=${MARKETPLACE_ID}&ItemType=Asin`, {
         headers: { 'x-amz-access-token': token }
       });
       const list = resp.data.payload || [];
       for (const p of list) {
-        const sku = p.SellerSKU;
-        const amt = p.Product?.Offers?.[0]?.BuyingPrice?.ListingPrice?.Amount
-                 || p.Product?.Offers?.[0]?.RegularPrice?.Amount;
-        if (sku && amt) prices[sku] = amt;
+        const asin = p.ASIN;
+        // try several price locations in the response
+        const offers = p.Product?.Offers || [];
+        let amt = null;
+        if (offers.length) {
+          amt = offers[0].BuyingPrice?.ListingPrice?.Amount || offers[0].RegularPrice?.Amount;
+        }
+        // also check competitive pricing
+        if (!amt) {
+          const cp = p.Product?.CompetitivePricing?.CompetitivePrices?.[0];
+          amt = cp?.Price?.ListingPrice?.Amount;
+        }
+        if (asin && amt) prices[asin] = amt;
       }
-    } catch(e) { /* skip batch on error */ }
+    } catch(e) { console.error('[Pricing] batch failed:', e.response?.status, JSON.stringify(e.response?.data||e.message)); }
     await sleep(1200);
   }
   return prices;
