@@ -127,6 +127,12 @@ async function initDb() {
       cosmo_num TEXT PRIMARY KEY,
       asin TEXT
     );
+    -- Cache for expensive data pulls (velocity, fba inventory) so they survive page refresh
+    CREATE TABLE IF NOT EXISTS inv_cache (
+      cache_key TEXT PRIMARY KEY,
+      data JSONB,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
     -- Pending/received Cosmoprof invoices
     CREATE TABLE IF NOT EXISTS inv_invoices (
       order_number TEXT PRIMARY KEY,
@@ -879,6 +885,16 @@ app.get('/api/fba-discrepancies', auth, async (req, res) => {
   res.json(ships.rows);
 });
 
+// Generic cache get/set (so loaded data survives page refresh)
+app.get('/api/cache/:key', auth, async (req, res) => {
+  const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [req.params.key]);
+  if (!r.rows.length) return res.json({ cached: false });
+  res.json({ cached: true, data: r.rows[0].data, updated_at: r.rows[0].updated_at });
+});
+async function saveCache(key, data) {
+  await pool.query('INSERT INTO inv_cache(cache_key, data, updated_at) VALUES($1,$2,now()) ON CONFLICT (cache_key) DO UPDATE SET data=$2, updated_at=now()', [key, JSON.stringify(data)]);
+}
+
 // ---- OWNER-ONLY endpoints ----
 
 // Inventory value (owner) — units on hand × cost, needs cost per item
@@ -927,6 +943,7 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     if (!seen.has(r.asin)) out.push({ asin:r.asin, name:r.name, warehouse:r.onhand, transit:r.transit, fba_total:0, fba_fulfillable:0, fba_inbound:0, grand_total:r.onhand+r.transit });
   }
   out.sort((a,b)=>b.grand_total-a.grand_total);
+  await saveCache('fba_inventory', out);
   res.json(out);
 });
 
@@ -945,7 +962,9 @@ app.get('/api/velocity', ownerAuth, async (req, res) => {
     out.push({ asin:r.asin, name:r.name, sku:r.sku, sold, perDay: Math.round(perDay*10)/10, onhand:r.onhand, daysLeft });
   }
   out.sort((a,b)=>b.sold-a.sold);
-  res.json({ days, items: out });
+  const result = { days, items: out };
+  await saveCache('velocity', result);
+  res.json(result);
 });
 
 app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
