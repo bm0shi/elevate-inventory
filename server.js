@@ -841,6 +841,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
   const lowStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand > 0 AND onhand <= 20');
   const outStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand <= 0');
   const pendingInv = await pool.query("SELECT COUNT(*)::int AS n FROM inv_invoices WHERE status='pending'");
+  const pendingUnits = await pool.query("SELECT COALESCE(SUM(ii.qty_expected),0)::int AS n FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number=ii.order_number WHERE i.status='pending'");
   const openShip = await pool.query("SELECT COUNT(*)::int AS n FROM inv_shipments WHERE status='in_transit'");
   const todayAct = await pool.query("SELECT COUNT(*)::int AS n FROM inv_activity WHERE (ts AT TIME ZONE 'America/Phoenix')::date = (now() AT TIME ZONE 'America/Phoenix')::date");
   // recent activity
@@ -862,7 +863,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
   res.json({
     onhand: stock.rows[0].onhand, transit: stock.rows[0].transit,
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
-    pendingInvoices: pendingInv.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
+    pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
     recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows,
     retailValue, retailAsOf
   });
