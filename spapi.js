@@ -223,30 +223,35 @@ async function getMyPrices(asins) {
   const unique = [...new Set(asins.filter(Boolean))];
   let errors = 0, noPrice = 0, ok = 0;
   for (const asin of unique) {
-    try {
-      const resp = await axios.get(
-        `${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
-        { headers: { 'x-amz-access-token': token } });
-      const payload = resp.data.payload || {};
-      let amt = null;
-      // 1. Buy Box price
-      const bb = payload.Summary?.BuyBoxPrices?.[0];
-      if (bb) amt = bb.ListingPrice?.Amount;
-      // 2. Lowest price
-      if (!amt) {
-        const lp = payload.Summary?.LowestPrices?.[0];
-        if (lp) amt = lp.ListingPrice?.Amount;
+    let attempt = 0;
+    let done = false;
+    while (attempt < 4 && !done) {
+      try {
+        const resp = await axios.get(
+          `${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
+          { headers: { 'x-amz-access-token': token } });
+        const payload = resp.data.payload || {};
+        let amt = null;
+        const bb = payload.Summary?.BuyBoxPrices?.[0];
+        if (bb) amt = bb.ListingPrice?.Amount;
+        if (!amt) { const lp = payload.Summary?.LowestPrices?.[0]; if (lp) amt = lp.ListingPrice?.Amount; }
+        if (!amt && payload.Offers?.length) amt = payload.Offers[0].ListingPrice?.Amount;
+        if (amt) { prices[asin] = amt; ok++; } else { noPrice++; }
+        done = true;
+      } catch(e) {
+        if (e.response?.status === 429) {
+          // rate limited — back off and retry
+          attempt++;
+          await sleep(3000 * attempt); // 3s, 6s, 9s...
+        } else {
+          errors++;
+          if (errors <= 3) console.error('[Pricing]', asin, e.response?.status, JSON.stringify(e.response?.data||e.message).slice(0,200));
+          done = true;
+        }
       }
-      // 3. First offer
-      if (!amt && payload.Offers?.length) {
-        amt = payload.Offers[0].ListingPrice?.Amount;
-      }
-      if (amt) { prices[asin] = amt; ok++; } else { noPrice++; }
-    } catch(e) {
-      errors++;
-      if (errors <= 3) console.error('[Pricing]', asin, e.response?.status, JSON.stringify(e.response?.data||e.message).slice(0,200));
     }
-    await sleep(600); // ~1.6/sec, under the typical 2/sec limit
+    if (!done) errors++; // exhausted retries
+    await sleep(2100); // ~0.47/sec — under Amazon's getItemOffers limit
   }
   console.log(`[Pricing] Done: ${ok} priced, ${noPrice} no-price, ${errors} errors of ${unique.length}`);
   return prices;
