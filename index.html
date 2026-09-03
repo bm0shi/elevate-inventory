@@ -327,11 +327,11 @@
             <option value="30" selected>Last 30 days</option>
             <option value="60">Last 60 days</option>
           </select>
-          <button class="action" onclick="loadVelocity()" id="velBtn" style="padding:10px 16px">Load</button>
+          <button class="action" onclick="loadVelocity()" id="velBtn" style="padding:10px 16px">Load / Refresh</button>
         </div>
-        <div class="hint">Pulls live sales from Amazon (may take 30-60 sec).</div>
+        <div class="hint">Shows the last data you loaded. Click Load/Refresh to pull fresh sales from Amazon (30-90 sec).</div>
       </div>
-      <div id="velocityBody"></div>
+      <div id="velocityBody"><div class="hint" style="padding:20px;text-align:center">No data loaded yet this session — click Load/Refresh above.</div></div>
     </div>
   </div>
 
@@ -392,10 +392,10 @@ function loadProducts(){ return api('/api/products').then(d=>{ products=d; rende
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='dashboard')loadDashboard();
-  if(t==='history'){ if(!window._histLoaded) loadHistory(); }
-  if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); }
-  if(t==='velocity' && OWNER_PW){ if(window._velData) renderVelocity(); }
-  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); else loadValue(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='history'){ if(window._histData) renderHistory(); else loadHistory(); }
+  if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
+  if(t==='velocity' && OWNER_PW){ if(window._velData) renderVelocity(); else loadVelCache(); }
+  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -507,7 +507,7 @@ function ownerUnlock(which){
         toast('Unlocked');
         // auto-load the data now that we're unlocked
         if(which==='value'){ if(window._valData) renderValue(); else loadValue(false); }
-        if(which==='velocity'){ if(window._velData) renderVelocity(); }
+        if(which==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
       } else toast('Wrong owner password',true);
     });
 }
@@ -554,7 +554,6 @@ function loadDashboard(){
 
 // ---- Received Log ----
 function loadHistory(){
-  window._histLoaded=true;
   // default dates to last 30 days if empty
   if(!document.getElementById('histFrom').value){
     const d30=new Date(Date.now()-30*24*60*60*1000);
@@ -564,18 +563,42 @@ function loadHistory(){
   const from=document.getElementById('histFrom').value||'2000-01-01';
   const to=document.getElementById('histTo').value||'2999-12-31';
   api('/api/receiving-history?from='+from+'&to='+to).then(d=>{
-    const b=document.getElementById('historyBody');
-    let h='<div class="cards"><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units Received</div></div><div class="card"><div class="n">'+d.invoices.length+'</div><div class="l">Orders Checked In</div></div></div>';
-    if(d.invoices.length){
-      h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">Orders in range</div>';
-      h+=d.invoices.map(i=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>#${i.order_number} · ${i.invoice_date||''}</span><b>${i.units} units</b></div>`).join('');
-      h+='</div>';
-    } else h+='<div class="hint">No completed check-ins in this range.</div>';
-    b.innerHTML=h;
+    window._histData=d; window._histLoadedAt=new Date();
+    renderHistory();
   });
+}
+function renderHistory(){
+  const d=window._histData; if(!d)return;
+  const b=document.getElementById('historyBody');
+  let h='<div class="cards"><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units Received</div></div><div class="card"><div class="n">'+d.invoices.length+'</div><div class="l">Orders Checked In</div></div></div>';
+  if(d.invoices.length){
+    h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">Orders in range</div>';
+    h+=d.invoices.map(i=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>#${i.order_number} · ${i.invoice_date||''}</span><b>${i.units} units</b></div>`).join('');
+    h+='</div>';
+  } else h+='<div class="hint">No completed check-ins in this range.</div>';
+  if(window._histLoadedAt) h+='<div class="hint">Last loaded: '+window._histLoadedAt.toLocaleString()+'</div>';
+  b.innerHTML=h;
 }
 
 // ---- FBA Inventory ----
+function loadFbaCache(){
+  api('/api/cache/fba_inventory').then(c=>{
+    if(c.cached && c.data){
+      window._fbaData=c.data; window._fbaSort={col:'grand_total',dir:-1};
+      window._fbaLoadedAt=new Date(c.updated_at);
+      renderFbaInv();
+    }
+  });
+}
+function loadVelCache(){
+  ownerApi('/api/cache/velocity').then(c=>{
+    if(c.cached && c.data){
+      window._velData=c.data.items; window._velDays=c.data.days; window._velSort={col:'sold',dir:-1};
+      window._velLoadedAt=new Date(c.updated_at);
+      renderVelocity();
+    }
+  });
+}
 function loadFbaInv(){
   const btn=document.getElementById('fbaInvBtn'); btn.textContent='Loading from Amazon...'; btn.disabled=true;
   api('/api/fba-inventory').then(d=>{
