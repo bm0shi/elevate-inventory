@@ -343,7 +343,6 @@
       <button class="action full" onclick="ownerUnlock('value')">Unlock</button>
     </div>
     <div id="valueContent" style="display:none">
-      <div class="box"><div style="font-weight:700">Retail Value On Hand</div><div class="hint">Total value of your warehouse inventory at current Amazon selling prices. Click Refresh to pull live prices.</div></div>
       <div id="valueBody"></div>
     </div>
   </div>
@@ -583,20 +582,26 @@ function renderHistory(){
 
 // ---- FBA Inventory ----
 function loadFbaCache(){
+  document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
   api('/api/cache/fba_inventory').then(c=>{
-    if(c.cached && c.data){
+    if(c.cached && c.data && c.data.length){
       window._fbaData=c.data; window._fbaSort={col:'grand_total',dir:-1};
       window._fbaLoadedAt=new Date(c.updated_at);
       renderFbaInv();
+    } else {
+      document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">No saved data yet — click "Load FBA Inventory" above to pull it the first time.</div>';
     }
   });
 }
 function loadVelCache(){
+  document.getElementById('velocityBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
   ownerApi('/api/cache/velocity').then(c=>{
-    if(c.cached && c.data){
+    if(c.cached && c.data && c.data.items){
       window._velData=c.data.items; window._velDays=c.data.days; window._velSort={col:'sold',dir:-1};
       window._velLoadedAt=new Date(c.updated_at);
       renderVelocity();
+    } else {
+      document.getElementById('velocityBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">No saved data yet — click "Load / Refresh" above to pull it the first time.</div>';
     }
   });
 }
@@ -690,13 +695,17 @@ function loadValue(){
   });
 }
 function loadValCache(){
+  document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
   ownerApi('/api/cache/inventory_value').then(c=>{
-    if(c.cached && c.data){
+    if(c.cached && c.data && c.data.length){
       c.data.forEach(x=>{ x._retail=x.amazon_price?parseFloat(x.amazon_price):0; x._retailVal=x._retail*x.onhand; });
       window._valData=c.data; window._valSort={col:'_retailVal',dir:-1}; window._valLoadedAt=new Date(c.updated_at);
       renderValue();
+    } else {
+      // no cache yet — pull fresh automatically the first time
+      loadValue();
     }
-  });
+  }).catch(()=>{ loadValue(); });
 }
 function valSort(col){
   const s=window._valSort;
