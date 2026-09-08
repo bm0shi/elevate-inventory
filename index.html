@@ -796,6 +796,90 @@ function uploadPdf(){
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
     }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });
 }
+// ==================== PREPPED & READY ====================
+let prepPendingFnsku = null;
+function initPrepScan(){
+  const el=document.getElementById('scanPrep');
+  if(el && !el._wired){
+    el._wired=true;
+    el.addEventListener('keydown', e=>{
+      if(e.key!=='Enter')return;
+      const code=e.target.value.trim(); if(!code)return;
+      e.target.value='';
+      api('/api/find/'+encodeURIComponent(code)).then(f=>{
+        if(!f.found){
+          prepPendingFnsku=code;
+          document.getElementById('prepFnskuAssign').style.display='block';
+          filterPrepPick();
+          document.getElementById('prepPickSearch').focus();
+          toast('New FNSKU — pick the product to save it',true);
+          return;
+        }
+        const qtyStr=prompt('How many of "'+(f.product.name||'').slice(0,40)+'" prepped & labeled?','1');
+        if(qtyStr===null){ if(window._resetScan)window._resetScan('Prep'); document.getElementById('scanPrep').focus(); return; }
+        const qty=parseInt(qtyStr);
+        if(!qty||qty<1){ toast('Enter a valid quantity',true); document.getElementById('scanPrep').focus(); return; }
+        doPrepScan(code, qty);
+      });
+    });
+  }
+}
+function doPrepScan(code, qty){
+  api('/api/prep/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+    if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
+    if(typeof scanFeedback==='function') scanFeedback();
+    toast('+'+qty+' prepped'+(d.isBundle?' (duo → components)':''));
+    if(d.warnings && d.warnings.length){
+      alert('⚠ WARNING — prepping more than on hand:\n\n'+d.warnings.map(w=>w.name+': on hand '+w.onhand+', prepped '+w.prepped+', adding '+w.adding).join('\n')+'\n\nIt was still added — verify your physical count.');
+    }
+    loadPrepList(); loadProducts();
+    if(window._resetScan)window._resetScan('Prep');
+    document.getElementById('scanPrep').focus();
+  });
+}
+function filterPrepPick(){
+  const q=(document.getElementById('prepPickSearch').value||'').toLowerCase();
+  const el=document.getElementById('prepPickList');
+  el.innerHTML=products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
+    .map(p=>`<div class="picker-item" onclick="assignPrepFnsku('${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+}
+function assignPrepFnsku(asin){
+  if(!prepPendingFnsku)return;
+  const p=products.find(x=>x.asin===asin);
+  api('/api/assign-fnsku',{method:'POST',body:JSON.stringify({asin,fnsku:prepPendingFnsku})}).then(()=>{
+    toast('FNSKU saved to '+p.name.slice(0,24));
+    document.getElementById('prepFnskuAssign').style.display='none';
+    document.getElementById('prepPickSearch').value='';
+    const savedCode=prepPendingFnsku;
+    const qtyStr=prompt('How many of "'+(p.name||'').slice(0,40)+'" prepped?','1');
+    if(qtyStr!==null){ const qty=parseInt(qtyStr); if(qty>0) doPrepScan(savedCode, qty); }
+    prepPendingFnsku=null;
+    loadProducts();
+    document.getElementById('scanPrep').focus();
+  });
+}
+function loadPrepList(){
+  initPrepScan();
+  setTimeout(()=>{ const s=document.getElementById('scanPrep'); if(s) s.focus(); }, 100);
+  api('/api/prep/list').then(d=>{
+    const b=document.getElementById('prepListBox');
+    if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Nothing prepped yet. Scan labeled items above.</div>'; return; }
+    let h='<div class="cards"><div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Total Units Prepped</div></div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
+    h+='<table><thead><tr><th>Product</th><th>Prepped</th><th>On Hand</th><th></th></tr></thead><tbody>';
+    h+=d.items.map(x=>{
+      const over=x.prepped>(x.onhand||0);
+      const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;
+      return `<tr${over?' style="background:#fdf0ee"':''}><td style="max-width:320px">${link}</td><td class="onhand-num">${x.prepped}${over?' <span style="color:#c0392b">⚠</span>':''}</td><td>${x.onhand||0}</td><td><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:4px 8px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">edit</button></td></tr>`;
+    }).join('');
+    h+='</tbody></table><div class="hint">⚠ = prepped exceeds on hand (verify count). These clear automatically when you finalize the shipment on Ship to FBA.</div>';
+    b.innerHTML=h;
+  });
+}
+function editPrep(asin, current){
+  const v=prompt('Set prepped quantity (0 to remove):', current);
+  if(v===null)return;
+  api('/api/prep/set',{method:'POST',body:JSON.stringify({asin,qty:parseInt(v)||0})}).then(()=>{ loadPrepList(); loadProducts(); });
+}
 function addInvoiceMulti(){
   const text=document.getElementById('invoiceText').value.trim();
   if(!text){toast('Paste an invoice first',true);return;}
