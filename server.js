@@ -105,6 +105,14 @@ async function initDb() {
     );
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS upc_norm TEXT;
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
+    ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS fnsku TEXT;
+    CREATE INDEX IF NOT EXISTS idx_fnsku ON inv_products(fnsku);
+    -- prepped/staging counts per product (persists across sessions)
+    CREATE TABLE IF NOT EXISTS inv_prepped (
+      asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
+      qty INTEGER NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
@@ -258,11 +266,11 @@ app.get('/api/find/:code', auth, async (req, res) => {
      LEFT JOIN inv_stock s ON s.asin = p.asin
      WHERE u.upc_norm = $1 LIMIT 1`, [norm]);
   if (rows.length) return res.json({ found: true, product: rows[0], scanned: raw });
-  // 2) fall back to ASIN/SKU direct match
+  // 2) fall back to ASIN / SKU / FNSKU direct match
   ({ rows } = await pool.query(
-    `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit
+    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, s.onhand, s.transit
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
-     WHERE UPPER(p.asin) = UPPER($1) OR UPPER(p.sku) = UPPER($1) LIMIT 1`, [raw]));
+     WHERE UPPER(p.asin) = UPPER($1) OR UPPER(p.sku) = UPPER($1) OR UPPER(p.fnsku) = UPPER($1) LIMIT 1`, [raw]));
   if (rows.length) return res.json({ found: true, product: rows[0], scanned: raw });
   res.json({ found: false, scanned: raw });
 });
@@ -270,8 +278,10 @@ app.get('/api/find/:code', auth, async (req, res) => {
 // full product list (for the "which product?" picker + on-hand view)
 app.get('/api/products', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit
+    `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit,
+            COALESCE(pr.qty,0) AS prepped
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
+     LEFT JOIN inv_prepped pr ON pr.asin = p.asin
      ORDER BY p.name`);
   res.json(rows);
 });
@@ -350,6 +360,8 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
       done++;
     } else { notfound.push(code); }
   }
+  // clear prepped staging — shipment is built and shipped
+  await clearAllPrepped();
   res.json({ ok: true, done, notfound, shipmentId, expanded: expandedNote });
 });
 
@@ -970,14 +982,21 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   const byAsin = {}; for(const r of ours.rows) byAsin[r.asin]=r;
   const out = [];
   const seen = new Set();
+  let fnskusSaved = 0;
   for (const sku in fba) {
     const f = fba[sku];
     const o = byAsin[f.asin] || {};
     seen.add(f.asin);
+    // capture FNSKU for this ASIN
+    if (f.fnSku && f.asin) {
+      await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku=\'\')', [f.fnSku, f.asin]);
+      fnskusSaved++;
+    }
     out.push({ asin: f.asin, name: o.name || sku, warehouse: o.onhand||0, transit: o.transit||0,
       fba_total: f.total, fba_fulfillable: f.fulfillable, fba_inbound: f.inbound,
       grand_total: (o.onhand||0)+(o.transit||0)+f.total });
   }
+  console.log(`[FBA] Captured/updated ${fnskusSaved} FNSKUs.`);
   // add our items not in FBA
   for (const r of ours.rows) {
     if (!seen.has(r.asin)) out.push({ asin:r.asin, name:r.name, warehouse:r.onhand, transit:r.transit, fba_total:0, fba_fulfillable:0, fba_inbound:0, grand_total:r.onhand+r.transit });
@@ -1009,6 +1028,94 @@ app.get('/api/velocity', ownerAuth, async (req, res) => {
 
 app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
   // placeholder for owner financial summary (velocity/profit come from SP-API tabs)
+  res.json({ ok: true });
+});
+
+// ============================================================
+// PREPPED & READY (FBA staging)
+// ============================================================
+
+// Resolve a scanned code (FNSKU / UPC / ASIN / SKU) to a product
+async function resolveCode(code) {
+  const raw = String(code).trim();
+  const norm = normCode(raw);
+  // FNSKU / ASIN / SKU direct
+  let r = await pool.query(
+    `SELECT asin, sku, name, fnsku FROM inv_products
+     WHERE UPPER(fnsku)=UPPER($1) OR UPPER(asin)=UPPER($1) OR UPPER(sku)=UPPER($1) LIMIT 1`, [raw]);
+  if (r.rows.length) return r.rows[0];
+  // UPC (multi table)
+  r = await pool.query(
+    `SELECT p.asin, p.sku, p.name, p.fnsku FROM inv_upcs u JOIN inv_products p ON p.asin=u.asin WHERE u.upc_norm=$1 LIMIT 1`, [norm]);
+  if (r.rows.length) return r.rows[0];
+  return null;
+}
+
+// Assign an FNSKU to a product (learn-as-you-scan fallback)
+app.post('/api/assign-fnsku', auth, async (req, res) => {
+  const { asin, fnsku } = req.body;
+  await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [(fnsku||'').trim(), asin]);
+  res.json({ ok: true });
+});
+
+// Scan an item into Prepped. Handles bundles (expands to components for the warning).
+app.post('/api/prep/scan', auth, async (req, res) => {
+  const { code, qty } = req.body;
+  const q = parseInt(qty);
+  if (!code || !q || q < 1) return res.status(400).json({ error: 'code + qty required' });
+  const prod = await resolveCode(code);
+  if (!prod) return res.json({ ok: false, reason: 'unknown_code', code });
+
+  // expand to components (bundle) or itself
+  const parts = await expandToComponents(prod.asin, q);
+  // warning check: is there enough ON HAND for each component (minus already prepped)?
+  let warnings = [];
+  for (const part of parts) {
+    const st = await pool.query('SELECT onhand FROM inv_stock WHERE asin=$1', [part.asin]);
+    const pr = await pool.query('SELECT qty FROM inv_prepped WHERE asin=$1', [part.asin]);
+    const onhand = st.rows[0]?.onhand || 0;
+    const alreadyPrepped = pr.rows[0]?.qty || 0;
+    const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [part.asin]);
+    if (alreadyPrepped + part.qty > onhand) {
+      warnings.push({ name: nm.rows[0]?.name || part.asin, onhand, prepped: alreadyPrepped, adding: part.qty });
+    }
+  }
+
+  // apply prep to components
+  for (const part of parts) {
+    await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [part.asin, part.qty]);
+  }
+  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+    ['prep', prod.asin, prod.name, q, parts.length>1?'Prepped (duo → components)':'Prepped']);
+
+  res.json({ ok: true, product: prod, qty: q, isBundle: parts.length>1, components: parts, warnings });
+});
+
+// Current prepped list
+app.get('/api/prep/list', auth, async (req, res) => {
+  const rows = await pool.query(
+    `SELECT pr.asin, p.name, pr.qty AS prepped, s.onhand
+     FROM inv_prepped pr JOIN inv_products p ON p.asin=pr.asin LEFT JOIN inv_stock s ON s.asin=pr.asin
+     WHERE pr.qty > 0 ORDER BY p.name`);
+  const totalPrepped = rows.rows.reduce((sum,x)=>sum+x.prepped,0);
+  res.json({ items: rows.rows, totalPrepped });
+});
+
+// Adjust/remove a prepped line (corrections)
+app.post('/api/prep/set', auth, async (req, res) => {
+  const { asin, qty } = req.body;
+  const q = Math.max(0, parseInt(qty)||0);
+  if (q === 0) await pool.query('DELETE FROM inv_prepped WHERE asin=$1', [asin]);
+  else await pool.query('INSERT INTO inv_prepped(asin,qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty=$2, updated_at=now()', [asin, q]);
+  res.json({ ok: true });
+});
+
+// Clear ALL prepped (called after a shipment is finalized)
+async function clearAllPrepped() {
+  await pool.query('DELETE FROM inv_prepped');
+}
+app.post('/api/prep/clear', auth, async (req, res) => {
+  await clearAllPrepped();
   res.json({ ok: true });
 });
 
