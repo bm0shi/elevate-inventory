@@ -924,7 +924,11 @@ function renderRestock(){
        '📊 Velocity: '+fmt(fr.velocity)+' ('+fr.velocityCount+' with sales)<br>'+
        '📦 FBA Inventory: '+fmt(fr.fba)+' ('+fr.fbaCount+' items)<br>'+
        '<b>Matched to your products:</b> '+(fr.matchedVelocity||0)+' with sales velocity, '+(fr.matchedFba||0)+' with FBA stock.<br>'+
-       '<span style="color:#5a6472">If matched counts are low but source counts are high, there\'s a SKU/ASIN mismatch — tell me.</span></div>';
+       '<span style="color:#5a6472">If matched counts are low but source counts are high, there\'s a SKU/ASIN mismatch.</span>'+
+       '<hr><b>DIAGNOSTIC SAMPLES:</b><br>'+
+       'Your products: '+JSON.stringify(fr.sampleProductAsins||[])+'<br>'+
+       'FBA data: '+JSON.stringify(fr.sampleFbaAsins||[])+'<br>'+
+       'Velocity data: '+JSON.stringify(fr.sampleVelSkus||[])+'</div>';
   }
   b.innerHTML=h;
 }
