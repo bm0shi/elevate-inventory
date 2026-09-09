@@ -828,8 +828,9 @@ function loadMarket(){
   ownerApi('/api/market-data').then(d=>{
     btn.textContent='↻ Refresh Market Data'; btn.disabled=false;
     if(d.error){ document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    d.forEach(x=>{ x._oppScore=marketOpp(x); });
-    window._mktData=d; window._mktSort={col:'salesRank',dir:1}; window._mktLoadedAt=new Date();
+    const items=d.items||d;
+    items.forEach(x=>{ x._oppScore=marketOpp(x); });
+    window._mktData=items; window._mktTokens=d.tokensLeft; window._mktSort={col:'salesRank',dir:1}; window._mktLoadedAt=new Date();
     renderMarket();
   }).catch(()=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; toast('Load failed',true); });
 }
@@ -893,6 +894,7 @@ function renderMarket(){
   h+='</tbody></table>';
   h+='<div class="hint">Sales Rank: lower = sells more. Amz OOS%: higher = Amazon often out of stock (your opening). Sellers: fewer = less competition. Opportunity score combines these — HOT = high-potential to stock/push.';
   if(window._mktLoadedAt) h+=' Last loaded: '+window._mktLoadedAt.toLocaleString()+'.';
+  if(window._mktTokens!=null) h+=' Keepa tokens left: '+window._mktTokens.toLocaleString()+'.';
   h+='</div>';
   b.innerHTML=h;
 }
