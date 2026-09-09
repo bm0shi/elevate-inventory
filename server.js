@@ -1158,6 +1158,10 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   // diagnostics: how many products actually matched velocity & fba
   freshness.matchedVelocity = rows.filter(r=>r.soldPerDay>0).length;
   freshness.matchedFba = rows.filter(r=>r.fbaFulfillable>0).length;
+  // SAMPLE diagnostics — show actual ASINs/SKUs to find the mismatch
+  freshness.sampleProductAsins = prods.rows.slice(0,3).map(p=>({asin:p.asin, sku:p.sku}));
+  freshness.sampleFbaAsins = fba.slice(0,3).map(f=>({asin:f.asin, name:(f.name||'').slice(0,20), fulfillable:f.fba_fulfillable}));
+  freshness.sampleVelSkus = velItems.slice(0,3).map(v=>({sku:v.sku, asin:v.asin, perDay:v.perDay, sold:v.sold}));
   rows.sort((a,b)=> b.score - a.score);
   await saveCache('restock_priority', rows);
   res.json({ items: rows, velDays, freshness });
