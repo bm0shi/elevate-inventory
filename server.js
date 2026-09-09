@@ -1041,6 +1041,104 @@ async function saveCache(key, data) {
 
 // ---- OWNER-ONLY endpoints ----
 
+// RESTOCK PRIORITY — combines Keepa market data + velocity + FBA + on-hand
+// into a ranked "what to reorder" list.
+app.get('/api/restock-priority', ownerAuth, async (req, res) => {
+  // pull cached data sets
+  const mktC = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+  const velC = await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'");
+  const fbaC = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'");
+
+  const market = mktC.rows.length ? (mktC.rows[0].data||[]) : [];
+  const velItems = velC.rows.length ? (velC.rows[0].data?.items||[]) : [];
+  const velDays = velC.rows.length ? (velC.rows[0].data?.days||30) : 30;
+  const fba = fbaC.rows.length ? (fbaC.rows[0].data||[]) : [];
+
+  // index by asin
+  const mByAsin = {}; for (const m of market) mByAsin[m.asin] = m;
+  const fbaByAsin = {}; for (const f of fba) fbaByAsin[f.asin] = f;
+
+  // velocity is keyed by SKU — map sku->sold, and we need sku->asin from products
+  const prods = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  const velBySku = {}; for (const v of velItems) velBySku[v.sku] = v;
+
+  const rows = [];
+  for (const p of prods.rows) {
+    const m = mByAsin[p.asin] || {};
+    const v = velBySku[p.sku] || {};
+    const f = fbaByAsin[p.asin] || {};
+
+    const onhand = p.onhand || 0;
+    const transit = p.transit || 0;
+    const fbaStock = f.fba_total || 0;
+    const fbaFulfillable = f.fba_fulfillable || 0;
+
+    // velocity signals
+    const soldPerDay = v.perDay || 0;                        // from OUR Amazon sales (velocity tab)
+    const keepaMonthly = m.monthlySold || 0;                 // Keepa "bought past month" (market-wide)
+    // days of stock left at FBA at our current sell rate
+    const daysAtFba = soldPerDay > 0 ? Math.round(fbaFulfillable / soldPerDay) : null;
+
+    // opportunity from Keepa market data
+    const salesRank = m.salesRank != null ? m.salesRank : null;
+    const amazonOOS = m.amazonOOS;
+    const sellers = m.offerCount;
+
+    // ---- RESTOCK SCORE ----
+    // Higher = more urgent/valuable to send more to FBA.
+    let score = 0;
+    // urgency: running low at FBA
+    if (daysAtFba != null) {
+      if (daysAtFba <= 7) score += 40;
+      else if (daysAtFba <= 14) score += 25;
+      else if (daysAtFba <= 30) score += 10;
+    } else if (fbaFulfillable === 0 && soldPerDay > 0) {
+      score += 45; // selling but nothing at FBA = urgent
+    }
+    // demand: it sells
+    if (soldPerDay >= 10) score += 20;
+    else if (soldPerDay >= 3) score += 10;
+    else if (soldPerDay > 0) score += 5;
+    // market strength (good sales rank)
+    if (salesRank != null) {
+      if (salesRank < 5000) score += 15;
+      else if (salesRank < 30000) score += 8;
+      else if (salesRank < 100000) score += 3;
+    }
+    // opportunity: Amazon weak
+    if (amazonOOS != null && amazonOOS > 20) score += 8;
+    // opportunity: low competition
+    if (sellers != null && sellers <= 3) score += 6;
+    // you have warehouse stock to send (can act now)
+    const canSendNow = onhand > 0;
+    if (canSendNow) score += 5;
+
+    // suggested send qty: cover ~45 days of FBA demand, minus what's already at FBA + inbound
+    let suggestedSend = null;
+    if (soldPerDay > 0) {
+      const target = Math.ceil(soldPerDay * 45);
+      const have = fbaFulfillable + (f.fba_inbound || 0) + transit;
+      suggestedSend = Math.max(0, target - have);
+      // cap at what we have on hand to send
+      suggestedSend = Math.min(suggestedSend, onhand);
+    }
+
+    // only include items with some signal (selling OR ranked OR we hold stock)
+    if (soldPerDay > 0 || salesRank != null || onhand > 0) {
+      rows.push({
+        asin: p.asin, name: p.name || m.title, onhand, transit,
+        fbaFulfillable, soldPerDay, keepaMonthly, daysAtFba,
+        salesRank, amazonOOS, sellers, score, suggestedSend, canSendNow
+      });
+    }
+  }
+  rows.sort((a,b)=> b.score - a.score);
+  await saveCache('restock_priority', rows);
+  res.json({ items: rows, velDays });
+});
+
+
+
 // Keepa market data — pull for target ASINs, cross-reference with our on-hand
 app.get('/api/market-data', ownerAuth, async (req, res) => {
   if (!keepa.keyOk()) return res.status(400).json({ error: 'KEEPA_API_KEY not set in Railway variables' });
@@ -1072,14 +1170,17 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
       offerCount: p.offerCount,
     };
   });
+  // dedupe by ASIN
+  const seen = new Set();
+  const deduped = out.filter(x => { if(seen.has(x.asin)) return false; seen.add(x.asin); return true; });
   // default sort: best sales rank (lowest number = best seller) first
-  out.sort((a,b)=>{
+  deduped.sort((a,b)=>{
     const ar = a.salesRank == null ? 1e12 : a.salesRank;
     const br = b.salesRank == null ? 1e12 : b.salesRank;
     return ar - br;
   });
-  await saveCache('market_data', out);
-  res.json({ items: out, tokensLeft });
+  await saveCache('market_data', deduped);
+  res.json({ items: deduped, tokensLeft });
 });
 
 
