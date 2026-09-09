@@ -106,6 +106,7 @@
     <button class="tab" onclick="showTab('value',event)">💰 Value 🔒</button>
     <button class="tab" onclick="showTab('market',event)">📈 Market Data 🔒</button>
     <button class="tab" onclick="showTab('restock',event)">🎯 Restock Plan 🔒</button>
+    <button class="tab" onclick="showTab('toadd',event)">🚀 Products to Add 🔒</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
   </div>
 
@@ -402,6 +403,22 @@
     </div>
     <div id="restockBody"></div>
   </div>
+  <div id="toadd" class="panel">
+    <div class="box">
+      <div style="font-weight:700">Products to Add — Expansion Roadmap</div>
+      <div class="hint">Every JPMS product selling 12+ units/month, ranked. Products you don't carry yet are your opportunity pipeline. Data from SmartScout.</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <select id="toaddFilter" onchange="renderToAdd()" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px">
+          <option value="notcarried">Not carried (opportunities)</option>
+          <option value="all">All products</option>
+          <option value="carried">Already carried</option>
+        </select>
+        <input type="text" id="toaddSearch" placeholder="Search..." onkeyup="renderToAdd()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px">
+        <button class="action" onclick="loadToAdd()" id="toaddBtn" style="padding:10px 16px">Load</button>
+      </div>
+    </div>
+    <div id="toaddBody"></div>
+  </div>
   <div id="dashboard" class="panel active">
     <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
   </div>
@@ -451,7 +468,8 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='velocity'){ document.getElementById('velocityGate').style.display='none'; document.getElementById('velocityContent').style.display='block'; OWNER_PW=PW; if(window._velData) renderVelocity(); else loadVelCache(); }
   if(t==='value'){ document.getElementById('valueGate').style.display='none'; document.getElementById('valueContent').style.display='block'; OWNER_PW=PW; if(window._valData) renderValue(); else loadValCache(); }
   if(t==='market'){ document.getElementById('marketGate').style.display='none'; document.getElementById('marketContent').style.display='block'; OWNER_PW=PW; if(window._mktData) renderMarket(); else loadMktCache(); }
-  if(t==='restock'){ OWNER_PW=PW; if(window._restockData) renderRestock(); else loadRestockCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='restock'){ OWNER_PW=PW; if(window._restockData) renderRestock(); else loadRestockCache(); }
+  if(t==='toadd'){ OWNER_PW=PW; if(window._toaddData) renderToAdd(); else loadToAdd(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -834,6 +852,64 @@ function uploadPdf(){
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
     }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });
 }
+// ==================== PRODUCTS TO ADD ====================
+function loadToAdd(){
+  const btn=document.getElementById('toaddBtn'); if(btn){btn.textContent='Loading...';btn.disabled=true;}
+  ownerApi('/api/products-to-add').then(d=>{
+    if(btn){btn.textContent='Load';btn.disabled=false;}
+    if(d.error){ document.getElementById('toaddBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    window._toaddData=d; window._toaddSort={col:'units',dir:-1};
+    renderToAdd();
+  }).catch(()=>{ if(btn){btn.textContent='Load';btn.disabled=false;} });
+}
+function toaddSort(col){
+  const s=window._toaddSort;
+  if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=(col==='rank')?1:-1; }
+  renderToAdd();
+}
+function renderToAdd(){
+  let d=window._toaddData||[]; const s=window._toaddSort||{col:'units',dir:-1};
+  const b=document.getElementById('toaddBody');
+  if(!d.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Click Load to see the expansion roadmap.</div>'; return; }
+  const filter=document.getElementById('toaddFilter').value;
+  const q=(document.getElementById('toaddSearch').value||'').toLowerCase();
+  let list=d.filter(x=>{
+    if(filter==='notcarried' && x.carried) return false;
+    if(filter==='carried' && !x.carried) return false;
+    if(q && !(x.title||'').toLowerCase().includes(q) && !(x.asin||'').toLowerCase().includes(q) && !(x.brand||'').toLowerCase().includes(q)) return false;
+    return true;
+  });
+  list.sort((a,b2)=>{
+    if(s.col==='title'){ const av=(a.title||'').toLowerCase(),bv=(b2.title||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    return ((a[s.col]||0)-(b2[s.col]||0))*s.dir;
+  });
+  const arrow=c=>s.col===c?(s.dir<0?' \u25bc':' \u25b2'):'';
+  // summary
+  const notCarried=d.filter(x=>!x.carried);
+  const oppUnits=notCarried.reduce((sum,x)=>sum+x.units,0);
+  const oppRev=notCarried.reduce((sum,x)=>sum+x.revenue,0);
+  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Total 12+ SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+notCarried.length+'</div><div class="l">Not Carried Yet</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(oppRev).toLocaleString()+'</div><div class="l">Opportunity Rev/mo</div></div><div class="card"><div class="n">'+oppUnits.toLocaleString()+'</div><div class="l">Opportunity Units/mo</div></div></div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products.</div>';
+  h+='<table><thead><tr>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'brand\')">Brand'+arrow('brand')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'units\')">Units/mo'+arrow('units')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'revenue\')">Rev/mo'+arrow('revenue')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'sellers\')">Sellers'+arrow('sellers')+'</th>'+
+    '<th>Status</th></tr></thead><tbody>';
+  h+=list.slice(0,300).map(x=>{
+    const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${x.title||x.asin}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
+    const rev=x.revenue?'$'+x.revenue.toLocaleString():'—';
+    const sellers=x.sellers!=null?x.sellers:'—';
+    const status=x.carried?'<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">CARRIED</span>':'<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">ADD</span>';
+    return `<tr><td style="max-width:420px">${link}</td><td>${x.brand||''}</td><td class="onhand-num">${x.units.toLocaleString()}</td><td>${rev}</td><td>${sellers}</td><td>${status}</td></tr>`;
+  }).join('');
+  h+='</tbody></table>';
+  if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow.</div>';
+  b.innerHTML=h;
+}
+
+// ==================== PRODUCTS TO ADD END ====================
 // ==================== RESTOCK PRIORITY (STAGE 2) ====================
 function loadRestock(){
   const btn=document.getElementById('restockBtn'); btn.textContent='Building plan...'; btn.disabled=true;
