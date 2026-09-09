@@ -1201,7 +1201,7 @@ async function componentCommitted(componentAsin) {
 // Current prepped list — items shown AS SCANNED (duos as duos, singles as singles)
 app.get('/api/prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pr.asin, p.name, pr.qty AS prepped, s.onhand
+    `SELECT pr.asin, p.name, p.sku, p.fnsku, pr.qty AS prepped, s.onhand
      FROM inv_prepped pr JOIN inv_products p ON p.asin=pr.asin LEFT JOIN inv_stock s ON s.asin=pr.asin
      WHERE pr.qty > 0 ORDER BY p.name`);
   // mark which are bundles
