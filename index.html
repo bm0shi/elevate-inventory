@@ -105,6 +105,7 @@
     <button class="tab" onclick="showTab('velocity',event)">📊 Velocity 🔒</button>
     <button class="tab" onclick="showTab('value',event)">💰 Value 🔒</button>
     <button class="tab" onclick="showTab('market',event)">📈 Market Data 🔒</button>
+    <button class="tab" onclick="showTab('restock',event)">🎯 Restock Plan 🔒</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
   </div>
 
@@ -392,6 +393,14 @@
       <div id="marketBody"></div>
     </div>
   </div>
+  <div id="restock" class="panel">
+    <div class="box">
+      <div style="font-weight:700">Restock Priority Plan</div>
+      <div class="hint">Combines Keepa market data + your sales velocity + FBA stock + on-hand into a ranked "what to send to FBA next" list. Load Market Data, Velocity, and FBA Inventory first for the fullest picture.</div>
+      <button class="action full" onclick="loadRestock()" id="restockBtn" style="margin-top:8px;background:#c0392b">🎯 Build Restock Plan</button>
+    </div>
+    <div id="restockBody"></div>
+  </div>
   <div id="dashboard" class="panel active">
     <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
   </div>
@@ -440,7 +449,8 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
   if(t==='velocity'){ document.getElementById('velocityGate').style.display='none'; document.getElementById('velocityContent').style.display='block'; OWNER_PW=PW; if(window._velData) renderVelocity(); else loadVelCache(); }
   if(t==='value'){ document.getElementById('valueGate').style.display='none'; document.getElementById('valueContent').style.display='block'; OWNER_PW=PW; if(window._valData) renderValue(); else loadValCache(); }
-  if(t==='market'){ document.getElementById('marketGate').style.display='none'; document.getElementById('marketContent').style.display='block'; OWNER_PW=PW; if(window._mktData) renderMarket(); else loadMktCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='market'){ document.getElementById('marketGate').style.display='none'; document.getElementById('marketContent').style.display='block'; OWNER_PW=PW; if(window._mktData) renderMarket(); else loadMktCache(); }
+  if(t==='restock'){ OWNER_PW=PW; if(window._restockData) renderRestock(); else loadRestockCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -823,6 +833,72 @@ function uploadPdf(){
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
     }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });
 }
+// ==================== RESTOCK PRIORITY (STAGE 2) ====================
+function loadRestock(){
+  const btn=document.getElementById('restockBtn'); btn.textContent='Building plan...'; btn.disabled=true;
+  ownerApi('/api/restock-priority').then(d=>{
+    btn.textContent='🎯 Build Restock Plan'; btn.disabled=false;
+    if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    window._restockData=d.items||[]; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date();
+    renderRestock();
+  }).catch(err=>{ btn.textContent='🎯 Build Restock Plan'; btn.disabled=false; document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Failed: '+(err.message||err)+'</div>'; });
+}
+function loadRestockCache(){
+  document.getElementById('restockBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved plan...</div>';
+  ownerApi('/api/cache/restock_priority').then(c=>{
+    if(c.cached && c.data && c.data.length){
+      window._restockData=c.data; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date(c.updated_at);
+      renderRestock();
+    } else {
+      document.getElementById('restockBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">No plan yet — click Build Restock Plan.</div>';
+    }
+  });
+}
+function restockSort(col){
+  const s=window._restockSort;
+  if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=(col==='daysAtFba'||col==='salesRank')?1:-1; }
+  renderRestock();
+}
+function renderRestock(){
+  const d=window._restockData||[]; const s=window._restockSort;
+  const b=document.getElementById('restockBody');
+  const sorted=[...d].sort((a,b2)=>{
+    if(s.col==='name'){ const av=(a.name||'').toLowerCase(),bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    let av=a[s.col], bv=b2[s.col];
+    av=(av==null)?(s.dir>0?1e12:-1):av; bv=(bv==null)?(s.dir>0?1e12:-1):bv;
+    return (av-bv)*s.dir;
+  });
+  const arrow=c=>s.col===c?(s.dir<0?' \u25bc':' \u25b2'):'';
+  // summary: how many urgent, total suggested units
+  const urgent=d.filter(x=>x.score>=40).length;
+  const totalSuggested=d.reduce((sum,x)=>sum+(x.suggestedSend||0),0);
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+urgent+'</div><div class="l">Urgent Restocks</div></div><div class="card"><div class="n">'+totalSuggested.toLocaleString()+'</div><div class="l">Total Units Suggested</div></div></div>';
+  h+='<table><thead><tr>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'name\')">Product'+arrow('name')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'fbaFulfillable\')">At FBA'+arrow('fbaFulfillable')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'soldPerDay\')">Sold/day'+arrow('soldPerDay')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'daysAtFba\')">Days@FBA'+arrow('daysAtFba')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'salesRank\')">Rank'+arrow('salesRank')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'suggestedSend\')">Send Qty'+arrow('suggestedSend')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'score\')">Priority'+arrow('score')+'</th></tr></thead><tbody>';
+  h+=sorted.map(x=>{
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(x.name||x.asin).slice(0,42)}</a>`:x.name;
+    const days=x.daysAtFba==null?'—':(x.daysAtFba+'d');
+    const daysStyle=(x.daysAtFba!=null&&x.daysAtFba<=7)?'style="color:#c0392b;font-weight:700"':(x.daysAtFba!=null&&x.daysAtFba<=14?'style="color:#b7791f;font-weight:700"':'');
+    const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
+    const send=x.suggestedSend?x.suggestedSend.toLocaleString():'—';
+    const sendStyle=x.suggestedSend>0?'style="color:#1e8449;font-weight:700"':'';
+    const pri=x.score>=40?`<span style="background:#fdeceb;color:#c0392b;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">URGENT ${x.score}</span>`:(x.score>=20?`<span style="background:#fdf6e3;color:#b7791f;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">${x.score}</span>`:`<span style="color:#9db0c9">${x.score}</span>`);
+    return `<tr><td style="max-width:280px">${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}</td><td>${x.soldPerDay}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}</td><td>${pri}</td></tr>`;
+  }).join('');
+  h+='</tbody></table>';
+  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>Send Qty</b> = suggested units to ship to FBA (covers ~45 days, capped at your on-hand). <b>Days@FBA</b> red = under a week left.';
+  if(window._restockLoadedAt) h+=' Last built: '+window._restockLoadedAt.toLocaleString()+'.';
+  h+=' Load Market Data, Velocity, and FBA Inventory first for full accuracy.</div>';
+  b.innerHTML=h;
+}
+
 // ==================== MARKET DATA (KEEPA) ====================
 function loadMarket(){
   const btn=document.getElementById('mktLoadBtn'); btn.textContent='Pulling Keepa data (may take a minute)...'; btn.disabled=true;
