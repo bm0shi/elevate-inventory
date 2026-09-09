@@ -868,9 +868,9 @@ function toaddSort(col){
   renderToAdd();
 }
 function renderToAdd(){
-  let d=window._toaddData||[]; const s=window._toaddSort||{col:'units',dir:-1};
+  let d=window._toaddData||[]; const s=window._toaddSort||{col:'salesRank',dir:1};
   const b=document.getElementById('toaddBody');
-  if(!d.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Click Load to see the expansion roadmap.</div>'; return; }
+  if(!d.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Click Load. (Refresh Market Data first if empty — this pulls from Keepa.)</div>'; return; }
   const filter=document.getElementById('toaddFilter').value;
   const q=(document.getElementById('toaddSearch').value||'').toLowerCase();
   let list=d.filter(x=>{
@@ -881,31 +881,32 @@ function renderToAdd(){
   });
   list.sort((a,b2)=>{
     if(s.col==='title'){ const av=(a.title||'').toLowerCase(),bv=(b2.title||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
-    return ((a[s.col]||0)-(b2[s.col]||0))*s.dir;
+    let av=a[s.col], bv=b2[s.col];
+    av=(av==null)?(s.dir>0?1e12:-1):av; bv=(bv==null)?(s.dir>0?1e12:-1):bv;
+    return (av-bv)*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' \u25bc':' \u25b2'):'';
-  // summary
   const notCarried=d.filter(x=>!x.carried);
-  const oppUnits=notCarried.reduce((sum,x)=>sum+x.units,0);
-  const oppRev=notCarried.reduce((sum,x)=>sum+x.revenue,0);
-  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Total 12+ SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+notCarried.length+'</div><div class="l">Not Carried Yet</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(oppRev).toLocaleString()+'</div><div class="l">Opportunity Rev/mo</div></div><div class="card"><div class="n">'+oppUnits.toLocaleString()+'</div><div class="l">Opportunity Units/mo</div></div></div>';
-  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products.</div>';
+  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Tracked SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+notCarried.length+'</div><div class="l">Not Carried Yet</div></div><div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. Ranked by Keepa sales rank (lower = sells more). Auto-updates when you refresh Market Data.</div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
-    '<th style="cursor:pointer" onclick="toaddSort(\'brand\')">Brand'+arrow('brand')+'</th>'+
-    '<th style="cursor:pointer" onclick="toaddSort(\'units\')">Units/mo'+arrow('units')+'</th>'+
-    '<th style="cursor:pointer" onclick="toaddSort(\'revenue\')">Rev/mo'+arrow('revenue')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'ssUnits\')">Units/mo (SS)'+arrow('ssUnits')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'buyBoxPrice\')">Buy Box'+arrow('buyBoxPrice')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'sellers\')">Sellers'+arrow('sellers')+'</th>'+
     '<th>Status</th></tr></thead><tbody>';
   h+=list.slice(0,300).map(x=>{
     const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${x.title||x.asin}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
-    const rev=x.revenue?'$'+x.revenue.toLocaleString():'—';
+    const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
+    const units=x.ssUnits!=null?x.ssUnits.toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
+    const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
     const status=x.carried?'<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">CARRIED</span>':'<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">ADD</span>';
-    return `<tr><td style="max-width:420px">${link}</td><td>${x.brand||''}</td><td class="onhand-num">${x.units.toLocaleString()}</td><td>${rev}</td><td>${sellers}</td><td>${status}</td></tr>`;
+    return `<tr><td style="max-width:420px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${status}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow.</div>';
+  if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
   b.innerHTML=h;
 }
 
