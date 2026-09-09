@@ -905,7 +905,7 @@ function loadPrepList(){
       const nameColor=x.isBundle?'color:#c0392b;font-weight:700':'color:#127a7a';
       const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="${nameColor};text-decoration:none">${x.name}</a>`:x.name;
       const badge=x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
-      const copyCell=(val)=>val?`<span onclick="copyText('${val}',this)" title="Click to copy" style="cursor:pointer;font-family:monospace;font-size:11px;color:#5a6472;border-bottom:1px dotted #ccc">${val}</span>`:'<span style="color:#c0392b">—</span>';
+      const copyCell=(val)=>val?`<span onclick="copyText('${val}',this)" title="Click to copy" style="cursor:pointer;font-family:monospace;font-size:13px;font-weight:700;color:#2563a8;border-bottom:1px dotted #2563a8">${val}</span>`:'<span style="color:#c0392b">—</span>';
       return `<tr${x.isBundle?' style="background:#fefafa"':''}><td style="max-width:280px">${link}${badge}</td><td class="onhand-num"${x.isBundle?' style="color:#c0392b;font-weight:700"':''}>${x.prepped}</td><td>${copyCell(x.asin)}</td><td>${copyCell(x.fnsku)}</td><td><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:4px 8px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">edit</button></td></tr>`;
     }).join('');
     h+='</tbody></table><div class="hint">Click any ASIN or FNSKU to copy it. Duos show as duos (red). These clear when you finalize the shipment on Ship to FBA.</div>';
@@ -915,7 +915,7 @@ function loadPrepList(){
 function copyText(txt, el){
   navigator.clipboard.writeText(txt).then(()=>{
     const orig=el.textContent; el.textContent='copied!'; el.style.color='#1e8449';
-    setTimeout(()=>{ el.textContent=orig; el.style.color='#5a6472'; }, 900);
+    setTimeout(()=>{ el.textContent=orig; el.style.color='#2563a8'; }, 900);
   }).catch(()=>{ toast('Copy failed — long-press to copy',true); });
 }
 function editPrep(asin, current){
