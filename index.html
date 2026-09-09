@@ -217,6 +217,10 @@
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Scan Labeled Items (Prepped &amp; Ready)</div>
       <div class="hint" style="margin-bottom:10px">Scan the FNSKU label as you prep each item, enter the quantity. This stages it for the next FBA shipment. On Hand shows the pending count but doesn't drop until you ship. Scanning a duo stages one shampoo + one conditioner.</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <button class="action" onclick="syncFnskus()" id="syncFnBtn" style="padding:8px 14px;font-size:13px;background:#127a7a">↻ Sync FNSKUs from Amazon</button>
+        <span id="fnStatus" class="hint" style="margin:0"></span>
+      </div>
       <div style="display:flex;gap:8px">
         <input type="text" id="scanPrep" placeholder="Scan FNSKU label..." autocomplete="off" style="flex:1">
         <button class="action" onclick="toggleCamera('Prep')" id="camBtnPrep" style="padding:14px 16px;white-space:nowrap">📷</button>
@@ -824,6 +828,21 @@ function initPrepScan(){
     });
   }
 }
+function syncFnskus(){
+  const btn=document.getElementById('syncFnBtn'); btn.textContent='Syncing from Amazon...'; btn.disabled=true;
+  api('/api/sync-fnskus',{method:'POST'}).then(d=>{
+    btn.textContent='↻ Sync FNSKUs from Amazon'; btn.disabled=false;
+    if(d.error){ toast('Sync error: '+d.error,true); return; }
+    toast('Matched '+d.matched+' FNSKUs'+(d.unmatchedCount?', '+d.unmatchedCount+' unmatched':''));
+    loadFnStatus();
+    if(d.unmatchedCount) alert(d.matched+' FNSKUs matched to products.\n\n'+d.unmatchedCount+' FBA items could not be matched (SKU/ASIN not in your catalog). Those will use scan-to-assign the first time.');
+  }).catch(()=>{ btn.textContent='↻ Sync FNSKUs from Amazon'; btn.disabled=false; toast('Sync failed',true); });
+}
+function loadFnStatus(){
+  api('/api/fnsku-status').then(d=>{
+    document.getElementById('fnStatus').textContent=d.withFnsku+' of '+d.total+' products have FNSKUs';
+  });
+}
 function doPrepScan(code, qty){
   api('/api/prep/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
@@ -859,7 +878,7 @@ function assignPrepFnsku(asin){
   });
 }
 function loadPrepList(){
-  initPrepScan();
+  initPrepScan(); loadFnStatus();
   setTimeout(()=>{ const s=document.getElementById('scanPrep'); if(s) s.focus(); }, 100);
   api('/api/prep/list').then(d=>{
     const b=document.getElementById('prepListBox');
