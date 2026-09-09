@@ -927,7 +927,7 @@ function renderRestock(){
        '<span style="color:#5a6472">If matched counts are low but source counts are high, there\'s a SKU/ASIN mismatch.</span>'+
        '<hr><b>DIAGNOSTIC SAMPLES:</b><br>'+
        'Your products: '+JSON.stringify(fr.sampleProductAsins||[])+'<br>'+
-       'FBA sample (total/fulfillable/inbound): '+JSON.stringify(fr.sampleFbaAsins||[])+'<br>'+'FBA items with total>0: '+(fr.fbaWithTotal||0)+', with fulfillable>0: '+(fr.fbaWithFulfillable||0)+'<br>'+
+       'FBA sample (total/fulfillable/inbound): '+JSON.stringify(fr.sampleFbaAsins||[])+'<br>'+'FBA items with total>0: '+(fr.fbaWithTotal||0)+', with fulfillable>0: '+(fr.fbaWithFulfillable||0)+'<br>'+'FBA ASINs that ARE in your catalog: '+(fr.fbaAsinsInCatalog||0)+' (of '+(fr.fbaCount||0)+'), with stock: '+(fr.fbaWithTotalInCatalog||0)+'<br>'+
        'Velocity data: '+JSON.stringify(fr.sampleVelSkus||[])+'</div>';
   }
   b.innerHTML=h;
