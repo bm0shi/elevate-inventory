@@ -23,18 +23,42 @@ async function getProducts(asins) {
   for (let i = 0; i < asins.length; i += 100) {
     const batch = asins.slice(i, i + 100);
     const url = `${KEEPA_BASE}/product?key=${key}&domain=${DOMAIN}&asin=${batch.join(',')}&stats=90&buybox=1`;
-    let resp;
-    try {
-      resp = await axios.get(url, { timeout: 60000, decompress: true });
-    } catch (err) {
-      const body = err.response?.data ? JSON.stringify(err.response.data).slice(0,300) : err.message;
-      throw new Error(`Keepa ${err.response?.status || ''}: ${body}`);
+
+    let done = false, attempts = 0;
+    while (!done && attempts < 6) {
+      attempts++;
+      let resp;
+      try {
+        resp = await axios.get(url, { timeout: 60000, decompress: true });
+      } catch (err) {
+        if (err.response?.status === 429) {
+          // out of tokens — wait for refill then retry
+          const refillIn = err.response.data?.refillIn || 20000;
+          await sleep(Math.min(refillIn + 1000, 65000));
+          continue;
+        }
+        const body = err.response?.data ? JSON.stringify(err.response.data).slice(0,300) : err.message;
+        throw new Error(`Keepa ${err.response?.status || ''}: ${body}`);
+      }
+      if (resp.data.error && resp.data.error.type === 'NOT_ENOUGH_TOKEN') {
+        const refillIn = resp.data.refillIn || 20000;
+        await sleep(Math.min(refillIn + 1000, 65000));
+        continue;
+      }
+      tokensLeft = resp.data.tokensLeft;
+      const products = resp.data.products || [];
+      for (const p of products) out.push(simplify(p));
+      done = true;
+
+      // if tokens are running low, wait for the bucket to refill before next batch
+      if (tokensLeft != null && tokensLeft < 50 && i + 100 < asins.length) {
+        const refillIn = resp.data.refillIn || 15000;
+        await sleep(Math.min(refillIn + 1000, 65000));
+      } else {
+        await sleep(1200);
+      }
     }
-    if (resp.data.error) throw new Error('Keepa: ' + (resp.data.error.message || JSON.stringify(resp.data.error)));
-    tokensLeft = resp.data.tokensLeft;
-    const products = resp.data.products || [];
-    for (const p of products) out.push(simplify(p));
-    await sleep(1200);
+    if (!done) throw new Error('Keepa: exhausted retries waiting for tokens');
   }
   return { products: out, tokensLeft };
 }
