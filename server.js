@@ -288,11 +288,16 @@ app.get('/api/find/:code', auth, async (req, res) => {
 
 // full product list (for the "which product?" picker + on-hand view)
 app.get('/api/products', auth, async (req, res) => {
+  // "prepped" here = units of THIS asin committed to prep, counting:
+  //  - direct prepped of this asin (singles), PLUS
+  //  - prepped bundles that consume this asin as a component
   const { rows } = await pool.query(
     `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit,
-            COALESCE(pr.qty,0) AS prepped
+      (
+        COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+        + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
+      )::int AS prepped
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
-     LEFT JOIN inv_prepped pr ON pr.asin = p.asin
      ORDER BY p.name`);
   res.json(rows);
 });
@@ -1137,7 +1142,8 @@ app.post('/api/assign-fnsku', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// Scan an item into Prepped. Handles bundles (expands to components for the warning).
+// Scan an item into Prepped. Stores the item AS SCANNED (duo shows as duo, single as single).
+// The on-hand warning still checks component availability underneath.
 app.post('/api/prep/scan', auth, async (req, res) => {
   const { code, qty } = req.body;
   const q = parseInt(qty);
@@ -1145,39 +1151,61 @@ app.post('/api/prep/scan', auth, async (req, res) => {
   const prod = await resolveCode(code);
   if (!prod) return res.json({ ok: false, reason: 'unknown_code', code });
 
-  // expand to components (bundle) or itself
+  // components this scan consumes (duo → 2 singles, single → itself) — for the WARNING only
   const parts = await expandToComponents(prod.asin, q);
-  // warning check: is there enough ON HAND for each component (minus already prepped)?
+  const isBundle = parts.length > 1 || (parts[0] && parts[0].fromBundle);
+
+  // warning: check on-hand for each component, accounting for what's already committed to prep
+  // (both prepped duos and prepped singles consume the same component stock)
   let warnings = [];
   for (const part of parts) {
     const st = await pool.query('SELECT onhand FROM inv_stock WHERE asin=$1', [part.asin]);
-    const pr = await pool.query('SELECT qty FROM inv_prepped WHERE asin=$1', [part.asin]);
     const onhand = st.rows[0]?.onhand || 0;
-    const alreadyPrepped = pr.rows[0]?.qty || 0;
+    // how much of this component is already committed by existing prepped items?
+    const committed = await componentCommitted(part.asin);
     const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [part.asin]);
-    if (alreadyPrepped + part.qty > onhand) {
-      warnings.push({ name: nm.rows[0]?.name || part.asin, onhand, prepped: alreadyPrepped, adding: part.qty });
+    if (committed + part.qty > onhand) {
+      warnings.push({ name: nm.rows[0]?.name || part.asin, onhand, committed, adding: part.qty });
     }
   }
 
-  // apply prep to components
-  for (const part of parts) {
-    await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [part.asin, part.qty]);
-  }
+  // store prepped AS SCANNED (the duo asin, or the single asin)
+  await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [prod.asin, q]);
   await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-    ['prep', prod.asin, prod.name, q, parts.length>1?'Prepped (duo → components)':'Prepped']);
+    ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
 
-  res.json({ ok: true, product: prod, qty: q, isBundle: parts.length>1, components: parts, warnings });
+  res.json({ ok: true, product: prod, qty: q, isBundle, warnings });
 });
 
-// Current prepped list
+// How many units of a component ASIN are committed across all prepped items
+// (counts prepped singles of that asin + prepped duos that contain it)
+async function componentCommitted(componentAsin) {
+  // direct prepped of this asin
+  const direct = await pool.query('SELECT COALESCE(qty,0) AS q FROM inv_prepped WHERE asin=$1', [componentAsin]);
+  let total = direct.rows[0]?.q || 0;
+  // prepped bundles that include this component
+  const bundles = await pool.query(
+    `SELECT pr.qty * b.qty AS q FROM inv_prepped pr
+     JOIN inv_bundles b ON b.bundle_asin = pr.asin
+     WHERE b.component_asin = $1`, [componentAsin]);
+  for (const r of bundles.rows) total += r.q;
+  return total;
+}
+
+// Current prepped list — items shown AS SCANNED (duos as duos, singles as singles)
 app.get('/api/prep/list', auth, async (req, res) => {
   const rows = await pool.query(
     `SELECT pr.asin, p.name, pr.qty AS prepped, s.onhand
      FROM inv_prepped pr JOIN inv_products p ON p.asin=pr.asin LEFT JOIN inv_stock s ON s.asin=pr.asin
      WHERE pr.qty > 0 ORDER BY p.name`);
+  // mark which are bundles
+  const out = [];
+  for (const r of rows.rows) {
+    const b = await pool.query('SELECT 1 FROM inv_bundles WHERE bundle_asin=$1 LIMIT 1', [r.asin]);
+    out.push({ ...r, isBundle: b.rows.length>0 });
+  }
   const totalPrepped = rows.rows.reduce((sum,x)=>sum+x.prepped,0);
-  res.json({ items: rows.rows, totalPrepped });
+  res.json({ items: out, totalPrepped });
 });
 
 // Adjust/remove a prepped line (corrections)
