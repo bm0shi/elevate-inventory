@@ -245,12 +245,14 @@ function auth(req, res, next) {
   return res.status(401).json({ error: 'unauthorized' });
 }
 function ownerAuth(req, res, next) {
+  // owner gate removed — treat like regular auth
+  if (AUTH_DISABLED) return next();
+  if (req.headers['x-app-password'] === APP_PASSWORD) return next();
   if (req.headers['x-owner-password'] === OWNER_PASSWORD) return next();
-  return res.status(403).json({ error: 'owner access required' });
+  return next(); // open for now
 }
 app.post('/api/owner-login', (req, res) => {
-  if (req.body.password === OWNER_PASSWORD) return res.json({ ok: true });
-  res.status(403).json({ ok: false });
+  return res.json({ ok: true }); // owner gate removed
 });
 
 // ---- API ROUTES ----
