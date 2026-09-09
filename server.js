@@ -1075,13 +1075,15 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
 
   // velocity is keyed by SKU — map sku->sold, and we need sku->asin from products
   // include prepped-committed quantity per component (singles + duo components)
-  const prods = await pool.query(`
-    SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
-      (
-        COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
-        + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
-      )::int AS prepped
-    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
+  const prods = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  // prepped computed separately (safe — never blocks the core plan)
+  const preppedByAsin = {};
+  try {
+    const pr = await pool.query('SELECT asin, qty FROM inv_prepped WHERE qty > 0');
+    for (const r of pr.rows) preppedByAsin[r.asin] = (preppedByAsin[r.asin]||0) + r.qty;
+    const bd = await pool.query('SELECT b.component_asin AS asin, SUM(p2.qty * b.qty) AS q FROM inv_prepped p2 JOIN inv_bundles b ON b.bundle_asin=p2.asin GROUP BY b.component_asin');
+    for (const r of bd.rows) preppedByAsin[r.asin] = (preppedByAsin[r.asin]||0) + parseInt(r.q);
+  } catch(e) { /* prepped optional — never break the plan */ }
   const velBySku = {}; const velByAsin = {};
   for (const v of velItems) {
     if (v.sku) { velBySku[v.sku] = v; velBySku[String(v.sku).trim().toUpperCase()] = v; }
@@ -1142,7 +1144,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     const canSendNow = onhand > 0;
     if (canSendNow) score += 5;
 
-    const prepped = p.prepped || 0;
+    const prepped = preppedByAsin[p.asin] || 0;
     // suggested send qty: cover ~45 days of demand, minus what's already covered:
     //   effective FBA (fulfillable+reserved+inbound) + in-transit + prepped/staged
     let suggestedSend = null;
