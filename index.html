@@ -840,9 +840,14 @@ function loadRestock(){
   ownerApi('/api/restock-priority').then(d=>{
     btn.textContent='🎯 Build Restock Plan'; btn.disabled=false;
     if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    if(!d.items){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">No items in response. Raw: '+JSON.stringify(d).slice(0,300)+'</div>'; return; }
     window._restockData=d.items||[]; window._restockFresh=d.freshness; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date();
-    renderRestock();
-  }).catch(err=>{ btn.textContent='🎯 Build Restock Plan'; btn.disabled=false; document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Failed: '+(err.message||err)+'</div>'; });
+    try {
+      renderRestock();
+    } catch(e){
+      document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Render error: '+(e.message||e)+'<br><br>Got '+d.items.length+' items. First item: '+JSON.stringify(d.items[0]||{}).slice(0,300)+'</div>';
+    }
+  }).catch(err=>{ btn.textContent='🎯 Build Restock Plan'; btn.disabled=false; document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Failed: '+(err.message||err)+'</div>'; });
 }
 function loadRestockCache(){
   document.getElementById('restockBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved plan...</div>';
