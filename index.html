@@ -833,7 +833,7 @@ function loadMarket(){
     items.forEach(x=>{ x._oppScore=marketOpp(x); });
     window._mktData=items; window._mktTokens=d.tokensLeft; window._mktSort={col:'salesRank',dir:1}; window._mktLoadedAt=new Date();
     renderMarket();
-  }).catch(()=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; toast('Load failed',true); });
+  }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Request failed: '+(err.message||err)+'<br><br>Check: 1) KEEPA_API_KEY is set in Railway, 2) keepa.js and keepa_asins.json are deployed (lowercase), 3) Railway logs for the real error.</div>'; });
 }
 function loadMktCache(){
   document.getElementById('marketBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
