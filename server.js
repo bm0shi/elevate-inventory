@@ -1092,14 +1092,17 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
 
     const onhand = p.onhand || 0;
     const transit = p.transit || 0;
-    const fbaStock = f.fba_total || 0;
+    const fbaTotal = f.fba_total || 0;
     const fbaFulfillable = f.fba_fulfillable || 0;
+    const fbaInbound = f.fba_inbound || 0;
 
     // velocity signals
     const soldPerDay = v.perDay || 0;                        // from OUR Amazon sales (velocity tab)
     const keepaMonthly = m.monthlySold || 0;                 // Keepa "bought past month" (market-wide)
-    // days of stock left at FBA at our current sell rate
-    const daysAtFba = soldPerDay > 0 ? Math.round(fbaFulfillable / soldPerDay) : null;
+    // days of stock left — use TOTAL FBA stock (fulfillable + reserved + INBOUND that's arriving)
+    // because inbound units are already on their way and count toward coverage.
+    const effectiveFba = fbaTotal; // total includes fulfillable + reserved + inbound
+    const daysAtFba = soldPerDay > 0 ? Math.round(effectiveFba / soldPerDay) : null;
 
     // opportunity from Keepa market data
     const salesRank = m.salesRank != null ? m.salesRank : null;
@@ -1109,13 +1112,13 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     // ---- RESTOCK SCORE ----
     // Higher = more urgent/valuable to send more to FBA.
     let score = 0;
-    // urgency: running low at FBA
+    // urgency: running low at FBA (using effective/total stock incl. inbound)
     if (daysAtFba != null) {
       if (daysAtFba <= 7) score += 40;
       else if (daysAtFba <= 14) score += 25;
       else if (daysAtFba <= 30) score += 10;
-    } else if (fbaFulfillable === 0 && soldPerDay > 0) {
-      score += 45; // selling but nothing at FBA = urgent
+    } else if (effectiveFba === 0 && soldPerDay > 0) {
+      score += 45; // selling but nothing at FBA (incl. inbound) = urgent
     }
     // demand: it sells
     if (soldPerDay >= 10) score += 20;
@@ -1136,13 +1139,14 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     if (canSendNow) score += 5;
 
     const prepped = p.prepped || 0;
-    // suggested send qty: cover ~45 days of FBA demand, minus what's already at FBA + inbound + already prepped
+    // suggested send qty: cover ~45 days of demand, minus what's already covered:
+    //   effective FBA (fulfillable+reserved+inbound) + in-transit + prepped/staged
     let suggestedSend = null;
     if (soldPerDay > 0) {
       const target = Math.ceil(soldPerDay * 45);
-      const have = fbaFulfillable + (f.fba_inbound || 0) + transit + prepped;
+      const have = fbaTotal + transit + prepped;   // fbaTotal already includes inbound
       suggestedSend = Math.max(0, target - have);
-      // cap at what we have on hand (minus what's already prepped/committed) to send
+      // cap at what we have on hand to send (minus what's already committed to prep)
       suggestedSend = Math.min(suggestedSend, Math.max(0, onhand - prepped));
     }
 
@@ -1150,7 +1154,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     if (soldPerDay > 0 || salesRank != null || onhand > 0) {
       rows.push({
         asin: p.asin, name: p.name || m.title, onhand, transit, prepped,
-        fbaFulfillable, soldPerDay, keepaMonthly, daysAtFba,
+        fbaFulfillable: fbaTotal, fbaInbound, soldPerDay, keepaMonthly, daysAtFba,
         salesRank, amazonOOS, sellers, score, suggestedSend, canSendNow
       });
     }
