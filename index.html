@@ -438,9 +438,9 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='dashboard')loadDashboard();
   if(t==='history'){ if(window._histData) renderHistory(); else loadHistory(); }
   if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
-  if(t==='velocity' && OWNER_PW){ if(window._velData) renderVelocity(); else loadVelCache(); }
-  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); else loadValCache(); }
-  if(t==='market' && OWNER_PW){ if(window._mktData) renderMarket(); else loadMktCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='velocity'){ document.getElementById('velocityGate').style.display='none'; document.getElementById('velocityContent').style.display='block'; OWNER_PW=PW; if(window._velData) renderVelocity(); else loadVelCache(); }
+  if(t==='value'){ document.getElementById('valueGate').style.display='none'; document.getElementById('valueContent').style.display='block'; OWNER_PW=PW; if(window._valData) renderValue(); else loadValCache(); }
+  if(t==='market'){ document.getElementById('marketGate').style.display='none'; document.getElementById('marketContent').style.display='block'; OWNER_PW=PW; if(window._mktData) renderMarket(); else loadMktCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -543,7 +543,8 @@ function doBulkShip(){
 // ==================== DATA TABS ====================
 let OWNER_PW = '';
 function ownerUnlock(which){
-  const pw = document.getElementById(which==='velocity'?'ownerPwVel':'ownerPwVal').value;
+  const fieldId = which==='velocity'?'ownerPwVel':(which==='market'?'ownerPwMkt':'ownerPwVal');
+  const pw = document.getElementById(fieldId).value;
   fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
     .then(r=>r.json()).then(d=>{
       if(d.ok){ OWNER_PW=pw;
