@@ -872,7 +872,12 @@ function renderRestock(){
   // summary: how many urgent, total suggested units
   const urgent=d.filter(x=>x.score>=40).length;
   const totalSuggested=d.reduce((sum,x)=>sum+(x.suggestedSend||0),0);
-  let h='<div class="cards"><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+urgent+'</div><div class="l">Urgent Restocks</div></div><div class="card"><div class="n">'+totalSuggested.toLocaleString()+'</div><div class="l">Total Units Suggested</div></div></div>';
+  const withVelocity=d.filter(x=>x.soldPerDay>0).length;
+  let h='';
+  if(withVelocity < 5){
+    h+='<div class="box" style="background:#fdf6e3;border:1px solid #b7791f;margin-bottom:10px"><b style="color:#b7791f">⚠ Sales data missing.</b> Only '+withVelocity+' products show sales velocity. Send Qty needs your sales data. <b>Load the Velocity tab and FBA Inventory tab first</b>, then rebuild this plan for accurate send quantities.</div>';
+  }
+  h+='<div class="cards"><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+urgent+'</div><div class="l">Urgent Restocks</div></div><div class="card"><div class="n">'+totalSuggested.toLocaleString()+'</div><div class="l">Total Units Suggested</div></div><div class="card"><div class="n">'+withVelocity+'</div><div class="l">Products w/ Sales Data</div></div></div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="restockSort(\'name\')">Product'+arrow('name')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
@@ -884,7 +889,7 @@ function renderRestock(){
     '<th style="cursor:pointer" onclick="restockSort(\'score\')">Priority'+arrow('score')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
     const nm2=x.name||x.asin;
-    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${nm2}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700;margin-top:2px">${x.asin}</div>`:nm2;
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${nm2}</a><div style="font-family:monospace;font-size:13px;color:#2563a8;font-weight:700;margin-top:3px">${x.asin}</div>`:nm2;
     const days=x.daysAtFba==null?'—':(x.daysAtFba+'d');
     const daysStyle=(x.daysAtFba!=null&&x.daysAtFba<=7)?'style="color:#c0392b;font-weight:700"':(x.daysAtFba!=null&&x.daysAtFba<=14?'style="color:#b7791f;font-weight:700"':'');
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
@@ -962,7 +967,7 @@ function renderMarket(){
   h+=sorted.map(x=>{
     const nm=x.name||x.asin;
     const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${nm}</a>`:nm;
-    const asinLine=x.asin?`<div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700;margin-top:2px">${x.asin}</div>`:'';
+    const asinLine=x.asin?`<div style="font-family:monospace;font-size:13px;color:#2563a8;font-weight:700;margin-top:3px">${x.asin}</div>`:'';
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const sold=x.monthlySold!=null?x.monthlySold.toLocaleString():'—';
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
