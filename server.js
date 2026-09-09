@@ -215,6 +215,17 @@ async function initDb() {
       console.log(`[Inventory] Seeded ${Object.keys(seedMap).length} Cosmoprof mappings.`);
     } catch(e) { console.error('cosmo_map seed skipped:', e.message); }
   }
+  // seed FNSKUs from shipment plans (fills blanks only)
+  try {
+    const seedFn = JSON.parse(fs.readFileSync(path.join(__dirname, 'seed_fnskus.json'), 'utf8'));
+    let fnCount = 0;
+    for (const [asin, fnsku] of Object.entries(seedFn)) {
+      const r = await pool.query("UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku='')", [fnsku, asin]);
+      if (r.rowCount) fnCount++;
+    }
+    console.log(`[Inventory] Seeded ${fnCount} FNSKUs from shipment plans.`);
+  } catch(e) { console.error('fnsku seed skipped:', e.message); }
+
   // seed unit costs from historical invoices (only fills blanks)
   try {
     const seedCosts = JSON.parse(fs.readFileSync(path.join(__dirname, 'seed_costs.json'), 'utf8'));
@@ -822,6 +833,43 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   }
   await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
   res.json({ ok: true, added, discrepancies });
+});
+
+// Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs
+app.post('/api/import-fnskus', auth, upload.single('file'), async (req, res) => {
+  let text;
+  if (req.file) text = req.file.buffer.toString('utf-8');
+  else if (req.body.text) text = req.body.text;
+  else return res.status(400).json({ error: 'No file or text' });
+
+  const lines = text.split(/\r?\n/);
+  // find header row with Merchant SKU / ASIN / FNSKU columns
+  let hdrIdx = -1, cols = [];
+  for (let i=0;i<lines.length;i++){
+    if (/Merchant SKU/i.test(lines[i]) && /FNSKU/i.test(lines[i])) { hdrIdx=i; cols=lines[i].split('\t').map(c=>c.trim()); break; }
+  }
+  if (hdrIdx === -1) return res.status(400).json({ error: 'Could not find FNSKU columns. Is this an Amazon shipment plan file?' });
+
+  const skuIdx = cols.findIndex(c=>/Merchant SKU/i.test(c));
+  const asinIdx = cols.findIndex(c=>/ASIN/i.test(c));
+  const fnIdx = cols.findIndex(c=>/FNSKU/i.test(c));
+
+  let matched = 0, unmatched = [];
+  for (let i=hdrIdx+1;i<lines.length;i++){
+    const c = lines[i].split('\t');
+    if (c.length <= fnIdx) continue;
+    const sku = (c[skuIdx]||'').trim();
+    const asin = (c[asinIdx]||'').trim();
+    const fnsku = (c[fnIdx]||'').trim();
+    if (!fnsku) continue;
+    // match by ASIN first, then SKU
+    let r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2 RETURNING asin', [fnsku, asin]);
+    if (r.rowCount === 0 && sku) r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2 RETURNING asin', [fnsku, sku]);
+    if (r.rowCount > 0) matched++;
+    else unmatched.push({ sku, asin, fnsku });
+  }
+  console.log(`[FNSKU Import] Matched ${matched}, unmatched ${unmatched.length}`);
+  res.json({ ok: true, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0,20) });
 });
 
 // Sync FNSKUs from FBA inventory — matches by SKU first, then ASIN. Returns a report.
