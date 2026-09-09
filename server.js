@@ -1087,7 +1087,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   const rows = [];
   for (const p of prods.rows) {
     const m = mByAsin[p.asin] || {};
-    const v = velBySku[p.sku] || velBySku[String(p.sku||'').trim().toUpperCase()] || velByAsin[p.asin] || {};
+    const v = velByAsin[p.asin] || velBySku[p.sku] || velBySku[String(p.sku||'').trim().toUpperCase()] || {};
     const f = fbaByAsin[p.asin] || {};
 
     const onhand = p.onhand || 0;
@@ -1158,9 +1158,11 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   // diagnostics: how many products actually matched velocity & fba
   freshness.matchedVelocity = rows.filter(r=>r.soldPerDay>0).length;
   freshness.matchedFba = rows.filter(r=>r.fbaFulfillable>0).length;
+  freshness.fbaWithTotal = fba.filter(f=>(f.fba_total||0)>0).length;
+  freshness.fbaWithFulfillable = fba.filter(f=>(f.fba_fulfillable||0)>0).length;
   // SAMPLE diagnostics — show actual ASINs/SKUs to find the mismatch
   freshness.sampleProductAsins = prods.rows.slice(0,3).map(p=>({asin:p.asin, sku:p.sku}));
-  freshness.sampleFbaAsins = fba.slice(0,3).map(f=>({asin:f.asin, name:(f.name||'').slice(0,20), fulfillable:f.fba_fulfillable}));
+  freshness.sampleFbaAsins = fba.slice(0,5).map(f=>({asin:f.asin, total:f.fba_total, fulfillable:f.fba_fulfillable, inbound:f.fba_inbound}));
   freshness.sampleVelSkus = velItems.slice(0,3).map(v=>({sku:v.sku, asin:v.asin, perDay:v.perDay, sold:v.sold}));
   rows.sort((a,b)=> b.score - a.score);
   await saveCache('restock_priority', rows);
