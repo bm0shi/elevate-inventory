@@ -1075,7 +1075,13 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
 
   // velocity is keyed by SKU — map sku->sold, and we need sku->asin from products
   // include prepped-committed quantity per component (singles + duo components)
-  const prods = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  const prodsRaw = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  // dedupe by ASIN — keep the row with the most on-hand (avoids duplicate-ASIN match misses)
+  const _seenAsin = {};
+  for (const r of prodsRaw.rows) {
+    if (!_seenAsin[r.asin] || (r.onhand||0) > (_seenAsin[r.asin].onhand||0)) _seenAsin[r.asin] = r;
+  }
+  const prods = { rows: Object.values(_seenAsin) };
   // prepped computed separately (safe — never blocks the core plan)
   const preppedByAsin = {};
   try {
@@ -1167,6 +1173,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   }
   // diagnostics: how many products actually matched velocity & fba
   freshness.matchedVelocity = rows.filter(r=>r.soldPerDay>0).length;
+  freshness.dedupedProductCount = prods.rows.length;
   freshness.matchedFba = rows.filter(r=>r.fbaFulfillable>0).length;
   freshness.fbaWithTotal = fba.filter(f=>(f.fba_total||0)>0).length;
   freshness.fbaWithFulfillable = fba.filter(f=>(f.fba_fulfillable||0)>0).length;
