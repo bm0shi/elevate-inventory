@@ -104,6 +104,7 @@
     <button class="tab" onclick="showTab('fbainv',event)">FBA Inventory</button>
     <button class="tab" onclick="showTab('velocity',event)">📊 Velocity 🔒</button>
     <button class="tab" onclick="showTab('value',event)">💰 Value 🔒</button>
+    <button class="tab" onclick="showTab('market',event)">📈 Market Data 🔒</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
   </div>
 
@@ -375,6 +376,22 @@
     </div>
   </div>
 
+  <div id="market" class="panel">
+    <div id="marketGate" class="box">
+      <div style="font-weight:700;margin-bottom:8px">🔒 Owner Access Required</div>
+      <input type="password" id="ownerPwMkt" placeholder="Owner password" onkeydown="if(event.key==='Enter')ownerUnlock('market')">
+      <div style="height:8px"></div>
+      <button class="action full" onclick="ownerUnlock('market')">Unlock</button>
+    </div>
+    <div id="marketContent" style="display:none">
+      <div class="box">
+        <div style="font-weight:700">Market Data (Keepa)</div>
+        <div class="hint">What's selling across the line, where Amazon is weak, and where competition is low — cross-referenced with your on-hand. Uses Keepa API.</div>
+        <button class="action full" onclick="loadMarket()" id="mktLoadBtn" style="margin-top:8px;background:#b7791f">↻ Refresh Market Data</button>
+      </div>
+      <div id="marketBody"></div>
+    </div>
+  </div>
   <div id="dashboard" class="panel active">
     <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
   </div>
@@ -422,7 +439,8 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='history'){ if(window._histData) renderHistory(); else loadHistory(); }
   if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
   if(t==='velocity' && OWNER_PW){ if(window._velData) renderVelocity(); else loadVelCache(); }
-  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); else loadValCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
+  if(t==='value' && OWNER_PW){ if(window._valData) renderValue(); else loadValCache(); }
+  if(t==='market' && OWNER_PW){ if(window._mktData) renderMarket(); else loadMktCache(); } if(t==='transit')renderTransit(); if(t==='shipments')renderShipments(); if(t==='bundles')renderBundles(); if(t==='log')renderLog(); if(t==='receive')setTimeout(()=>document.getElementById('scanIn').focus(),100); }
 
 // RECEIVING
 document.getElementById('scanIn').addEventListener('keydown', e=>{
@@ -534,6 +552,7 @@ function ownerUnlock(which){
         toast('Unlocked');
         // auto-load the data now that we're unlocked
         if(which==='value'){ if(window._valData) renderValue(); else loadValCache(); }
+        if(which==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); }
         if(which==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
       } else toast('Wrong owner password',true);
     });
@@ -803,6 +822,81 @@ function uploadPdf(){
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
     }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });
 }
+// ==================== MARKET DATA (KEEPA) ====================
+function loadMarket(){
+  const btn=document.getElementById('mktLoadBtn'); btn.textContent='Pulling Keepa data (may take a minute)...'; btn.disabled=true;
+  ownerApi('/api/market-data').then(d=>{
+    btn.textContent='↻ Refresh Market Data'; btn.disabled=false;
+    if(d.error){ document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    d.forEach(x=>{ x._oppScore=marketOpp(x); });
+    window._mktData=d; window._mktSort={col:'salesRank',dir:1}; window._mktLoadedAt=new Date();
+    renderMarket();
+  }).catch(()=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; toast('Load failed',true); });
+}
+function loadMktCache(){
+  document.getElementById('marketBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
+  ownerApi('/api/cache/market_data').then(c=>{
+    if(c.cached && c.data && c.data.length){
+      c.data.forEach(x=>{ x._oppScore=marketOpp(x); });
+      window._mktData=c.data; window._mktSort={col:'salesRank',dir:1}; window._mktLoadedAt=new Date(c.updated_at);
+      renderMarket();
+    } else {
+      document.getElementById('marketBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">No data yet — click Refresh Market Data to pull from Keepa.</div>';
+    }
+  });
+}
+// simple opportunity score: Amazon weak (OOS high or no buybox) + low competition + selling
+function marketOpp(x){
+  let score=0;
+  if(x.amazonOOS!=null && x.amazonOOS>20) score+=2;      // Amazon often out of stock
+  if(!x.amazonHasBuyBox) score+=1;                        // Amazon not holding buy box
+  if(x.offerCount!=null && x.offerCount<=3) score+=2;     // few competitors
+  if(x.salesRank!=null && x.salesRank<50000) score+=2;    // sells well
+  if(x.monthlySold!=null && x.monthlySold>50) score+=1;
+  return score;
+}
+function mktSort(col){
+  const s=window._mktSort;
+  if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=(col==='salesRank'||col==='offerCount')?1:-1; }
+  renderMarket();
+}
+function renderMarket(){
+  const d=window._mktData||[]; const s=window._mktSort;
+  const b=document.getElementById('marketBody');
+  const sorted=[...d].sort((a,b2)=>{
+    if(s.col==='name'){ const av=(a.name||'').toLowerCase(),bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    let av=a[s.col], bv=b2[s.col];
+    av=(av==null)?(s.dir>0?1e12:-1):av; bv=(bv==null)?(s.dir>0?1e12:-1):bv;
+    return (av-bv)*s.dir;
+  });
+  const arrow=c=>s.col===c?(s.dir<0?' \u25bc':' \u25b2'):'';
+  let h='<table><thead><tr>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'name\')">Product'+arrow('name')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'monthlySold\')">Est. Sold/mo'+arrow('monthlySold')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'buyBoxPrice\')">Buy Box'+arrow('buyBoxPrice')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'amazonOOS\')">Amz OOS%'+arrow('amazonOOS')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'offerCount\')">Sellers'+arrow('offerCount')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
+    '<th style="cursor:pointer" onclick="mktSort(\'_oppScore\')">Opportunity'+arrow('_oppScore')+'</th></tr></thead><tbody>';
+  h+=sorted.map(x=>{
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(x.name||x.asin).slice(0,44)}</a>`:x.name;
+    const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
+    const sold=x.monthlySold!=null?x.monthlySold.toLocaleString():'—';
+    const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
+    const oos=x.amazonOOS!=null?Math.round(x.amazonOOS)+'%':'—';
+    const sellers=x.offerCount!=null?x.offerCount:'—';
+    const opp=x._oppScore;
+    const oppBadge=opp>=5?`<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px">HOT ${opp}</span>`:(opp>=3?`<span style="background:#fdf6e3;color:#b7791f;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px">${opp}</span>`:`<span style="color:#9db0c9">${opp}</span>`);
+    return `<tr><td style="max-width:300px">${link}</td><td>${rank}</td><td>${sold}</td><td>${bb}</td><td>${oos}</td><td>${sellers}</td><td class="onhand-num">${x.onhand}</td><td>${oppBadge}</td></tr>`;
+  }).join('');
+  h+='</tbody></table>';
+  h+='<div class="hint">Sales Rank: lower = sells more. Amz OOS%: higher = Amazon often out of stock (your opening). Sellers: fewer = less competition. Opportunity score combines these — HOT = high-potential to stock/push.';
+  if(window._mktLoadedAt) h+=' Last loaded: '+window._mktLoadedAt.toLocaleString()+'.';
+  h+='</div>';
+  b.innerHTML=h;
+}
+
 // ==================== PREPPED & READY ====================
 let prepPendingFnsku = null;
 function initPrepScan(){
