@@ -1053,6 +1053,17 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   const velItems = velC.rows.length ? (velC.rows[0].data?.items||[]) : [];
   const velDays = velC.rows.length ? (velC.rows[0].data?.days||30) : 30;
   const fba = fbaC.rows.length ? (fbaC.rows[0].data||[]) : [];
+  // freshness timestamps
+  const freshness = {};
+  const mktT = await pool.query("SELECT updated_at FROM inv_cache WHERE cache_key='market_data'");
+  const velT = await pool.query("SELECT updated_at FROM inv_cache WHERE cache_key='velocity'");
+  const fbaT = await pool.query("SELECT updated_at FROM inv_cache WHERE cache_key='fba_inventory'");
+  freshness.market = mktT.rows[0]?.updated_at || null;
+  freshness.velocity = velT.rows[0]?.updated_at || null;
+  freshness.fba = fbaT.rows[0]?.updated_at || null;
+  freshness.velocityCount = velItems.length;
+  freshness.fbaCount = fba.length;
+  freshness.marketCount = market.length;
 
   // index by asin
   const mByAsin = {}; for (const m of market) mByAsin[m.asin] = m;
@@ -1142,7 +1153,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   }
   rows.sort((a,b)=> b.score - a.score);
   await saveCache('restock_priority', rows);
-  res.json({ items: rows, velDays });
+  res.json({ items: rows, velDays, freshness });
 });
 
 
