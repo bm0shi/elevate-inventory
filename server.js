@@ -1055,7 +1055,7 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
   catch(err){ return res.status(400).json({ error: err.message }); }
 
   // cross-reference with our on-hand
-  const onhandRows = await pool.query('SELECT asin, sku, name, s.onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  const onhandRows = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
   const byAsin = {}; for (const r of onhandRows.rows) byAsin[r.asin] = r;
 
   const out = products.map(p => {
