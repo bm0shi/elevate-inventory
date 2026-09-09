@@ -1172,6 +1172,10 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   const catalogAsins = new Set(prods.rows.map(p=>p.asin));
   freshness.fbaAsinsInCatalog = fba.filter(f=>catalogAsins.has(f.asin)).length;
   freshness.fbaWithTotalInCatalog = fba.filter(f=>catalogAsins.has(f.asin) && (f.fba_total||0)>0).length;
+  // velocity ASINs in catalog?
+  freshness.velAsinsInCatalog = velItems.filter(v=>catalogAsins.has(v.asin)).length;
+  // sample velocity ASINs that are NOT in catalog
+  freshness.velNotInCatalog = velItems.filter(v=>!catalogAsins.has(v.asin)).slice(0,5).map(v=>({asin:v.asin, sku:v.sku, sold:v.sold}));
   // SAMPLE diagnostics — show actual ASINs/SKUs to find the mismatch
   freshness.sampleProductAsins = prods.rows.slice(0,3).map(p=>({asin:p.asin, sku:p.sku}));
   freshness.sampleFbaAsins = fba.slice(0,5).map(f=>({asin:f.asin, total:f.fba_total, fulfillable:f.fba_fulfillable, inbound:f.fba_inbound}));
