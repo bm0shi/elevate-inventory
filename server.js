@@ -1151,15 +1151,18 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     if (canSendNow) score += 5;
 
     const prepped = preppedByAsin[p.asin] || 0;
-    // suggested send qty: cover ~45 days of demand, minus what's already covered:
-    //   effective FBA (fulfillable+reserved+inbound) + in-transit + prepped/staged
+    // suggested send qty: how many MORE to ship to hit ~45 days of coverage.
+    // Coverage already at/heading to FBA = fbaTotal (incl inbound) + in-transit + prepped(staged).
+    // Send = the gap. Cap at on-hand (prepped is coming OUT of on-hand as it ships, so the
+    // full on-hand is the ceiling of what you could send).
     let suggestedSend = null;
     if (soldPerDay > 0) {
       const target = Math.ceil(soldPerDay * 45);
-      const have = fbaTotal + transit + prepped;   // fbaTotal already includes inbound
+      const have = fbaTotal + transit + prepped;
       suggestedSend = Math.max(0, target - have);
-      // cap at what we have on hand to send (minus what's already committed to prep)
-      suggestedSend = Math.min(suggestedSend, Math.max(0, onhand - prepped));
+      // ceiling = what you physically have to send (on hand). Prepped is part of on-hand
+      // until it ships, so don't subtract it from the ceiling.
+      suggestedSend = Math.min(suggestedSend, onhand);
     }
 
     // only include items with some signal (selling OR ranked OR we hold stock)
