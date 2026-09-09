@@ -1041,6 +1041,37 @@ async function saveCache(key, data) {
 
 // ---- OWNER-ONLY endpoints ----
 
+// PRODUCTS TO ADD — SmartScout 12+ unit products, flagged by whether we carry them
+app.get('/api/products-to-add', ownerAuth, async (req, res) => {
+  let ss;
+  try { ss = JSON.parse(fs.readFileSync(path.join(__dirname, 'smartscout_products.json'), 'utf8')); }
+  catch(e){ return res.status(400).json({ error: 'smartscout_products.json not found' }); }
+
+  // which ASINs do we carry?
+  const ours = await pool.query('SELECT asin FROM inv_products');
+  const carried = new Set(ours.rows.map(r=>r.asin));
+
+  // optional: pull cached market data for extra signals (sellers, amazon buy box)
+  const mktC = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+  const market = mktC.rows.length ? (mktC.rows[0].data||[]) : [];
+  const mByAsin = {}; for (const m of market) mByAsin[m.asin] = m;
+
+  const out = ss.map(p => {
+    const m = mByAsin[p.asin] || {};
+    return {
+      asin: p.asin, title: p.title, brand: p.brand,
+      units: p.units, revenue: p.revenue, rank: p.rank,
+      carried: carried.has(p.asin),
+      sellers: m.offerCount, amazonHasBuyBox: m.amazonHasBuyBox, amazonOOS: m.amazonOOS,
+    };
+  });
+  // default: not-carried first, then by units desc
+  out.sort((a,b)=> (a.carried?1:0)-(b.carried?1:0) || b.units - a.units);
+  res.json(out);
+});
+
+
+
 // RESTOCK PRIORITY — combines Keepa market data + velocity + FBA + on-hand
 // into a ranked "what to reorder" list.
 app.get('/api/restock-priority', ownerAuth, async (req, res) => {
