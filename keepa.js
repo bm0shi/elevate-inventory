@@ -1,80 +1,88 @@
 // ============================================================
-// keepa.js — Keepa API integration for market data
-// Docs: https://keepa.com/#!discuss/t/product-object/116
+// keepa.js — Keepa API integration (corrected per official docs)
+// https://keepa.com/api-docs/product-object.html
 // ============================================================
 const axios = require('axios');
 
 const KEEPA_BASE = 'https://api.keepa.com';
-const DOMAIN = 1; // 1 = amazon.com (US)
+const DOMAIN = 1; // amazon.com
+const AMAZON_SELLER_ID = 'ATVPDKIKX0DER';
 
 function keyOk() { return !!process.env.KEEPA_API_KEY; }
-
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Fetch product data for a batch of ASINs (Keepa accepts up to 100 per request).
-// Returns array of simplified product objects.
+// csv/stats index constants
+const IDX = { AMAZON:0, NEW:1, SALES:3, COUNT_NEW:11, BUY_BOX:18 };
+
+// Fetch product data for ASINs (up to 100 per request). stats=90 for 90-day stats.
 async function getProducts(asins) {
   if (!keyOk()) throw new Error('KEEPA_API_KEY not set');
   const key = process.env.KEEPA_API_KEY;
   const out = [];
-  // Keepa allows up to 100 ASINs per call. stats=90 gives 90-day stats.
+  let tokensLeft = null;
   for (let i = 0; i < asins.length; i += 100) {
     const batch = asins.slice(i, i + 100);
-    const url = `${KEEPA_BASE}/product?key=${key}&domain=${DOMAIN}&asin=${batch.join(',')}&stats=90&offers=20&buybox=1`;
+    const url = `${KEEPA_BASE}/product?key=${key}&domain=${DOMAIN}&asin=${batch.join(',')}&stats=90&buybox=1`;
     let resp;
     try {
-      resp = await axios.get(url, { timeout: 60000 });
+      resp = await axios.get(url, { timeout: 60000, decompress: true });
     } catch (err) {
-      const body = err.response?.data ? JSON.stringify(err.response.data).slice(0,200) : err.message;
+      const body = err.response?.data ? JSON.stringify(err.response.data).slice(0,300) : err.message;
       throw new Error(`Keepa ${err.response?.status || ''}: ${body}`);
     }
+    if (resp.data.error) throw new Error('Keepa: ' + (resp.data.error.message || JSON.stringify(resp.data.error)));
+    tokensLeft = resp.data.tokensLeft;
     const products = resp.data.products || [];
-    for (const p of products) {
-      out.push(simplify(p));
-    }
-    // token-friendly pause between batches
-    await sleep(1500);
+    for (const p of products) out.push(simplify(p));
+    await sleep(1200);
   }
-  return out;
+  return { products: out, tokensLeft };
 }
 
-// Turn a raw Keepa product into the fields we care about
+function cents(v){ return (v == null || v < 0) ? null : v / 100; }
+
 function simplify(p) {
   const stats = p.stats || {};
-  // Keepa prices are in cents; -1 means no data
-  const cents = v => (v == null || v < 0) ? null : v / 100;
-  // current values array indices: 0=AMAZON,1=NEW,2=USED,3=SALES(rank),...,18=BUY_BOX
-  const cur = stats.current || [];
+  const cur = stats.current || [];      // current value per csv index
   const avg30 = stats.avg30 || [];
-  const salesRank = cur[3] != null && cur[3] >= 0 ? cur[3] : null;
-  const salesRankAvg30 = avg30[3] != null && avg30[3] >= 0 ? avg30[3] : null;
 
-  // buy box: is Amazon the seller? Keepa buyBoxSellerId 'ATVPDKIKX0DER' = Amazon
-  const buyBoxSeller = p.buyBoxSellerIdHistory ? p.buyBoxSellerIdHistory[p.buyBoxSellerIdHistory.length-1] : null;
-  const amazonHasBuyBox = buyBoxSeller === 'ATVPDKIKX0DER';
+  // Sales rank (index 3). Lower = better.
+  const salesRank = (cur[IDX.SALES] != null && cur[IDX.SALES] >= 0) ? cur[IDX.SALES] : null;
+  const salesRankAvg30 = (avg30[IDX.SALES] != null && avg30[IDX.SALES] >= 0) ? avg30[IDX.SALES] : null;
 
-  // Amazon in-stock rate over 90 days (outOfStockPercentage for Amazon offer)
-  const amazonOOS = stats.outOfStockPercentageInInterval ? stats.outOfStockPercentageInInterval[0] : null;
+  // Buy box price (index 18). -1 = none.
+  const buyBoxPrice = cents(cur[IDX.BUY_BOX]);
+  // Amazon price (index 0)
+  const amazonPrice = cents(cur[IDX.AMAZON]);
 
-  // offer count (number of new offers)
-  const offerCount = cur[11] != null && cur[11] >= 0 ? cur[11] : (p.offers ? p.offers.length : null);
+  // Offer count: COUNT_NEW (index 11) = number of new marketplace sellers
+  const offerCount = (cur[IDX.COUNT_NEW] != null && cur[IDX.COUNT_NEW] >= 0) ? cur[IDX.COUNT_NEW] : null;
 
-  // estimated monthly sales (Keepa provides monthlySold on some products)
-  const monthlySold = p.monthlySold != null ? p.monthlySold : null;
+  // Who holds the buy box currently (last entry of buyBoxSellerIdHistory)
+  let amazonHasBuyBox = false;
+  if (Array.isArray(p.buyBoxSellerIdHistory) && p.buyBoxSellerIdHistory.length) {
+    const lastSeller = p.buyBoxSellerIdHistory[p.buyBoxSellerIdHistory.length - 1];
+    amazonHasBuyBox = (lastSeller === AMAZON_SELLER_ID);
+  }
+
+  // Amazon out-of-stock %: stats.outOfStockPercentage is [amazon%, new%] over the interval
+  let amazonOOS = null;
+  if (Array.isArray(stats.outOfStockPercentage) && stats.outOfStockPercentage[IDX.AMAZON] != null && stats.outOfStockPercentage[IDX.AMAZON] >= 0) {
+    amazonOOS = stats.outOfStockPercentage[IDX.AMAZON];
+  }
+
+  // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
+  const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
 
   return {
     asin: p.asin,
     title: p.title || '',
     brand: p.brand || '',
-    salesRank,
-    salesRankAvg30,
-    buyBoxPrice: cents(cur[18]),
-    amazonPrice: cents(cur[0]),
-    newPrice: cents(cur[1]),
-    amazonHasBuyBox,
-    amazonOOS,          // % of time Amazon was out of stock (higher = Amazon weak = opportunity)
-    offerCount,          // fewer offers = less competition
-    monthlySold,         // Keepa's "bought in past month" if available
+    productType: p.productType,
+    salesRank, salesRankAvg30,
+    buyBoxPrice, amazonPrice,
+    amazonHasBuyBox, amazonOOS,
+    offerCount, monthlySold,
   };
 }
 
