@@ -837,6 +837,7 @@ function uploadPdf(){
 // ==================== RESTOCK PRIORITY (STAGE 2) ====================
 function loadRestock(){
   const btn=document.getElementById('restockBtn'); btn.textContent='Building plan...'; btn.disabled=true;
+  document.getElementById('restockBody').innerHTML='<div class="hint" style="padding:16px">Requesting plan from server...</div>';
   ownerApi('/api/restock-priority').then(d=>{
     btn.textContent='🎯 Build Restock Plan'; btn.disabled=false;
     if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
