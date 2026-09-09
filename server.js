@@ -1078,12 +1078,16 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
       )::int AS prepped
     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
-  const velBySku = {}; for (const v of velItems) velBySku[v.sku] = v;
+  const velBySku = {}; const velByAsin = {};
+  for (const v of velItems) {
+    if (v.sku) { velBySku[v.sku] = v; velBySku[String(v.sku).trim().toUpperCase()] = v; }
+    if (v.asin) velByAsin[v.asin] = v;
+  }
 
   const rows = [];
   for (const p of prods.rows) {
     const m = mByAsin[p.asin] || {};
-    const v = velBySku[p.sku] || {};
+    const v = velBySku[p.sku] || velBySku[String(p.sku||'').trim().toUpperCase()] || velByAsin[p.asin] || {};
     const f = fbaByAsin[p.asin] || {};
 
     const onhand = p.onhand || 0;
@@ -1151,6 +1155,9 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
       });
     }
   }
+  // diagnostics: how many products actually matched velocity & fba
+  freshness.matchedVelocity = rows.filter(r=>r.soldPerDay>0).length;
+  freshness.matchedFba = rows.filter(r=>r.fbaFulfillable>0).length;
   rows.sort((a,b)=> b.score - a.score);
   await saveCache('restock_priority', rows);
   res.json({ items: rows, velDays, freshness });
