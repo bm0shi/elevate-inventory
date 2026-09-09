@@ -1067,7 +1067,11 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
 
   // index by asin
   const mByAsin = {}; for (const m of market) mByAsin[m.asin] = m;
-  const fbaByAsin = {}; for (const f of fba) fbaByAsin[f.asin] = f;
+  const fbaByAsin = {}; const fbaBySku = {};
+  for (const f of fba) {
+    if (f.asin) fbaByAsin[f.asin] = f;
+    if (f.sku) fbaBySku[f.sku] = f;
+  }
 
   // velocity is keyed by SKU — map sku->sold, and we need sku->asin from products
   // include prepped-committed quantity per component (singles + duo components)
@@ -1088,7 +1092,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   for (const p of prods.rows) {
     const m = mByAsin[p.asin] || {};
     const v = velByAsin[p.asin] || velBySku[p.sku] || velBySku[String(p.sku||'').trim().toUpperCase()] || {};
-    const f = fbaByAsin[p.asin] || {};
+    const f = fbaByAsin[p.asin] || fbaBySku[p.sku] || {};
 
     const onhand = p.onhand || 0;
     const transit = p.transit || 0;
@@ -1164,6 +1168,10 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   freshness.matchedFba = rows.filter(r=>r.fbaFulfillable>0).length;
   freshness.fbaWithTotal = fba.filter(f=>(f.fba_total||0)>0).length;
   freshness.fbaWithFulfillable = fba.filter(f=>(f.fba_fulfillable||0)>0).length;
+  // how many FBA asins are in our catalog at all?
+  const catalogAsins = new Set(prods.rows.map(p=>p.asin));
+  freshness.fbaAsinsInCatalog = fba.filter(f=>catalogAsins.has(f.asin)).length;
+  freshness.fbaWithTotalInCatalog = fba.filter(f=>catalogAsins.has(f.asin) && (f.fba_total||0)>0).length;
   // SAMPLE diagnostics — show actual ASINs/SKUs to find the mismatch
   freshness.sampleProductAsins = prods.rows.slice(0,3).map(p=>({asin:p.asin, sku:p.sku}));
   freshness.sampleFbaAsins = fba.slice(0,5).map(f=>({asin:f.asin, total:f.fba_total, fulfillable:f.fba_fulfillable, inbound:f.fba_inbound}));
@@ -1265,7 +1273,7 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
       if (ur.rowCount === 0 && f.asin) ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [f.fnSku, f.asin]);
       if (ur.rowCount > 0) fnskusSaved++;
     }
-    out.push({ asin: f.asin, name: o.name || sku, warehouse: o.onhand||0, transit: o.transit||0,
+    out.push({ asin: f.asin, sku: sku, name: o.name || sku, warehouse: o.onhand||0, transit: o.transit||0,
       fba_total: f.total, fba_fulfillable: f.fulfillable, fba_inbound: f.inbound,
       grand_total: (o.onhand||0)+(o.transit||0)+f.total });
   }
