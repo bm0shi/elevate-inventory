@@ -8,6 +8,7 @@ const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
 const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices } = require('./spapi');
+const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -1037,6 +1038,49 @@ async function saveCache(key, data) {
 }
 
 // ---- OWNER-ONLY endpoints ----
+
+// Keepa market data — pull for target ASINs, cross-reference with our on-hand
+app.get('/api/market-data', ownerAuth, async (req, res) => {
+  if (!keepa.keyOk()) return res.status(400).json({ error: 'KEEPA_API_KEY not set in Railway variables' });
+  // target ASINs: our catalog (can expand later)
+  let asins;
+  try { asins = JSON.parse(fs.readFileSync(path.join(__dirname, 'keepa_asins.json'), 'utf8')); }
+  catch(e){ asins = []; }
+  if (!asins.length) return res.status(400).json({ error: 'No target ASINs configured' });
+
+  let products;
+  try { products = await keepa.getProducts(asins); }
+  catch(err){ return res.status(400).json({ error: err.message }); }
+
+  // cross-reference with our on-hand
+  const onhandRows = await pool.query('SELECT asin, sku, name, s.onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  const byAsin = {}; for (const r of onhandRows.rows) byAsin[r.asin] = r;
+
+  const out = products.map(p => {
+    const mine = byAsin[p.asin] || {};
+    return {
+      asin: p.asin,
+      name: mine.name || p.title,
+      onhand: mine.onhand || 0,
+      salesRank: p.salesRank,
+      monthlySold: p.monthlySold,
+      buyBoxPrice: p.buyBoxPrice,
+      amazonHasBuyBox: p.amazonHasBuyBox,
+      amazonOOS: p.amazonOOS,
+      offerCount: p.offerCount,
+    };
+  });
+  // default sort: best sales rank (lowest number = best seller) first
+  out.sort((a,b)=>{
+    const ar = a.salesRank == null ? 1e12 : a.salesRank;
+    const br = b.salesRank == null ? 1e12 : b.salesRank;
+    return ar - br;
+  });
+  await saveCache('market_data', out);
+  res.json(out);
+});
+
+
 
 // Inventory value (owner) — units on hand × cost, needs cost per item
 app.get('/api/inventory-value', ownerAuth, async (req, res) => {
