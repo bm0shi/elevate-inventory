@@ -1108,13 +1108,19 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     const fbaFulfillable = f.fba_fulfillable || 0;
     const fbaInbound = f.fba_inbound || 0;
 
-    // velocity signals
-    const soldPerDay = v.perDay || 0;                        // from OUR Amazon sales (velocity tab)
-    const keepaMonthly = m.monthlySold || 0;                 // Keepa "bought past month" (market-wide)
-    // days of stock left — use TOTAL FBA stock (fulfillable + reserved + INBOUND that's arriving)
-    // because inbound units are already on their way and count toward coverage.
-    const effectiveFba = fbaTotal; // total includes fulfillable + reserved + inbound
-    const daysAtFba = soldPerDay > 0 ? Math.round(effectiveFba / soldPerDay) : null;
+    // ===== DEMAND DRIVER: Keepa market demand (NOT our stockout-suppressed sales) =====
+    const ourSoldPerDay = v.perDay || 0;                     // our actual sales (info only — skewed by stockouts)
+    const keepaMonthly = m.monthlySold || 0;                 // Keepa "bought past month" = TRUE market demand
+    // Amazon buy-box discount: if Amazon holds the buy box, third-party sellers (you) capture less.
+    // amazonHasBuyBox is a current snapshot; treat it as ~capturing 50% less when Amazon holds it.
+    const amazonFactor = m.amazonHasBuyBox ? 0.5 : 1.0;
+    // market demand per day you can realistically capture
+    const marketDemandPerDay = (keepaMonthly / 30) * amazonFactor;
+    // Use market demand as the primary driver; fall back to our sales only if Keepa has no data
+    const demandPerDay = marketDemandPerDay > 0 ? marketDemandPerDay : ourSoldPerDay;
+
+    const effectiveFba = fbaTotal;
+    const daysAtFba = demandPerDay > 0 ? Math.round(effectiveFba / demandPerDay) : null;
 
     // opportunity from Keepa market data
     const salesRank = m.salesRank != null ? m.salesRank : null;
@@ -1129,13 +1135,13 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
       if (daysAtFba <= 7) score += 40;
       else if (daysAtFba <= 14) score += 25;
       else if (daysAtFba <= 30) score += 10;
-    } else if (effectiveFba === 0 && soldPerDay > 0) {
-      score += 45; // selling but nothing at FBA (incl. inbound) = urgent
+    } else if (effectiveFba === 0 && demandPerDay > 0) {
+      score += 45; // market demand exists but nothing at FBA = urgent
     }
-    // demand: it sells
-    if (soldPerDay >= 10) score += 20;
-    else if (soldPerDay >= 3) score += 10;
-    else if (soldPerDay > 0) score += 5;
+    // demand: market wants it
+    if (demandPerDay >= 10) score += 20;
+    else if (demandPerDay >= 3) score += 10;
+    else if (demandPerDay > 0) score += 5;
     // market strength (good sales rank)
     if (salesRank != null) {
       if (salesRank < 5000) score += 15;
@@ -1151,31 +1157,35 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     if (canSendNow) score += 5;
 
     const prepped = preppedByAsin[p.asin] || 0;
-    // suggested send qty: how many MORE to ship to hit ~45 days of coverage.
-    // Coverage already at/heading to FBA = fbaTotal (incl inbound) + in-transit + prepped(staged).
-    // Send = the gap. Cap at on-hand (prepped is coming OUT of on-hand as it ships, so the
-    // full on-hand is the ceiling of what you could send).
+    // Coverage already heading to FBA (units that will be sellable soon)
+    const coverage = fbaTotal + transit + prepped;
+    const coverageDays = demandPerDay > 0 ? coverage / demandPerDay : null;
+    // Suggested send: bring FBA coverage up to a 60-day target, drawing from on-hand.
+    // Prepped counts toward coverage (already staged), so we only recommend the ADDITIONAL
+    // units needed beyond what's prepped/inbound/in-transit.
     let suggestedSend = null;
-    if (soldPerDay > 0) {
-      const target = Math.ceil(soldPerDay * 45);
-      const have = fbaTotal + transit + prepped;
-      suggestedSend = Math.max(0, target - have);
-      // ceiling = what you physically have to send (on hand). Prepped is part of on-hand
-      // until it ships, so don't subtract it from the ceiling.
-      suggestedSend = Math.min(suggestedSend, onhand);
+    if (demandPerDay > 0) {
+      const TARGET_DAYS = 60;
+      const target = Math.ceil(demandPerDay * TARGET_DAYS);
+      const gap = target - coverage;
+      const availableToSend = Math.max(0, onhand - prepped);
+      suggestedSend = Math.max(0, Math.min(gap, availableToSend));
     }
 
     // only include items with some signal (selling OR ranked OR we hold stock)
-    if (soldPerDay > 0 || salesRank != null || onhand > 0) {
+    if (demandPerDay > 0 || salesRank != null || onhand > 0) {
       rows.push({
         asin: p.asin, name: p.name || m.title, onhand, transit, prepped,
-        fbaFulfillable: fbaTotal, fbaInbound, soldPerDay, keepaMonthly, daysAtFba,
-        salesRank, amazonOOS, sellers, score, suggestedSend, canSendNow
+        fbaFulfillable: fbaTotal, fbaInbound,
+        soldPerDay: Math.round(demandPerDay*10)/10,   // MARKET demand/day (the driver)
+        ourSoldPerDay: Math.round(ourSoldPerDay*10)/10, // our actual (reference)
+        keepaMonthly, amazonHasBuyBox: m.amazonHasBuyBox,
+        daysAtFba, salesRank, amazonOOS, sellers, score, suggestedSend, canSendNow
       });
     }
   }
   // diagnostics: how many products actually matched velocity & fba
-  freshness.matchedVelocity = rows.filter(r=>r.soldPerDay>0).length;
+  freshness.matchedVelocity = rows.filter(r=>r.soldPerDay>0).length; // now = market demand>0
   freshness.dedupedProductCount = prods.rows.length;
   // how many velocity SOURCE items have perDay>0 (before any matching)?
   freshness.velSourceWithPerDay = velItems.filter(v=>(v.perDay||0)>0).length;
