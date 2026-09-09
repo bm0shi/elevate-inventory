@@ -1041,32 +1041,48 @@ async function saveCache(key, data) {
 
 // ---- OWNER-ONLY endpoints ----
 
-// PRODUCTS TO ADD — SmartScout 12+ unit products, flagged by whether we carry them
+// PRODUCTS TO ADD — driven by LIVE KEEPA data (refreshes with Market Data).
+// SmartScout units layered on where available for extra precision.
 app.get('/api/products-to-add', ownerAuth, async (req, res) => {
-  let ss;
-  try { ss = JSON.parse(fs.readFileSync(path.join(__dirname, 'smartscout_products.json'), 'utf8')); }
-  catch(e){ return res.status(400).json({ error: 'smartscout_products.json not found' }); }
+  // primary source: cached Keepa market data (all tracked ASINs)
+  const mktC = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+  const market = mktC.rows.length ? (mktC.rows[0].data||[]) : [];
+  if (!market.length) return res.status(400).json({ error: 'No Keepa market data yet — refresh Market Data first.' });
 
   // which ASINs do we carry?
   const ours = await pool.query('SELECT asin FROM inv_products');
   const carried = new Set(ours.rows.map(r=>r.asin));
 
-  // optional: pull cached market data for extra signals (sellers, amazon buy box)
-  const mktC = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
-  const market = mktC.rows.length ? (mktC.rows[0].data||[]) : [];
-  const mByAsin = {}; for (const m of market) mByAsin[m.asin] = m;
+  // optional SmartScout enrichment (units/revenue where we have it)
+  let ssByAsin = {};
+  try {
+    const ss = JSON.parse(fs.readFileSync(path.join(__dirname, 'smartscout_products.json'), 'utf8'));
+    for (const p of ss) ssByAsin[p.asin] = p;
+  } catch(e) { /* optional */ }
 
-  const out = ss.map(p => {
-    const m = mByAsin[p.asin] || {};
+  const out = market.map(m => {
+    const ss = ssByAsin[m.asin] || {};
     return {
-      asin: p.asin, title: p.title, brand: p.brand,
-      units: p.units, revenue: p.revenue, rank: p.rank,
-      carried: carried.has(p.asin),
-      sellers: m.offerCount, amazonHasBuyBox: m.amazonHasBuyBox, amazonOOS: m.amazonOOS,
+      asin: m.asin,
+      title: m.name || ss.title || m.asin,
+      brand: ss.brand || '',
+      salesRank: m.salesRank,               // Keepa — available for all
+      keepaMonthly: m.monthlySold || null,  // Keepa units where available
+      ssUnits: ss.units || null,            // SmartScout units (enrichment)
+      ssRevenue: ss.revenue || null,
+      sellers: m.offerCount,
+      amazonHasBuyBox: m.amazonHasBuyBox,
+      amazonOOS: m.amazonOOS,
+      buyBoxPrice: m.buyBoxPrice,
+      carried: carried.has(m.asin),
     };
   });
-  // default: not-carried first, then by units desc
-  out.sort((a,b)=> (a.carried?1:0)-(b.carried?1:0) || b.units - a.units);
+  // default sort: not-carried first, then best sales rank (lowest = sells most)
+  out.sort((a,b)=>{
+    if((a.carried?1:0)!==(b.carried?1:0)) return (a.carried?1:0)-(b.carried?1:0);
+    const ar=a.salesRank==null?1e12:a.salesRank, br=b.salesRank==null?1e12:b.salesRank;
+    return ar-br;
+  });
   res.json(out);
 });
 
