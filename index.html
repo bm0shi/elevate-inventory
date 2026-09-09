@@ -900,13 +900,13 @@ function loadPrepList(){
     const b=document.getElementById('prepListBox');
     if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Nothing prepped yet. Scan labeled items above.</div>'; return; }
     let h='<div class="cards"><div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Total Units Prepped</div></div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
-    h+='<table><thead><tr><th>Product</th><th>Prepped</th><th>On Hand</th><th></th></tr></thead><tbody>';
+    h+='<table><thead><tr><th>Product</th><th>Prepped</th><th></th></tr></thead><tbody>';
     h+=d.items.map(x=>{
-      const over=x.prepped>(x.onhand||0);
       const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;
-      return `<tr${over?' style="background:#fdf0ee"':''}><td style="max-width:320px">${link}</td><td class="onhand-num">${x.prepped}${over?' <span style="color:#c0392b">⚠</span>':''}</td><td>${x.onhand||0}</td><td><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:4px 8px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">edit</button></td></tr>`;
+      const badge=x.isBundle?' <span style="background:#e6eff8;color:#2563a8;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span>':'';
+      return `<tr><td style="max-width:340px">${link}${badge}</td><td class="onhand-num">${x.prepped}</td><td><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:4px 8px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">edit</button></td></tr>`;
     }).join('');
-    h+='</tbody></table><div class="hint">⚠ = prepped exceeds on hand (verify count). These clear automatically when you finalize the shipment on Ship to FBA.</div>';
+    h+='</tbody></table><div class="hint">Duos show as duos, singles as singles — exactly as scanned. Duos consume component stock underneath. These clear when you finalize the shipment on Ship to FBA.</div>';
     b.innerHTML=h;
   });
 }
