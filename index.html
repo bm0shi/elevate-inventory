@@ -396,8 +396,9 @@
   <div id="restock" class="panel">
     <div class="box">
       <div style="font-weight:700">Restock Priority Plan</div>
-      <div class="hint">Combines Keepa market data + your sales velocity + FBA stock + on-hand into a ranked "what to send to FBA next" list. Load Market Data, Velocity, and FBA Inventory first for the fullest picture.</div>
-      <button class="action full" onclick="loadRestock()" id="restockBtn" style="margin-top:8px;background:#c0392b">🎯 Build Restock Plan</button>
+      <div class="hint">Combines Keepa market data + your sales velocity + FBA stock + on-hand into a ranked "what to send to FBA next" list.</div>
+      <div class="box" style="background:#fdf6e3;border:1px solid #b7791f;margin:10px 0;padding:10px"><b style="color:#b7791f">📋 Before building:</b> For accurate Send Quantities, make sure <b>Velocity</b> and <b>FBA Inventory</b> are freshly loaded. The plan uses their most recent saved data (shown below after building).</div>
+      <button class="action full" onclick="loadRestock()" id="restockBtn" style="background:#c0392b">🎯 Build Restock Plan</button>
     </div>
     <div id="restockBody"></div>
   </div>
@@ -839,7 +840,7 @@ function loadRestock(){
   ownerApi('/api/restock-priority').then(d=>{
     btn.textContent='🎯 Build Restock Plan'; btn.disabled=false;
     if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    window._restockData=d.items||[]; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date();
+    window._restockData=d.items||[]; window._restockFresh=d.freshness; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date();
     renderRestock();
   }).catch(err=>{ btn.textContent='🎯 Build Restock Plan'; btn.disabled=false; document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Failed: '+(err.message||err)+'</div>'; });
 }
@@ -902,7 +903,17 @@ function renderRestock(){
   h+='</tbody></table>';
   h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>Send Qty</b> = suggested units to ship to FBA (covers ~45 days, accounts for whats already at FBA, inbound, and prepped). <b>(prepped)</b> = already staged on the Prepped &amp; Ready page. <b>Days@FBA</b> red = under a week left.';
   if(window._restockLoadedAt) h+=' Last built: '+window._restockLoadedAt.toLocaleString()+'.';
-  h+=' Load Market Data, Velocity, and FBA Inventory first for full accuracy.</div>';
+  h+='</div>';
+  // data freshness panel
+  const fr=window._restockFresh;
+  if(fr){
+    const fmt=t=>t?new Date(t).toLocaleString():'<span style="color:#c0392b">never loaded</span>';
+    h+='<div class="box" style="margin-top:10px;font-size:12px"><b>Source data freshness:</b><br>'+
+       '📈 Market (Keepa): '+fmt(fr.market)+' ('+fr.marketCount+' products)<br>'+
+       '📊 Velocity: '+fmt(fr.velocity)+' ('+fr.velocityCount+' with sales)<br>'+
+       '📦 FBA Inventory: '+fmt(fr.fba)+' ('+fr.fbaCount+' items)<br>'+
+       '<span style="color:#5a6472">Reload any that are stale, then rebuild the plan.</span></div>';
+  }
   b.innerHTML=h;
 }
 
