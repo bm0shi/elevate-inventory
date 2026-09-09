@@ -7,7 +7,7 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1b2d; color: #1f2733; }
-  .app { max-width: 1100px; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
+  .app { max-width: 1500px; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
   header { background: #0f1b2d; color: #fff; padding: 16px 20px; position: sticky; top: 0; z-index: 10; }
   header h1 { font-size: 18px; font-weight: 700; }
   header .sub { font-size: 12px; color: #9db0c9; margin-top: 2px; }
@@ -604,7 +604,7 @@ function loadDashboard(){
     if(d.underStocked && d.underStocked.length){
       h+='<div class="box"><div style="font-weight:700;color:#b7791f;margin-bottom:2px">🔥 Under-Stocked Top Sellers (≤100 units)</div><div class="hint" style="margin-bottom:8px">Highest-revenue items you\'re low or out on — restock priority. Based on last velocity + price pull.</div>';
       h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>On Hand</th><th>Sold</th><th>Revenue</th></tr></thead><tbody>';
-      h+=d.underStocked.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;const rev=x.revenue?'$'+Math.round(x.revenue).toLocaleString():'—';const oh=x.onhand<=20?`<b style="color:#c0392b">${x.onhand}</b>`:x.onhand;return `<tr><td style="max-width:340px">${link}</td><td>${oh}</td><td>${x.sold}</td><td class="onhand-num">${rev}</td></tr>`;}).join('');
+      h+=d.underStocked.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;const rev=x.revenue?'$'+Math.round(x.revenue).toLocaleString():'—';const oh=x.onhand<=20?`<b style="color:#c0392b">${x.onhand}</b>`:x.onhand;return `<tr><td>${link}</td><td>${oh}</td><td>${x.sold}</td><td class="onhand-num">${rev}</td></tr>`;}).join('');
       h+='</tbody></table></div>';
     }
     // recent activity
@@ -701,7 +701,7 @@ function renderFbaInv(){
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
-  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');return `<tr><td style="max-width:340px">${link}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`;}).join('');
+  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');return `<tr><td>${link}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
 }
@@ -742,7 +742,7 @@ function renderVelocity(){
     const dl=x.daysLeft===null?'—':(x.daysLeft+'d');
     const col=x.daysLeft!==null&&x.daysLeft<21?'style="color:#c0392b;font-weight:700"':'';
     const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
-    return `<tr><td style="max-width:340px">${link}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;
+    return `<tr><td>${link}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;
   }).join('');
   h+='</tbody></table><div class="hint">Click a product name to open its Amazon listing. Red = under 21 days of stock left. Based on last '+window._velDays+' days of Amazon sales.'+(window._velLoadedAt?' · Last loaded: '+window._velLoadedAt.toLocaleString():'')+'</div>';
   b.innerHTML=h;
@@ -798,7 +798,7 @@ function renderValue(){
      '<th style="cursor:pointer" onclick="valSort(\'_retailVal\')">Retail Value'+arrow('_retailVal')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
     const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
-    return `<tr><td style="max-width:360px">${link}</td><td>${x.onhand}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
+    return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   h+='<div class="hint">Retail value = units on hand × current Amazon price. Blank price = no active/available Amazon price for that item.';
@@ -883,17 +883,19 @@ function renderRestock(){
     '<th style="cursor:pointer" onclick="restockSort(\'suggestedSend\')">Send Qty'+arrow('suggestedSend')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'score\')">Priority'+arrow('score')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
-    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(x.name||x.asin).slice(0,42)}</a>`:x.name;
+    const nm2=x.name||x.asin;
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${nm2}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700;margin-top:2px">${x.asin}</div>`:nm2;
     const days=x.daysAtFba==null?'—':(x.daysAtFba+'d');
     const daysStyle=(x.daysAtFba!=null&&x.daysAtFba<=7)?'style="color:#c0392b;font-weight:700"':(x.daysAtFba!=null&&x.daysAtFba<=14?'style="color:#b7791f;font-weight:700"':'');
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const send=x.suggestedSend?x.suggestedSend.toLocaleString():'—';
     const sendStyle=x.suggestedSend>0?'style="color:#1e8449;font-weight:700"':'';
+    const preppedTag=x.prepped>0?` <span style="color:#b7791f;font-size:11px;font-weight:700">(${x.prepped} prepped)</span>`:'';
     const pri=x.score>=40?`<span style="background:#fdeceb;color:#c0392b;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">URGENT ${x.score}</span>`:(x.score>=20?`<span style="background:#fdf6e3;color:#b7791f;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">${x.score}</span>`:`<span style="color:#9db0c9">${x.score}</span>`);
-    return `<tr><td style="max-width:280px">${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}</td><td>${x.soldPerDay}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}</td><td>${pri}</td></tr>`;
+    return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}</td><td>${x.soldPerDay}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}${preppedTag}</td><td>${pri}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>Send Qty</b> = suggested units to ship to FBA (covers ~45 days, capped at your on-hand). <b>Days@FBA</b> red = under a week left.';
+  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>Send Qty</b> = suggested units to ship to FBA (covers ~45 days, accounts for whats already at FBA, inbound, and prepped). <b>(prepped)</b> = already staged on the Prepped &amp; Ready page. <b>Days@FBA</b> red = under a week left.';
   if(window._restockLoadedAt) h+=' Last built: '+window._restockLoadedAt.toLocaleString()+'.';
   h+=' Load Market Data, Velocity, and FBA Inventory first for full accuracy.</div>';
   b.innerHTML=h;
@@ -958,7 +960,9 @@ function renderMarket(){
     '<th style="cursor:pointer" onclick="mktSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
     '<th style="cursor:pointer" onclick="mktSort(\'_oppScore\')">Opportunity'+arrow('_oppScore')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
-    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(x.name||x.asin).slice(0,44)}</a>`:x.name;
+    const nm=x.name||x.asin;
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${nm}</a>`:nm;
+    const asinLine=x.asin?`<div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700;margin-top:2px">${x.asin}</div>`:'';
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const sold=x.monthlySold!=null?x.monthlySold.toLocaleString():'—';
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
@@ -966,7 +970,7 @@ function renderMarket(){
     const sellers=x.offerCount!=null?x.offerCount:'—';
     const opp=x._oppScore;
     const oppBadge=opp>=5?`<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px">HOT ${opp}</span>`:(opp>=3?`<span style="background:#fdf6e3;color:#b7791f;padding:2px 8px;border-radius:10px;font-weight:700;font-size:11px">${opp}</span>`:`<span style="color:#9db0c9">${opp}</span>`);
-    return `<tr><td style="max-width:300px">${link}</td><td>${rank}</td><td>${sold}</td><td>${bb}</td><td>${oos}</td><td>${sellers}</td><td class="onhand-num">${x.onhand}</td><td>${oppBadge}</td></tr>`;
+    return `<tr><td>${link}${asinLine}</td><td>${rank}</td><td>${sold}</td><td>${bb}</td><td>${oos}</td><td>${sellers}</td><td class="onhand-num">${x.onhand}</td><td>${oppBadge}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   h+='<div class="hint">Sales Rank: lower = sells more. Amz OOS%: higher = Amazon often out of stock (your opening). Sellers: fewer = less competition. Opportunity score combines these — HOT = high-potential to stock/push.';
