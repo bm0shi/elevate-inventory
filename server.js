@@ -824,6 +824,36 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   res.json({ ok: true, added, discrepancies });
 });
 
+// Sync FNSKUs from FBA inventory — matches by SKU first, then ASIN. Returns a report.
+app.post('/api/sync-fnskus', auth, async (req, res) => {
+  let fba;
+  try { fba = await getFbaInventory(); }
+  catch(err){ return res.status(400).json({ error: err.message }); }
+
+  let matched = 0, unmatched = [];
+  for (const sku in fba) {
+    const f = fba[sku];
+    if (!f.fnSku) continue;
+    // try match by SKU first
+    let r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2 RETURNING asin', [f.fnSku, sku]);
+    if (r.rowCount === 0 && f.asin) {
+      // then by ASIN
+      r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2 RETURNING asin', [f.fnSku, f.asin]);
+    }
+    if (r.rowCount > 0) matched++;
+    else unmatched.push({ sku, asin: f.asin, fnsku: f.fnSku });
+  }
+  console.log(`[FNSKU Sync] Matched ${matched}, unmatched ${unmatched.length}`);
+  res.json({ ok: true, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0,30) });
+});
+
+// How many products have an FNSKU (diagnostic)
+app.get('/api/fnsku-status', auth, async (req, res) => {
+  const total = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products');
+  const withFn = await pool.query("SELECT COUNT(*)::int AS n FROM inv_products WHERE fnsku IS NOT NULL AND fnsku<>''");
+  res.json({ total: total.rows[0].n, withFnsku: withFn.rows[0].n });
+});
+
 // PDF upload -> extract text -> process (multi-order)
 app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -987,10 +1017,11 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     const f = fba[sku];
     const o = byAsin[f.asin] || {};
     seen.add(f.asin);
-    // capture FNSKU for this ASIN
-    if (f.fnSku && f.asin) {
-      await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku=\'\')', [f.fnSku, f.asin]);
-      fnskusSaved++;
+    // capture FNSKU — match by SKU first, then ASIN
+    if (f.fnSku) {
+      let ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2', [f.fnSku, sku]);
+      if (ur.rowCount === 0 && f.asin) ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [f.fnSku, f.asin]);
+      if (ur.rowCount > 0) fnskusSaved++;
     }
     out.push({ asin: f.asin, name: o.name || sku, warehouse: o.onhand||0, transit: o.transit||0,
       fba_total: f.total, fba_fulfillable: f.fulfillable, fba_inbound: f.inbound,
