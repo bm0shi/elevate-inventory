@@ -1059,7 +1059,14 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   const fbaByAsin = {}; for (const f of fba) fbaByAsin[f.asin] = f;
 
   // velocity is keyed by SKU — map sku->sold, and we need sku->asin from products
-  const prods = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  // include prepped-committed quantity per component (singles + duo components)
+  const prods = await pool.query(`
+    SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
+      (
+        COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+        + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
+      )::int AS prepped
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
   const velBySku = {}; for (const v of velItems) velBySku[v.sku] = v;
 
   const rows = [];
@@ -1113,20 +1120,21 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     const canSendNow = onhand > 0;
     if (canSendNow) score += 5;
 
-    // suggested send qty: cover ~45 days of FBA demand, minus what's already at FBA + inbound
+    const prepped = p.prepped || 0;
+    // suggested send qty: cover ~45 days of FBA demand, minus what's already at FBA + inbound + already prepped
     let suggestedSend = null;
     if (soldPerDay > 0) {
       const target = Math.ceil(soldPerDay * 45);
-      const have = fbaFulfillable + (f.fba_inbound || 0) + transit;
+      const have = fbaFulfillable + (f.fba_inbound || 0) + transit + prepped;
       suggestedSend = Math.max(0, target - have);
-      // cap at what we have on hand to send
-      suggestedSend = Math.min(suggestedSend, onhand);
+      // cap at what we have on hand (minus what's already prepped/committed) to send
+      suggestedSend = Math.min(suggestedSend, Math.max(0, onhand - prepped));
     }
 
     // only include items with some signal (selling OR ranked OR we hold stock)
     if (soldPerDay > 0 || salesRank != null || onhand > 0) {
       rows.push({
-        asin: p.asin, name: p.name || m.title, onhand, transit,
+        asin: p.asin, name: p.name || m.title, onhand, transit, prepped,
         fbaFulfillable, soldPerDay, keepaMonthly, daysAtFba,
         salesRank, amazonOOS, sellers, score, suggestedSend, canSendNow
       });
