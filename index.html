@@ -894,7 +894,7 @@ function renderRestock(){
     '<th style="cursor:pointer" onclick="restockSort(\'name\')">Product'+arrow('name')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'fbaFulfillable\')">FBA (+inbound)'+arrow('fbaFulfillable')+'</th>'+
-    '<th style="cursor:pointer" onclick="restockSort(\'soldPerDay\')">Sold/day'+arrow('soldPerDay')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'soldPerDay\')">Mkt Demand/day'+arrow('soldPerDay')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'daysAtFba\')">Days@FBA'+arrow('daysAtFba')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'salesRank\')">Rank'+arrow('salesRank')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'suggestedSend\')">Send Qty'+arrow('suggestedSend')+'</th>'+
@@ -909,10 +909,10 @@ function renderRestock(){
     const sendStyle=x.suggestedSend>0?'style="color:#1e8449;font-weight:700"':'';
     const preppedTag=x.prepped>0?` <span style="color:#b7791f;font-size:11px;font-weight:700">(${x.prepped} prepped)</span>`:'';
     const pri=x.score>=40?`<span style="background:#fdeceb;color:#c0392b;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">URGENT ${x.score}</span>`:(x.score>=20?`<span style="background:#fdf6e3;color:#b7791f;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">${x.score}</span>`:`<span style="color:#9db0c9">${x.score}</span>`);
-    const inbTag=x.fbaInbound>0?` <span style="color:#2563a8;font-size:10px">(${x.fbaInbound} inbound)</span>`:'';return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}${inbTag}</td><td>${x.soldPerDay}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}${preppedTag}</td><td>${pri}</td></tr>`;
+    const inbTag=x.fbaInbound>0?` <span style="color:#2563a8;font-size:10px">(${x.fbaInbound} inbound)</span>`:'';const bbTag=x.amazonHasBuyBox?' <span style="color:#c0392b;font-size:9px">(Amz BB)</span>':'';const demandCell=x.soldPerDay+(x.ourSoldPerDay!=null?`<div style="font-size:9px;color:#9db0c9">you: ${x.ourSoldPerDay}/day</div>`:'')+bbTag;return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}${inbTag}</td><td>${demandCell}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}${preppedTag}</td><td>${pri}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>FBA (+inbound)</b> = total at Amazon including units already on the way. <b>Send Qty</b> = suggested units to ship (covers ~45 days, subtracts FBA total, in-transit, and prepped so you dont over-send). <b>(prepped)</b> = already staged on the Prepped &amp; Ready page. <b>Days@FBA</b> red = under a week left.';
+  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>Mkt Demand/day</b> = Keepas total market demand (NOT your sales, which are skewed by stockouts), discounted 50% when Amazon holds the buy box. "you:" shows your actual sales for reference. <b>FBA (+inbound)</b> = total at Amazon including units on the way. <b>Send Qty</b> = suggested units to ship (covers ~45 days, subtracts FBA total, in-transit, and prepped so you dont over-send). <b>(prepped)</b> = already staged on the Prepped &amp; Ready page. <b>Days@FBA</b> red = under a week left.';
   if(window._restockLoadedAt) h+=' Last built: '+window._restockLoadedAt.toLocaleString()+'.';
   h+='</div>';
   // data freshness panel
@@ -927,7 +927,7 @@ function renderRestock(){
        '<span style="color:#5a6472">If matched counts are low but source counts are high, there\'s a SKU/ASIN mismatch.</span>'+
        '<hr><b>DIAGNOSTIC SAMPLES:</b><br>'+
        'Your products: '+JSON.stringify(fr.sampleProductAsins||[])+'<br>'+
-       'FBA sample (total/fulfillable/inbound): '+JSON.stringify(fr.sampleFbaAsins||[])+'<br>'+'FBA items with total>0: '+(fr.fbaWithTotal||0)+', with fulfillable>0: '+(fr.fbaWithFulfillable||0)+'<br>'+'FBA ASINs in your catalog: '+(fr.fbaAsinsInCatalog||0)+' of '+(fr.fbaCount||0)+', with stock: '+(fr.fbaWithTotalInCatalog||0)+'<br>'+'VELOCITY ASINs in your catalog: '+(fr.velAsinsInCatalog||0)+' of '+(fr.velocityCount||0)+'<br>'+'Velocity NOT in catalog (sample): '+JSON.stringify(fr.velNotInCatalog||[])+'<br>'+
+       'FBA sample (total/fulfillable/inbound): '+JSON.stringify(fr.sampleFbaAsins||[])+'<br>'+'FBA items with total>0: '+(fr.fbaWithTotal||0)+', with fulfillable>0: '+(fr.fbaWithFulfillable||0)+'<br>'+'FBA ASINs in your catalog: '+(fr.fbaAsinsInCatalog||0)+' of '+(fr.fbaCount||0)+', with stock: '+(fr.fbaWithTotalInCatalog||0)+'<br>'+'VELOCITY ASINs in your catalog: '+(fr.velAsinsInCatalog||0)+' of '+(fr.velocityCount||0)+'<br>'+'Velocity SOURCE items with perDay>0: '+(fr.velSourceWithPerDay||0)+'<br>'+'Velocity perDay>0 that MISSED matching: '+JSON.stringify(fr.velMissedSample||[])+'<br>'+'Velocity NOT in catalog (sample): '+JSON.stringify(fr.velNotInCatalog||[])+'<br>'+
        'Velocity data: '+JSON.stringify(fr.sampleVelSkus||[])+'</div>';
   }
   b.innerHTML=h;
