@@ -932,6 +932,12 @@ app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res
 // Dashboard summary — everything at a glance (uses data we already have)
 app.get('/api/dashboard', auth, async (req, res) => {
   const stock = await pool.query('SELECT COALESCE(SUM(onhand),0)::int AS onhand, COALESCE(SUM(transit),0)::int AS transit FROM inv_stock');
+  // total units committed to prep (component-level: singles + duo components)
+  const pendingPrep = await pool.query(`
+    SELECT (
+      COALESCE((SELECT SUM(pr.qty) FROM inv_prepped pr WHERE pr.asin NOT IN (SELECT bundle_asin FROM inv_bundles)),0)
+      + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin),0)
+    )::int AS n`);
   const skus = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products');
   const lowStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand > 0 AND onhand <= 20');
   const outStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand <= 0');
@@ -986,7 +992,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
   res.json({
     onhand: stock.rows[0].onhand, transit: stock.rows[0].transit,
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
-    pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
+    pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, pendingPrep: pendingPrep.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
     recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows, underStocked,
     retailValue, retailAsOf
   });
