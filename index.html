@@ -843,6 +843,12 @@ function loadRestock(){
     if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
     if(!d.items){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">No items in response. Raw: '+JSON.stringify(d).slice(0,300)+'</div>'; return; }
     window._restockData=d.items||[]; window._restockFresh=d.freshness; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date();
+    // LOUD diagnostic banner so we can SEE what came back
+    alert('Restock response received:\n\nItems: '+d.items.length+'\nFreshness: '+JSON.stringify(d.freshness||{}));
+    if(d.items.length===0){
+      document.getElementById('restockBody').innerHTML='<div class="box" style="padding:20px;color:#c0392b"><b>0 items returned.</b><br>The server built the plan but no products qualified. Freshness: '+JSON.stringify(d.freshness||{})+'</div>';
+      return;
+    }
     try {
       renderRestock();
     } catch(e){
