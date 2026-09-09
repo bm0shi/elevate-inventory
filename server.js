@@ -1048,8 +1048,8 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
   catch(e){ asins = []; }
   if (!asins.length) return res.status(400).json({ error: 'No target ASINs configured' });
 
-  let products;
-  try { products = await keepa.getProducts(asins); }
+  let products, tokensLeft;
+  try { const r = await keepa.getProducts(asins); products = r.products; tokensLeft = r.tokensLeft; }
   catch(err){ return res.status(400).json({ error: err.message }); }
 
   // cross-reference with our on-hand
@@ -1077,7 +1077,7 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
     return ar - br;
   });
   await saveCache('market_data', out);
-  res.json(out);
+  res.json({ items: out, tokensLeft });
 });
 
 
