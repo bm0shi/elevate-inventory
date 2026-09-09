@@ -893,7 +893,7 @@ function renderRestock(){
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="restockSort(\'name\')">Product'+arrow('name')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
-    '<th style="cursor:pointer" onclick="restockSort(\'fbaFulfillable\')">At FBA'+arrow('fbaFulfillable')+'</th>'+
+    '<th style="cursor:pointer" onclick="restockSort(\'fbaFulfillable\')">FBA (+inbound)'+arrow('fbaFulfillable')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'soldPerDay\')">Sold/day'+arrow('soldPerDay')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'daysAtFba\')">Days@FBA'+arrow('daysAtFba')+'</th>'+
     '<th style="cursor:pointer" onclick="restockSort(\'salesRank\')">Rank'+arrow('salesRank')+'</th>'+
@@ -909,10 +909,10 @@ function renderRestock(){
     const sendStyle=x.suggestedSend>0?'style="color:#1e8449;font-weight:700"':'';
     const preppedTag=x.prepped>0?` <span style="color:#b7791f;font-size:11px;font-weight:700">(${x.prepped} prepped)</span>`:'';
     const pri=x.score>=40?`<span style="background:#fdeceb;color:#c0392b;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">URGENT ${x.score}</span>`:(x.score>=20?`<span style="background:#fdf6e3;color:#b7791f;padding:2px 9px;border-radius:10px;font-weight:700;font-size:12px">${x.score}</span>`:`<span style="color:#9db0c9">${x.score}</span>`);
-    return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}</td><td>${x.soldPerDay}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}${preppedTag}</td><td>${pri}</td></tr>`;
+    const inbTag=x.fbaInbound>0?` <span style="color:#2563a8;font-size:10px">(${x.fbaInbound} inbound)</span>`:'';return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x.fbaFulfillable}${inbTag}</td><td>${x.soldPerDay}</td><td ${daysStyle}>${days}</td><td>${rank}</td><td ${sendStyle}>${send}${preppedTag}</td><td>${pri}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>Send Qty</b> = suggested units to ship to FBA (covers ~45 days, accounts for whats already at FBA, inbound, and prepped). <b>(prepped)</b> = already staged on the Prepped &amp; Ready page. <b>Days@FBA</b> red = under a week left.';
+  h+='<div class="hint">Priority score combines: FBA urgency (days left) + sales velocity + market rank + Amazon-weakness + low-competition + whether you have stock to send. <b>FBA (+inbound)</b> = total at Amazon including units already on the way. <b>Send Qty</b> = suggested units to ship (covers ~45 days, subtracts FBA total, in-transit, and prepped so you dont over-send). <b>(prepped)</b> = already staged on the Prepped &amp; Ready page. <b>Days@FBA</b> red = under a week left.';
   if(window._restockLoadedAt) h+=' Last built: '+window._restockLoadedAt.toLocaleString()+'.';
   h+='</div>';
   // data freshness panel
