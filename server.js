@@ -1280,11 +1280,13 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
   const byAsin = {}; for (const r of onhandRows.rows) byAsin[r.asin] = r;
 
   // save images to products for card display
+  let imgsSaved = 0;
   for (const p of products) {
     if (p.image && p.asin) {
-      try { await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2 AND (image IS NULL OR image=\'\')', [p.image, p.asin]); } catch(e){}
+      try { const r = await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2', [p.image, p.asin]); if(r.rowCount) imgsSaved++; } catch(e){}
     }
   }
+  console.log('[Market] Images saved: ' + imgsSaved + ' of ' + products.length + ' products');
   const out = products.map(p => {
     const mine = byAsin[p.asin] || {};
     return {
