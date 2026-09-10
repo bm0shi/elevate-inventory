@@ -107,6 +107,7 @@ async function initDb() {
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS upc_norm TEXT;
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS fnsku TEXT;
+    ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS image TEXT;
     CREATE INDEX IF NOT EXISTS idx_fnsku ON inv_products(fnsku);
     -- prepped/staging counts per product (persists across sessions)
     CREATE TABLE IF NOT EXISTS inv_prepped (
@@ -295,7 +296,7 @@ app.get('/api/products', auth, async (req, res) => {
   //  - direct prepped of this asin (singles), PLUS
   //  - prepped bundles that consume this asin as a component
   const { rows } = await pool.query(
-    `SELECT p.asin, p.sku, p.name, p.upc, s.onhand, s.transit,
+    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, s.onhand, s.transit,
       (
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
@@ -1278,6 +1279,12 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
   const onhandRows = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
   const byAsin = {}; for (const r of onhandRows.rows) byAsin[r.asin] = r;
 
+  // save images to products for card display
+  for (const p of products) {
+    if (p.image && p.asin) {
+      try { await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2 AND (image IS NULL OR image=\'\')', [p.image, p.asin]); } catch(e){}
+    }
+  }
   const out = products.map(p => {
     const mine = byAsin[p.asin] || {};
     return {
@@ -1489,7 +1496,7 @@ async function componentCommitted(componentAsin) {
 // Current prepped list — items shown AS SCANNED (duos as duos, singles as singles)
 app.get('/api/prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pr.asin, p.name, p.sku, p.fnsku, pr.qty AS prepped, s.onhand
+    `SELECT pr.asin, p.name, p.sku, p.fnsku, p.image, p.upc, pr.qty AS prepped, s.onhand
      FROM inv_prepped pr JOIN inv_products p ON p.asin=pr.asin LEFT JOIN inv_stock s ON s.asin=pr.asin
      WHERE pr.qty > 0 ORDER BY p.name`);
   // mark which are bundles
