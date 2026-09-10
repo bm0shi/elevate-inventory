@@ -98,10 +98,17 @@ function simplify(p) {
   // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
   const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
 
+  // image: Keepa gives imagesCSV (comma-sep filenames). First one = main image.
+  let image = null;
+  if (p.imagesCSV) {
+    const first = p.imagesCSV.split(',')[0];
+    if (first) image = 'https://m.media-amazon.com/images/I/' + first;
+  }
   return {
     asin: p.asin,
     title: p.title || '',
     brand: p.brand || '',
+    image,
     productType: p.productType,
     salesRank, salesRankAvg30,
     buyBoxPrice, amazonPrice,
