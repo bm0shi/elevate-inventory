@@ -182,6 +182,7 @@
         <option value="transit_desc">In Transit: high→low</option>
       </select>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
+      <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
     </div>
     <div style="height:12px"></div>
     <div id="onhandBody"></div>
@@ -1562,6 +1563,15 @@ function renderOnhand(){
     return `<div class="pcard">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="pc-meta"><b>${p.asin}</b>${p.sku?' · '+p.sku:''}${t?' · '+t+' transit':''}</div></div><div class="pc-qty"><div class="n ${o<=0?'low':''}">${o}</div><div class="l">On Hand</div>${prep>0?'<div style="color:#b7791f;font-size:10px;font-weight:700">'+prep+' prepped</div>':''}</div></div>`;
   }).join('')+'</div>';
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
+}
+function pullImages(){
+  const btn=document.getElementById('imgBtn'); btn.textContent='Pulling from Amazon...'; btn.disabled=true;
+  api('/api/pull-images',{method:'POST',body:JSON.stringify({onlyMissing:true})}).then(d=>{
+    btn.textContent='🖼️ Pull Images'; btn.disabled=false;
+    if(d.error){ toast('Image pull error: '+d.error,true); return; }
+    toast('Got '+d.saved+' images from Amazon'+(d.requested?' (of '+d.requested+' needed)':''));
+    loadProducts();
+  }).catch(()=>{ btn.textContent='🖼️ Pull Images'; btn.disabled=false; toast('Image pull failed',true); });
 }
 function syncFba(){
   const btn=document.getElementById('syncBtn'); btn.textContent='Syncing...'; btn.disabled=true;
