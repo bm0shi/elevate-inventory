@@ -98,9 +98,15 @@ function simplify(p) {
   // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
   const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
 
-  // image: Keepa gives imagesCSV (comma-sep filenames). First one = main image.
+  // image: newer Keepa uses images[] array (images[0].l = large filename);
+  // older uses imagesCSV. Handle both.
   let image = null;
-  if (p.imagesCSV) {
+  if (Array.isArray(p.images) && p.images.length) {
+    const im = p.images[0];
+    const fn = im.l || im.m || im.large || im.medium;
+    if (fn) image = 'https://m.media-amazon.com/images/I/' + fn;
+  }
+  if (!image && p.imagesCSV) {
     const first = p.imagesCSV.split(',')[0];
     if (first) image = 'https://m.media-amazon.com/images/I/' + first;
   }
