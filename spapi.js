@@ -257,4 +257,31 @@ async function getMyPrices(asins) {
   return prices;
 }
 
-module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices };
+// Get product images via Catalog Items API (2022-04-01). Returns { asin: imageUrl }.
+async function getCatalogImages(asins) {
+  const token = await getAccessToken();
+  const images = {};
+  const unique = [...new Set(asins.filter(Boolean))];
+  for (const asin of unique) {
+    try {
+      const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=images`;
+      const resp = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+      // images come back as images[].images[] with variant + link
+      const imgGroups = resp.data.images || [];
+      let bestUrl = null;
+      for (const g of imgGroups) {
+        const imgs = g.images || [];
+        // prefer MAIN variant, largest
+        const main = imgs.find(i => i.variant === 'MAIN') || imgs[0];
+        if (main && main.link) { bestUrl = main.link; break; }
+      }
+      if (bestUrl) images[asin] = bestUrl;
+    } catch(e) {
+      // skip individual failures
+    }
+    await sleep(600); // Catalog Items rate limit ~2/sec
+  }
+  return images;
+}
+
+module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages };
