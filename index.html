@@ -7,7 +7,7 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1b2d; color: #1f2733; }
-  .app { max-width: 1500px; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
+  .app { max-width: 100%; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
   header { background: #0f1b2d; color: #fff; padding: 16px 20px; position: sticky; top: 0; z-index: 10; }
   header h1 { font-size: 18px; font-weight: 700; }
   header .sub { font-size: 12px; color: #9db0c9; margin-top: 2px; }
@@ -69,6 +69,18 @@
   #login { position: fixed; inset: 0; background: #0f1b2d; display: flex; align-items: center; justify-content: center; z-index: 200; }
   #login .lbox { background: #fff; padding: 30px; border-radius: 12px; width: 320px; }
   #login h2 { margin-bottom: 16px; color: #0f1b2d; }
+  /* Product cards */
+  .pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 10px; }
+  .pcard { background:#fff; border-radius:10px; box-shadow:0 1px 3px rgba(0,0,0,0.08); padding:10px; display:flex; gap:10px; align-items:center; }
+  .pcard img { width:52px; height:52px; object-fit:contain; border-radius:6px; background:#f4f6f9; flex-shrink:0; }
+  .pcard .pc-body { flex:1; min-width:0; }
+  .pcard .pc-name { font-weight:600; font-size:13px; line-height:1.25; color:#1f2733; }
+  .pcard .pc-meta { font-size:11px; color:#5a6472; margin-top:3px; font-family:monospace; }
+  .pcard .pc-meta b { color:#2563a8; }
+  .pcard .pc-qty { text-align:right; flex-shrink:0; }
+  .pcard .pc-qty .n { font-size:20px; font-weight:700; }
+  .pcard .pc-qty .l { font-size:10px; color:#9db0c9; text-transform:uppercase; }
+  .noimg { width:52px;height:52px;border-radius:6px;background:#eef2f6;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0; }
 </style>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
 </head>
@@ -172,7 +184,7 @@
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
     </div>
     <div style="height:12px"></div>
-    <table><thead><tr><th>Product</th><th>ASIN</th><th>UPC</th><th>On Hand</th><th>Transit</th></tr></thead><tbody id="onhandBody"></tbody></table>
+    <div id="onhandBody"></div>
   </div>
 
   <div id="reconcile" class="panel">
@@ -247,6 +259,16 @@
         <input type="text" id="prepPickSearch" placeholder="Search product..." onkeyup="filterPrepPick()">
         <div class="picker" id="prepPickList"></div>
       </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+      <select id="prepSort" onchange="renderPrepList()" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px;background:#fff">
+        <option value="qty_desc">Prepped: high→low</option>
+        <option value="qty_asc">Prepped: low→high</option>
+        <option value="name">Name A→Z</option>
+        <option value="name_desc">Name Z→A</option>
+        <option value="asin">ASIN</option>
+      </select>
+      <input type="text" id="prepSearch" placeholder="Search prepped..." onkeyup="renderPrepList()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
     </div>
     <div id="prepListBox"></div>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
@@ -1218,21 +1240,36 @@ function assignPrepFnsku(asin){
 function loadPrepList(){
   initPrepScan(); loadFnStatus();
   setTimeout(()=>{ const s=document.getElementById('scanPrep'); if(s) s.focus(); }, 100);
-  api('/api/prep/list').then(d=>{
-    const b=document.getElementById('prepListBox');
-    if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Nothing prepped yet. Scan labeled items above.</div>'; return; }
-    let h='<div class="cards"><div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Total Units Prepped</div></div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
-    h+='<table><thead><tr><th>Product</th><th>Prepped</th><th>ASIN</th><th>FNSKU</th><th></th></tr></thead><tbody>';
-    h+=d.items.map(x=>{
-      const nameColor=x.isBundle?'color:#c0392b;font-weight:700':'color:#127a7a';
-      const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="${nameColor};text-decoration:none">${x.name}</a>`:x.name;
-      const badge=x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
-      const copyCell=(val)=>val?`<span onclick="copyText('${val}',this)" title="Click to copy" style="cursor:pointer;font-family:monospace;font-size:13px;font-weight:700;color:#2563a8;border-bottom:1px dotted #2563a8">${val}</span>`:'<span style="color:#c0392b">—</span>';
-      return `<tr${x.isBundle?' style="background:#fefafa"':''}><td style="max-width:280px">${link}${badge}</td><td class="onhand-num"${x.isBundle?' style="color:#c0392b;font-weight:700"':''}>${x.prepped}</td><td>${copyCell(x.asin)}</td><td>${copyCell(x.fnsku)}</td><td><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:4px 8px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer">edit</button></td></tr>`;
-    }).join('');
-    h+='</tbody></table><div class="hint">Click any ASIN or FNSKU to copy it. Duos show as duos (red). These clear when you finalize the shipment on Ship to FBA.</div>';
-    b.innerHTML=h;
+  api('/api/prep/list').then(d=>{ window._prepData=d; renderPrepList(); });
+}
+function renderPrepList(){
+  const d=window._prepData; if(!d)return;
+  const b=document.getElementById('prepListBox');
+  if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Nothing prepped yet. Scan labeled items above.</div>'; return; }
+  const sort=(document.getElementById('prepSort')||{}).value||'qty_desc';
+  const q=((document.getElementById('prepSearch')||{}).value||'').toLowerCase();
+  let items=d.items.filter(x=>!q||(x.name||'').toLowerCase().includes(q)||(x.asin||'').toLowerCase().includes(q)||(x.fnsku||'').toLowerCase().includes(q));
+  items.sort((a,b2)=>{
+    switch(sort){
+      case 'qty_asc': return a.prepped-b2.prepped;
+      case 'name': return (a.name||'').localeCompare(b2.name||'');
+      case 'name_desc': return (b2.name||'').localeCompare(a.name||'');
+      case 'asin': return (a.asin||'').localeCompare(b2.asin||'');
+      default: return b2.prepped-a.prepped;
+    }
   });
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Total Units Prepped</div></div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
+  h+='<div class="pcards">';
+  h+=items.map(x=>{
+    const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const nameLink=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${x.name}</a>`:x.name;
+    const badge=x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span>':'';
+    const copyItem=(label,val)=>val?`${label} <span onclick="copyText('${val}',this)" title="copy" style="cursor:pointer;color:#2563a8;font-weight:700;border-bottom:1px dotted #2563a8">${val}</span>`:'';
+    const border=x.isBundle?'border:1px solid #fdeceb;':'';
+    return `<div class="pcard" style="${border}">${img}<div class="pc-body"><div class="pc-name">${nameLink}${badge}</div><div class="pc-meta">${copyItem('ASIN',x.asin)}<br>${copyItem('FNSKU',x.fnsku)}</div></div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 8px;font-size:10px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:2px">edit</button></div></div>`;
+  }).join('');
+  h+='</div><div class="hint">Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
+  b.innerHTML=h;
 }
 function copyText(txt, el){
   navigator.clipboard.writeText(txt).then(()=>{
@@ -1519,10 +1556,11 @@ function renderOnhand(){
       default: return a.name.localeCompare(b.name);
     }
   });
-  body.innerHTML = list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
-    const link=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${p.name}</a>`:p.name;
-    return `<tr><td>${link}</td><td>${p.asin}</td><td>${p.upc||'<span style="color:#c0392b">—</span>'}</td><td class="onhand-num${o<=0?' low':''}">${o}${prep>0?' <span style="color:#b7791f;font-size:11px">('+prep+' prepped)</span>':''}</td><td>${t||''}</td></tr>`;
-  }).join('');
+  body.innerHTML = '<div class="pcards">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
+    const img=p.image?`<img src="${p.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${p.name}</a>`:p.name;
+    return `<div class="pcard">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="pc-meta"><b>${p.asin}</b>${p.sku?' · '+p.sku:''}${t?' · '+t+' transit':''}</div></div><div class="pc-qty"><div class="n ${o<=0?'low':''}">${o}</div><div class="l">On Hand</div>${prep>0?'<div style="color:#b7791f;font-size:10px;font-weight:700">'+prep+' prepped</div>':''}</div></div>`;
+  }).join('')+'</div>';
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
 }
 function syncFba(){
