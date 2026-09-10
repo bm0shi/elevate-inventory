@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices } = require('./spapi');
+const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -909,6 +909,28 @@ app.get('/api/fnsku-status', auth, async (req, res) => {
   const total = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products');
   const withFn = await pool.query("SELECT COUNT(*)::int AS n FROM inv_products WHERE fnsku IS NOT NULL AND fnsku<>''");
   res.json({ total: total.rows[0].n, withFnsku: withFn.rows[0].n });
+});
+
+// Pull product images from Amazon (SP-API Catalog) for products missing them
+app.post('/api/pull-images', auth, async (req, res) => {
+  const onlyMissing = req.body.onlyMissing !== false; // default: only missing
+  const q = onlyMissing
+    ? "SELECT asin FROM inv_products WHERE (image IS NULL OR image='') AND asin IS NOT NULL"
+    : "SELECT asin FROM inv_products WHERE asin IS NOT NULL";
+  const prods = await pool.query(q);
+  const asins = prods.rows.map(r => r.asin);
+  if (!asins.length) return res.json({ ok: true, saved: 0, message: 'No products need images.' });
+
+  let images;
+  try { images = await getCatalogImages(asins); }
+  catch(err){ return res.status(400).json({ error: err.message }); }
+
+  let saved = 0;
+  for (const asin in images) {
+    try { const r = await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2', [images[asin], asin]); if(r.rowCount) saved++; } catch(e){}
+  }
+  console.log(`[Images] Pulled ${saved} of ${asins.length} from Amazon Catalog`);
+  res.json({ ok: true, saved, requested: asins.length });
 });
 
 // PDF upload -> extract text -> process (multi-order)
