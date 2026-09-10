@@ -1411,6 +1411,25 @@ async function resolveCode(code) {
 }
 
 // Assign an FNSKU to a product (learn-as-you-scan fallback)
+// Look up which product currently has a given FNSKU
+app.get('/api/fnsku-lookup/:fnsku', auth, async (req, res) => {
+  const fn = req.params.fnsku.trim();
+  const r = await pool.query('SELECT asin, name, sku FROM inv_products WHERE UPPER(fnsku)=UPPER($1)', [fn]);
+  res.json({ found: r.rows.length>0, products: r.rows });
+});
+
+// Re-map an FNSKU to the correct product (clears it from any wrong product first)
+app.post('/api/remap-fnsku', auth, async (req, res) => {
+  const { fnsku, asin } = req.body;
+  const fn = (fnsku||'').trim();
+  if (!fn || !asin) return res.status(400).json({ error: 'fnsku + asin required' });
+  // clear this FNSKU from any product that wrongly has it
+  await pool.query("UPDATE inv_products SET fnsku=NULL WHERE UPPER(fnsku)=UPPER($1)", [fn]);
+  // assign to the correct product
+  await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [fn, asin]);
+  res.json({ ok: true });
+});
+
 app.post('/api/assign-fnsku', auth, async (req, res) => {
   const { asin, fnsku } = req.body;
   await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [(fnsku||'').trim(), asin]);
