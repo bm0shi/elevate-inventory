@@ -227,6 +227,14 @@
         <span id="fnStatus" class="hint" style="margin:0"></span>
       </div>
       <div class="hint" style="margin-bottom:10px">Best way to get FNSKUs: download the "Shipment plan" / packing-list TSV from Seller Central and upload it here — it has the FNSKU for every item including duos.</div>
+      <div style="border-top:1px solid #eef2f6;padding-top:10px;margin-top:6px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:6px">🔧 Fix a wrong FNSKU mapping</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input type="text" id="fixFnsku" placeholder="FNSKU (e.g. X0049MFSTJ)" style="flex:1;min-width:140px;padding:10px;font-size:14px">
+          <button class="action" onclick="lookupFnsku()" style="padding:10px 14px;font-size:13px">Look Up</button>
+        </div>
+        <div id="fixFnskuResult" style="margin-top:8px"></div>
+      </div>
       <div style="display:flex;gap:8px">
         <input type="text" id="scanPrep" placeholder="Scan FNSKU label..." autocomplete="off" style="flex:1">
         <button class="action" onclick="toggleCamera('Prep')" id="camBtnPrep" style="padding:14px 16px;white-space:nowrap">📷</button>
@@ -1129,6 +1137,34 @@ function importFnskuFile(){
     loadFnStatus();
     if(d.unmatchedCount) alert(d.matched+' FNSKUs matched.\n\n'+d.unmatchedCount+' not matched (SKU/ASIN not in catalog):\n'+d.unmatched.map(u=>u.asin+' / '+u.sku).join('\n'));
   }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan (FNSKUs)'; btn.disabled=false; toast('Import failed',true); });
+}
+function lookupFnsku(){
+  const fn=document.getElementById('fixFnsku').value.trim(); if(!fn){toast('Enter an FNSKU',true);return;}
+  api('/api/fnsku-lookup/'+encodeURIComponent(fn)).then(d=>{
+    const el=document.getElementById('fixFnskuResult');
+    let h='';
+    if(d.found){ h+='<div class="hint" style="color:#c0392b">Currently linked to: '+d.products.map(p=>p.name+' ('+p.asin+')').join(', ')+'</div>'; }
+    else h+='<div class="hint">Not currently linked to any product.</div>';
+    h+='<label style="margin-top:8px">Search for the CORRECT product:</label>';
+    h+='<input type="text" id="fixProdSearch" placeholder="Search name or ASIN..." onkeyup="filterFixProd()" style="padding:10px;font-size:14px">';
+    h+='<div class="picker" id="fixProdList"></div>';
+    el.innerHTML=h;
+    window._fixFnsku=fn;
+    document.getElementById('fixProdSearch').focus();
+  });
+}
+function filterFixProd(){
+  const q=(document.getElementById('fixProdSearch').value||'').toLowerCase();
+  const el=document.getElementById('fixProdList');
+  el.innerHTML=products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,20)
+    .map(p=>`<div class="picker-item" onclick="remapFnsku('${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+}
+function remapFnsku(asin){
+  const fn=window._fixFnsku; const p=products.find(x=>x.asin===asin);
+  api('/api/remap-fnsku',{method:'POST',body:JSON.stringify({fnsku:fn,asin})}).then(d=>{
+    if(d.ok){ toast('FNSKU '+fn+' → '+p.name.slice(0,22)); document.getElementById('fixFnskuResult').innerHTML='<div class="hint" style="color:#1e8449">✓ Fixed — '+fn+' now links to '+p.name+'</div>'; document.getElementById('fixFnsku').value=''; loadProducts(); loadFnStatus(); }
+    else toast('Fix failed',true);
+  });
 }
 function syncFnskus(){
   const btn=document.getElementById('syncFnBtn'); btn.textContent='Syncing from Amazon...'; btn.disabled=true;
