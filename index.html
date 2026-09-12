@@ -104,7 +104,9 @@
 <div class="app" style="display:none" id="mainApp">
   <header>
     <h1>📦 Elevate Inventory</h1>
-    <div class="sub">Scan receiving · live on-hand · FBA deduction</div>
+    <div class="sub">Scan receiving · live on-hand · FBA deduction <span id="refreshStamp" style="color:#1e8449;margin-left:10px;font-size:11px"></span>
+      <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="margin-left:10px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#1e8449;color:#fff;cursor:pointer;font-weight:700">🔄 Live: ON</button>
+    </div>
   </header>
   <div class="tabs">
     <button class="tab active" onclick="showTab('dashboard',event)">Dashboard</button>
@@ -1203,7 +1205,9 @@ function initPrepScan(){
       if(e.key!=='Enter')return;
       const code=e.target.value.trim(); if(!code)return;
       e.target.value='';
+      _scanInFlight=true;
       api('/api/find/'+encodeURIComponent(code)).then(f=>{
+        _scanInFlight=false;
         if(!f.found){
           prepPendingFnsku=code;
           document.getElementById('prepFnskuAssign').style.display='block';
@@ -1278,7 +1282,9 @@ function loadFnStatus(){
   });
 }
 function doPrepScan(code, qty){
+  _scanInFlight=true;
   api('/api/prep/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+    _scanInFlight=false;
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
     if(typeof scanFeedback==='function') scanFeedback();
     toast('+'+qty+' prepped'+(d.isBundle?' (duo → components)':''));
@@ -1807,6 +1813,82 @@ showTab = function(t, ev) {
   ['In','Out','Recon','Prep'].forEach(w => { if (scanning[w]) toggleCamera(w); });
   _origShowTab(t, ev);
 };
+
+
+// ==================== AUTO-REFRESH (with guards) ====================
+// Keeps On Hand / Dashboard / Prepped live without disturbing anyone mid-task.
+let _autoRefreshOn = true;
+let _lastRefreshAt = null;
+let _scanInFlight = false;          // set true while a scan is processing
+let _promptOpen = false;            // set true while a qty prompt is showing
+
+// Wrap window.prompt so we KNOW when a prompt is open (never refresh during one)
+const _origPrompt = window.prompt;
+window.prompt = function(){
+  _promptOpen = true;
+  try { return _origPrompt.apply(window, arguments); }
+  finally { _promptOpen = false; }
+};
+// Same for confirm/alert
+const _origConfirm = window.confirm;
+window.confirm = function(){
+  _promptOpen = true;
+  try { return _origConfirm.apply(window, arguments); }
+  finally { _promptOpen = false; }
+};
+
+function _isTyping(){
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = (el.tagName||'').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') {
+    // typing in a text field = don't disturb
+    return true;
+  }
+  return false;
+}
+
+function _canAutoRefresh(){
+  if (!_autoRefreshOn) return false;
+  if (document.hidden) return false;        // tab not visible
+  if (_promptOpen) return false;            // a prompt/confirm is open
+  if (_scanInFlight) return false;          // a scan is processing
+  if (_isTyping()) return false;            // user is typing
+  return true;
+}
+
+function _activeTabId(){
+  const p = document.querySelector('.panel.active');
+  return p ? p.id : null;
+}
+
+function autoRefreshTick(){
+  if (!_canAutoRefresh()) return;
+  const t = _activeTabId();
+  // only refresh the "viewing" pages
+  if (t === 'onhand') { loadProducts().then(()=>{ _lastRefreshAt = new Date(); updateRefreshStamp(); }); }
+  else if (t === 'dashboard') { loadDashboard(); _lastRefreshAt = new Date(); updateRefreshStamp(); }
+  else if (t === 'prep') {
+    // refresh the prepped LIST only (never touches the scan box or focus)
+    api('/api/prep/list').then(d=>{ window._prepData=d; renderPrepList(); _lastRefreshAt=new Date(); updateRefreshStamp(); });
+  }
+}
+
+function updateRefreshStamp(){
+  const el = document.getElementById('refreshStamp');
+  if (el && _lastRefreshAt) {
+    el.textContent = '🔄 live · updated ' + _lastRefreshAt.toLocaleTimeString();
+  }
+}
+function toggleAutoRefresh(){
+  _autoRefreshOn = !_autoRefreshOn;
+  const b = document.getElementById('autoRefreshBtn');
+  if (b) { b.textContent = _autoRefreshOn ? '🔄 Live: ON' : '⏸ Live: OFF'; b.style.background = _autoRefreshOn ? '#1e8449' : '#5a6472'; }
+  toast(_autoRefreshOn ? 'Auto-refresh on' : 'Auto-refresh paused');
+}
+
+// tick every 30 seconds
+setInterval(autoRefreshTick, 30000);
 
 </script>
 </body>
