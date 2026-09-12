@@ -939,6 +939,62 @@ app.post('/api/pull-images', auth, async (req, res) => {
   res.json({ ok: true, saved, requested: asins.length });
 });
 
+// Reconcile a shipment against its plan TSV: add ONLY the missing units (no double-deduct)
+app.post('/api/reconcile-shipment', auth, upload.single('file'), async (req, res) => {
+  let text = req.file ? req.file.buffer.toString('utf-8') : (req.body.text||'');
+  const lines = text.split(/\r?\n/);
+  let shipmentId = '';
+  for (const l of lines.slice(0,8)) { const c=l.split('\t'); if(/^Shipment ID/i.test(c[0])) shipmentId=(c[1]||'').trim(); }
+  let hdrIdx=-1, cols=[];
+  for (let i=0;i<lines.length;i++){ if(/Merchant SKU/i.test(lines[i])&&/FNSKU/i.test(lines[i])){hdrIdx=i;cols=lines[i].split('\t').map(c=>c.trim());break;} }
+  if(hdrIdx===-1||!shipmentId) return res.status(400).json({error:'Bad shipment plan file'});
+  const asinIdx=cols.findIndex(c=>/^ASIN/i.test(c)), skuIdx=cols.findIndex(c=>/Merchant SKU/i.test(c)), fnIdx=cols.findIndex(c=>/FNSKU/i.test(c)), qtyIdx=cols.findIndex(c=>/Shipped/i.test(c));
+
+  // Build EXPECTED component-level quantities from the plan (expanding duos)
+  const expected = {}; // asin -> qty
+  const preview = { isPreview: req.body.preview==='true'||req.body.preview===true };
+  for (let i=hdrIdx+1;i<lines.length;i++){
+    const c=lines[i].split('\t'); if(c.length<=qtyIdx) continue;
+    const asin=(c[asinIdx]||'').trim(), sku=(c[skuIdx]||'').trim(), fnsku=(c[fnIdx]||'').trim();
+    const qty=parseInt(c[qtyIdx])||0; if(qty<1) continue;
+    const r=await pool.query('SELECT asin FROM inv_products WHERE UPPER(asin)=UPPER($1) OR UPPER(fnsku)=UPPER($2) OR UPPER(sku)=UPPER($3) LIMIT 1',[asin,fnsku,sku]);
+    if(!r.rows.length) continue;
+    const parts=await expandToComponents(r.rows[0].asin, qty);
+    for(const p of parts) expected[p.asin]=(expected[p.asin]||0)+p.qty;
+  }
+
+  // What's ALREADY recorded in this shipment
+  const recorded={};
+  const rec=await pool.query('SELECT asin, SUM(qty) AS q FROM inv_shipment_items WHERE shipment_id=$1 GROUP BY asin',[shipmentId]);
+  for(const r of rec.rows) recorded[r.asin]=parseInt(r.q);
+
+  // The GAP = expected - recorded (only positive gaps need adding)
+  const gaps=[];
+  for(const asin in expected){
+    const need=expected[asin]-(recorded[asin]||0);
+    if(need>0){
+      const nm=await pool.query('SELECT name FROM inv_products WHERE asin=$1',[asin]);
+      gaps.push({asin, name:nm.rows[0]?.name||asin, missing:need, expected:expected[asin], recorded:recorded[asin]||0});
+    }
+  }
+
+  if(preview.isPreview){
+    return res.json({ok:true, preview:true, shipmentId, gaps});
+  }
+
+  // Apply the gaps: deduct from on-hand, add to shipment + transit
+  let added=0;
+  for(const g of gaps){
+    await pool.query('UPDATE inv_stock SET onhand=onhand-$1, transit=transit+$1 WHERE asin=$2',[g.missing,g.asin]);
+    await pool.query('INSERT INTO inv_shipment_items(shipment_id,asin,qty) VALUES($1,$2,$3)',[shipmentId,g.asin,g.missing]);
+    await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',['out',g.asin,g.name,g.missing,'Reconcile '+shipmentId]);
+    await pool.query('UPDATE inv_prepped SET qty=GREATEST(0,qty-$1) WHERE asin=$2',[g.missing,g.asin]);
+    added+=g.missing;
+  }
+  await pool.query('DELETE FROM inv_prepped WHERE qty<=0');
+  res.json({ok:true, shipmentId, gapsFixed:gaps.length, unitsAdded:added, gaps});
+});
+
 // Diagnostic: check bundle definitions for specific ASINs
 app.get('/api/check-bundles', auth, async (req, res) => {
   const asins = (req.query.asins||'').split(',').map(a=>a.trim()).filter(Boolean);
