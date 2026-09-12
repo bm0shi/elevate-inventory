@@ -284,6 +284,9 @@
       <div class="hint" style="margin-bottom:10px">Download the shipment plan TSV from Seller Central and upload it here. It reads the Shipment ID, all items, and quantities automatically — then deducts from on-hand and clears those items from Prepped.</div>
       <input type="file" id="shipTsvFile" accept=".tsv,.txt,.csv" style="display:none" onchange="shipFromTsv()">
       <button class="action full" onclick="document.getElementById('shipTsvFile').click()" id="shipTsvBtn" style="background:#127a7a">📄 Upload Shipment Plan TSV</button>
+      <input type="file" id="reconcileFile" accept=".tsv,.txt,.csv" style="display:none" onchange="reconcileShipment()">
+      <button class="action" onclick="document.getElementById('reconcileFile').click()" id="reconcileBtn" style="background:#b7791f;width:100%;margin-top:8px;font-size:14px;padding:12px">🔧 Fix/Reconcile a Shipment (add only missing units)</button>
+      <div class="hint" style="margin-top:6px">If a shipment processed but some items (like duos) are missing, upload the same plan here. It adds ONLY what's missing — never double-deducts.</div>
       <div style="text-align:center;color:#9db0c9;font-size:12px;margin:14px 0">— or enter manually below —</div>
       <label>Amazon Shipment ID (required)</label>
       <input type="text" id="shipmentId" placeholder="FBA18XRL8GV5" autocomplete="off">
@@ -595,22 +598,61 @@ function doShip(){
   });
 }
 
+let _shipTsvFile=null; let _reconcileFile=null;
+function reconcileShipment(){
+  const f=document.getElementById('reconcileFile').files[0]; if(!f)return;
+  _reconcileFile=f;
+  const btn=document.getElementById('reconcileBtn'); btn.textContent='Analyzing...'; btn.disabled=true;
+  const fd=new FormData(); fd.append('file',f); fd.append('preview','true');
+  fetch('/api/reconcile-shipment',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
+    btn.textContent='🔧 Fix/Reconcile a Shipment (add only missing units)'; btn.disabled=false;
+    if(d.error){ toast(d.error,true); alert(d.error); document.getElementById('reconcileFile').value=''; return; }
+    if(!d.gaps.length){ alert('✓ Nothing missing — this shipment already matches the plan.'); document.getElementById('reconcileFile').value=''; return; }
+    let msg='MISSING units for shipment '+d.shipmentId+':\n\n'+d.gaps.map(g=>g.name.slice(0,40)+': recorded '+g.recorded+', should be '+g.expected+' → ADD '+g.missing).join('\n');
+    msg+='\n\nAdd these missing units (deduct from on-hand, add to this shipment)?';
+    if(confirm(msg)) commitReconcile();
+    else { document.getElementById('reconcileFile').value=''; _reconcileFile=null; toast('Cancelled'); }
+  }).catch(()=>{ btn.textContent='🔧 Fix/Reconcile a Shipment (add only missing units)'; btn.disabled=false; toast('Failed',true); });
+}
+function commitReconcile(){
+  if(!_reconcileFile)return;
+  const fd=new FormData(); fd.append('file',_reconcileFile); fd.append('preview','false');
+  fetch('/api/reconcile-shipment',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
+    document.getElementById('reconcileFile').value=''; _reconcileFile=null;
+    if(d.error){ toast(d.error,true); return; }
+    toast('Added '+d.unitsAdded+' missing units');
+    alert('✓ Fixed '+d.gapsFixed+' items, added '+d.unitsAdded+' units to shipment '+d.shipmentId);
+    loadProducts();
+  }).catch(()=>toast('Failed',true));
+}
 function shipFromTsv(){
   const f=document.getElementById('shipTsvFile').files[0]; if(!f)return;
-  const btn=document.getElementById('shipTsvBtn'); btn.textContent='Reading shipment plan...'; btn.disabled=true;
-  const fd=new FormData(); fd.append('file', f);
+  _shipTsvFile=f;
+  const btn=document.getElementById('shipTsvBtn'); btn.textContent='Reading...'; btn.disabled=true;
+  const fd=new FormData(); fd.append('file', f); fd.append('preview','true');
   fetch('/api/ship-from-tsv',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
     btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false;
-    document.getElementById('shipTsvFile').value='';
-    if(d.error){ toast(d.error,true); alert('Could not process:\n\n'+d.error); return; }
-    let msg='Shipment '+d.shipmentId+(d.shipmentName?' ('+d.shipmentName+')':'')+':\n\n';
-    msg+='✓ '+d.done+' of '+d.totalLines+' items deducted from on-hand → In Transit\n';
-    if(d.expanded && d.expanded.length) msg+=d.expanded.length+' duos expanded to singles\n';
-    if(d.notfound && d.notfound.length) msg+='\n⚠ '+d.notfound.length+' not matched (add these first):\n'+d.notfound.join('\n');
-    toast('Shipped '+d.done+' items from plan');
-    alert(msg);
+    if(d.error){ toast(d.error,true); alert('Could not process:\n\n'+d.error); document.getElementById('shipTsvFile').value=''; return; }
+    // show PREVIEW and ask to confirm
+    let msg='PREVIEW — Shipment '+d.shipmentId+(d.shipmentName?' ('+d.shipmentName+')':'')+'\n\nThis will deduct:\n\n'+d.previewLines.join('\n');
+    if(d.notfound && d.notfound.length) msg+='\n\n⚠ NOT matched ('+d.notfound.length+'): '+d.notfound.join(', ');
+    msg+='\n\nProceed with the deduction?';
+    if(confirm(msg)){ commitShipTsv(); }
+    else { document.getElementById('shipTsvFile').value=''; _shipTsvFile=null; toast('Cancelled — nothing deducted'); }
+  }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false; toast('Preview failed',true); });
+}
+function commitShipTsv(){
+  if(!_shipTsvFile)return;
+  const btn=document.getElementById('shipTsvBtn'); btn.textContent='Processing...'; btn.disabled=true;
+  const fd=new FormData(); fd.append('file', _shipTsvFile); fd.append('preview','false');
+  fetch('/api/ship-from-tsv',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
+    btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false;
+    document.getElementById('shipTsvFile').value=''; _shipTsvFile=null;
+    if(d.error){ toast(d.error,true); return; }
+    toast('Shipped '+d.done+' items — on-hand updated');
+    alert('✓ Done. '+d.done+' of '+d.totalLines+' items deducted → In Transit'+(d.expanded&&d.expanded.length?'\n'+d.expanded.length+' duos expanded to singles':'')+(d.notfound&&d.notfound.length?'\n\n⚠ Not matched: '+d.notfound.join(', '):''));
     loadProducts();
-  }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false; toast('Upload failed',true); });
+  }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false; toast('Failed',true); });
 }
 function doBulkShip(){
   const shipmentId=document.getElementById('shipmentId').value.trim();
