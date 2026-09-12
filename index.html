@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="Elevate Inventory">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0f1b2d">
+<script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f1b2d; color: #1f2733; }
@@ -1230,6 +1231,74 @@ function renderMarket(){
   b.innerHTML=h;
 }
 
+// ==================== FNSKU LABEL PRINTING ====================
+// Matches Amazon's fulfillment label format: Code128 barcode + FNSKU + "New - Title"
+function printLabels(fnsku, title, suggestedQty){
+  const qtyStr = prompt('How many labels to print for '+fnsku+'?', suggestedQty || 1);
+  if(qtyStr===null) return;
+  const qty = parseInt(qtyStr);
+  if(!qty || qty<1){ toast('Enter a valid quantity', true); return; }
+  if(qty>1000 && !confirm('Print '+qty+' labels? That is a lot of paper.')) return;
+
+  const w = window.open('', '_blank', 'width=420,height=620');
+  if(!w){ toast('Popup blocked — allow popups to print', true); return; }
+
+  // Build the print document — 2" x 1" thermal labels, one per page
+  let labels = '';
+  for(let i=0;i<qty;i++){
+    labels += `<div class="label">
+      <svg class="bc" data-code="${fnsku}"></svg>
+      <div class="fn">${fnsku}</div>
+      <div class="ti">New - ${title}</div>
+    </div>`;
+  }
+
+  w.document.write(`<!DOCTYPE html><html><head><title>FNSKU Labels — ${fnsku}</title>
+  <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"><\/script>
+  <style>
+    @page { size: 2in 1in; margin: 0; }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; }
+    .label {
+      width: 2in; height: 1in;
+      padding: 0.04in 0.06in;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: flex-start;
+      page-break-after: always; break-after: page;
+      overflow: hidden;
+    }
+    .label:last-child { page-break-after: auto; }
+    .bc { width: 100%; height: 0.38in; display:block; }
+    .fn { font-size: 9.5pt; font-weight: 600; letter-spacing: 0.4px; margin-top: 0.01in; line-height:1; }
+    .ti { font-size: 6.2pt; text-align: center; line-height: 1.12; margin-top: 0.025in;
+          display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    @media screen {
+      body { background:#eee; padding:16px; }
+      .label { background:#fff; border:1px solid #bbb; margin:0 auto 10px; }
+      .noprint { text-align:center; margin-bottom:14px; font-family:Arial; }
+      .noprint button { padding:10px 22px; font-size:15px; font-weight:700; background:#127a7a; color:#fff; border:none; border-radius:8px; cursor:pointer; }
+      .noprint p { font-size:12px; color:#555; margin-top:8px; }
+    }
+    @media print { .noprint { display:none; } body { background:#fff; padding:0; } .label { border:none; margin:0; } }
+  </style></head><body>
+  <div class="noprint">
+    <button onclick="window.print()">🖨️ Print ${qty} Label${qty>1?'s':''}</button>
+    <p>Set your printer to <b>2" x 1"</b> label stock, scale <b>100% / Actual size</b>, no margins.<br>
+    <b>Scan-test one label before running a full shipment.</b></p>
+  </div>
+  ${labels}
+  <script>
+    document.querySelectorAll('.bc').forEach(function(el){
+      JsBarcode(el, el.getAttribute('data-code'), {
+        format: 'CODE128', displayValue: false,
+        width: 1.6, height: 46, margin: 0
+      });
+    });
+  <\/script>
+  </body></html>`);
+  w.document.close();
+}
+
 // ==================== PENDING PREP (work orders) ====================
 function requestPrep(asin, canDuo){
   const p = products.find(x=>x.asin===asin);
@@ -1316,7 +1385,7 @@ function renderPendingPrep(){
          </div>`
       : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
     const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
-    return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?pill('📦','FNSKU',x.fnsku,'#fdf3e6'):''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>${claimBanner}</div>`;
+    return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint">Workers: prep these, then scan them in on the <b>Prepped &amp; Ready</b> page — they clear from here automatically.</div>';
   b.innerHTML=h;
