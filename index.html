@@ -71,16 +71,16 @@
   #login h2 { margin-bottom: 16px; color: #0f1b2d; }
   /* Product cards */
   .pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 14px; }
-  .pcard { background:#fff; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.1); padding:16px; display:flex; gap:14px; align-items:center; }
-  .pcard img { width:84px; height:84px; object-fit:contain; border-radius:8px; background:#f4f6f9; flex-shrink:0; }
-  .pcard .pc-body { flex:1; min-width:0; }
+  .pcard { background:#fff; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.1); padding:14px; display:flex; gap:12px; align-items:flex-start; }
+  .pcard img { width:76px; height:76px; object-fit:contain; border-radius:8px; background:#f4f6f9; flex:0 0 auto; }
+  .pcard .pc-body { flex:1 1 auto; min-width:0; }
   .pcard .pc-name { font-weight:600; font-size:15px; line-height:1.3; color:#1f2733; }
   .pcard .pc-meta { font-size:11px; color:#5a6472; margin-top:3px; font-family:monospace; }
   .pcard .pc-meta b { color:#2563a8; }
-  .pcard .pc-qty { text-align:right; flex-shrink:0; }
+  .pcard .pc-qty { text-align:right; flex:0 0 auto; min-width:72px; }
   .pcard .pc-qty .n { font-size:26px; font-weight:700; }
   .pcard .pc-qty .l { font-size:11px; color:#9db0c9; text-transform:uppercase; }
-  .noimg { width:84px;height:84px;border-radius:8px;background:#eef2f6;display:flex;align-items:center;justify-content:center;font-size:32px;flex-shrink:0; }
+  .noimg { width:76px;height:76px;border-radius:8px;background:#eef2f6;display:flex;align-items:center;justify-content:center;font-size:30px;flex:0 0 auto; }
   .idrow { display:flex; align-items:center; gap:6px; margin-top:5px; }
   .idlabel { font-size:11px; color:#5a6472; font-weight:700; text-transform:uppercase; min-width:56px; }
   .idpill { font-family:monospace; font-size:14px; font-weight:700; color:#1a2b4a; padding:4px 11px; border-radius:6px; cursor:pointer; letter-spacing:0.3px; }
@@ -1648,7 +1648,7 @@ function renderOnhand(){
       if(p.partners && p.partners.length){
         duoNote+=p.partners.map(pt=>{
           const qtyColor=pt.onhand>0?'#1e8449':'#c0392b';
-          return `<div style="font-size:13px;color:#5a6472;margin-top:8px;line-height:1.45;padding:6px 8px;background:#f9fafb;border-radius:6px">
+          return `<div style="font-size:13px;color:#5a6472;margin-top:8px;line-height:1.45;padding:6px 9px;background:#f9fafb;border-radius:6px;width:100%">
             <div><span style="font-weight:700;color:#7a5b1f">🔗 pairs with:</span> <a href="https://www.amazon.com/dp/${pt.asin}" target="_blank" style="color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${pt.asin}</a> <span style="font-weight:800;color:${qtyColor};font-size:14px">— ${pt.onhand} on hand</span></div>
             <div style="margin-top:2px;color:#9db0c9;font-size:12px">↳ duo: <a href="https://www.amazon.com/dp/${pt.bundle_asin}" target="_blank" style="color:#127a7a;font-weight:700;text-decoration:none;border-bottom:1px dotted #127a7a">${pt.bundle_asin}</a></div>
           </div>`;
