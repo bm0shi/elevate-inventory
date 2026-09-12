@@ -118,6 +118,8 @@ async function initDb() {
       is_duo BOOLEAN DEFAULT false,
       created_at TIMESTAMPTZ DEFAULT now()
     );
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
       qty INTEGER NOT NULL DEFAULT 0,
@@ -1695,9 +1697,9 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, p.name, p.sku, p.fnsku, p.image
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, p.name, p.sku, p.fnsku, p.image
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
-     WHERE pp.qty > 0 ORDER BY pp.created_at`);
+     WHERE pp.qty > 0 ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
   // for duos, also return the component names so the worker knows what to grab
   const out = [];
   for (const r of rows.rows) {
@@ -1714,6 +1716,27 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
   }
   const totalUnits = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
   res.json({ items: out, totalRequests: out.length, totalUnits });
+});
+
+// Claim a prep job (worker starts on it)
+app.post('/api/pending-prep/claim', auth, async (req, res) => {
+  const { id, name } = req.body;
+  const who = (name||'').trim();
+  if (!id || !who) return res.status(400).json({ error: 'id + name required' });
+  // don't steal someone else's claim
+  const cur = await pool.query('SELECT claimed_by FROM inv_pending_prep WHERE id=$1', [id]);
+  if (!cur.rows.length) return res.status(404).json({ error: 'Job not found' });
+  if (cur.rows[0].claimed_by && cur.rows[0].claimed_by.toLowerCase() !== who.toLowerCase()) {
+    return res.json({ ok: false, takenBy: cur.rows[0].claimed_by });
+  }
+  await pool.query('UPDATE inv_pending_prep SET claimed_by=$1, claimed_at=now() WHERE id=$2', [who, id]);
+  res.json({ ok: true, claimedBy: who });
+});
+
+// Release a claim
+app.post('/api/pending-prep/release', auth, async (req, res) => {
+  await pool.query('UPDATE inv_pending_prep SET claimed_by=NULL, claimed_at=NULL WHERE id=$1', [req.body.id]);
+  res.json({ ok: true });
 });
 
 // Adjust / remove a pending prep request
