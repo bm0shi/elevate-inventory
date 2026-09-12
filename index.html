@@ -94,6 +94,13 @@
   .ppcard .noimg { width:120px !important; height:120px !important; font-size:44px !important; }
   .ppcard .pc-name { font-size:16px !important; }
   #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)) !important; }
+  #onhandBody .pcards { grid-template-columns: repeat(auto-fill, minmax(580px, 1fr)) !important; }
+  #onhandBody .pcard img { width:100px; height:100px; }
+  #onhandBody .noimg { width:100px; height:100px; font-size:38px; }
+  .mktrow { display:flex; gap:12px; align-items:center; margin-top:7px; padding:6px 9px; background:#f4f7fb; border-radius:6px; border-left:3px solid #2563a8; font-size:12px; }
+  .mktrow .mk { display:flex; flex-direction:column; }
+  .mktrow .mk .v { font-weight:800; font-size:14px; color:#1a2b4a; }
+  .mktrow .mk .k { font-size:10px; color:#5a6472; text-transform:uppercase; }
   .copybtn { background:none; border:none; cursor:pointer; font-size:13px; padding:2px 4px; border-radius:4px; opacity:0.55; line-height:1; }
   .copybtn:hover { opacity:1; background:#eef4fb; }
 </style>
@@ -198,6 +205,9 @@
         <option value="name">Name A→Z</option>
         <option value="name_desc">Name Z→A</option>
         <option value="transit_desc">In Transit: high→low</option>
+        <option value="rank">Best Sales Rank (hottest)</option>
+        <option value="sold_desc">Most Sold/mo</option>
+        <option value="cover_asc">Lowest Days Cover (prep first!)</option>
       </select>
       <select id="filterOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
         <option value="all">Show all</option>
@@ -1799,7 +1809,23 @@ function renderOnhand(){
     const pend=p.pending_prep||0;
     const available=Math.max(0, o - pend - prep);
     const buildBtn=`<button onclick="requestPrep('${p.asin}',${p.is_component||p.is_bundle?'true':'false'})" title="Request prep" style="margin-top:6px;padding:5px 10px;font-size:11px;font-weight:700;background:#1a2b4a;color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">🔧 PREP</button>`;
-    return `<div class="pcard" style="align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>`;
+    // Keepa market signals for prioritization
+    let mktRow='';
+    if(p.salesRank!=null || p.monthlySold!=null){
+      const rankTxt = p.salesRank!=null ? p.salesRank.toLocaleString() : '—';
+      const soldTxt = p.monthlySold!=null ? p.monthlySold.toLocaleString() : '—';
+      // days of cover at market demand (rough priority signal)
+      const perDay = p.monthlySold ? p.monthlySold/30 : 0;
+      const daysTxt = perDay>0 ? Math.round(available/perDay)+'d' : '—';
+      const daysColor = (perDay>0 && available/perDay < 21) ? '#c0392b' : '#1a2b4a';
+      mktRow=`<div class="mktrow">
+        <div class="mk"><span class="v">#${rankTxt}</span><span class="k">Rank</span></div>
+        <div class="mk"><span class="v">${soldTxt}</span><span class="k">Sold/mo</span></div>
+        <div class="mk"><span class="v" style="color:${daysColor}">${daysTxt}</span><span class="k">Cover</span></div>
+        ${p.sellers!=null?`<div class="mk"><span class="v">${p.sellers}</span><span class="k">Sellers</span></div>`:''}
+      </div>`;
+    }
+    return `<div class="pcard" style="align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${mktRow}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>`;
   }).join('')+'</div>';
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
 }
