@@ -117,6 +117,7 @@
     <button class="tab active" onclick="showTab('dashboard',event)">Dashboard</button>
     <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
+    <button class="tab" onclick="showTab('pendingprep',event)">🔧 Pending Prep</button>
     <button class="tab" onclick="showTab('prep',event)">Prepped &amp; Ready</button>
     <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
     <button class="tab" onclick="showTab('transit',event)">In Transit</button>
@@ -244,6 +245,14 @@
       <button class="action full" onclick="completeInvoice()" style="margin-top:12px">Mark Complete → Add to On Hand</button>
       <button class="action danger full" onclick="deleteInvoice()" style="margin-top:8px">Delete This Invoice</button>
     </div>
+  </div>
+  <div id="pendingprep" class="panel">
+    <div class="box">
+      <div style="font-weight:700">🔧 Pending Prep — Work Orders</div>
+      <div class="hint">What needs to be prepped. Add items from the On Hand page (🔧 button on each card). As workers scan items into Prepped &amp; Ready, these clear automatically.</div>
+    </div>
+    <div id="pendingPrepBody"></div>
+    <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
   <div id="prep" class="panel">
     <div class="box">
@@ -516,7 +525,7 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='dashboard')loadDashboard();
   if(t==='history'){ if(window._histData) renderHistory(); else loadHistory(); }
   if(t==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
@@ -1200,6 +1209,59 @@ function renderMarket(){
   b.innerHTML=h;
 }
 
+// ==================== PENDING PREP (work orders) ====================
+function requestPrep(asin, canDuo){
+  const p = products.find(x=>x.asin===asin);
+  if(!p) return;
+  const qtyStr = prompt('How many of "'+(p.name||'').slice(0,45)+'" do you want prepped?', '');
+  if(qtyStr===null) return;
+  const qty = parseInt(qtyStr);
+  if(!qty || qty<1){ toast('Enter a valid quantity', true); return; }
+  let isDuo = false;
+  if(canDuo){
+    isDuo = confirm('Prep these as DUOS?\n\nOK = yes, prep '+qty+' DUOS (uses '+qty+' of this item + '+qty+' of its partner)\nCancel = no, prep '+qty+' as SINGLES');
+  }
+  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo})}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    toast('Added to Pending Prep: '+qty+(d.isDuo?' duos':' units'));
+    loadProducts();
+  });
+}
+function loadPendingPrep(){
+  api('/api/pending-prep/list').then(d=>{
+    window._pendingPrepData=d;
+    renderPendingPrep();
+  });
+}
+function renderPendingPrep(){
+  const d=window._pendingPrepData; if(!d)return;
+  const b=document.getElementById('pendingPrepBody');
+  if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div></div>';
+  h+='<div class="pcards">';
+  h+=d.items.map(x=>{
+    const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${x.name}</a>`;
+    const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
+    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${label}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span></div>`:'';
+    let compLines='';
+    if(x.is_duo && x.components && x.components.length){
+      compLines='<div style="margin-top:7px;padding:7px 9px;background:#f9fafb;border-radius:6px;border-left:3px solid #c0392b;font-size:12px">'+
+        '<div style="font-weight:700;color:#c0392b;margin-bottom:3px">Grab '+x.qty+' of EACH:</div>'+
+        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:6px;margin-top:2px"><span>${c.name.slice(0,34)}</span><span style="font-weight:700;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand} avail</span></div>`).join('')+
+        '</div>';
+    }
+    return `<div class="pcard" style="align-items:stretch;${x.is_duo?'border:1px solid #fdeceb':''}">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?pill('📦','FNSKU',x.fnsku,'#fdf3e6'):''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>`;
+  }).join('');
+  h+='</div><div class="hint">Workers: prep these, then scan them in on the <b>Prepped &amp; Ready</b> page — they clear from here automatically.</div>';
+  b.innerHTML=h;
+}
+function editPendingPrep(id, current){
+  const v=prompt('Set quantity to prep (0 to remove):', current);
+  if(v===null)return;
+  api('/api/pending-prep/set',{method:'POST',body:JSON.stringify({id,qty:parseInt(v)||0})}).then(()=>{ loadPendingPrep(); loadProducts(); });
+}
+
 // ==================== PREPPED & READY ====================
 let prepPendingFnsku = null;
 function initPrepScan(){
@@ -1293,6 +1355,14 @@ function doPrepScan(code, qty){
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
     if(typeof scanFeedback==='function') scanFeedback();
     toast('+'+qty+' prepped'+(d.isBundle?' (duo → components)':''));
+    if(d.pendingInfo){
+      if(d.pendingInfo.over>0){
+        alert('⚠ OVER-PREPPED\n\nRequested: '+d.pendingInfo.requested+'\nYou scanned: '+d.pendingInfo.scanned+'\nOver by: '+d.pendingInfo.over+'\n\nThe request is now closed. Verify this is intentional.');
+      } else if(d.pendingInfo.remaining>0){
+        toast('Still needed: '+d.pendingInfo.remaining);
+      }
+    }
+    loadPendingPrep();
     if(d.warnings && d.warnings.length){
       alert('⚠ WARNING — prepping more than on hand:\n\n'+d.warnings.map(w=>w.name+': on hand '+w.onhand+', prepped '+w.prepped+', adding '+w.adding).join('\n')+'\n\nIt was still added — verify your physical count.');
     }
@@ -1675,7 +1745,10 @@ function renderOnhand(){
     } else if(p.is_bundle){
       duoNote='<div style="margin-top:5px;font-size:11px;color:#c0392b;font-weight:700">📦 THIS IS A DUO</div>';
     }
-    return `<div class="pcard" style="align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${o<=0?'low':''}">${o}</div><div class="l">On Hand</div>${t?'<div style="color:#2563a8;font-size:10px;font-weight:700">'+t+' transit</div>':''}${prep>0?'<div style="color:#b7791f;font-size:10px;font-weight:700">'+prep+' prepped</div>':''}</div></div>`;
+    const pend=p.pending_prep||0;
+    const available=Math.max(0, o - pend - prep);
+    const buildBtn=`<button onclick="requestPrep('${p.asin}',${p.is_component||p.is_bundle?'true':'false'})" title="Request prep" style="margin-top:6px;padding:5px 10px;font-size:11px;font-weight:700;background:#1a2b4a;color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">🔧 PREP</button>`;
+    return `<div class="pcard" style="align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>`;
   }).join('')+'</div>';
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
 }
@@ -1873,6 +1946,7 @@ function autoRefreshTick(){
   // only refresh the "viewing" pages
   if (t === 'onhand') { loadProducts().then(()=>{ _lastRefreshAt = new Date(); updateRefreshStamp(); }); }
   else if (t === 'dashboard') { loadDashboard(); _lastRefreshAt = new Date(); updateRefreshStamp(); }
+  else if (t === 'pendingprep') { loadPendingPrep(); _lastRefreshAt=new Date(); updateRefreshStamp(); }
   else if (t === 'prep') {
     // refresh the prepped LIST only (never touches the scan box or focus)
     api('/api/prep/list').then(d=>{ window._prepData=d; renderPrepList(); _lastRefreshAt=new Date(); updateRefreshStamp(); });
