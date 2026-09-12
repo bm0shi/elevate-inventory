@@ -324,7 +324,17 @@ app.get('/api/products', auth, async (req, res) => {
            b1.bundle_asin AS bundle_asin,
            b2.component_asin AS partner_asin,
            p2.name AS partner_name,
-           COALESCE(s2.onhand,0) AS partner_onhand
+           GREATEST(0,
+             COALESCE(s2.onhand,0)
+             - (
+                 COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=b2.component_asin AND is_duo=false),0)
+               + COALESCE((SELECT SUM(pp.qty*bb.qty) FROM inv_pending_prep pp JOIN inv_bundles bb ON bb.bundle_asin=pp.asin WHERE bb.component_asin=b2.component_asin),0)
+               )
+             - (
+                 COALESCE((SELECT qty FROM inv_prepped WHERE asin=b2.component_asin),0)
+               + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=b2.component_asin),0)
+               )
+           )::int AS partner_onhand
     FROM inv_bundles b1
     JOIN inv_bundles b2 ON b1.bundle_asin = b2.bundle_asin AND b1.component_asin <> b2.component_asin
     JOIN inv_products p2 ON p2.asin = b2.component_asin
