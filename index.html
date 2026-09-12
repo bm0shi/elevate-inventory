@@ -280,6 +280,11 @@
   </div>
   <div id="ship" class="panel">
     <div class="box">
+      <div style="font-weight:700;margin-bottom:4px">📄 Upload Amazon Shipment Plan (easiest)</div>
+      <div class="hint" style="margin-bottom:10px">Download the shipment plan TSV from Seller Central and upload it here. It reads the Shipment ID, all items, and quantities automatically — then deducts from on-hand and clears those items from Prepped.</div>
+      <input type="file" id="shipTsvFile" accept=".tsv,.txt,.csv" style="display:none" onchange="shipFromTsv()">
+      <button class="action full" onclick="document.getElementById('shipTsvFile').click()" id="shipTsvBtn" style="background:#127a7a">📄 Upload Shipment Plan TSV</button>
+      <div style="text-align:center;color:#9db0c9;font-size:12px;margin:14px 0">— or enter manually below —</div>
       <label>Amazon Shipment ID (required)</label>
       <input type="text" id="shipmentId" placeholder="FBA18XRL8GV5" autocomplete="off">
       <div style="height:10px"></div>
@@ -590,6 +595,23 @@ function doShip(){
   });
 }
 
+function shipFromTsv(){
+  const f=document.getElementById('shipTsvFile').files[0]; if(!f)return;
+  const btn=document.getElementById('shipTsvBtn'); btn.textContent='Reading shipment plan...'; btn.disabled=true;
+  const fd=new FormData(); fd.append('file', f);
+  fetch('/api/ship-from-tsv',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
+    btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false;
+    document.getElementById('shipTsvFile').value='';
+    if(d.error){ toast(d.error,true); alert('Could not process:\n\n'+d.error); return; }
+    let msg='Shipment '+d.shipmentId+(d.shipmentName?' ('+d.shipmentName+')':'')+':\n\n';
+    msg+='✓ '+d.done+' of '+d.totalLines+' items deducted from on-hand → In Transit\n';
+    if(d.expanded && d.expanded.length) msg+=d.expanded.length+' duos expanded to singles\n';
+    if(d.notfound && d.notfound.length) msg+='\n⚠ '+d.notfound.length+' not matched (add these first):\n'+d.notfound.join('\n');
+    toast('Shipped '+d.done+' items from plan');
+    alert(msg);
+    loadProducts();
+  }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false; toast('Upload failed',true); });
+}
 function doBulkShip(){
   const shipmentId=document.getElementById('shipmentId').value.trim();
   const shipmentName=document.getElementById('shipmentName').value.trim();
