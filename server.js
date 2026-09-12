@@ -309,6 +309,7 @@ app.get('/api/products', auth, async (req, res) => {
   // For each component, find its PARTNER components (the other items in the same duos) + their on-hand
   const partnerRows = await pool.query(`
     SELECT b1.component_asin AS asin,
+           b1.bundle_asin AS bundle_asin,
            b2.component_asin AS partner_asin,
            p2.name AS partner_name,
            COALESCE(s2.onhand,0) AS partner_onhand
@@ -320,9 +321,9 @@ app.get('/api/products', auth, async (req, res) => {
   const partnersByAsin = {};
   for (const r of partnerRows.rows) {
     if (!partnersByAsin[r.asin]) partnersByAsin[r.asin] = [];
-    // dedupe partners
-    if (!partnersByAsin[r.asin].some(x=>x.asin===r.partner_asin)) {
-      partnersByAsin[r.asin].push({ asin: r.partner_asin, name: r.partner_name, onhand: r.partner_onhand });
+    // dedupe by partner+bundle combo
+    if (!partnersByAsin[r.asin].some(x=>x.asin===r.partner_asin && x.bundle_asin===r.bundle_asin)) {
+      partnersByAsin[r.asin].push({ asin: r.partner_asin, name: r.partner_name, onhand: r.partner_onhand, bundle_asin: r.bundle_asin });
     }
   }
   const out = rows.map(p => ({ ...p, partners: partnersByAsin[p.asin] || [] }));
@@ -1016,6 +1017,23 @@ app.post('/api/reconcile-shipment', auth, upload.single('file'), async (req, res
   }
   await pool.query('DELETE FROM inv_prepped WHERE qty<=0');
   res.json({ok:true, shipmentId, gapsFixed:gaps.length, unitsAdded:added, gaps});
+});
+
+// Full bundle dump — every bundle with its components (to spot bad mappings)
+app.get('/api/all-bundles-detail', auth, async (req, res) => {
+  const r = await pool.query(`
+    SELECT b.bundle_asin, bp.name AS bundle_name,
+           b.component_asin, cp.name AS comp_name
+    FROM inv_bundles b
+    JOIN inv_products bp ON bp.asin=b.bundle_asin
+    JOIN inv_products cp ON cp.asin=b.component_asin
+    ORDER BY bp.name, cp.name`);
+  const map={};
+  for(const x of r.rows){
+    if(!map[x.bundle_asin]) map[x.bundle_asin]={bundle_asin:x.bundle_asin,bundle_name:x.bundle_name,components:[]};
+    map[x.bundle_asin].components.push({asin:x.component_asin,name:x.comp_name});
+  }
+  res.json(Object.values(map));
 });
 
 // Diagnostic: check bundle definitions for specific ASINs
