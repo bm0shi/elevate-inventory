@@ -178,8 +178,10 @@
   <div id="onhand" class="panel">
     <div class="cards">
       <div class="card"><div class="n" id="totSkus">0</div><div class="l">SKUs</div></div>
-      <div class="card"><div class="n" id="totUnits">0</div><div class="l">On Hand</div></div>
-      <div class="card"><div class="n" id="totTransit">0</div><div class="l">In Transit</div></div>
+      <div class="card" style="border-top:3px solid #1e8449"><div class="n" id="totAvailable">0</div><div class="l">Available</div><div id="totOnhandSub" style="font-size:11px;color:#9db0c9;margin-top:2px"></div></div>
+      <div class="card" style="border-top:3px solid #7a4fb5"><div class="n" id="totPendingPrep">0</div><div class="l">Pending Prep</div></div>
+      <div class="card" style="border-top:3px solid #b7791f"><div class="n" id="totPrepped">0</div><div class="l">Prepped</div></div>
+      <div class="card" style="border-top:3px solid #2563a8"><div class="n" id="totTransit">0</div><div class="l">In Transit</div></div>
     </div>
     <div style="margin-bottom:12px">
       <button class="action" onclick="toggleAddProduct()" id="addProdBtn" style="width:100%;padding:12px;font-size:14px;background:#1a2b4a">+ Add a Product to Catalog</button>
@@ -1830,7 +1832,21 @@ function renderOnhand(){
     }
     return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>${mktRow}</div>`;
   }).join('')+'</div>';
-  document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
+  // full breakdown totals (across ALL products, not just the filtered view)
+  let sumOnhand=0, sumPending=0, sumPrepped=0, sumTransit=0;
+  for(const x of products){
+    sumOnhand += (x.onhand||0);
+    sumPending += (x.pending_prep||0);
+    sumPrepped += (x.prepped||0);
+    sumTransit += (x.transit||0);
+  }
+  const sumAvailable = Math.max(0, sumOnhand - sumPending - sumPrepped);
+  document.getElementById('totSkus').textContent=sk;
+  document.getElementById('totAvailable').textContent=sumAvailable.toLocaleString();
+  const sub=document.getElementById('totOnhandSub'); if(sub) sub.textContent='of '+sumOnhand.toLocaleString()+' on hand';
+  document.getElementById('totPendingPrep').textContent=sumPending.toLocaleString();
+  document.getElementById('totPrepped').textContent=sumPrepped.toLocaleString();
+  document.getElementById('totTransit').textContent=sumTransit.toLocaleString();
 }
 function pullImages(){
   const btn=document.getElementById('imgBtn'); btn.textContent='Pulling from Amazon...'; btn.disabled=true;
