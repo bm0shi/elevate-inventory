@@ -348,7 +348,24 @@ app.get('/api/products', auth, async (req, res) => {
       partnersByAsin[r.asin].push({ asin: r.partner_asin, name: r.partner_name, onhand: r.partner_onhand, bundle_asin: r.bundle_asin });
     }
   }
-  const out = rows.map(p => ({ ...p, partners: partnersByAsin[p.asin] || [] }));
+  // layer in cached Keepa market data (sales rank + monthly sold) for prioritization
+  let mByAsin = {};
+  try {
+    const mkt = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+    if (mkt.rows.length) for (const m of (mkt.rows[0].data||[])) mByAsin[m.asin] = m;
+  } catch(e) {}
+
+  const out = rows.map(p => {
+    const m = mByAsin[p.asin] || {};
+    return {
+      ...p,
+      partners: partnersByAsin[p.asin] || [],
+      salesRank: m.salesRank != null ? m.salesRank : null,
+      monthlySold: m.monthlySold != null ? m.monthlySold : null,
+      buyBoxPrice: m.buyBoxPrice != null ? m.buyBoxPrice : null,
+      sellers: m.offerCount != null ? m.offerCount : null,
+    };
+  });
   res.json(out);
 });
 
