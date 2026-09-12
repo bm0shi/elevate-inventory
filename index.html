@@ -1293,7 +1293,8 @@ function renderPendingPrep(){
   const d=window._pendingPrepData; if(!d)return;
   const b=document.getElementById('pendingPrepBody');
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
-  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div></div>';
+  const claimedCount=d.items.filter(x=>x.claimed_by).length;
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div></div>';
   h+='<div class="pcards">';
   h+=d.items.map(x=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
@@ -1307,11 +1308,40 @@ function renderPendingPrep(){
         x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px;align-items:flex-start"><span style="flex:1;line-height:1.35"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${c.name}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button></div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand} avail</span></div>`).join('')+
         '</div>';
     }
-    return `<div class="pcard ppcard" style="align-items:stretch;${x.is_duo?'border:1px solid #fdeceb':''}">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?pill('📦','FNSKU',x.fnsku,'#fdf3e6'):''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>`;
+    const claimed = !!x.claimed_by;
+    const claimBanner = claimed
+      ? `<div style="margin-top:12px;padding:11px 14px;background:#1e8449;border-radius:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+           <span style="color:#fff;font-weight:800;font-size:15px;letter-spacing:0.4px">🔨 CURRENTLY BEING PREPPED BY ${String(x.claimed_by).toUpperCase()}</span>
+           <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release</button>
+         </div>`
+      : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
+    const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
+    return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?pill('📦','FNSKU',x.fnsku,'#fdf3e6'):''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint">Workers: prep these, then scan them in on the <b>Prepped &amp; Ready</b> page — they clear from here automatically.</div>';
   b.innerHTML=h;
 }
+function claimPrepJob(id){
+  let who = localStorage_get('prepWorkerName') || '';
+  who = prompt('Who is prepping this? (your name)', who);
+  if(who===null) return;
+  who = who.trim();
+  if(!who){ toast('Enter a name',true); return; }
+  localStorage_set('prepWorkerName', who);
+  api('/api/pending-prep/claim',{method:'POST',body:JSON.stringify({id,name:who})}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    if(!d.ok && d.takenBy){ alert('⚠ Already claimed by '+d.takenBy+'.\n\nIf they are done or not working on it, have them release it first.'); return; }
+    toast('Started — '+who);
+    loadPendingPrep();
+  });
+}
+function releasePrepJob(id){
+  if(!confirm('Release this job so someone else can take it?')) return;
+  api('/api/pending-prep/release',{method:'POST',body:JSON.stringify({id})}).then(()=>{ toast('Released'); loadPendingPrep(); });
+}
+// tiny helpers (localStorage not available in artifacts but fine in the real app)
+function localStorage_get(k){ try { return window.localStorage.getItem(k); } catch(e){ return window['_mem_'+k]||''; } }
+function localStorage_set(k,v){ try { window.localStorage.setItem(k,v); } catch(e){ window['_mem_'+k]=v; } }
 function editPendingPrep(id, current){
   const v=prompt('Set quantity to prep (0 to remove):', current);
   if(v===null)return;
