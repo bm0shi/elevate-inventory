@@ -377,11 +377,17 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
           ['out', part.asin, part.name, part.qty, note]);
       }
       if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${code} → ${parts.length} singles`);
+      // clear prepped ONLY for the specific items that actually shipped (not everything)
+      for (const part of parts) {
+        await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [part.qty, part.asin]);
+      }
+      // also clear the duo's own prepped entry if we shipped it as a duo
+      await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [q, matchedAsin]);
+      await pool.query('DELETE FROM inv_prepped WHERE qty <= 0');
       done++;
     } else { notfound.push(code); }
   }
-  // clear prepped staging — shipment is built and shipped
-  await clearAllPrepped();
+  // SAFETY: never wipe the whole prepped list. Only the items that shipped were cleared above.
   res.json({ ok: true, done, notfound, shipmentId, expanded: expandedNote });
 });
 
@@ -931,6 +937,78 @@ app.post('/api/pull-images', auth, async (req, res) => {
   }
   console.log(`[Images] Pulled ${saved} of ${asins.length} from Amazon Catalog`);
   res.json({ ok: true, saved, requested: asins.length });
+});
+
+// Ship to FBA via Amazon shipment plan TSV upload — parses SKU/ASIN/FNSKU + Shipped qty
+app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => {
+  let text;
+  if (req.file) text = req.file.buffer.toString('utf-8');
+  else if (req.body.text) text = req.body.text;
+  else return res.status(400).json({ error: 'No file or text provided' });
+
+  const lines = text.split(/\r?\n/);
+  // pull shipment id + name from the header block
+  let shipmentId = '', shipmentName = '';
+  for (const l of lines.slice(0, 8)) {
+    const c = l.split('\t');
+    if (/^Shipment ID/i.test(c[0])) shipmentId = (c[1]||'').trim();
+    if (/^Name/i.test(c[0])) shipmentName = (c[1]||'').trim();
+  }
+  // find the data header row (has Merchant SKU + FNSKU + Shipped)
+  let hdrIdx = -1, cols = [];
+  for (let i=0;i<lines.length;i++){
+    if (/Merchant SKU/i.test(lines[i]) && /FNSKU/i.test(lines[i])) { hdrIdx=i; cols=lines[i].split('\t').map(c=>c.trim()); break; }
+  }
+  if (hdrIdx === -1) return res.status(400).json({ error: 'Not an Amazon shipment plan (no Merchant SKU/FNSKU header found).' });
+  if (!shipmentId) return res.status(400).json({ error: 'No Shipment ID found in the file.' });
+
+  const skuIdx = cols.findIndex(c=>/Merchant SKU/i.test(c));
+  const asinIdx = cols.findIndex(c=>/^ASIN/i.test(c));
+  const fnIdx = cols.findIndex(c=>/FNSKU/i.test(c));
+  const qtyIdx = cols.findIndex(c=>/Shipped/i.test(c));
+  if (qtyIdx === -1) return res.status(400).json({ error: 'No "Shipped" quantity column found.' });
+
+  // build the item list
+  const items = [];
+  for (let i=hdrIdx+1;i<lines.length;i++){
+    const c = lines[i].split('\t');
+    if (c.length <= qtyIdx) continue;
+    const asin = (c[asinIdx]||'').trim();
+    const sku = (c[skuIdx]||'').trim();
+    const fnsku = (c[fnIdx]||'').trim();
+    const qty = parseInt(c[qtyIdx]) || 0;
+    if (qty < 1) continue;
+    items.push({ asin, sku, fnsku, qty });
+  }
+  if (!items.length) return res.status(400).json({ error: 'No line items with a shipped quantity.' });
+
+  // register shipment
+  await pool.query(
+    `INSERT INTO inv_shipments(shipment_id, shipment_name) VALUES($1,$2)
+     ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
+    [shipmentId, shipmentName]);
+
+  let done = 0, notfound = [], expandedNote = [];
+  for (const it of items) {
+    // match by ASIN, then FNSKU, then SKU
+    let r = await pool.query('SELECT asin, name FROM inv_products WHERE UPPER(asin)=UPPER($1) OR UPPER(fnsku)=UPPER($2) OR UPPER(sku)=UPPER($3) LIMIT 1', [it.asin, it.fnsku, it.sku]);
+    if (!r.rows.length) { notfound.push(it.asin || it.sku || it.fnsku); continue; }
+    const matchedAsin = r.rows[0].asin;
+    const parts = await expandToComponents(matchedAsin, it.qty);
+    for (const part of parts) {
+      await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
+      await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
+      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+        ['out', part.asin, part.name, part.qty, part.fromBundle ? ('Shipment '+shipmentId+' (duo)') : ('Shipment '+shipmentId)]);
+      // clear ONLY this item from prepped
+      await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [part.qty, part.asin]);
+    }
+    await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [it.qty, matchedAsin]);
+    if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${it.asin} → ${parts.length} singles`);
+    done++;
+  }
+  await pool.query('DELETE FROM inv_prepped WHERE qty <= 0');
+  res.json({ ok: true, shipmentId, shipmentName, done, notfound, expanded: expandedNote, totalLines: items.length });
 });
 
 // PDF upload -> extract text -> process (multi-order)
