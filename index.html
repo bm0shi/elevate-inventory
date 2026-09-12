@@ -1646,7 +1646,7 @@ function renderOnhand(){
     if(p.is_component){
       duoNote='<div style="margin-top:5px;font-size:11px;color:#c0392b;font-weight:700">🔗 CAN BE PART OF A DUO</div>';
       if(p.partners && p.partners.length){
-        duoNote+=p.partners.map(pt=>`<div style="font-size:11px;color:#5a6472;margin-top:2px">pairs with: <b style="color:#2563a8">${pt.asin}</b> — <b>${pt.onhand}</b> on hand</div>`).join('');
+        duoNote+=p.partners.map(pt=>`<div style="font-size:11px;color:#5a6472;margin-top:2px">pairs with: <a href="https://www.amazon.com/dp/${pt.asin}" target="_blank" style="color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${pt.asin}</a> — <b>${pt.onhand}</b> on hand</div>`).join('');
       }
     } else if(p.is_bundle){
       duoNote='<div style="margin-top:5px;font-size:11px;color:#c0392b;font-weight:700">📦 THIS IS A DUO</div>';
