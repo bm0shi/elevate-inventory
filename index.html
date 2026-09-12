@@ -185,6 +185,11 @@
         <option value="name_desc">Name Z→A</option>
         <option value="transit_desc">In Transit: high→low</option>
       </select>
+      <select id="filterOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
+        <option value="all">Show all</option>
+        <option value="instock">In stock only</option>
+        <option value="outstock">Out of stock only</option>
+      </select>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
       <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
     </div>
@@ -1612,8 +1617,15 @@ function renderOnhand(){
   // totals across ALL products (not just filtered)
   let tU=0,tT=0,sk=0;
   products.forEach(p=>{ tU+=(p.onhand||0); tT+=(p.transit||0); sk++; });
+  // stock filter
+  const stockFilter=(document.getElementById('filterOnhand')||{}).value||'all';
   // filter
-  let list=products.filter(p=> !q || p.name.toLowerCase().includes(q) || (p.asin||'').toLowerCase().includes(q));
+  let list=products.filter(p=>{
+    if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;
+    if(stockFilter==='instock' && (p.onhand||0)<=0) return false;
+    if(stockFilter==='outstock' && (p.onhand||0)>0) return false;
+    return true;
+  });
   // sort
   const oh=p=>p.onhand||0, tr=p=>p.transit||0;
   list.sort((a,b)=>{
