@@ -90,6 +90,10 @@
   .idlabel { font-size:11px; color:#5a6472; font-weight:700; text-transform:uppercase; min-width:56px; }
   .idpill { font-family:monospace; font-size:14px; font-weight:700; color:#1a2b4a; padding:4px 11px; border-radius:6px; cursor:pointer; letter-spacing:0.3px; }
   .idpill:hover { outline:1px solid #2563a8; }
+  .ppcard img { width:120px !important; height:120px !important; }
+  .ppcard .noimg { width:120px !important; height:120px !important; font-size:44px !important; }
+  .ppcard .pc-name { font-size:16px !important; }
+  #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)) !important; }
   .copybtn { background:none; border:none; cursor:pointer; font-size:13px; padding:2px 4px; border-radius:4px; opacity:0.55; line-height:1; }
   .copybtn:hover { opacity:1; background:#eef4fb; }
 </style>
@@ -1283,12 +1287,12 @@ function renderPendingPrep(){
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${label}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${label}" class="copybtn">📋</button></div>`:'';
     let compLines='';
     if(x.is_duo && x.components && x.components.length){
-      compLines='<div style="margin-top:7px;padding:7px 9px;background:#f9fafb;border-radius:6px;border-left:3px solid #c0392b;font-size:12px">'+
-        '<div style="font-weight:700;color:#c0392b;margin-bottom:3px">Grab '+x.qty+' of EACH:</div>'+
-        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:6px;margin-top:2px"><span>${c.name.slice(0,34)}</span><span style="font-weight:700;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand} avail</span></div>`).join('')+
+      compLines='<div style="margin-top:9px;padding:10px 12px;background:#f9fafb;border-radius:8px;border-left:4px solid #c0392b;font-size:13px">'+
+        '<div style="font-weight:800;color:#c0392b;margin-bottom:4px;font-size:14px">⚡ Grab '+x.qty+' of EACH:</div>'+
+        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px;align-items:flex-start"><span style="flex:1;line-height:1.35">${c.name}<div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700;margin-top:1px">${c.asin}</div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand} avail</span></div>`).join('')+
         '</div>';
     }
-    return `<div class="pcard" style="align-items:stretch;${x.is_duo?'border:1px solid #fdeceb':''}">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?pill('📦','FNSKU',x.fnsku,'#fdf3e6'):''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>`;
+    return `<div class="pcard ppcard" style="align-items:stretch;${x.is_duo?'border:1px solid #fdeceb':''}">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?pill('📦','FNSKU',x.fnsku,'#fdf3e6'):''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>`;
   }).join('');
   h+='</div><div class="hint">Workers: prep these, then scan them in on the <b>Prepped &amp; Ready</b> page — they clear from here automatically.</div>';
   b.innerHTML=h;
