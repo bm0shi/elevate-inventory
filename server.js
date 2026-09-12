@@ -300,7 +300,9 @@ app.get('/api/products', auth, async (req, res) => {
       (
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
-      )::int AS prepped
+      )::int AS prepped,
+      EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
+      EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
      ORDER BY p.name`);
   res.json(rows);
