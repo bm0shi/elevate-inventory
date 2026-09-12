@@ -305,7 +305,28 @@ app.get('/api/products', auth, async (req, res) => {
       EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
      ORDER BY p.name`);
-  res.json(rows);
+
+  // For each component, find its PARTNER components (the other items in the same duos) + their on-hand
+  const partnerRows = await pool.query(`
+    SELECT b1.component_asin AS asin,
+           b2.component_asin AS partner_asin,
+           p2.name AS partner_name,
+           COALESCE(s2.onhand,0) AS partner_onhand
+    FROM inv_bundles b1
+    JOIN inv_bundles b2 ON b1.bundle_asin = b2.bundle_asin AND b1.component_asin <> b2.component_asin
+    JOIN inv_products p2 ON p2.asin = b2.component_asin
+    LEFT JOIN inv_stock s2 ON s2.asin = b2.component_asin
+  `);
+  const partnersByAsin = {};
+  for (const r of partnerRows.rows) {
+    if (!partnersByAsin[r.asin]) partnersByAsin[r.asin] = [];
+    // dedupe partners
+    if (!partnersByAsin[r.asin].some(x=>x.asin===r.partner_asin)) {
+      partnersByAsin[r.asin].push({ asin: r.partner_asin, name: r.partner_name, onhand: r.partner_onhand });
+    }
+  }
+  const out = rows.map(p => ({ ...p, partners: partnersByAsin[p.asin] || [] }));
+  res.json(out);
 });
 
 // assign a UPC to a product (learn-as-you-scan)
