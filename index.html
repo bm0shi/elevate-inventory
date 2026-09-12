@@ -95,8 +95,11 @@
   .ppcard .pc-name { font-size:16px !important; }
   #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)) !important; }
   #onhandBody .pcards { grid-template-columns: repeat(auto-fill, minmax(580px, 1fr)) !important; }
-  #onhandBody .pcard img { width:100px; height:100px; }
-  #onhandBody .noimg { width:100px; height:100px; font-size:38px; }
+  #onhandBody .pcard img { width:140px; height:140px; }
+  #onhandBody .noimg { width:140px; height:140px; font-size:52px; }
+  .ohcard .mktrow { margin-top:12px; width:100%; justify-content:space-around; padding:9px 12px; }
+  .ohcard .mktrow .mk { align-items:center; }
+  .ohcard .mktrow .mk .v { font-size:16px; }
   .mktrow { display:flex; gap:12px; align-items:center; margin-top:7px; padding:6px 9px; background:#f4f7fb; border-radius:6px; border-left:3px solid #2563a8; font-size:12px; }
   .mktrow .mk { display:flex; flex-direction:column; }
   .mktrow .mk .v { font-weight:800; font-size:14px; color:#1a2b4a; }
@@ -1825,7 +1828,7 @@ function renderOnhand(){
         ${p.sellers!=null?`<div class="mk"><span class="v">${p.sellers}</span><span class="k">Sellers</span></div>`:''}
       </div>`;
     }
-    return `<div class="pcard" style="align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${mktRow}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>`;
+    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>${mktRow}</div>`;
   }).join('')+'</div>';
   document.getElementById('totSkus').textContent=sk; document.getElementById('totUnits').textContent=tU.toLocaleString(); document.getElementById('totTransit').textContent=tT.toLocaleString();
 }
