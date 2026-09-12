@@ -110,6 +110,14 @@ async function initDb() {
     ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS image TEXT;
     CREATE INDEX IF NOT EXISTS idx_fnsku ON inv_products(fnsku);
     -- prepped/staging counts per product (persists across sessions)
+    -- Prep work orders: what the owner wants prepped (worker's to-do list)
+    CREATE TABLE IF NOT EXISTS inv_pending_prep (
+      id SERIAL PRIMARY KEY,
+      asin TEXT NOT NULL,          -- the item as requested (duo asin if duo, else the single)
+      qty INTEGER NOT NULL,        -- units requested (duos = number of duos)
+      is_duo BOOLEAN DEFAULT false,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
       qty INTEGER NOT NULL DEFAULT 0,
@@ -301,6 +309,10 @@ app.get('/api/products', auth, async (req, res) => {
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
       )::int AS prepped,
+      (
+        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+      )::int AS pending_prep,
       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
       EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
@@ -1620,6 +1632,73 @@ app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
 });
 
 // ============================================================
+// PENDING PREP (work orders — what the owner wants prepped)
+// ============================================================
+
+// Create a prep request
+app.post('/api/pending-prep/add', auth, async (req, res) => {
+  const { asin, qty, isDuo } = req.body;
+  const q = parseInt(qty);
+  if (!asin || !q || q < 1) return res.status(400).json({ error: 'asin + qty required' });
+
+  // If marked as duo, the asin passed should be a component; find the duo it belongs to.
+  let requestAsin = asin, duoFlag = false;
+  if (isDuo) {
+    // is this asin already a bundle (duo) itself?
+    const isBundle = await pool.query('SELECT 1 FROM inv_bundles WHERE bundle_asin=$1 LIMIT 1', [asin]);
+    if (isBundle.rows.length) { requestAsin = asin; duoFlag = true; }
+    else {
+      // it's a component — find a duo containing it
+      const b = await pool.query('SELECT bundle_asin FROM inv_bundles WHERE component_asin=$1 LIMIT 1', [asin]);
+      if (!b.rows.length) return res.status(400).json({ error: 'This item is not part of any duo.' });
+      requestAsin = b.rows[0].bundle_asin; duoFlag = true;
+    }
+  }
+
+  // merge with an existing open request for the same item
+  const ex = await pool.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2', [requestAsin, duoFlag]);
+  if (ex.rows.length) {
+    await pool.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
+  } else {
+    await pool.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
+  }
+  res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag });
+});
+
+// List pending prep (worker's task list)
+app.get('/api/pending-prep/list', auth, async (req, res) => {
+  const rows = await pool.query(
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, p.name, p.sku, p.fnsku, p.image
+     FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
+     WHERE pp.qty > 0 ORDER BY pp.created_at`);
+  // for duos, also return the component names so the worker knows what to grab
+  const out = [];
+  for (const r of rows.rows) {
+    let components = [];
+    if (r.is_duo) {
+      const c = await pool.query(
+        `SELECT b.component_asin AS asin, p.name, COALESCE(s.onhand,0) AS onhand
+         FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin
+         LEFT JOIN inv_stock s ON s.asin=b.component_asin
+         WHERE b.bundle_asin=$1`, [r.asin]);
+      components = c.rows;
+    }
+    out.push({ ...r, components });
+  }
+  const totalUnits = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
+  res.json({ items: out, totalRequests: out.length, totalUnits });
+});
+
+// Adjust / remove a pending prep request
+app.post('/api/pending-prep/set', auth, async (req, res) => {
+  const { id, qty } = req.body;
+  const q = parseInt(qty) || 0;
+  if (q <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
+  else await pool.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [q, id]);
+  res.json({ ok: true });
+});
+
+// ============================================================
 // PREPPED & READY (FBA staging)
 // ============================================================
 
@@ -1694,10 +1773,19 @@ app.post('/api/prep/scan', auth, async (req, res) => {
 
   // store prepped AS SCANNED (the duo asin, or the single asin)
   await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [prod.asin, q]);
+  // decrement the matching PENDING PREP work order (if any)
+  let pendingInfo = null;
+  const pend = await pool.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1', [prod.asin]);
+  if (pend.rows.length) {
+    const remaining = pend.rows[0].qty - q;
+    pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
+    if (remaining <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [pend.rows[0].id]);
+    else await pool.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [remaining, pend.rows[0].id]);
+  }
   await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
     ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
 
-  res.json({ ok: true, product: prod, qty: q, isBundle, warnings });
+  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo });
 });
 
 // How many units of a component ASIN are committed across all prepped items
