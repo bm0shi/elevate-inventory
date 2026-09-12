@@ -1653,9 +1653,10 @@ function renderOnhand(){
               <a href="https://www.amazon.com/dp/${pt.asin}" target="_blank" style="color:#2563a8;font-weight:700;text-decoration:none;font-family:monospace;font-size:13px">${pt.asin}</a>
               <span style="font-weight:800;color:${qtyColor};font-size:15px;white-space:nowrap">${pt.onhand}</span>
             </div>
-            <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-top:3px">
-              <a href="https://www.amazon.com/dp/${pt.bundle_asin}" target="_blank" style="color:#127a7a;font-weight:700;text-decoration:none;font-family:monospace;font-size:12px">${pt.bundle_asin}</a>
-              <span style="color:#9db0c9;font-size:10px;text-transform:uppercase;white-space:nowrap">the duo</span>
+            <div style="display:flex;align-items:center;gap:4px;margin-top:5px;padding:4px 7px;background:#eafaf1;border:1px solid #1e8449;border-radius:5px">
+              <a href="https://www.amazon.com/dp/${pt.bundle_asin}" target="_blank" style="color:#127a7a;font-weight:700;text-decoration:none;font-family:monospace;font-size:12.5px;white-space:nowrap">${pt.bundle_asin}</a>
+              <span style="flex:1;border-top:2px dashed #1e8449;margin:0 3px;min-width:14px"></span>
+              <span style="color:#1e8449;font-size:11px;font-weight:800;text-transform:uppercase;white-space:nowrap">▶ THE DUO</span>
             </div>
           </div>`;
         }).join('');
