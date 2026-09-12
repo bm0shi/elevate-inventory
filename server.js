@@ -939,6 +939,18 @@ app.post('/api/pull-images', auth, async (req, res) => {
   res.json({ ok: true, saved, requested: asins.length });
 });
 
+// Diagnostic: check bundle definitions for specific ASINs
+app.get('/api/check-bundles', auth, async (req, res) => {
+  const asins = (req.query.asins||'').split(',').map(a=>a.trim()).filter(Boolean);
+  const out = [];
+  for (const a of asins) {
+    const b = await pool.query('SELECT b.component_asin, p.name FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin WHERE b.bundle_asin=$1', [a]);
+    const prod = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [a]);
+    out.push({ asin:a, name:prod.rows[0]?.name||'(not in catalog)', isBundle:b.rows.length>0, components:b.rows.map(r=>r.name) });
+  }
+  res.json(out);
+});
+
 // Ship to FBA via Amazon shipment plan TSV upload — parses SKU/ASIN/FNSKU + Shipped qty
 app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => {
   let text;
@@ -988,13 +1000,21 @@ app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => 
      ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
     [shipmentId, shipmentName]);
 
-  let done = 0, notfound = [], expandedNote = [];
+  const isPreview = req.body.preview === 'true' || req.body.preview === true;
+  let done = 0, notfound = [], expandedNote = [], previewLines = [];
   for (const it of items) {
     // match by ASIN, then FNSKU, then SKU
     let r = await pool.query('SELECT asin, name FROM inv_products WHERE UPPER(asin)=UPPER($1) OR UPPER(fnsku)=UPPER($2) OR UPPER(sku)=UPPER($3) LIMIT 1', [it.asin, it.fnsku, it.sku]);
     if (!r.rows.length) { notfound.push(it.asin || it.sku || it.fnsku); continue; }
     const matchedAsin = r.rows[0].asin;
     const parts = await expandToComponents(matchedAsin, it.qty);
+    // build preview line
+    if (parts.length > 1 || parts[0].fromBundle) {
+      previewLines.push(`${r.rows[0].name.slice(0,30)} (DUO ×${it.qty}) → ` + parts.map(p=>`${p.qty} ${p.name.slice(0,24)}`).join(' + '));
+    } else {
+      previewLines.push(`${r.rows[0].name.slice(0,40)} → deduct ${it.qty}`);
+    }
+    if (isPreview) { done++; continue; }  // preview: don't actually deduct
     for (const part of parts) {
       await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
       await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
@@ -1006,6 +1026,9 @@ app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => 
     await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [it.qty, matchedAsin]);
     if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${it.asin} → ${parts.length} singles`);
     done++;
+  }
+  if (isPreview) {
+    return res.json({ ok: true, preview: true, shipmentId, shipmentName, done, notfound, previewLines, totalLines: items.length });
   }
   await pool.query('DELETE FROM inv_prepped WHERE qty <= 0');
   res.json({ ok: true, shipmentId, shipmentName, done, notfound, expanded: expandedNote, totalLines: items.length });
