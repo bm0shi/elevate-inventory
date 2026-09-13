@@ -465,6 +465,12 @@
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Margin %
           <input type="number" id="marginPct" value="15" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:64px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
         </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#2563a8;white-space:nowrap" title="Amazon referral fee % — used when Keepa does not supply it. Beauty is typically 15%.">Referral %
+          <input type="number" id="refPct" value="15" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:60px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#2563a8;white-space:nowrap" title="Default FBA fulfillment fee per unit when Keepa does not supply it.">FBA fee $
+          <input type="number" step="0.01" id="fbaFee" placeholder="auto" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:74px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
+        </label>
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#b7791f;white-space:nowrap" title="Blank = auto (fair share based on seller count + Amazon). Enter a number to override with your real-world capture rate.">Capture %
           <input type="number" id="capturePct" placeholder="auto" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:72px;padding:10px;border:2px solid #b7791f;border-radius:6px;font-size:14px">
         </label>
@@ -1106,10 +1112,22 @@ function renderToAdd(){
   const margin=(parseFloat((document.getElementById('marginPct')||{}).value)||15)/100;
   const captureOverride=parseFloat((document.getElementById('capturePct')||{}).value);
   // profit model: MAX = you capture the whole market; REALISTIC = fair-share adjusted
+  const defRefPct=parseFloat((document.getElementById('refPct')||{}).value)||15;
+  const defFbaFee=parseFloat((document.getElementById('fbaFee')||{}).value);
   d.forEach(x=>{
     const u = x.ssUnits!=null?x.ssUnits:(x.keepaMonthly||0);
     x._units = u;
-    x._profitUnit = (x.buyBoxPrice||0)*margin;
+    const price = x.buyBoxPrice||0;
+    // ---- NET DEPOSIT = price − Amazon referral fee − FBA fulfillment fee ----
+    const refPct = (x.referralPct!=null ? x.referralPct : defRefPct)/100;
+    const fbaFee = (x.pickPackFee!=null ? x.pickPackFee : (isNaN(defFbaFee)?null:defFbaFee));
+    x._refFee = price * refPct;
+    x._fbaFee = fbaFee;
+    x._netDeposit = (price>0 && fbaFee!=null) ? Math.max(0, price - x._refFee - fbaFee) : (price>0 ? Math.max(0, price - x._refFee) : 0);
+    x._feesEstimated = (x.referralPct==null) || (x.pickPackFee==null);
+    x._netDepositMo = x._netDeposit * u;
+
+    x._profitUnit = price*margin;
     x._profitMoMax = x._profitUnit * u;
 
     // --- capture rate ---
@@ -1166,13 +1184,14 @@ function renderToAdd(){
       return c;
     })()+
     '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
-  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Net Deposit/unit</b> = what Amazon actually deposits per sale (price − referral fee − FBA fulfillment fee), before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'ssUnits\')">Units/mo (SS)'+arrow('ssUnits')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'buyBoxPrice\')">Buy Box'+arrow('buyBoxPrice')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'sellers\')">Sellers'+arrow('sellers')+'</th>'+
+    '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDeposit\')">Net Deposit/unit'+arrow('_netDeposit')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_profitMoMax\')">Max Profit/mo'+arrow('_profitMoMax')+'</th>'+
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Realistic Profit/mo'+arrow('_profitMo')+'</th>'+
     '<th>Status</th></tr></thead><tbody>';
@@ -1183,13 +1202,16 @@ function renderToAdd(){
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
     const status=x.carried?'<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">CARRIED</span>':'<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">ADD</span>';
+    const netCell = x._netDeposit>0
+      ? `<span style="font-weight:800;color:#2563a8;font-size:15px">$${x._netDeposit.toFixed(2)}</span><div style="font-size:10px;color:#9db0c9">fees −$${(x._refFee+(x._fbaFee||0)).toFixed(2)}${x._feesEstimated?' <span style="color:#b7791f">est</span>':''}</div>`
+      : '<span style="color:#9db0c9">—</span>';
     const maxCell = x._profitMoMax>0
       ? `<span style="color:#5a6472;font-weight:600">$${Math.round(x._profitMoMax).toLocaleString()}</span><div style="font-size:10px;color:#c9d4e0">$${x._profitUnit.toFixed(2)}/unit</div>`
       : '<span style="color:#9db0c9">—</span>';
     const realCell = x._profitMo>0
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">${Math.round(x._capture*100)}% capture · ~${Math.round(x._unitsReal)} u/mo</div>`
       : '<span style="color:#9db0c9">—</span>';
-    return `<tr><td style="max-width:340px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
+    return `<tr><td style="max-width:320px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
