@@ -1739,6 +1739,44 @@ app.post('/api/pending-prep/release', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Complete a prep job WITHOUT scanning — moves it straight to Prepped & Ready
+app.post('/api/pending-prep/complete', auth, async (req, res) => {
+  const { id, qty, completedBy } = req.body;
+  const q = parseInt(qty);
+  if (!id || !q || q < 1) return res.status(400).json({ error: 'id + qty required' });
+
+  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by FROM inv_pending_prep WHERE id=$1', [id]);
+  if (!job.rows.length) return res.status(404).json({ error: 'Job not found' });
+  const { asin, qty: requested, is_duo } = job.rows[0];
+  const who = (completedBy || job.rows[0].claimed_by || 'unknown').trim();
+
+  // availability warning (component-level for duos)
+  const parts = await expandToComponents(asin, q);
+  const warnings = [];
+  for (const part of parts) {
+    const st = await pool.query('SELECT onhand FROM inv_stock WHERE asin=$1', [part.asin]);
+    const onhand = st.rows[0]?.onhand || 0;
+    const committed = await componentCommitted(part.asin);
+    const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [part.asin]);
+    if (committed + part.qty > onhand) {
+      warnings.push({ name: nm.rows[0]?.name || part.asin, onhand, committed, adding: part.qty });
+    }
+  }
+
+  // move into Prepped & Ready (stored as-scanned: duo asin or single asin)
+  await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [asin, q]);
+  const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+    ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
+
+  // decrement / close the work order
+  const remaining = requested - q;
+  if (remaining <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
+  else await pool.query('UPDATE inv_pending_prep SET qty=$1, claimed_by=NULL, claimed_at=NULL WHERE id=$2', [remaining, id]);
+
+  res.json({ ok: true, moved: q, requested, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0, isDuo: is_duo, warnings, completedBy: who });
+});
+
 // Adjust / remove a pending prep request
 app.post('/api/pending-prep/set', auth, async (req, res) => {
   const { id, qty } = req.body;
