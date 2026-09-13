@@ -500,7 +500,24 @@
   </div>
     </div>
   </div>
-  <div id="log" class="panel"><div id="logBody"></div></div>
+  <div id="log" class="panel">
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div>
+          <div style="font-weight:800;font-size:17px">⏱ Prep Performance</div>
+          <div class="hint">Who prepped what, how long it took, and units-per-hour productivity.</div>
+        </div>
+        <select id="perfDays" onchange="loadPrepPerformance()" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px;background:#fff">
+          <option value="7">Last 7 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+    </div>
+    <div id="perfBody"></div>
+    <div class="box" style="margin-top:16px"><div style="font-weight:800;font-size:17px">📋 Activity Log</div></div>
+    <div id="logBody"></div>
+  </div>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -546,7 +563,7 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='transit')renderTransit();
   if(t==='shipments')renderShipments();
   if(t==='bundles')renderBundles();
-  if(t==='log')renderLog();
+  if(t==='log'){ renderLog(); loadPrepPerformance(); }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
 }
 
@@ -1224,6 +1241,67 @@ function renderMarket(){
   b.innerHTML=h;
 }
 
+// ==================== PREP PERFORMANCE ====================
+function fmtDur(sec){
+  if(sec==null) return '—';
+  const h=Math.floor(sec/3600), m=Math.round((sec%3600)/60);
+  return h>0 ? `${h}h ${m}m` : `${m}m`;
+}
+function loadPrepPerformance(){
+  const days=(document.getElementById('perfDays')||{}).value||30;
+  api('/api/prep-performance?days='+days).then(d=>{
+    const b=document.getElementById('perfBody');
+    if(d.error){ b.innerHTML='<div class="hint">No performance data yet.</div>'; return; }
+    const t=d.totals||{};
+    let h='<div class="cards" style="flex-wrap:wrap">'+
+      '<div class="card"><div class="n">'+(t.jobs||0)+'</div><div class="l">Jobs Completed</div></div>'+
+      '<div class="card"><div class="n">'+(t.units||0).toLocaleString()+'</div><div class="l">Units Prepped</div></div>'+
+      '<div class="card"><div class="n">'+fmtDur(t.total_sec)+'</div><div class="l">Total Time</div></div>'+
+      '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+(t.unitsPerHour!=null?t.unitsPerHour:'—')+'</div><div class="l">Units / Hour</div></div>'+
+      '</div>';
+
+    // by worker
+    if(d.byWorker && d.byWorker.length){
+      h+='<div class="box"><div style="font-weight:700;margin-bottom:8px">👷 By Worker</div>';
+      h+='<table><thead><tr><th>Worker</th><th>Jobs</th><th>Units</th><th>Time</th><th>Units/hr</th></tr></thead><tbody>';
+      h+=d.byWorker.map(w=>`<tr><td><b>${w.worker||'unknown'}</b></td><td>${w.jobs}</td><td>${(w.units||0).toLocaleString()}</td><td>${fmtDur(w.total_sec)}</td><td class="onhand-num" style="color:#1e8449">${w.units_per_hour!=null?w.units_per_hour:'—'}</td></tr>`).join('');
+      h+='</tbody></table></div>';
+    }
+
+    // by ASIN — slowest first (process improvement targets)
+    if(d.byAsin && d.byAsin.length){
+      h+='<div class="box"><div style="font-weight:700;margin-bottom:2px">📦 By Product</div><div class="hint" style="margin-bottom:8px">Sorted slowest first — low units/hr may mean an awkward prep process worth fixing.</div>';
+      h+='<table><thead><tr><th>Product</th><th>Jobs</th><th>Units</th><th>Time</th><th>Units/hr</th></tr></thead><tbody>';
+      h+=d.byAsin.slice(0,25).map(a=>{
+        const link=`<a href="https://www.amazon.com/dp/${a.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(a.name||a.asin)}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${a.asin}</div>`;
+        const uph=a.units_per_hour;
+        const col=uph!=null&&uph<60?'#c0392b':'#1a2b4a';
+        return `<tr><td>${link}</td><td>${a.jobs}</td><td>${(a.units||0).toLocaleString()}</td><td>${fmtDur(a.total_sec)}</td><td class="onhand-num" style="color:${col}">${uph!=null?uph:'—'}</td></tr>`;
+      }).join('');
+      h+='</tbody></table></div>';
+    }
+
+    // recent jobs
+    if(d.recent && d.recent.length){
+      h+='<div class="box"><div style="font-weight:700;margin-bottom:8px">🕐 Recent Prep Jobs</div>';
+      h+=d.recent.slice(0,30).map(r=>{
+        const uph = r.duration_sec>0 ? Math.round((r.units/(r.duration_sec/3600))*10)/10 : null;
+        return `<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px;flex-wrap:wrap">
+          <span style="flex:1;min-width:200px"><b>${r.worker||'unknown'}</b> — ${(r.name||r.asin).slice(0,48)}${r.is_duo?' <span style="color:#c0392b;font-weight:700">(DUO)</span>':''}
+            <div style="font-family:monospace;font-size:11px;color:#2563a8">${r.asin}</div></span>
+          <span style="white-space:nowrap;text-align:right">
+            <b>${r.qty}</b>${r.is_duo?' duos':''} · ${(r.units||0)} units<br>
+            <span style="color:#5a6472">${fmtDur(r.duration_sec)}${uph?' · '+uph+'/hr':''}</span><br>
+            <span style="color:#9db0c9;font-size:11px">${new Date(r.finished_at).toLocaleString()}</span>
+          </span></div>`;
+      }).join('');
+      h+='</div>';
+    }
+    if(!d.recent || !d.recent.length) h+='<div class="hint" style="padding:16px;text-align:center">No completed prep jobs yet. Use START PREP → PREP FINISHED on the Pending Prep page to start tracking.</div>';
+    b.innerHTML=h;
+  });
+}
+
 // ==================== ADMIN AREA ====================
 function adminUnlock(){
   const pw=(document.getElementById('adminPw')||{}).value||'';
@@ -1425,9 +1503,21 @@ function renderPendingPrep(){
     const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
     return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
-  h+='</div><div class="hint">Workers: prep these, then scan them in on the <b>Prepped &amp; Ready</b> page — they clear from here automatically.</div>';
+  h+='</div><div class="hint">Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done (or scan them in on Prepped &amp; Ready).</div>';
   b.innerHTML=h;
+  updateElapsed();
 }
+// live "elapsed" counters on claimed prep jobs
+function updateElapsed(){
+  document.querySelectorAll('.elapsed').forEach(el=>{
+    const since=el.getAttribute('data-since');
+    if(!since){ el.textContent='—'; return; }
+    const secs=Math.max(0,Math.floor((Date.now()-new Date(since).getTime())/1000));
+    const h=Math.floor(secs/3600), m=Math.floor((secs%3600)/60), s=secs%60;
+    el.textContent = h>0 ? `${h}h ${m}m` : (m>0 ? `${m}m ${s}s` : `${s}s`);
+  });
+}
+setInterval(updateElapsed, 1000);
 function claimPrepJob(id){
   let who = localStorage_get('prepWorkerName') || '';
   who = prompt('Who is prepping this? (your name)', who);
