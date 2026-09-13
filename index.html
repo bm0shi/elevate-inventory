@@ -1385,11 +1385,13 @@ function renderPendingPrep(){
         '</div>';
     }
     const claimed = !!x.claimed_by;
+    const safeName=String(x.name).replace(/'/g,"\\'").replace(/"/g,'');
     const claimBanner = claimed
-      ? `<div style="margin-top:12px;padding:11px 14px;background:#1e8449;border-radius:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      ? `<div style="margin-top:12px;padding:11px 14px;background:#1e8449;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
            <span style="color:#fff;font-weight:800;font-size:15px;letter-spacing:0.4px">🔨 CURRENTLY BEING PREPPED BY ${String(x.claimed_by).toUpperCase()}</span>
            <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release</button>
-         </div>`
+         </div>
+         <button onclick="finishPrepJob(${x.id},'${safeName}',${x.qty},${x.is_duo})" style="width:100%;padding:14px;font-size:16px;font-weight:800;background:#127a7a;color:#fff;border:none;border-radius:0 0 8px 8px;cursor:pointer;letter-spacing:0.4px">✅ PREP FINISHED</button>`
       : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
     const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
     return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>${claimBanner}</div>`;
@@ -1409,6 +1411,51 @@ function claimPrepJob(id){
     if(!d.ok && d.takenBy){ alert('⚠ Already claimed by '+d.takenBy+'.\n\nIf they are done or not working on it, have them release it first.'); return; }
     toast('Started — '+who);
     loadPendingPrep();
+  });
+}
+function finishPrepJob(id, name, requestedQty, isDuo){
+  const modal=document.createElement('div');
+  modal.id='finishModal';
+  modal.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+  modal.innerHTML=`
+    <div style="background:#fff;border-radius:12px;padding:24px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.35)">
+      <div style="font-weight:800;font-size:19px;margin-bottom:4px;color:#127a7a">✅ Confirm Prep Complete</div>
+      <div style="font-size:13px;color:#5a6472;line-height:1.4;margin-bottom:16px">${name}${isDuo?' <b style="color:#c0392b">(DUO)</b>':''}</div>
+
+      <label style="display:block;font-size:13px;font-weight:700;margin-bottom:4px">How many did you actually prep?</label>
+      <input type="number" id="finishQty" value="${requestedQty}" style="width:100%;padding:14px;font-size:20px;font-weight:700;text-align:center;border:2px solid #127a7a;border-radius:8px">
+      <div style="font-size:12px;color:#9db0c9;margin-top:4px">Requested: ${requestedQty}${isDuo?' duos':' units'} — change this if you prepped a different amount.</div>
+
+      <label style="display:flex;align-items:flex-start;gap:10px;margin-top:18px;padding:14px;background:#fffbe6;border:2px solid #b7791f;border-radius:8px;cursor:pointer">
+        <input type="checkbox" id="countVerified" style="width:22px;height:22px;margin-top:1px;flex-shrink:0">
+        <span style="font-size:14px;font-weight:700;color:#7a5b1f;line-height:1.35">COUNT VERIFIED — I physically counted these and the number above is correct.</span>
+      </label>
+
+      <div style="display:flex;gap:8px;margin-top:20px">
+        <button onclick="closeFinishModal()" style="flex:1;padding:13px;font-size:14px;font-weight:700;background:#e2e8f0;color:#1f2733;border:none;border-radius:8px;cursor:pointer">Cancel</button>
+        <button onclick="submitFinishPrep(${id})" style="flex:2;padding:13px;font-size:15px;font-weight:800;background:#127a7a;color:#fff;border:none;border-radius:8px;cursor:pointer">Send to Prepped &amp; Ready →</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  setTimeout(()=>{ const i=document.getElementById('finishQty'); if(i){ i.focus(); i.select(); } },50);
+}
+function closeFinishModal(){ const m=document.getElementById('finishModal'); if(m) m.remove(); }
+function submitFinishPrep(id){
+  const qty=parseInt((document.getElementById('finishQty')||{}).value);
+  const verified=(document.getElementById('countVerified')||{}).checked;
+  if(!qty||qty<1){ toast('Enter a valid quantity',true); return; }
+  if(!verified){ alert('Please check the COUNT VERIFIED box to confirm you counted these.'); return; }
+  const who = localStorage_get('prepWorkerName') || '';
+  closeFinishModal();
+  api('/api/pending-prep/complete',{method:'POST',body:JSON.stringify({id,qty,completedBy:who})}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    let msg='✅ '+d.moved+(d.isDuo?' duos':' units')+' sent to Prepped & Ready.';
+    if(d.remaining>0) msg+='\n\nStill outstanding on this job: '+d.remaining;
+    if(d.over>0) msg+='\n\n⚠ You prepped '+d.over+' MORE than requested. The job is now closed.';
+    if(d.warnings && d.warnings.length) msg+='\n\n⚠ Not enough on hand:\n'+d.warnings.map(w=>w.name+': on hand '+w.onhand+', committed '+w.committed+', adding '+w.adding).join('\n');
+    alert(msg);
+    toast('Moved to Prepped & Ready');
+    loadPendingPrep(); loadProducts();
   });
 }
 function releasePrepJob(id){
