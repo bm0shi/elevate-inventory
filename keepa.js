@@ -32,16 +32,37 @@ async function getProducts(asins) {
         resp = await axios.get(url, { timeout: 60000, decompress: true });
       } catch (err) {
         if (err.response?.status === 429) {
-          // out of tokens — wait for refill then retry
           const refillIn = err.response.data?.refillIn || 20000;
           await sleep(Math.min(refillIn + 1000, 65000));
           continue;
         }
-        const body = err.response?.data ? JSON.stringify(err.response.data).slice(0,300) : err.message;
-        throw new Error(`Keepa ${err.response?.status || ''}: ${body}`);
+        // "upstream error" or other non-JSON = Keepa server issue or overload
+        const status = err.response?.status;
+        let body = err.response?.data;
+        if (typeof body === 'string') body = body.slice(0,150);
+        else if (body) body = JSON.stringify(body).slice(0,150);
+        else body = err.message;
+        // retry upstream/5xx errors a couple times before giving up
+        if (status >= 500 || String(body).includes('upstream')) {
+          attempts++;
+          if (attempts < 4) { await sleep(5000); continue; }
+        }
+        throw new Error(`Keepa ${status || ''}: ${body}`);
+      }
+      // response might not be JSON (Keepa returned an error page)
+      if (typeof resp.data === 'string') {
+        attempts++;
+        if (attempts < 4) { await sleep(5000); continue; }
+        throw new Error('Keepa returned a non-JSON response (likely overloaded or out of tokens). Try again in a minute.');
       }
       if (resp.data.error && resp.data.error.type === 'NOT_ENOUGH_TOKEN') {
         const refillIn = resp.data.refillIn || 20000;
+        await sleep(Math.min(refillIn + 1000, 65000));
+        continue;
+      }
+      if (resp.data.tokensLeft != null && resp.data.tokensLeft < 0) {
+        // negative tokens — wait for refill
+        const refillIn = resp.data.refillIn || 30000;
         await sleep(Math.min(refillIn + 1000, 65000));
         continue;
       }
@@ -98,6 +119,19 @@ function simplify(p) {
   // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
   const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
 
+  // ---- Amazon fees (for net-deposit calc) ----
+  // Keepa returns fbaFees.pickAndPackFee in cents; referralFeePercent as a number (e.g. 15)
+  let pickPackFee = null, referralPct = null;
+  if (p.fbaFees) {
+    const pp = p.fbaFees.pickAndPackFee;
+    if (pp != null && pp >= 0) pickPackFee = pp / 100;
+  }
+  if (p.referralFeePercent != null && p.referralFeePercent > 0) {
+    referralPct = p.referralFeePercent;
+  } else if (p.referralFeePercentage != null && p.referralFeePercentage > 0) {
+    referralPct = p.referralFeePercentage;
+  }
+
   // image: newer Keepa uses images[] array (images[0].l = large filename);
   // older uses imagesCSV. Handle both.
   let image = null;
@@ -120,6 +154,7 @@ function simplify(p) {
     buyBoxPrice, amazonPrice,
     amazonHasBuyBox, amazonOOS,
     offerCount, monthlySold,
+    pickPackFee, referralPct,
   };
 }
 
