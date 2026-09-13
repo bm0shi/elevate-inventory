@@ -119,6 +119,19 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now()
     );
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS claimed_by TEXT;
+    -- completed prep jobs with timing (productivity metrics)
+    CREATE TABLE IF NOT EXISTS inv_prep_log (
+      id SERIAL PRIMARY KEY,
+      asin TEXT,
+      name TEXT,
+      qty INTEGER,
+      is_duo BOOLEAN DEFAULT false,
+      units INTEGER,             -- actual units handled (duos = qty*2)
+      worker TEXT,
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ DEFAULT now(),
+      duration_sec INTEGER
+    );
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
@@ -1739,13 +1752,56 @@ app.post('/api/pending-prep/release', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Prep performance metrics — recent jobs + per-worker + per-ASIN productivity
+app.get('/api/prep-performance', auth, async (req, res) => {
+  const days = parseInt(req.query.days) || 30;
+  const since = new Date(Date.now() - days*24*60*60*1000).toISOString();
+
+  const recent = await pool.query(
+    `SELECT asin, name, qty, is_duo, units, worker, started_at, finished_at, duration_sec
+     FROM inv_prep_log WHERE finished_at >= $1 ORDER BY finished_at DESC LIMIT 100`, [since]);
+
+  const byWorker = await pool.query(
+    `SELECT worker,
+            COUNT(*)::int AS jobs,
+            SUM(units)::int AS units,
+            SUM(duration_sec)::int AS total_sec,
+            CASE WHEN SUM(duration_sec) > 0
+              THEN ROUND(SUM(units)::numeric / (SUM(duration_sec)::numeric/3600), 1)
+              ELSE NULL END AS units_per_hour
+     FROM inv_prep_log WHERE finished_at >= $1 AND duration_sec IS NOT NULL
+     GROUP BY worker ORDER BY units DESC`, [since]);
+
+  const byAsin = await pool.query(
+    `SELECT asin, name,
+            COUNT(*)::int AS jobs,
+            SUM(units)::int AS units,
+            SUM(duration_sec)::int AS total_sec,
+            CASE WHEN SUM(duration_sec) > 0
+              THEN ROUND(SUM(units)::numeric / (SUM(duration_sec)::numeric/3600), 1)
+              ELSE NULL END AS units_per_hour
+     FROM inv_prep_log WHERE finished_at >= $1 AND duration_sec IS NOT NULL
+     GROUP BY asin, name ORDER BY units_per_hour ASC NULLS LAST`, [since]);
+
+  const totals = await pool.query(
+    `SELECT COUNT(*)::int AS jobs, COALESCE(SUM(units),0)::int AS units,
+            COALESCE(SUM(duration_sec),0)::int AS total_sec
+     FROM inv_prep_log WHERE finished_at >= $1`, [since]);
+
+  const t = totals.rows[0];
+  const overallUPH = t.total_sec > 0 ? Math.round((t.units / (t.total_sec/3600)) * 10)/10 : null;
+
+  res.json({ days, recent: recent.rows, byWorker: byWorker.rows, byAsin: byAsin.rows,
+             totals: { ...t, unitsPerHour: overallUPH } });
+});
+
 // Complete a prep job WITHOUT scanning — moves it straight to Prepped & Ready
 app.post('/api/pending-prep/complete', auth, async (req, res) => {
   const { id, qty, completedBy } = req.body;
   const q = parseInt(qty);
   if (!id || !q || q < 1) return res.status(400).json({ error: 'id + qty required' });
 
-  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by FROM inv_pending_prep WHERE id=$1', [id]);
+  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ error: 'Job not found' });
   const { asin, qty: requested, is_duo } = job.rows[0];
   const who = (completedBy || job.rows[0].claimed_by || 'unknown').trim();
@@ -1768,6 +1824,17 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
   const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
   await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
     ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
+
+  // ---- record prep performance ----
+  try {
+    const startedAt = job.rows[0].claimed_at || null;
+    const durSec = startedAt ? Math.max(1, Math.round((Date.now() - new Date(startedAt).getTime())/1000)) : null;
+    const unitsHandled = is_duo ? q * 2 : q;
+    await pool.query(
+      `INSERT INTO inv_prep_log(asin, name, qty, is_duo, units, worker, started_at, duration_sec)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [asin, nm.rows[0]?.name || asin, q, is_duo, unitsHandled, who, startedAt, durSec]);
+  } catch(e) { console.error('prep log failed:', e.message); }
 
   // decrement / close the work order
   const remaining = requested - q;
