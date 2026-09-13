@@ -453,7 +453,13 @@
           <option value="all">All products</option>
           <option value="carried">Already carried</option>
         </select>
-        <input type="text" id="toaddSearch" placeholder="Search..." onkeyup="renderToAdd()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Min $
+          <input type="number" id="toaddMinPrice" placeholder="0" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:82px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
+        </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Min units/mo
+          <input type="number" id="toaddMinUnits" placeholder="0" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:86px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
+        </label>
+        <input type="text" id="toaddSearch" placeholder="Search..." onkeyup="renderToAdd()" style="flex:1;min-width:150px;padding:10px;border:2px solid #e2e8f0;border-radius:6px">
         <button class="action" onclick="loadToAdd()" id="toaddBtn" style="padding:10px 16px">Load</button>
       </div>
     </div>
@@ -1085,10 +1091,14 @@ function renderToAdd(){
   if(!d.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Click Load. (Refresh Market Data first if empty — this pulls from Keepa.)</div>'; return; }
   const filter=document.getElementById('toaddFilter').value;
   const q=(document.getElementById('toaddSearch').value||'').toLowerCase();
+  const minPrice=parseFloat((document.getElementById('toaddMinPrice')||{}).value)||0;
+  const minUnits=parseInt((document.getElementById('toaddMinUnits')||{}).value)||0;
   let list=d.filter(x=>{
     if(filter==='notcarried' && x.carried) return false;
     if(filter==='carried' && !x.carried) return false;
     if(q && !(x.title||'').toLowerCase().includes(q) && !(x.asin||'').toLowerCase().includes(q) && !(x.brand||'').toLowerCase().includes(q)) return false;
+    if(minPrice>0 && !(x.buyBoxPrice && x.buyBoxPrice>=minPrice)) return false;
+    if(minUnits>0){ const u = x.ssUnits!=null?x.ssUnits:(x.keepaMonthly!=null?x.keepaMonthly:0); if(u<minUnits) return false; }
     return true;
   });
   list.sort((a,b2)=>{
@@ -1099,7 +1109,15 @@ function renderToAdd(){
   });
   const arrow=c=>s.col===c?(s.dir<0?' \u25bc':' \u25b2'):'';
   const notCarried=d.filter(x=>!x.carried);
-  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Tracked SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+notCarried.length+'</div><div class="l">Not Carried Yet</div></div><div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
+  // revenue potential of what's currently shown and not carried
+  const shownNotCarried = list.filter(x=>!x.carried);
+  const revPot = shownNotCarried.reduce((s,x)=>{
+    const u = x.ssUnits!=null?x.ssUnits:(x.keepaMonthly||0);
+    return s + (u * (x.buyBoxPrice||0));
+  },0);
+  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Tracked SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+shownNotCarried.length+'</div><div class="l">Not Carried (shown)</div></div>'+
+    (revPot>0?'<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(revPot).toLocaleString()+'</div><div class="l">Mkt Revenue / mo (shown)</div></div>':'')+
+    '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
   h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. Ranked by Keepa sales rank (lower = sells more). Auto-updates when you refresh Market Data.</div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
