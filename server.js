@@ -1752,13 +1752,27 @@ app.post('/api/pending-prep/release', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Delete a single prep log entry (for removing test data)
+app.post('/api/prep-log/delete', auth, async (req, res) => {
+  const { id } = req.body;
+  if (!id) return res.status(400).json({ error: 'id required' });
+  await pool.query('DELETE FROM inv_prep_log WHERE id=$1', [id]);
+  res.json({ ok: true });
+});
+
+// Clear ALL prep log entries (wipe test data)
+app.post('/api/prep-log/clear-all', auth, async (req, res) => {
+  const r = await pool.query('DELETE FROM inv_prep_log');
+  res.json({ ok: true, deleted: r.rowCount });
+});
+
 // Prep performance metrics — recent jobs + per-worker + per-ASIN productivity
 app.get('/api/prep-performance', auth, async (req, res) => {
   const days = parseInt(req.query.days) || 30;
   const since = new Date(Date.now() - days*24*60*60*1000).toISOString();
 
   const recent = await pool.query(
-    `SELECT asin, name, qty, is_duo, units, worker, started_at, finished_at, duration_sec
+    `SELECT id, asin, name, qty, is_duo, units, worker, started_at, finished_at, duration_sec
      FROM inv_prep_log WHERE finished_at >= $1 ORDER BY finished_at DESC LIMIT 100`, [since]);
 
   const byWorker = await pool.query(
