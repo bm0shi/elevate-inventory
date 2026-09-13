@@ -1216,11 +1216,22 @@ app.get('/api/dashboard', auth, async (req, res) => {
       COALESCE((SELECT SUM(pr.qty) FROM inv_prepped pr WHERE pr.asin NOT IN (SELECT bundle_asin FROM inv_bundles)),0)
       + COALESCE((SELECT SUM(pr.qty*b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin),0)
     )::int AS n`);
-  // total units committed to prep (component-level: singles + duo components)
+  // per-ASIN committed map so lists can show AVAILABLE consistently
+  const committedMap = await pool.query(`
+    SELECT p.asin,
+      (
+        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+      + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+      + COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+      + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
+      )::int AS committed
+    FROM inv_products p`);
+  const committedByAsin = {}; for (const r of committedMap.rows) committedByAsin[r.asin] = r.committed;
+  // total units in PENDING PREP work orders (component-level: singles + duo components)
   const pendingPrep = await pool.query(`
     SELECT (
-      COALESCE((SELECT SUM(pr.qty) FROM inv_prepped pr WHERE pr.asin NOT IN (SELECT bundle_asin FROM inv_bundles)),0)
-      + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin),0)
+      COALESCE((SELECT SUM(pp.qty) FROM inv_pending_prep pp WHERE pp.is_duo = false),0)
+      + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin),0)
     )::int AS n`);
   const skus = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products');
   const lowStock = await pool.query('SELECT COUNT(*)::int AS n FROM inv_stock WHERE onhand > 0 AND onhand <= 20');
@@ -1232,9 +1243,17 @@ app.get('/api/dashboard', auth, async (req, res) => {
   // recent activity
   const recent = await pool.query('SELECT direction, name, qty, ts FROM inv_activity ORDER BY ts DESC LIMIT 8');
   // top on-hand
-  const topStock = await pool.query('SELECT p.asin, p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 ORDER BY s.onhand DESC LIMIT 10');
+  const topStockRaw = await pool.query('SELECT p.asin, p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0');
+  const topStock = { rows: topStockRaw.rows
+      .map(r => ({ ...r, onhand: Math.max(0, r.onhand - (committedByAsin[r.asin]||0)) }))
+      .filter(r => r.onhand > 0)
+      .sort((a,b)=> b.onhand - a.onhand).slice(0,10) };
   // low stock list
-  const lowList = await pool.query('SELECT p.asin, p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin WHERE s.onhand>0 AND s.onhand<=20 ORDER BY s.onhand ASC LIMIT 10');
+  const lowListRaw = await pool.query('SELECT p.asin, p.name, s.onhand FROM inv_stock s JOIN inv_products p ON p.asin=s.asin');
+  const lowList = { rows: lowListRaw.rows
+      .map(r => ({ ...r, onhand: Math.max(0, r.onhand - (committedByAsin[r.asin]||0)) }))
+      .filter(r => r.onhand > 0 && r.onhand <= 20)
+      .sort((a,b)=> a.onhand - b.onhand).slice(0,10) };
   // Under-stocked ranked by recent sales (from cached velocity + retail price if available)
   let underStocked = [];
   try {
