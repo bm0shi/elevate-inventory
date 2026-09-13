@@ -1210,6 +1210,12 @@ app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res
 // Dashboard summary — everything at a glance (uses data we already have)
 app.get('/api/dashboard', auth, async (req, res) => {
   const stock = await pool.query('SELECT COALESCE(SUM(onhand),0)::int AS onhand, COALESCE(SUM(transit),0)::int AS transit FROM inv_stock');
+  // committed totals so the dashboard matches the On Hand page's "Available"
+  const preppedTot = await pool.query(`
+    SELECT (
+      COALESCE((SELECT SUM(pr.qty) FROM inv_prepped pr WHERE pr.asin NOT IN (SELECT bundle_asin FROM inv_bundles)),0)
+      + COALESCE((SELECT SUM(pr.qty*b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin),0)
+    )::int AS n`);
   // total units committed to prep (component-level: singles + duo components)
   const pendingPrep = await pool.query(`
     SELECT (
@@ -1267,8 +1273,14 @@ app.get('/api/dashboard', auth, async (req, res) => {
       retailAsOf = rv.rows[0].updated_at;
     }
   } catch(e) {}
+  const totalOnhand = stock.rows[0].onhand;
+  const totalPendingPrep = pendingPrep.rows[0].n;
+  const totalPrepped = preppedTot.rows[0].n;
+  const totalAvailable = Math.max(0, totalOnhand - totalPendingPrep - totalPrepped);
   res.json({
-    onhand: stock.rows[0].onhand, transit: stock.rows[0].transit,
+    onhand: totalAvailable,            // "Units On Hand" card now = AVAILABLE (matches On Hand page)
+    totalOnhand, totalPendingPrep, totalPrepped, totalAvailable,
+    transit: stock.rows[0].transit,
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
     pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, pendingPrep: pendingPrep.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
     recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows, underStocked,
