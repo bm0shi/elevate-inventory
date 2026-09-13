@@ -1148,7 +1148,8 @@ function renderToAdd(){
     }
     x._capture = cap;
     x._unitsReal = u * cap;
-    x._profitMo = x._profitUnit * x._unitsReal;        // REALISTIC (what filters/sorts use)
+    x._profitMo = x._profitUnit * x._unitsReal;        // REALISTIC profit (filters/sorts use this)
+    x._netDepositMoReal = x._netDeposit * x._unitsReal; // REALISTIC monthly Amazon deposit
   });
   let list=d.filter(x=>{
     if(filter==='notcarried' && x.carried) return false;
@@ -1180,18 +1181,20 @@ function renderToAdd(){
       const pp=shownNotCarried.reduce((s,x)=>s+(x._profitMo||0),0);
       let c='';
       if(mx>0) c+='<div class="card"><div class="n">$'+Math.round(mx).toLocaleString()+'</div><div class="l">Max Profit / mo</div></div>';
+      const nd=shownNotCarried.reduce((s,x)=>s+(x._netDepositMoReal||0),0);
+      if(nd>0) c+='<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+Math.round(nd).toLocaleString()+'</div><div class="l">Net Deposit / mo (realistic)</div></div>';
       if(pp>0) c+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(pp).toLocaleString()+'</div><div class="l">Realistic Profit / mo</div></div>';
       return c;
     })()+
     '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
-  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Net Deposit/unit</b> = what Amazon actually deposits per sale (price − referral fee − FBA fulfillment fee), before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'ssUnits\')">Units/mo (SS)'+arrow('ssUnits')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'buyBoxPrice\')">Buy Box'+arrow('buyBoxPrice')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'sellers\')">Sellers'+arrow('sellers')+'</th>'+
-    '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDeposit\')">Net Deposit/unit'+arrow('_netDeposit')+'</th>'+
+    '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDepositMoReal\')">Net Deposit/mo'+arrow('_netDepositMoReal')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_profitMoMax\')">Max Profit/mo'+arrow('_profitMoMax')+'</th>'+
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Realistic Profit/mo'+arrow('_profitMo')+'</th>'+
     '<th>Status</th></tr></thead><tbody>';
@@ -1202,8 +1205,8 @@ function renderToAdd(){
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
     const status=x.carried?'<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">CARRIED</span>':'<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">ADD</span>';
-    const netCell = x._netDeposit>0
-      ? `<span style="font-weight:800;color:#2563a8;font-size:15px">$${x._netDeposit.toFixed(2)}</span><div style="font-size:10px;color:#9db0c9">fees −$${(x._refFee+(x._fbaFee||0)).toFixed(2)}${x._feesEstimated?' <span style="color:#b7791f">est</span>':''}</div>`
+    const netCell = x._netDepositMoReal>0
+      ? `<span style="font-weight:800;color:#2563a8;font-size:16px">$${Math.round(x._netDepositMoReal).toLocaleString()}</span><div style="font-size:10px;color:#9db0c9">$${x._netDeposit.toFixed(2)}/unit × ~${Math.round(x._unitsReal)} u${x._feesEstimated?' <span style="color:#b7791f">est</span>':''}</div>`
       : '<span style="color:#9db0c9">—</span>';
     const maxCell = x._profitMoMax>0
       ? `<span style="color:#5a6472;font-weight:600">$${Math.round(x._profitMoMax).toLocaleString()}</span><div style="font-size:10px;color:#c9d4e0">$${x._profitUnit.toFixed(2)}/unit</div>`
