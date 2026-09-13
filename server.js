@@ -1660,8 +1660,18 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   let fba;
   try { fba = await getFbaInventory(); }
   catch(err){ return res.status(400).json({ error: err.message }); }
-  // join with our warehouse on-hand by ASIN
-  const ours = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p JOIN inv_stock s ON s.asin=p.asin');
+  // join with our warehouse on-hand by ASIN, including committed (pending prep + prepped)
+  const ours = await pool.query(`
+    SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
+      (
+        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+      )::int AS pending_prep,
+      (
+        COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+        + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
+      )::int AS prepped
+    FROM inv_products p JOIN inv_stock s ON s.asin=p.asin`);
   const byAsin = {}; for(const r of ours.rows) byAsin[r.asin]=r;
   const out = [];
   const seen = new Set();
