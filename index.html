@@ -509,16 +509,26 @@
     
   </div>
 <div id="sub-velocity" class="subpanel">
-    
-      <div id="velocityBody"><div class="hint" style="padding:20px;text-align:center">No data loaded yet this session — click Load/Refresh above.</div></div>
+      <div class="box">
+        <div style="font-weight:700">Sales Velocity &amp; Days of Stock</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+          <select id="velDays" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="60">Last 60 days</option>
+          </select>
+          <button class="action" onclick="loadVelocity()" id="velBtn" style="padding:10px 16px">Load / Refresh</button>
+        </div>
+        <div class="hint">Shows the last data you loaded. Click Load/Refresh to pull fresh sales from Amazon (30-90 sec).</div>
+      </div>
+      <div id="velocityBody"><div class="hint" style="padding:20px;text-align:center">No data loaded yet — click Load/Refresh above.</div></div>
     </div>
-  </div>
 <div id="sub-value" class="subpanel">
-    
-  </div>
+      <div id="valueBody"><div class="hint" style="padding:20px;text-align:center">Loading…</div></div>
+    </div>
     </div>
   </div>
-  <div id="log" class="panel">
+<div id="log" class="panel">
     <div class="box">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div>
