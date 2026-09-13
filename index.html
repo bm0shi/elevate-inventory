@@ -91,10 +91,16 @@
   .idlabel { font-size:11px; color:#5a6472; font-weight:700; text-transform:uppercase; min-width:56px; }
   .idpill { font-family:monospace; font-size:14px; font-weight:700; color:#1a2b4a; padding:4px 11px; border-radius:6px; cursor:pointer; letter-spacing:0.3px; }
   .idpill:hover { outline:1px solid #2563a8; }
+  /* Pending Prep: equal-height cards, button pinned to bottom */
+  #pendingPrepBody .pcards { align-items: stretch; }
+  .ppcard { height: 100%; }
+  .ppcard > div:first-child { flex: 1 1 auto; }          /* content row grows */
+  .ppcard > div:last-child,
+  .ppcard > button:last-child { margin-top: auto; }       /* action pinned to bottom */
   .ppcard img { width:120px !important; height:120px !important; }
   .ppcard .noimg { width:120px !important; height:120px !important; font-size:44px !important; }
   .ppcard .pc-name { font-size:16px !important; }
-  #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fill, minmax(560px, 1fr)) !important; }
+  #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)) !important; gap:16px; }
   #onhandBody .pcards { grid-template-columns: repeat(auto-fill, minmax(580px, 1fr)) !important; }
   #onhandBody .pcard img { width:140px; height:140px; }
   #onhandBody .noimg { width:140px; height:140px; font-size:52px; }
@@ -1554,9 +1560,9 @@ function renderPendingPrep(){
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${label}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${label}" class="copybtn">📋</button></div>`:'';
     let compLines='';
     if(x.is_duo && x.components && x.components.length){
-      compLines='<div style="margin-top:9px;padding:10px 12px;background:#f9fafb;border-radius:8px;border-left:4px solid #c0392b;font-size:13px">'+
-        '<div style="font-weight:800;color:#c0392b;margin-bottom:4px;font-size:14px">⚡ Grab '+x.qty+' of EACH:</div>'+
-        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;margin-top:6px;align-items:flex-start"><span style="flex:1;line-height:1.35"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${c.name}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button></div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand} avail</span></div>`).join('')+
+      compLines='<div style="margin-top:10px;padding:10px 12px;background:#fdf6f5;border-radius:8px;border:1px solid #f3d9d6;font-size:12.5px">'+
+        '<div style="font-weight:800;color:#c0392b;margin-bottom:6px;font-size:13px;letter-spacing:0.2px">⚡ GRAB '+x.qty+' OF EACH</div>'+
+        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1;line-height:1.3"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${c.name}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button></div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand}</span></div>`).join('')+
         '</div>';
     }
     const claimed = !!x.claimed_by;
@@ -1575,7 +1581,7 @@ function renderPendingPrep(){
          <button onclick="finishPrepJob(${x.id},'${safeName}',${x.qty},${x.is_duo})" style="width:100%;padding:14px;font-size:16px;font-weight:800;background:#127a7a;color:#fff;border:none;border-radius:0 0 8px 8px;cursor:pointer;letter-spacing:0.4px">✅ PREP FINISHED</button>`
       : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
     const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
-    return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty"><div class="n" style="color:#7a4fb5">${x.qty}</div><div class="l">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:6px">edit</button></div></div>${claimBanner}</div>`;
+    return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint">Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done (or scan them in on Prepped &amp; Ready).</div>';
   b.innerHTML=h;
