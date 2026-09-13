@@ -214,11 +214,14 @@
         <option value="rank">Best Sales Rank (hottest)</option>
         <option value="sold_desc">Most Sold/mo</option>
         <option value="cover_asc">Lowest Days Cover (prep first!)</option>
+        <option value="duos_desc">Duos buildable: high→low</option>
       </select>
       <select id="filterOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
         <option value="all">Show all</option>
         <option value="instock">In stock only</option>
         <option value="outstock">Out of stock only</option>
+        <option value="duoonly">Duo items only</option>
+        <option value="duobuildable">Duos I can build now</option>
       </select>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
       <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
@@ -1856,6 +1859,17 @@ function addProduct(){
     } else toast('Add failed',true);
   });
 }
+// how many complete duos can be built from this item + its partner(s)
+function duosBuildable(p){
+  if(!p.partners || !p.partners.length) return 0;
+  const myAvail = Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0));
+  // best pairing = the partner that lets us build the most
+  let best = 0;
+  for(const pt of p.partners){
+    best = Math.max(best, Math.min(myAvail, pt.onhand||0));
+  }
+  return best;
+}
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
   const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'onhand_desc';
@@ -1870,6 +1884,8 @@ function renderOnhand(){
     if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;
     if(stockFilter==='instock' && (p.onhand||0)<=0) return false;
     if(stockFilter==='outstock' && (p.onhand||0)>0) return false;
+    if(stockFilter==='duoonly' && !(p.is_component||p.is_bundle)) return false;
+    if(stockFilter==='duobuildable' && duosBuildable(p)<=0) return false;
     return true;
   });
   // sort
@@ -1926,7 +1942,9 @@ function renderOnhand(){
       const perDay = p.monthlySold ? p.monthlySold/30 : 0;
       const daysTxt = perDay>0 ? Math.round(available/perDay)+'d' : '—';
       const daysColor = (perDay>0 && available/perDay < 21) ? '#c0392b' : '#1a2b4a';
+      const canBuild = duosBuildable(p);
       mktRow=`<div class="mktrow">
+        ${canBuild>0?`<div class="mk"><span class="v" style="color:#c0392b">${canBuild}</span><span class="k">Duos Buildable</span></div>`:''}
         <div class="mk"><span class="v">#${rankTxt}</span><span class="k">Rank</span></div>
         <div class="mk"><span class="v">${soldTxt}</span><span class="k">Sold/mo</span></div>
         <div class="mk"><span class="v" style="color:${daysColor}">${daysTxt}</span><span class="k">Cover</span></div>
