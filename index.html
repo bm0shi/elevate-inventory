@@ -1288,6 +1288,21 @@ function fmtDur(sec){
   const h=Math.floor(sec/3600), m=Math.round((sec%3600)/60);
   return h>0 ? `${h}h ${m}m` : `${m}m`;
 }
+function deletePrepLog(id){
+  if(!confirm('Delete this prep log entry?')) return;
+  api('/api/prep-log/delete',{method:'POST',body:JSON.stringify({id})}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    toast('Entry deleted'); loadPrepPerformance();
+  });
+}
+function clearAllPrepLog(){
+  if(!confirm('Delete ALL prep log entries?\n\nThis wipes every recorded prep job and its timing data. Use this to clear test data.\n\nThis cannot be undone.')) return;
+  if(!confirm('Are you sure? This removes ALL prep performance history.')) return;
+  api('/api/prep-log/clear-all',{method:'POST'}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    toast('Cleared '+(d.deleted||0)+' entries'); loadPrepPerformance();
+  });
+}
 function loadPrepPerformance(){
   const days=(document.getElementById('perfDays')||{}).value||30;
   const pb=document.getElementById('perfBody');
@@ -1327,16 +1342,19 @@ function loadPrepPerformance(){
 
     // recent jobs
     if(d.recent && d.recent.length){
-      h+='<div class="box"><div style="font-weight:700;margin-bottom:8px">🕐 Recent Prep Jobs</div>';
+      h+='<div class="box"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap"><div style="font-weight:700">🕐 Recent Prep Jobs</div><button onclick="clearAllPrepLog()" style="padding:6px 12px;font-size:11px;font-weight:700;background:#fdeceb;color:#c0392b;border:1px solid #f3d9d6;border-radius:5px;cursor:pointer">🗑 Clear All (test data)</button></div>';
       h+=d.recent.slice(0,30).map(r=>{
         const uph = r.duration_sec>0 ? Math.round((r.units/(r.duration_sec/3600))*10)/10 : null;
         return `<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px;flex-wrap:wrap">
           <span style="flex:1;min-width:200px"><b>${r.worker||'unknown'}</b> — ${(r.name||r.asin).slice(0,48)}${r.is_duo?' <span style="color:#c0392b;font-weight:700">(DUO)</span>':''}
             <div style="font-family:monospace;font-size:11px;color:#2563a8">${r.asin}</div></span>
-          <span style="white-space:nowrap;text-align:right">
-            <b>${r.qty}</b>${r.is_duo?' duos':''} · ${(r.units||0)} units<br>
-            <span style="color:#5a6472">${fmtDur(r.duration_sec)}${uph?' · '+uph+'/hr':''}</span><br>
-            <span style="color:#9db0c9;font-size:11px">${new Date(r.finished_at).toLocaleString()}</span>
+          <span style="white-space:nowrap;text-align:right;display:flex;align-items:center;gap:10px">
+            <span>
+              <b>${r.qty}</b>${r.is_duo?' duos':''} · ${(r.units||0)} units<br>
+              <span style="color:#5a6472">${fmtDur(r.duration_sec)}${uph?' · '+uph+'/hr':''}</span><br>
+              <span style="color:#9db0c9;font-size:11px">${new Date(r.finished_at).toLocaleString()}</span>
+            </span>
+            <button onclick="deletePrepLog(${r.id})" title="Delete this entry" style="background:none;border:none;cursor:pointer;font-size:15px;opacity:0.5;padding:4px" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.5">🗑</button>
           </span></div>`;
       }).join('');
       h+='</div>';
