@@ -379,6 +379,8 @@ app.get('/api/products', auth, async (req, res) => {
       monthlySold: m.monthlySold != null ? m.monthlySold : null,
       buyBoxPrice: m.buyBoxPrice != null ? m.buyBoxPrice : null,
       sellers: m.offerCount != null ? m.offerCount : null,
+      pickPackFee: m.pickPackFee != null ? m.pickPackFee : null,
+      referralPct: m.referralPct != null ? m.referralPct : null,
     };
   });
   res.json(out);
@@ -1388,6 +1390,8 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       ssUnits: ss.units || null,            // SmartScout units (enrichment)
       ssRevenue: ss.revenue || null,
       sellers: m.offerCount,
+      pickPackFee: m.pickPackFee,
+      referralPct: m.referralPct,
       amazonHasBuyBox: m.amazonHasBuyBox,
       amazonOOS: m.amazonOOS,
       buyBoxPrice: m.buyBoxPrice,
