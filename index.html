@@ -910,17 +910,25 @@ function fbaSort(col){
 function renderFbaInv(){
   const d=window._fbaData||[]; const s=window._fbaSort;
   const b=document.getElementById('fbaInvBody');
-  let tot={w:0,t:0,f:0,g:0}; d.forEach(x=>{tot.w+=x.warehouse;tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
+  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; d.forEach(x=>{tot.w+=x.warehouse;tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
   const sorted=[...d].sort((a,b2)=>{
     let av,bv;
     if(s.col==='name'){ av=(a.name||'').toLowerCase(); bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
     av=a[s.col]||0; bv=b2[s.col]||0; return (av-bv)*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
-  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Warehouse</div></div><div class="card"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div><div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL</div></div></div>';
+  let h='<div class="cards" style="flex-wrap:wrap">'+
+    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div></div>'+
+    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div></div>':'')+
+    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div></div>':'')+
+    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div>'+
+    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div>'+
+    '<div class="card" style="border-top:3px solid #0f1b2d"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL UNITS</div></div></div>';
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'name\')">Product'+arrow('name')+'</th>'+
-     '<th style="cursor:pointer" onclick="fbaSort(\'warehouse\')">Wh'+arrow('warehouse')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'warehouse\')">Available'+arrow('warehouse')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'pending_prep\')">Pend Prep'+arrow('pending_prep')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'prepped\')">Prepped'+arrow('prepped')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
