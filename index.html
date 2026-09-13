@@ -137,9 +137,9 @@
     </div>
   </header>
   <div class="tabs">
-    <button class="tab active" onclick="showTab('reconcile',event)">Order Check-In</button>
+    <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
-    <button class="tab" onclick="showTab('pendingprep',event)">🔧 Pending Prep</button>
+    <button class="tab active" onclick="showTab('pendingprep',event)">🔧 Pending Prep</button>
     <button class="tab" onclick="showTab('prep',event)">Prepped &amp; Ready</button>
     <button class="tab" onclick="showTab('ship',event)">Ship to FBA</button>
     <button class="tab" onclick="showTab('transit',event)">In Transit</button>
@@ -231,7 +231,7 @@
     <div id="onhandBody"></div>
   </div>
 
-  <div id="reconcile" class="panel active">
+  <div id="reconcile" class="panel">
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Add Cosmoprof Invoice(s)</div>
       <div class="hint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
@@ -272,7 +272,7 @@
       <button class="action danger full" onclick="deleteInvoice()" style="margin-top:8px">Delete This Invoice</button>
     </div>
   </div>
-  <div id="pendingprep" class="panel">
+  <div id="pendingprep" class="panel active">
     <div class="box">
       <div style="font-weight:700">🔧 Pending Prep — Work Orders</div>
       <div class="hint">What needs to be prepped. Add items from the On Hand page (🔧 button on each card). As workers scan items into Prepped &amp; Ready, these clear automatically.</div>
@@ -554,7 +554,7 @@ function doLogin() {
   const pw = document.getElementById('pw').value;
   fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
     .then(r=>r.json()).then(d=>{
-      if(d.ok){ PW=pw; document.getElementById('login').style.display='none'; document.getElementById('mainApp').style.display='block'; loadProducts(); loadInvoiceList(); }
+      if(d.ok){ PW=pw; document.getElementById('login').style.display='none'; document.getElementById('mainApp').style.display='block'; loadProducts(); loadPendingPrep(); }
       else document.getElementById('loginErr').textContent='Wrong password';
     });
 }
@@ -567,7 +567,7 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
     document.getElementById('login').style.display='none';
     document.getElementById('mainApp').style.display='block';
     loadProducts();
-    loadInvoiceList();
+    loadPendingPrep();
   }
 }).catch(()=>{});
 
