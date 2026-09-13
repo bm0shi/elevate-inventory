@@ -277,6 +277,23 @@
       <div style="font-weight:700">🔧 Pending Prep — Work Orders</div>
       <div class="hint">What needs to be prepped. Add items from the On Hand page (🔧 button on each card). As workers scan items into Prepped &amp; Ready, these clear automatically.</div>
     </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <select id="ppSort" onchange="renderPendingPrep()" style="padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
+        <option value="qty_desc">Quantity: high→low</option>
+        <option value="qty_asc">Quantity: low→high</option>
+        <option value="duos_desc">Duos: highest qty first</option>
+        <option value="name">Name A→Z</option>
+        <option value="oldest">Oldest requests first</option>
+      </select>
+      <select id="ppFilter" onchange="renderPendingPrep()" style="padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
+        <option value="all">Show all</option>
+        <option value="duos">Duos only</option>
+        <option value="singles">Singles only</option>
+        <option value="unclaimed">Unclaimed only</option>
+        <option value="inprogress">In progress only</option>
+      </select>
+      <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
+    </div>
     <div id="pendingPrepBody"></div>
     <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
@@ -564,7 +581,7 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
   if(t==='transit')renderTransit();
   if(t==='shipments')renderShipments();
   if(t==='bundles')renderBundles();
-  if(t==='log'){ renderLog(); loadPrepPerformance(); }
+  if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
 }
 
@@ -1485,9 +1502,30 @@ function renderPendingPrep(){
   const b=document.getElementById('pendingPrepBody');
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
   const claimedCount=d.items.filter(x=>x.claimed_by).length;
+  // sort + filter
+  const ppSort=(document.getElementById('ppSort')||{}).value||'qty_desc';
+  const ppFilter=(document.getElementById('ppFilter')||{}).value||'all';
+  const ppQ=((document.getElementById('ppSearch')||{}).value||'').toLowerCase();
+  let items=d.items.filter(x=>{
+    if(ppQ && !(x.name||'').toLowerCase().includes(ppQ) && !(x.asin||'').toLowerCase().includes(ppQ) && !(x.fnsku||'').toLowerCase().includes(ppQ)) return false;
+    if(ppFilter==='duos' && !x.is_duo) return false;
+    if(ppFilter==='singles' && x.is_duo) return false;
+    if(ppFilter==='unclaimed' && x.claimed_by) return false;
+    if(ppFilter==='inprogress' && !x.claimed_by) return false;
+    return true;
+  });
+  items.sort((a,b2)=>{
+    switch(ppSort){
+      case 'qty_asc': return a.qty-b2.qty;
+      case 'duos_desc': { const ad=a.is_duo?1:0, bd=b2.is_duo?1:0; if(ad!==bd) return bd-ad; return b2.qty-a.qty; }
+      case 'name': return (a.name||'').localeCompare(b2.name||'');
+      case 'oldest': return new Date(a.created_at||0)-new Date(b2.created_at||0);
+      default: return b2.qty-a.qty;
+    }
+  });
   let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div></div>';
   h+='<div class="pcards">';
-  h+=d.items.map(x=>{
+  h+=items.map(x=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
     const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${x.name}</a>`;
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
@@ -1502,9 +1540,15 @@ function renderPendingPrep(){
     const claimed = !!x.claimed_by;
     const safeName=String(x.name).replace(/'/g,"\\'").replace(/"/g,'');
     const claimBanner = claimed
-      ? `<div style="margin-top:12px;padding:11px 14px;background:#1e8449;border-radius:8px 8px 0 0;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-           <span style="color:#fff;font-weight:800;font-size:15px;letter-spacing:0.4px">🔨 CURRENTLY BEING PREPPED BY ${String(x.claimed_by).toUpperCase()}</span>
-           <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release</button>
+      ? `<div style="margin-top:12px;padding:11px 14px;background:#1e8449;border-radius:8px 8px 0 0">
+           <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+             <span style="color:#fff;font-weight:800;font-size:15px;letter-spacing:0.4px">🔨 CURRENTLY BEING PREPPED BY ${String(x.claimed_by).toUpperCase()}</span>
+             <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release</button>
+           </div>
+           <div style="color:#d4f5e2;font-size:12.5px;margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">
+             <span>⏱ Started ${x.claimed_at ? new Date(x.claimed_at).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'}) : '—'}</span>
+             <span><b class="elapsed" data-since="${x.claimed_at||''}" style="color:#fff;font-size:14px">—</b> elapsed</span>
+           </div>
          </div>
          <button onclick="finishPrepJob(${x.id},'${safeName}',${x.qty},${x.is_duo})" style="width:100%;padding:14px;font-size:16px;font-weight:800;background:#127a7a;color:#fff;border:none;border-radius:0 0 8px 8px;cursor:pointer;letter-spacing:0.4px">✅ PREP FINISHED</button>`
       : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
