@@ -790,7 +790,9 @@ function loadDashboard(){
     const b=document.getElementById('dashBody');
     const card=(n,l,color)=>`<div class="card" style="border-top:3px solid ${color||'#127a7a'}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
     let h='<div class="cards" style="flex-wrap:wrap">';
-    h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+d.onhand.toLocaleString()+(d.pendingPrep?'<div style="font-size:12px;color:#b7791f;font-weight:700;margin-top:2px">('+d.pendingPrep.toLocaleString()+' pending)</div>':'')+'</div><div class="l">Units On Hand</div></div>';
+    h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+(d.totalAvailable!=null?d.totalAvailable:d.onhand).toLocaleString()+'</div><div class="l">Available</div><div style="font-size:11px;color:#9db0c9;margin-top:3px">of '+(d.totalOnhand||d.onhand).toLocaleString()+' on hand</div></div>';
+    if(d.totalPendingPrep) h+='<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalPendingPrep.toLocaleString()+'</div><div class="l">Pending Prep</div></div>';
+    if(d.totalPrepped) h+='<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Prepped</div></div>';
     h+=card(d.transit.toLocaleString(),'In Transit','#b7791f');
     h+=card(d.skus,'SKUs','#127a7a');
     if(d.retailValue){ const asof=d.retailAsOf?' (as of '+new Date(d.retailAsOf).toLocaleDateString()+' '+new Date(d.retailAsOf).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+')':''; h+=card('$'+Math.round(d.retailValue).toLocaleString(),'Retail Value On Hand'+asof,'#1e8449'); }
