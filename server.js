@@ -1282,16 +1282,27 @@ app.get('/api/dashboard', auth, async (req, res) => {
     }
   } catch(e) {}
 
-  // retail value from the last cached pull (if available)
-  let retailValue = null, retailAsOf = null;
+  // Retail value: use CURRENT on-hand quantities × last-known Amazon prices.
+  // (Quantities are always live; only the prices come from the cached pull.)
+  let retailValue = null, retailAsOf = null, retailPricedCount = 0, retailTotalCount = 0;
   try {
     const rv = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='inventory_value'");
     if (rv.rows.length) {
-      const items = rv.rows[0].data || [];
-      retailValue = items.reduce((sum, x) => sum + ((x.amazon_price||0) * (x.onhand||0)), 0);
-      retailAsOf = rv.rows[0].updated_at;
+      const priceByAsin = {};
+      for (const x of (rv.rows[0].data || [])) {
+        if (x.amazon_price) priceByAsin[x.asin] = parseFloat(x.amazon_price);
+      }
+      const live = await pool.query('SELECT asin, onhand FROM inv_stock WHERE onhand > 0');
+      retailTotalCount = live.rows.length;
+      let v = 0;
+      for (const r of live.rows) {
+        const p = priceByAsin[r.asin];
+        if (p) { v += p * r.onhand; retailPricedCount++; }
+      }
+      retailValue = Math.round(v);
+      retailAsOf = rv.rows[0].updated_at;   // when the PRICES were pulled
     }
-  } catch(e) {}
+  } catch(e) { console.error('retail value calc failed:', e.message); }
   const totalOnhand = stock.rows[0].onhand;
   const totalPendingPrep = pendingPrep.rows[0].n;
   const totalPrepped = preppedTot.rows[0].n;
@@ -1303,7 +1314,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
     pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, pendingPrep: pendingPrep.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
     recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows, underStocked,
-    retailValue, retailAsOf
+    retailValue, retailAsOf, retailPricedCount, retailTotalCount
   });
 });
 
