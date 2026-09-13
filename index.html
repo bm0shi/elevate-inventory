@@ -460,8 +460,13 @@
     <div id="toaddBody"></div>
   </div>
 <div id="sub-market" class="subpanel">
-    
-  </div>
+      <div class="box">
+        <div style="font-weight:700">Market Data (Keepa)</div>
+        <div class="hint">What's selling across the line, where Amazon is weak, and where competition is low — cross-referenced with your on-hand. Uses Keepa API.</div>
+        <button class="action full" onclick="loadMarket()" id="mktLoadBtn" style="margin-top:8px;background:#b7791f">↻ Refresh Market Data</button>
+      </div>
+      <div id="marketBody"><div class="hint" style="padding:20px;text-align:center">Loading last saved data…</div></div>
+    </div>
 <div id="sub-velocity" class="subpanel">
       <div class="box">
         <div style="font-weight:700">Sales Velocity &amp; Days of Stock</div>
