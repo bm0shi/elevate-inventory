@@ -795,7 +795,11 @@ function loadDashboard(){
     if(d.totalPrepped) h+='<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Prepped</div></div>';
     h+=card(d.transit.toLocaleString(),'In Transit','#b7791f');
     h+=card(d.skus,'SKUs','#127a7a');
-    if(d.retailValue){ const asof=d.retailAsOf?' (as of '+new Date(d.retailAsOf).toLocaleDateString()+' '+new Date(d.retailAsOf).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+')':''; h+=card('$'+Math.round(d.retailValue).toLocaleString(),'Retail Value On Hand'+asof,'#1e8449'); }
+    if(d.retailValue){
+      const priced = d.retailPricedCount!=null ? d.retailPricedCount+'/'+d.retailTotalCount+' priced' : '';
+      const asof = d.retailAsOf ? 'prices from '+new Date(d.retailAsOf).toLocaleDateString() : '';
+      h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(d.retailValue).toLocaleString()+'</div><div class="l">Retail Value On Hand</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">'+priced+(asof?' · '+asof:'')+'</div></div>';
+    }
     h+='</div><div class="cards" style="flex-wrap:wrap">';
     h+=card(d.pendingInvoices+(d.pendingUnits?' · '+d.pendingUnits.toLocaleString()+' units':''),'Pending Check-Ins','#2563a8');
     h+=card(d.openShipments,'Open FBA Shipments','#2563a8');
