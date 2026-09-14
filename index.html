@@ -1140,6 +1140,60 @@ function loadToAdd(){
     renderToAdd();
   }).catch(()=>{ if(btn){btn.textContent='Load';btn.disabled=false;} });
 }
+// ---- selection + export ----
+window._toaddSelected = window._toaddSelected || {};
+function toaddUpdateCount(){
+  const n = Object.keys(window._toaddSelected).filter(k=>window._toaddSelected[k]).length;
+  const el = document.getElementById('toaddSelCount');
+  if(el) el.textContent = n + ' selected';
+}
+function toaddToggleOne(asin, on){
+  if(on) window._toaddSelected[asin]=true; else delete window._toaddSelected[asin];
+  toaddUpdateCount();
+}
+function toaddToggleAll(on){
+  document.querySelectorAll('.toaddChk').forEach(c=>{
+    c.checked = on;
+    const a = c.getAttribute('data-asin');
+    if(on) window._toaddSelected[a]=true; else delete window._toaddSelected[a];
+  });
+  toaddUpdateCount();
+}
+function toaddSelectAllShown(){
+  const sa=document.getElementById('toaddSelectAll'); if(sa) sa.checked=true;
+  toaddToggleAll(true);
+}
+function toaddClearSel(){
+  window._toaddSelected = {};
+  const sa=document.getElementById('toaddSelectAll'); if(sa) sa.checked=false;
+  document.querySelectorAll('.toaddChk').forEach(c=>c.checked=false);
+  toaddUpdateCount();
+}
+function exportToadd(){
+  const sel = Object.keys(window._toaddSelected).filter(k=>window._toaddSelected[k]);
+  if(!sel.length){ toast('Select at least one product first', true); return; }
+  const all = window._toaddData || [];
+  const byAsin = {}; for(const x of all) byAsin[x.asin]=x;
+
+  const esc = v => '"' + String(v==null?'':v).replace(/"/g,'""') + '"';
+  let csv = 'Item Name,ASIN,Amazon Link\r\n';
+  let n = 0;
+  for(const asin of sel){
+    const x = byAsin[asin]; if(!x) continue;
+    csv += [ esc(x.title||''), esc(asin), esc('https://www.amazon.com/dp/'+asin) ].join(',') + '\r\n';
+    n++;
+  }
+  // BOM so Excel reads UTF-8 correctly
+  const blob = new Blob(['\ufeff'+csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const d = new Date();
+  const stamp = d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0');
+  a.href = url; a.download = 'products-to-add-'+stamp+'.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast('Exported '+n+' products');
+}
 function toaddSort(col){
   const s=window._toaddSort;
   if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=(col==='rank')?1:-1; }
@@ -1237,8 +1291,15 @@ function renderToAdd(){
       return c;
     })()+
     '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
+  h+='<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;padding:10px 12px;background:#eef4fb;border-radius:8px">'+
+     '<span style="font-weight:700;font-size:13px;color:#2563a8" id="toaddSelCount">0 selected</span>'+
+     '<button onclick="toaddSelectAllShown()" style="padding:7px 13px;font-size:12px;font-weight:700;background:#fff;color:#2563a8;border:1px solid #c9d4e0;border-radius:6px;cursor:pointer">Select all shown ('+list.length+')</button>'+
+     '<button onclick="toaddClearSel()" style="padding:7px 13px;font-size:12px;font-weight:700;background:#fff;color:#5a6472;border:1px solid #c9d4e0;border-radius:6px;cursor:pointer">Clear</button>'+
+     '<button onclick="exportToadd()" style="padding:8px 16px;font-size:13px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:auto">⬇ Export to Excel</button>'+
+     '</div>';
   h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Order Qty</b> = units to buy to cover the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
   h+='<table><thead><tr>'+
+    '<th style="width:36px;text-align:center"><input type="checkbox" id="toaddSelectAll" onclick="toaddToggleAll(this.checked)" style="width:17px;height:17px;cursor:pointer" title="Select all shown"></th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'ssUnits\')">Units/mo (SS)'+arrow('ssUnits')+'</th>'+
@@ -1268,11 +1329,13 @@ function renderToAdd(){
     const realCell = x._profitMo>0
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">${Math.round(x._capture*100)}% capture · ~${Math.round(x._unitsReal)} u/mo</div>`
       : '<span style="color:#9db0c9">—</span>';
-    return `<tr><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
+    const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
+    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
   b.innerHTML=h;
+  toaddUpdateCount();
 }
 
 // ==================== PRODUCTS TO ADD END ====================
