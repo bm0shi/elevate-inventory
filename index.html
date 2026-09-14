@@ -465,6 +465,9 @@
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Margin %
           <input type="number" id="marginPct" value="15" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:64px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
         </label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#c0392b;white-space:nowrap" title="How many months of supply to buy. Order Qty = realistic monthly sales x this, minus what you already have across warehouse/prep/transit/FBA.">Cover mo
+          <input type="number" id="coverMonths" value="3" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:60px;padding:10px;border:2px solid #c0392b;border-radius:6px;font-size:14px">
+        </label>
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#2563a8;white-space:nowrap" title="Amazon referral fee % — used when Keepa does not supply it. Beauty is typically 15%.">Referral %
           <input type="number" id="refPct" value="15" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:60px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
         </label>
@@ -834,6 +837,26 @@ function loadDashboard(){
     h+=card(d.lowStock,'Low Stock','#c0392b');
     h+=card(d.outStock,'Out of Stock','#c0392b');
     h+='</div>';
+    // ---- MERCHANT FULFILLED OPPORTUNITIES ----
+    if(d.mfnOpportunities && d.mfnOpportunities.items && d.mfnOpportunities.items.length){
+      const m=d.mfnOpportunities;
+      h+='<div class="box" style="border:2px solid #c0392b">';
+      h+='<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">';
+      h+='<div style="font-weight:800;font-size:17px;color:#c0392b">🚀 POTENTIAL FOR MERCHANT FULFILLED</div>';
+      h+='<button onclick="runMfnScan()" id="mfnScanBtn" style="padding:7px 14px;font-size:12px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:6px;cursor:pointer">↻ Scan Now</button>';
+      h+='</div>';
+      h+='<div class="hint" style="margin-bottom:10px">Items you have in the warehouse where the buy box looks winnable right now — list these MFN and ship yourself while Amazon is out.'+(m.updatedAt?' Last scan: '+new Date(m.updatedAt).toLocaleString()+'.':'')+(m.total?' Showing top '+m.items.length+' of '+m.total+'.':'')+'</div>';
+      h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>Available</th><th>Buy Box</th><th>Sellers</th><th>Rank</th><th>Why</th></tr></thead><tbody>';
+      h+=m.items.map(x=>{
+        const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${(x.name||x.asin).slice(0,58)}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${x.asin}</div>`;
+        const bb = x.buyBoxPrice!=null ? '$'+x.buyBoxPrice.toFixed(2) : '<span style="color:#c0392b;font-weight:700">none</span>';
+        return `<tr><td>${link}</td><td class="onhand-num" style="color:#1e8449">${x.available}</td><td>${bb}</td><td>${x.sellers!=null?x.sellers:'—'}</td><td>${x.salesRank!=null?x.salesRank.toLocaleString():'—'}</td><td style="font-size:12px;color:#c0392b;font-weight:600">${x.reason||''}</td></tr>`;
+      }).join('');
+      h+='</tbody></table></div>';
+    } else if(d.mfnOpportunities){
+      h+='<div class="box"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><div style="font-weight:800;font-size:16px;color:#c0392b">🚀 Potential for Merchant Fulfilled</div><div class="hint">No open buy-box opportunities found in your in-stock items right now.'+(d.mfnOpportunities.updatedAt?' Last scan: '+new Date(d.mfnOpportunities.updatedAt).toLocaleString()+'.':' Scan has not run yet.')+'</div></div><button onclick="runMfnScan()" id="mfnScanBtn" style="padding:7px 14px;font-size:12px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:6px;cursor:pointer">↻ Scan Now</button></div></div>';
+    }
+
     // low stock list
     if(d.lowList && d.lowList.length){
       h+='<div class="box"><div style="font-weight:700;color:#c0392b;margin-bottom:6px">⚠ Low Stock (≤20 units)</div>';
@@ -861,6 +884,26 @@ function loadDashboard(){
     }
     b.innerHTML=h;
   });
+}
+
+// ---- Merchant Fulfilled scan ----
+function runMfnScan(){
+  const b=document.getElementById('mfnScanBtn');
+  if(b){ b.textContent='Scanning…'; b.disabled=true; }
+  ownerApi('/api/mfn-scan',{method:'POST'}).then(d=>{
+    if(d.error){ toast(d.error,true); if(b){b.textContent='↻ Scan Now';b.disabled=false;} return; }
+    toast('Scan started — checking your in-stock items');
+    pollMfn();
+  }).catch(()=>{ if(b){b.textContent='↻ Scan Now';b.disabled=false;} toast('Scan failed',true); });
+}
+function pollMfn(){
+  ownerApi('/api/mfn-status').then(j=>{
+    if(j.running){ setTimeout(pollMfn, 4000); return; }
+    const b=document.getElementById('mfnScanBtn'); if(b){ b.textContent='↻ Scan Now'; b.disabled=false; }
+    if(j.error){ toast('Scan failed: '+j.error, true); return; }
+    toast('Scan complete — '+(j.count||0)+' opportunities');
+    loadDashboard();
+  }).catch(()=>{ setTimeout(pollMfn, 5000); });
 }
 
 // ---- Received Log ----
@@ -1112,6 +1155,7 @@ function renderToAdd(){
   const minUnits=parseInt((document.getElementById('toaddMinUnits')||{}).value)||0;
   const minProfit=parseFloat((document.getElementById('toaddMinProfit')||{}).value)||0;
   const margin=(parseFloat((document.getElementById('marginPct')||{}).value)||15)/100;
+  const coverMonths=parseFloat((document.getElementById('coverMonths')||{}).value)||3;
   const captureOverride=parseFloat((document.getElementById('capturePct')||{}).value);
   // profit model: MAX = you capture the whole market; REALISTIC = fair-share adjusted
   const defRefPct=parseFloat((document.getElementById('refPct')||{}).value)||15;
@@ -1152,6 +1196,10 @@ function renderToAdd(){
     x._unitsReal = u * cap;
     x._profitMo = x._profitUnit * x._unitsReal;        // REALISTIC profit (filters/sorts use this)
     x._netDepositMoReal = x._netDeposit * x._unitsReal; // REALISTIC monthly Amazon deposit
+    // ---- ORDER QTY: cover N months of realistic demand, minus everything we already have ----
+    const have = (x.available||0) + (x.pendingPrep||0) + (x.prepped||0) + (x.transit||0) + (x.fba||0);
+    x._have = have;
+    x._orderQty = Math.max(0, Math.ceil(x._unitsReal * coverMonths - have));
   });
   let list=d.filter(x=>{
     if(filter==='notcarried' && x.carried) return false;
@@ -1189,13 +1237,14 @@ function renderToAdd(){
       return c;
     })()+
     '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
-  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Order Qty</b> = units to buy to cover the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'ssUnits\')">Units/mo (SS)'+arrow('ssUnits')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'buyBoxPrice\')">Buy Box'+arrow('buyBoxPrice')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'sellers\')">Sellers'+arrow('sellers')+'</th>'+
+    '<th style="cursor:pointer;background:#c0392b" onclick="toaddSort(\'_orderQty\')">Order Qty'+arrow('_orderQty')+'</th>'+
     '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDepositMoReal\')">Net Deposit/mo'+arrow('_netDepositMoReal')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_profitMoMax\')">Max Profit/mo'+arrow('_profitMoMax')+'</th>'+
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Realistic Profit/mo'+arrow('_profitMo')+'</th>'+
@@ -1207,6 +1256,9 @@ function renderToAdd(){
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
     const status=x.carried?'<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">CARRIED</span>':'<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">ADD</span>';
+    const orderCell = x._orderQty>0
+      ? `<span style="font-weight:800;color:#c0392b;font-size:17px">${x._orderQty.toLocaleString()}</span><div style="font-size:10px;color:#9db0c9">${coverMonths}mo cover${x._have>0?' · have '+x._have:''}</div>`
+      : (x._unitsReal>0 ? '<span style="color:#1e8449;font-weight:700">✓ stocked</span>' : '<span style="color:#9db0c9">—</span>');
     const netCell = x._netDepositMoReal>0
       ? `<span style="font-weight:800;color:#2563a8;font-size:16px">$${Math.round(x._netDepositMoReal).toLocaleString()}</span><div style="font-size:10px;color:#9db0c9">$${x._netDeposit.toFixed(2)}/unit × ~${Math.round(x._unitsReal)} u${x._feesEstimated?' <span style="color:#b7791f">est</span>':''}</div>`
       : '<span style="color:#9db0c9">—</span>';
@@ -1216,7 +1268,7 @@ function renderToAdd(){
     const realCell = x._profitMo>0
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">${Math.round(x._capture*100)}% capture · ~${Math.round(x._unitsReal)} u/mo</div>`
       : '<span style="color:#9db0c9">—</span>';
-    return `<tr><td style="max-width:320px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
+    return `<tr><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
