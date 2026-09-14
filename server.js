@@ -1316,7 +1316,14 @@ app.get('/api/dashboard', auth, async (req, res) => {
     skus: skus.rows[0].n, lowStock: lowStock.rows[0].n, outStock: outStock.rows[0].n,
     pendingInvoices: pendingInv.rows[0].n, pendingUnits: pendingUnits.rows[0].n, pendingPrep: pendingPrep.rows[0].n, openShipments: openShip.rows[0].n, todayActivity: todayAct.rows[0].n,
     recent: recent.rows, topStock: topStock.rows, lowList: lowList.rows, underStocked,
-    retailValue, retailAsOf, retailPricedCount, retailTotalCount
+    retailValue, retailAsOf, retailPricedCount, retailTotalCount,
+    mfnOpportunities: await (async()=>{
+      try {
+        const c = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='mfn_opportunities'");
+        if (!c.rows.length) return { items: [], updatedAt: null };
+        return { items: (c.rows[0].data||[]).slice(0,15), updatedAt: c.rows[0].updated_at, total: (c.rows[0].data||[]).length };
+      } catch(e) { return { items: [], updatedAt: null }; }
+    })()
   });
 });
 
@@ -1368,9 +1375,26 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
   const market = mktC.rows.length ? (mktC.rows[0].data||[]) : [];
   if (!market.length) return res.status(400).json({ error: 'No Keepa market data yet — refresh Market Data first.' });
 
-  // which ASINs do we carry?
-  const ours = await pool.query('SELECT asin FROM inv_products');
-  const carried = new Set(ours.rows.map(r=>r.asin));
+  // our full stock picture per ASIN (available / committed / transit / FBA)
+  const stockRows = await pool.query(`
+    SELECT p.asin, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
+      (
+        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+      )::int AS pending_prep,
+      (
+        COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+        + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
+      )::int AS prepped
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
+  const stockByAsin = {}; for (const r of stockRows.rows) stockByAsin[r.asin] = r;
+  const carried = new Set(stockRows.rows.map(r=>r.asin));
+  // FBA quantities from the last FBA pull
+  let fbaByAsin = {};
+  try {
+    const fc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'");
+    if (fc.rows.length) for (const f of (fc.rows[0].data||[])) fbaByAsin[f.asin] = f.fba_total||0;
+  } catch(e) {}
 
   // optional SmartScout enrichment (units/revenue where we have it)
   let ssByAsin = {};
@@ -1381,6 +1405,7 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
 
   const out = market.map(m => {
     const ss = ssByAsin[m.asin] || {};
+    const st = stockByAsin[m.asin] || {};
     return {
       asin: m.asin,
       title: m.name || ss.title || m.asin,
@@ -1396,6 +1421,11 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       amazonOOS: m.amazonOOS,
       buyBoxPrice: m.buyBoxPrice,
       carried: carried.has(m.asin),
+      available: st.onhand ? Math.max(0, st.onhand - (st.pending_prep||0) - (st.prepped||0)) : 0,
+      pendingPrep: st.pending_prep||0,
+      prepped: st.prepped||0,
+      transit: st.transit||0,
+      fba: fbaByAsin[m.asin]||0,
     };
   });
   // default sort: not-carried first, then best sales rank (lowest = sells most)
@@ -1612,6 +1642,97 @@ app.post('/api/market-data/start', ownerAuth, async (req, res) => {
 });
 
 app.get('/api/market-data/status', ownerAuth, (req, res) => res.json(mktJob));
+
+// ============================================================
+// MERCHANT-FULFILLED OPPORTUNITY SCAN
+// Scans ONLY the ASINs we have stock for (token-efficient) to spot
+// moments where Amazon is out of stock / not holding the buy box —
+// i.e. we could list MFN and ship from our own warehouse right now.
+// ============================================================
+async function runMfnScan() {
+  if (!keepa.keyOk()) throw new Error('KEEPA_API_KEY not set');
+  // only ASINs with physical stock on hand
+  const rows = await pool.query('SELECT p.asin FROM inv_products p JOIN inv_stock s ON s.asin=p.asin WHERE s.onhand > 0');
+  const asins = rows.rows.map(r => r.asin).filter(Boolean);
+  if (!asins.length) return { scanned: 0, opportunities: [] };
+
+  console.log(`[MFN] Scanning ${asins.length} in-stock ASINs...`);
+  const r = await keepa.getProducts(asins);
+  const products = r.products || [];
+
+  // pull our stock detail
+  const stock = await pool.query(`
+    SELECT p.asin, p.name, p.sku, p.image, COALESCE(s.onhand,0) AS onhand,
+      (
+        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+      )::int AS pending_prep,
+      (
+        COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+        + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
+      )::int AS prepped
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
+  const sByAsin = {}; for (const s of stock.rows) sByAsin[s.asin] = s;
+
+  const opportunities = [];
+  for (const p of products) {
+    const s = sByAsin[p.asin];
+    if (!s) continue;
+    const available = Math.max(0, (s.onhand||0) - (s.pending_prep||0) - (s.prepped||0));
+    if (available <= 0) continue;   // nothing free to sell MFN
+
+    // Signals that the buy box is winnable right now
+    const amzOut = (p.amazonOOS != null && p.amazonOOS > 50);   // Amazon frequently OOS
+    const amzNoBB = (p.amazonHasBuyBox === false);              // Amazon not holding BB
+    const fewSellers = (p.offerCount != null && p.offerCount <= 3);
+    const noBuyBox = (p.buyBoxPrice == null);                   // nobody holds the BB
+
+    let score = 0;
+    if (noBuyBox) score += 4;        // wide open
+    if (amzNoBB) score += 3;
+    if (amzOut) score += 2;
+    if (fewSellers) score += 2;
+    if (p.salesRank != null && p.salesRank < 20000) score += 2;  // it actually sells
+
+    if (score >= 4) {
+      opportunities.push({
+        asin: p.asin, name: s.name, sku: s.sku, image: s.image,
+        available, salesRank: p.salesRank, buyBoxPrice: p.buyBoxPrice,
+        sellers: p.offerCount, amazonOOS: p.amazonOOS,
+        amazonHasBuyBox: p.amazonHasBuyBox, monthlySold: p.monthlySold,
+        score,
+        reason: [ noBuyBox?'No buy box winner':null, amzNoBB?'Amazon not in buy box':null,
+                  amzOut?`Amazon OOS ${Math.round(p.amazonOOS)}%`:null,
+                  fewSellers?`Only ${p.offerCount} sellers`:null ].filter(Boolean).join(' · ')
+      });
+    }
+  }
+  opportunities.sort((a,b)=> b.score - a.score || (a.salesRank||1e12)-(b.salesRank||1e12));
+  await saveCache('mfn_opportunities', opportunities);
+  console.log(`[MFN] Scan complete: ${opportunities.length} opportunities from ${asins.length} ASINs`);
+  return { scanned: asins.length, opportunities };
+}
+
+// manual trigger + status
+let mfnJob = { running:false, lastRun:null, error:null, count:0 };
+app.post('/api/mfn-scan', ownerAuth, async (req, res) => {
+  if (mfnJob.running) return res.json({ ok:true, alreadyRunning:true });
+  mfnJob = { running:true, lastRun:mfnJob.lastRun, error:null, count:0 };
+  res.json({ ok:true, started:true });
+  try {
+    const r = await runMfnScan();
+    mfnJob.count = r.opportunities.length;
+    mfnJob.lastRun = new Date();
+  } catch(err) {
+    mfnJob.error = err.message;
+    console.error('[MFN] scan failed:', err.message);
+  } finally { mfnJob.running = false; }
+});
+app.get('/api/mfn-status', ownerAuth, (req,res)=>res.json(mfnJob));
+
+// scheduled: run twice a day (every 12h), first run 3 min after boot
+setTimeout(()=>{ runMfnScan().catch(e=>console.error('[MFN] scheduled scan failed:', e.message)); }, 3*60*1000);
+setInterval(()=>{ runMfnScan().catch(e=>console.error('[MFN] scheduled scan failed:', e.message)); }, 12*60*60*1000);
 
 // Shared pull used by BOTH the direct endpoint and the background job
 async function runMarketDataPull(onProgress) {
