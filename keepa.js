@@ -15,13 +15,14 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const IDX = { AMAZON:0, NEW:1, SALES:3, COUNT_NEW:11, BUY_BOX:18 };
 
 // Fetch product data for ASINs (up to 100 per request). stats=90 for 90-day stats.
-async function getProducts(asins) {
+async function getProducts(asins, onProgress) {
   if (!keyOk()) throw new Error('KEEPA_API_KEY not set');
   const key = process.env.KEEPA_API_KEY;
   const out = [];
   let tokensLeft = null;
   for (let i = 0; i < asins.length; i += 100) {
     const batch = asins.slice(i, i + 100);
+    if (onProgress) onProgress(`batch ${Math.floor(i/100)+1} of ${Math.ceil(asins.length/100)} — ${out.length} products so far`);
     const url = `${KEEPA_BASE}/product?key=${key}&domain=${DOMAIN}&asin=${batch.join(',')}&stats=90&buybox=1`;
 
     let done = false, attempts = 0;
