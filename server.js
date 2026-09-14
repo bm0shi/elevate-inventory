@@ -1583,30 +1583,60 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
 
 
 // Keepa market data — pull for target ASINs, cross-reference with our on-hand
-app.get('/api/market-data', ownerAuth, async (req, res) => {
-  if (!keepa.keyOk()) return res.status(400).json({ error: 'KEEPA_API_KEY not set in Railway variables' });
-  // target ASINs: our catalog (can expand later)
+// ---- Background market-data job (avoids Railway request timeouts) ----
+let mktJob = { running:false, done:false, error:null, startedAt:null, finishedAt:null, progress:'', count:0, tokensLeft:null };
+
+app.post('/api/market-data/start', ownerAuth, async (req, res) => {
+  if (mktJob.running) return res.json({ ok:true, alreadyRunning:true, job:mktJob });
+  mktJob = { running:true, done:false, error:null, startedAt:new Date(), finishedAt:null, progress:'starting…', count:0, tokensLeft:null };
+  res.json({ ok:true, started:true });      // respond immediately
+
+  // run in background
+  (async () => {
+    try {
+      mktJob.progress = 'pulling from Keepa…';
+      const result = await runMarketDataPull((msg)=>{ mktJob.progress = msg; });
+      mktJob.count = result.count;
+      mktJob.tokensLeft = result.tokensLeft;
+      mktJob.done = true;
+      mktJob.progress = 'complete';
+    } catch (err) {
+      mktJob.error = err.message || String(err);
+      mktJob.progress = 'failed';
+      console.error('[Market] background pull failed:', mktJob.error);
+    } finally {
+      mktJob.running = false;
+      mktJob.finishedAt = new Date();
+    }
+  })();
+});
+
+app.get('/api/market-data/status', ownerAuth, (req, res) => res.json(mktJob));
+
+// Shared pull used by BOTH the direct endpoint and the background job
+async function runMarketDataPull(onProgress) {
+  if (!keepa.keyOk()) throw new Error('KEEPA_API_KEY not set in Railway variables');
   let asins;
   try { asins = JSON.parse(fs.readFileSync(path.join(__dirname, 'keepa_asins.json'), 'utf8')); }
   catch(e){ asins = []; }
-  if (!asins.length) return res.status(400).json({ error: 'No target ASINs configured' });
+  if (!asins.length) throw new Error('No target ASINs configured');
 
-  let products, tokensLeft;
-  try { const r = await keepa.getProducts(asins); products = r.products; tokensLeft = r.tokensLeft; }
-  catch(err){ return res.status(400).json({ error: err.message }); }
+  if (onProgress) onProgress(`pulling ${asins.length} ASINs from Keepa…`);
+  const r = await keepa.getProducts(asins, onProgress);
+  const products = r.products, tokensLeft = r.tokensLeft;
 
-  // cross-reference with our on-hand
+  if (onProgress) onProgress('saving…');
   const onhandRows = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
-  const byAsin = {}; for (const r of onhandRows.rows) byAsin[r.asin] = r;
+  const byAsin = {}; for (const row of onhandRows.rows) byAsin[row.asin] = row;
 
-  // save images to products for card display
   let imgsSaved = 0;
   for (const p of products) {
     if (p.image && p.asin) {
-      try { const r = await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2', [p.image, p.asin]); if(r.rowCount) imgsSaved++; } catch(e){}
+      try { const u = await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2', [p.image, p.asin]); if(u.rowCount) imgsSaved++; } catch(e){}
     }
   }
-  console.log('[Market] Images saved: ' + imgsSaved + ' of ' + products.length + ' products');
+  console.log('[Market] Images saved: ' + imgsSaved + ' of ' + products.length);
+
   const out = products.map(p => {
     const mine = byAsin[p.asin] || {};
     return {
@@ -1619,22 +1649,30 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
       amazonHasBuyBox: p.amazonHasBuyBox,
       amazonOOS: p.amazonOOS,
       offerCount: p.offerCount,
+      pickPackFee: p.pickPackFee,
+      referralPct: p.referralPct,
     };
   });
-  // dedupe by ASIN
   const seen = new Set();
   const deduped = out.filter(x => { if(seen.has(x.asin)) return false; seen.add(x.asin); return true; });
-  // default sort: best sales rank (lowest number = best seller) first
   deduped.sort((a,b)=>{
     const ar = a.salesRank == null ? 1e12 : a.salesRank;
     const br = b.salesRank == null ? 1e12 : b.salesRank;
     return ar - br;
   });
   await saveCache('market_data', deduped);
-  res.json({ items: deduped, tokensLeft });
+  return { count: deduped.length, tokensLeft, items: deduped };
+}
+
+// Direct (synchronous) pull — kept for small sets; may time out on large ones
+app.get('/api/market-data', ownerAuth, async (req, res) => {
+  try {
+    const r = await runMarketDataPull();
+    res.json({ items: r.items, tokensLeft: r.tokensLeft });
+  } catch(err) {
+    res.status(400).json({ error: err.message });
+  }
 });
-
-
 
 // Inventory value (owner) — units on hand × cost, needs cost per item
 app.get('/api/inventory-value', ownerAuth, async (req, res) => {
