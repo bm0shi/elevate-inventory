@@ -806,8 +806,10 @@ function ownerUnlock(which){
       } else toast('Wrong owner password',true);
     });
 }
-function ownerApi(path){
-  return fetch(path,{headers:{'x-app-password':PW,'x-owner-password':OWNER_PW}}).then(r=>r.json());
+function ownerApi(path, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({'Content-Type':'application/json','x-app-password':PW,'x-owner-password':OWNER_PW}, opts.headers||{});
+  return fetch(path, opts).then(r=>r.json());
 }
 
 // ---- Dashboard ----
@@ -1323,15 +1325,38 @@ function renderRestock(){
 
 // ==================== MARKET DATA (KEEPA) ====================
 function loadMarket(){
-  const btn=document.getElementById('mktLoadBtn'); btn.textContent='Pulling Keepa data (may take a minute)...'; btn.disabled=true;
-  ownerApi('/api/market-data').then(d=>{
+  const btn=document.getElementById('mktLoadBtn');
+  btn.textContent='Starting…'; btn.disabled=true;
+  const body=document.getElementById('marketBody');
+  ownerApi('/api/market-data/start',{method:'POST'}).then(d=>{
+    if(d.error){ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+d.error+'</div>'; return; }
+    body.innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pulling Keepa data…</div><div id="mktProgress" class="hint" style="margin-top:6px">starting…</div><div class="hint" style="margin-top:10px;color:#9db0c9">This runs in the background and can take several minutes for a large catalog. You can switch tabs — it keeps running.</div></div>';
+    pollMarketJob();
+  }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(err.message||err)+'</div>'; });
+}
+function pollMarketJob(){
+  ownerApi('/api/market-data/status').then(j=>{
+    const btn=document.getElementById('mktLoadBtn');
+    const prog=document.getElementById('mktProgress');
+    if(prog) prog.textContent = j.progress || '…';
+    if(j.running){ setTimeout(pollMarketJob, 3000); return; }
     btn.textContent='↻ Refresh Market Data'; btn.disabled=false;
-    if(d.error){ document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    const items=d.items||d;
-    items.forEach(x=>{ x._oppScore=marketOpp(x); });
-    window._mktData=items; window._mktTokens=d.tokensLeft; window._mktSort={col:'salesRank',dir:1}; window._mktLoadedAt=new Date();
-    renderMarket();
-  }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Request failed: '+(err.message||err)+'<br><br>Check: 1) KEEPA_API_KEY is set in Railway, 2) keepa.js and keepa_asins.json are deployed (lowercase), 3) Railway logs for the real error.</div>'; });
+    if(j.error){
+      document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Pull failed: '+j.error+'</div>';
+      return;
+    }
+    if(j.done){ toast('Market data updated ('+j.count+' products)'); loadMktCache(); }
+  }).catch(()=>{ setTimeout(pollMarketJob, 5000); });
+}
+// if a pull is already running when you open the tab, resume showing progress
+function checkMarketJobOnOpen(){
+  ownerApi('/api/market-data/status').then(j=>{
+    if(j && j.running){
+      const btn=document.getElementById('mktLoadBtn'); if(btn){ btn.textContent='Pulling…'; btn.disabled=true; }
+      document.getElementById('marketBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pull in progress…</div><div id="mktProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>';
+      pollMarketJob();
+    }
+  }).catch(()=>{});
 }
 function loadMktCache(){
   document.getElementById('marketBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
@@ -1530,7 +1555,7 @@ function showSubTab(name, ev){
   if(name==='dashboard'){ loadDashboard(); }
   if(name==='restock'){ if(window._restockData) renderRestock(); else loadRestockCache(); }
   if(name==='toadd'){ if(window._toaddData) renderToAdd(); else loadToAdd(); }
-  if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); }
+  if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); }
   if(name==='transit') renderTransit();
