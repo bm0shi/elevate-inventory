@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages } = require('./spapi');
+const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -1667,18 +1667,8 @@ app.get('/api/market-data/status', ownerAuth, (req, res) => res.json(mktJob));
 // moments where Amazon is out of stock / not holding the buy box —
 // i.e. we could list MFN and ship from our own warehouse right now.
 // ============================================================
-async function runMfnScan() {
-  if (!keepa.keyOk()) throw new Error('KEEPA_API_KEY not set');
-  // only ASINs with physical stock on hand
-  const rows = await pool.query('SELECT p.asin FROM inv_products p JOIN inv_stock s ON s.asin=p.asin WHERE s.onhand > 0');
-  const asins = rows.rows.map(r => r.asin).filter(Boolean);
-  if (!asins.length) return { scanned: 0, opportunities: [] };
-
-  console.log(`[MFN] Scanning ${asins.length} in-stock ASINs...`);
-  const r = await keepa.getProducts(asins);
-  const products = r.products || [];
-
-  // pull our stock detail
+async function runMfnScan(onProgress) {
+  // Only ASINs we physically have free stock for
   const stock = await pool.query(`
     SELECT p.asin, p.name, p.sku, p.image, COALESCE(s.onhand,0) AS onhand,
       (
@@ -1689,58 +1679,88 @@ async function runMfnScan() {
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
       )::int AS prepped
-    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
-  const sByAsin = {}; for (const s of stock.rows) sByAsin[s.asin] = s;
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin
+    WHERE COALESCE(s.onhand,0) > 0`);
+
+  const candidates = stock.rows
+    .map(r => ({ ...r, available: Math.max(0, r.onhand - r.pending_prep - r.prepped) }))
+    .filter(r => r.available > 0);
+
+  if (!candidates.length) {
+    await saveCache('mfn_opportunities', []);
+    return { scanned: 0, opportunities: [] };
+  }
+
+  console.log(`[MFN] LIVE check of ${candidates.length} in-stock ASINs via SP-API...`);
+  if (onProgress) onProgress(`checking ${candidates.length} listings live on Amazon…`);
+
+  const offers = await getLiveOffers(candidates.map(c => c.asin), onProgress);
+
+  // Keepa cache is used ONLY for sales rank / demand context, never for buy-box state
+  let mkt = {};
+  try {
+    const mc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+    if (mc.rows.length) for (const m of (mc.rows[0].data||[])) mkt[m.asin] = m;
+  } catch(e) {}
 
   const opportunities = [];
-  for (const p of products) {
-    const s = sByAsin[p.asin];
-    if (!s) continue;
-    const available = Math.max(0, (s.onhand||0) - (s.pending_prep||0) - (s.prepped||0));
-    if (available <= 0) continue;   // nothing free to sell MFN
+  for (const c of candidates) {
+    const o = offers[c.asin];
+    if (!o || o.error) continue;
 
-    // Signals that the buy box is winnable right now
-    const amzOut = (p.amazonOOS != null && p.amazonOOS > 50);   // Amazon frequently OOS
-    const amzNoBB = (p.amazonHasBuyBox === false);              // Amazon not holding BB
-    const fewSellers = (p.offerCount != null && p.offerCount <= 3);
-    const noBuyBox = (p.buyBoxPrice == null);                   // nobody holds the BB
+    // THE key signal, live from Amazon: is Amazon actually selling this right now?
+    const amazonSoldOut = !o.amazonSelling;
+    const noBuyBox = !o.buyBoxExists;
+    const fewOffers = (o.totalOffers != null && o.totalOffers <= 3);
+    const m = mkt[c.asin] || {};
 
     let score = 0;
-    if (noBuyBox) score += 4;        // wide open
-    if (amzNoBB) score += 3;
-    if (amzOut) score += 2;
-    if (fewSellers) score += 2;
-    if (p.salesRank != null && p.salesRank < 20000) score += 2;  // it actually sells
+    if (amazonSoldOut) score += 5;          // ← the real opportunity
+    if (noBuyBox) score += 3;
+    if (fewOffers) score += 2;
+    if (m.salesRank != null && m.salesRank < 20000) score += 2;
+    if (m.monthlySold != null && m.monthlySold >= 200) score += 1;
 
-    if (score >= 4) {
+    // Only surface it if Amazon is genuinely not selling, or nobody holds the buy box
+    if (amazonSoldOut || noBuyBox) {
       opportunities.push({
-        asin: p.asin, name: s.name, sku: s.sku, image: s.image,
-        available, salesRank: p.salesRank, buyBoxPrice: p.buyBoxPrice,
-        sellers: p.offerCount, amazonOOS: p.amazonOOS,
-        amazonHasBuyBox: p.amazonHasBuyBox, monthlySold: p.monthlySold,
+        asin: c.asin, name: c.name, sku: c.sku, image: c.image,
+        available: c.available,
+        amazonSelling: o.amazonSelling,
+        amazonHasBuyBox: o.amazonHasBuyBox,
+        buyBoxPrice: o.buyBoxPrice,
+        buyBoxIsFba: o.buyBoxIsFba,
+        totalOffers: o.totalOffers,
+        lowestPrice: o.lowestPrice,
+        salesRank: m.salesRank ?? null,
+        monthlySold: m.monthlySold ?? null,
+        checkedAt: o.checkedAt,
         score,
-        reason: [ noBuyBox?'No buy box winner':null, amzNoBB?'Amazon not in buy box':null,
-                  amzOut?`Amazon OOS ${Math.round(p.amazonOOS)}%`:null,
-                  fewSellers?`Only ${p.offerCount} sellers`:null ].filter(Boolean).join(' · ')
+        reason: [
+          amazonSoldOut ? '🔴 AMAZON SOLD OUT' : null,
+          noBuyBox ? 'No buy box winner' : null,
+          fewOffers ? `Only ${o.totalOffers} offers` : null,
+        ].filter(Boolean).join(' · ')
       });
     }
   }
   opportunities.sort((a,b)=> b.score - a.score || (a.salesRank||1e12)-(b.salesRank||1e12));
   await saveCache('mfn_opportunities', opportunities);
-  console.log(`[MFN] Scan complete: ${opportunities.length} opportunities from ${asins.length} ASINs`);
-  return { scanned: asins.length, opportunities };
+  console.log(`[MFN] LIVE scan complete: ${opportunities.length} real opportunities from ${candidates.length} ASINs`);
+  return { scanned: candidates.length, opportunities };
 }
 
 // manual trigger + status
-let mfnJob = { running:false, lastRun:null, error:null, count:0 };
+let mfnJob = { running:false, lastRun:null, error:null, count:0, progress:'' };
 app.post('/api/mfn-scan', ownerAuth, async (req, res) => {
   if (mfnJob.running) return res.json({ ok:true, alreadyRunning:true });
   mfnJob = { running:true, lastRun:mfnJob.lastRun, error:null, count:0 };
   res.json({ ok:true, started:true });
   try {
-    const r = await runMfnScan();
+    const r = await runMfnScan((msg)=>{ mfnJob.progress = msg; });
     mfnJob.count = r.opportunities.length;
     mfnJob.lastRun = new Date();
+    mfnJob.progress = 'complete';
   } catch(err) {
     mfnJob.error = err.message;
     console.error('[MFN] scan failed:', err.message);
