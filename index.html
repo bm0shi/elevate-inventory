@@ -1223,15 +1223,15 @@ function loadValCache(){
     } else {
       document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:28px"><div style="font-weight:700;font-size:16px;margin-bottom:6px">No price data yet</div><div class="hint" style="margin-bottom:14px">Pull current Amazon prices to value your inventory. Takes a few minutes and runs in the background.</div><button class="action" id="valLoadBtn" onclick="loadValue()" style="background:#b7791f;padding:12px 22px">↻ Pull Amazon Prices</button></div>';
     }
-  }).catch(()=>{ document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load saved prices. <button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:8px 16px;margin-left:8px">Pull Amazon Prices</button></div>'; });
+  }).catch(err=>{ console.error('value cache error', err); document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load saved prices: '+(err&&err.message?err.message:err)+' <button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:8px 16px;margin-left:8px">Pull Amazon Prices</button></div>'; });
 }
 function valSort(col){
-  const s=window._valSort;
+  const s=window._valSort||(window._valSort={col:'_retailVal',dir:-1});
   if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=-1; }
   renderValue();
 }
 function renderValue(){
-  let d=window._valData||[]; const s=window._valSort;
+  let d=window._valData||[]; const s=window._valSort||(window._valSort={col:'_retailVal',dir:-1});
   const seen=new Set(); d=d.filter(x=>{ if(seen.has(x.asin))return false; seen.add(x.asin); return true; });
   // merge LIVE stock (cached price data carries stale quantities)
   const liveByAsin={};
