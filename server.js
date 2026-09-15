@@ -1897,7 +1897,6 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     if (!seen.has(r.asin)) out.push({ asin:r.asin, name:r.name, warehouse:r.onhand, transit:r.transit, fba_total:0, fba_fulfillable:0, fba_inbound:0, grand_total:r.onhand+r.transit });
   }
   out.sort((a,b)=>b.grand_total-a.grand_total);
-  await saveCache('fba_inventory', out);
   res.json(out);
 });
 
