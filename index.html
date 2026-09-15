@@ -1155,14 +1155,23 @@ function renderVelocity(){
 
 // ---- Value (owner) ----
 function loadValue(){
-  const btn=document.getElementById('valLoadBtn'); if(btn){btn.textContent='Pulling Amazon prices...';btn.disabled=true;}
-  ownerApi('/api/inventory-value').then(d=>{
-    if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;}
-    if(d.error){ document.getElementById('valueBody').innerHTML='<div class="hint">Error</div>'; return; }
-    d.forEach(x=>{ x._retail=x.amazon_price?parseFloat(x.amazon_price):0; x._retailVal=x._retail*x.onhand; });
-    window._valData=d; window._valSort={col:'_retailVal',dir:-1}; window._valLoadedAt=new Date();
-    renderValue();
-  });
+  const btn=document.getElementById('valLoadBtn'); if(btn){btn.textContent='Starting…';btn.disabled=true;}
+  const body=document.getElementById('valueBody');
+  ownerApi('/api/inventory-value/start',{method:'POST'}).then(d=>{
+    if(d.error){ if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;} body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+d.error+'</div>'; return; }
+    body.innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pulling Amazon prices…</div><div id="valProgress" class="hint" style="margin-top:6px">starting…</div><div class="hint" style="margin-top:10px;color:#9db0c9">Amazon limits this to about 2 products per second, so a full catalog takes a few minutes. Runs in the background — you can switch tabs.</div></div>';
+    pollValJob();
+  }).catch(err=>{ if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;} body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(err.message||err)+'</div>'; });
+}
+function pollValJob(){
+  ownerApi('/api/inventory-value/status').then(j=>{
+    const p=document.getElementById('valProgress');
+    if(p) p.textContent=j.progress||'…';
+    if(j.running){ setTimeout(pollValJob, 3000); return; }
+    const btn=document.getElementById('valLoadBtn'); if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;}
+    if(j.error){ document.getElementById('valueBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Price pull failed: '+j.error+'</div>'; return; }
+    if(j.done){ toast('Prices updated ('+j.count+' products)'); loadValCache(); }
+  }).catch(()=>{ setTimeout(pollValJob, 5000); });
 }
 function loadValCache(){
   document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
@@ -1172,10 +1181,9 @@ function loadValCache(){
       window._valData=c.data; window._valSort={col:'_retailVal',dir:-1}; window._valLoadedAt=new Date(c.updated_at);
       renderValue();
     } else {
-      // no cache yet — pull fresh automatically the first time
-      loadValue();
+      document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:28px"><div style="font-weight:700;font-size:16px;margin-bottom:6px">No price data yet</div><div class="hint" style="margin-bottom:14px">Pull current Amazon prices to value your inventory. Takes a few minutes and runs in the background.</div><button class="action" id="valLoadBtn" onclick="loadValue()" style="background:#b7791f;padding:12px 22px">↻ Pull Amazon Prices</button></div>';
     }
-  }).catch(()=>{ loadValue(); });
+  }).catch(()=>{ document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load saved prices. <button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:8px 16px;margin-left:8px">Pull Amazon Prices</button></div>'; });
 }
 function valSort(col){
   const s=window._valSort;
@@ -1808,7 +1816,7 @@ function showSubTab(name, ev){
   if(name==='toadd'){ if(window._toaddData) renderToAdd(); else loadToAdd(); }
   if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
-  if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); }
+  if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
   if(name==='transit') renderTransit();
   if(name==='shipments') renderShipments();
   if(name==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
