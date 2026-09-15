@@ -1668,7 +1668,7 @@ app.get('/api/market-data/status', ownerAuth, (req, res) => res.json(mktJob));
 // i.e. we could list MFN and ship from our own warehouse right now.
 // ============================================================
 async function runMfnScan(onProgress) {
-  // Only ASINs we physically have free stock for
+  // ASINs we physically have free stock for
   const stock = await pool.query(`
     SELECT p.asin, p.name, p.sku, p.image, COALESCE(s.onhand,0) AS onhand,
       (
@@ -1686,67 +1686,59 @@ async function runMfnScan(onProgress) {
     .map(r => ({ ...r, available: Math.max(0, r.onhand - r.pending_prep - r.prepped) }))
     .filter(r => r.available > 0);
 
-  if (!candidates.length) {
-    await saveCache('mfn_opportunities', []);
-    return { scanned: 0, opportunities: [] };
-  }
+  if (!candidates.length) { await saveCache('mfn_opportunities', []); return { scanned: 0, opportunities: [] }; }
 
-  console.log(`[MFN] LIVE check of ${candidates.length} in-stock ASINs via SP-API...`);
-  if (onProgress) onProgress(`checking ${candidates.length} listings live on Amazon…`);
-
-  const offers = await getLiveOffers(candidates.map(c => c.asin), onProgress);
-
-  // Keepa cache is used ONLY for sales rank / demand context, never for buy-box state
-  let mkt = {};
+  // ---- Amazon availability comes from KEEPA ----
+  // The SP-API Pricing endpoint anonymises competitor seller ids, so it cannot tell us
+  // whether the Amazon retail offer exists. Keepa tracks that explicitly.
+  if (onProgress) onProgress(`checking ${candidates.length} listings on Keepa…`);
+  let kByAsin = {};
   try {
-    const mc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
-    if (mc.rows.length) for (const m of (mc.rows[0].data||[])) mkt[m.asin] = m;
-  } catch(e) {}
+    const kr = await keepa.getProducts(candidates.map(c=>c.asin), onProgress);
+    for (const p of (kr.products||[])) kByAsin[p.asin] = p;
+  } catch (err) {
+    throw new Error('Keepa lookup failed: ' + err.message);
+  }
 
   const opportunities = [];
   for (const c of candidates) {
-    const o = offers[c.asin];
-    if (!o || o.error) continue;
+    const k = kByAsin[c.asin];
+    if (!k) continue;
 
-    // THE key signal, live from Amazon: is Amazon actually selling this right now?
-    const amazonSoldOut = !o.amazonSelling;
-    const noBuyBox = !o.buyBoxExists;
-    const fewOffers = (o.totalOffers != null && o.totalOffers <= 3);
-    const m = mkt[c.asin] || {};
+    const amazonOut = k.amazonOutOfStock === true;     // Keepa: Amazon has no live offer
+    const fewOffers = (k.offerCount != null && k.offerCount <= 3);
+    const sellsWell = (k.salesRank != null && k.salesRank < 20000);
 
-    let score = 0;
-    if (amazonSoldOut) score += 5;          // ← the real opportunity
-    if (noBuyBox) score += 3;
+    // Only a genuine opportunity if Amazon is actually NOT selling it
+    if (!amazonOut) continue;
+
+    let score = 5;
     if (fewOffers) score += 2;
-    if (m.salesRank != null && m.salesRank < 20000) score += 2;
-    if (m.monthlySold != null && m.monthlySold >= 200) score += 1;
+    if (sellsWell) score += 2;
+    if (k.monthlySold != null && k.monthlySold >= 200) score += 1;
 
-    // Only surface it if Amazon is genuinely not selling, or nobody holds the buy box
-    if (amazonSoldOut || noBuyBox) {
-      opportunities.push({
-        asin: c.asin, name: c.name, sku: c.sku, image: c.image,
-        available: c.available,
-        amazonSelling: o.amazonSelling,
-        amazonHasBuyBox: o.amazonHasBuyBox,
-        buyBoxPrice: o.buyBoxPrice,
-        buyBoxIsFba: o.buyBoxIsFba,
-        totalOffers: o.totalOffers,
-        lowestPrice: o.lowestPrice,
-        salesRank: m.salesRank ?? null,
-        monthlySold: m.monthlySold ?? null,
-        checkedAt: o.checkedAt,
-        score,
-        reason: [
-          amazonSoldOut ? '🔴 AMAZON SOLD OUT' : null,
-          noBuyBox ? 'No buy box winner' : null,
-          fewOffers ? `Only ${o.totalOffers} offers` : null,
-        ].filter(Boolean).join(' · ')
-      });
-    }
+    opportunities.push({
+      asin: c.asin, name: c.name, sku: c.sku, image: c.image,
+      available: c.available,
+      amazonSelling: false,
+      amazonPrice: k.amazonPrice ?? null,
+      availabilityAmazon: k.availabilityAmazon ?? null,
+      buyBoxPrice: k.buyBoxPrice ?? null,
+      totalOffers: k.offerCount ?? null,
+      salesRank: k.salesRank ?? null,
+      monthlySold: k.monthlySold ?? null,
+      checkedAt: new Date().toISOString(),
+      score,
+      reason: [
+        '🔴 AMAZON NOT SELLING',
+        fewOffers ? `Only ${k.offerCount} offers` : null,
+        sellsWell ? 'Sells well' : null,
+      ].filter(Boolean).join(' · ')
+    });
   }
   opportunities.sort((a,b)=> b.score - a.score || (a.salesRank||1e12)-(b.salesRank||1e12));
   await saveCache('mfn_opportunities', opportunities);
-  console.log(`[MFN] LIVE scan complete: ${opportunities.length} real opportunities from ${candidates.length} ASINs`);
+  console.log(`[MFN] Scan complete: ${opportunities.length} opportunities from ${candidates.length} in-stock ASINs`);
   return { scanned: candidates.length, opportunities };
 }
 
