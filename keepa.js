@@ -120,6 +120,13 @@ function simplify(p) {
   // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
   const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
 
+  // ---- IS AMAZON SELLING? ----
+  // amazonPrice (from stats.current[AMAZON]) is null when Amazon has NO live offer.
+  // availabilityAmazon: -1 = no offer, 0 = in stock, >0 = delayed/backordered.
+  const availAmz = (p.availabilityAmazon != null) ? p.availabilityAmazon : null;
+  const amazonSelling = (amazonPrice != null) && (availAmz !== -1);
+  const amazonOutOfStock = (amazonPrice == null) || (availAmz === -1);
+
   // ---- Amazon fees (for net-deposit calc) ----
   // Keepa returns fbaFees.pickAndPackFee in cents; referralFeePercent as a number (e.g. 15)
   let pickPackFee = null, referralPct = null;
@@ -156,6 +163,7 @@ function simplify(p) {
     amazonHasBuyBox, amazonOOS,
     offerCount, monthlySold,
     pickPackFee, referralPct,
+    availabilityAmazon: availAmz, amazonSelling, amazonOutOfStock,
   };
 }
 
