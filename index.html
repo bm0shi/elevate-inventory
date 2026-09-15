@@ -1088,6 +1088,25 @@ function valSort(col){
 function renderValue(){
   let d=window._valData||[]; const s=window._valSort;
   const seen=new Set(); d=d.filter(x=>{ if(seen.has(x.asin))return false; seen.add(x.asin); return true; });
+  // merge LIVE stock (cached price data carries stale quantities)
+  const liveByAsin={};
+  for(const p of (products||[])){
+    liveByAsin[p.asin]={
+      available: Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0)),
+      onhand: p.onhand||0, pending: p.pending_prep||0, prepped: p.prepped||0, transit: p.transit||0
+    };
+  }
+  d.forEach(x=>{
+    const L=liveByAsin[x.asin];
+    if(L){
+      x.onhand = L.available;          // value is based on AVAILABLE stock
+      x._onhandTotal = L.onhand; x._pending = L.pending; x._prepped = L.prepped; x._transit = L.transit;
+    } else { x.onhand = 0; x._onhandTotal = 0; }
+    x._retail = x.amazon_price ? parseFloat(x.amazon_price) : 0;
+    x._retailVal = x._retail * x.onhand;                        // available value
+    x._retailValTotal = x._retail * (x._onhandTotal||0);        // all warehouse stock
+    x._retailValPipeline = x._retail * ((x._onhandTotal||0) + (x._transit||0));  // incl. in transit
+  });
   const b=document.getElementById('valueBody');
   const sorted=[...d].sort((a,b2)=>{
     if(s.col==='name'){ const av=(a.name||'').toLowerCase(),bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
@@ -1095,21 +1114,30 @@ function renderValue(){
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
   const totalRetail=d.reduce((sum,x)=>sum+(x._retailVal||0),0);
+  const totalAll=d.reduce((sum,x)=>sum+(x._retailValTotal||0),0);
+  const totalPipe=d.reduce((sum,x)=>sum+(x._retailValPipeline||0),0);
   const priced=d.filter(x=>x._retail>0).length;
   let h='<div style="margin-bottom:10px"><button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:10px 16px;background:#b7791f">↻ Refresh Amazon Prices</button></div>';
   const netProfit=totalRetail*0.15;
-  h+='<div class="cards" style="flex-wrap:wrap"><div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Total Retail Value On Hand</div></div><div class="card" style="border-top:3px solid #b7791f"><div class="n">$'+netProfit.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Est. Net Profit @ 15%</div></div><div class="card"><div class="n">'+priced+' / '+d.length+'</div><div class="l">Products Priced</div></div></div>';
+  h+='<div class="cards" style="flex-wrap:wrap">'+
+    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+totalRetail.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Value — Available</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">uncommitted stock</div></div>'+
+    '<div class="card" style="border-top:3px solid #b7791f"><div class="n">$'+totalAll.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Value — All Warehouse</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">incl. pending prep + prepped</div></div>'+
+    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+totalPipe.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Value — Incl. In Transit</div></div>'+
+    '<div class="card"><div class="n">$'+netProfit.toLocaleString(undefined,{maximumFractionDigits:0})+'</div><div class="l">Est. Net @ 15% (available)</div></div>'+
+    '<div class="card"><div class="n">'+priced+' / '+d.length+'</div><div class="l">Products Priced</div></div></div>';
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="valSort(\'name\')">Product'+arrow('name')+'</th>'+
-     '<th style="cursor:pointer" onclick="valSort(\'onhand\')">On Hand'+arrow('onhand')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'onhand\')">Available'+arrow('onhand')+'</th>'+
+     '<th style="cursor:pointer" onclick="valSort(\'_onhandTotal\')">Warehouse'+arrow('_onhandTotal')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'_retail\')">Amazon Price'+arrow('_retail')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'_retailVal\')">Retail Value'+arrow('_retailVal')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
     const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
-    return `<tr><td>${link}</td><td>${x.onhand}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
+    const committed=(x._pending||0)+(x._prepped||0);
+    return `<tr><td>${link}</td><td style="font-weight:700;color:${x.onhand>0?'#1e8449':'#c0392b'}">${x.onhand}</td><td>${x._onhandTotal||0}${committed>0?`<div style="font-size:10px;color:#9db0c9">${committed} committed</div>`:''}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  h+='<div class="hint">Retail value = units on hand × current Amazon price. Blank price = no active/available Amazon price for that item.';
+  h+='<div class="hint"><b>Available</b> = warehouse stock free to commit (on hand − pending prep − prepped); the main value figure uses this. <b>Warehouse</b> = all physical units you hold. Quantities are live; prices come from the last Amazon price pull.';
   if(window._valLoadedAt) h+=' Last loaded: '+window._valLoadedAt.toLocaleString()+'.';
   h+='</div>';
   b.innerHTML=h;
