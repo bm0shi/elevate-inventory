@@ -1960,8 +1960,12 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     }
     out.push({ ...r, components });
   }
-  const totalUnits = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
-  res.json({ items: out, totalRequests: out.length, totalUnits });
+  // Units AS SHIPPED — a duo is ONE sellable unit (one FNSKU), matching Amazon/3rd-party plan counts
+  const totalUnits = out.reduce((s,x)=> s + x.qty, 0);
+  // Bottles actually handled on the floor (duo = 2 bottles) — for prep-labor context
+  const totalBottles = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
+  const duoCount = out.filter(x=>x.is_duo).reduce((s,x)=> s + x.qty, 0);
+  res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount });
 });
 
 // Mark / unmark a job as added to the 3rd-party shipment plan software
