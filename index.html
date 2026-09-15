@@ -1043,10 +1043,46 @@ function computeFbaValuation(rows){
     const q=r.fba_total||0; if(q<=0) continue;
     if(price[r.asin]!=null){ fbaValue+=q*price[r.asin]; fbaPriced++; } else fbaUnpriced++;
   }
+
+  // 5) WAREHOUSE — available, pending prep, and prepped.
+  //    Prepped duos are held as components, so pair those back into duos too.
+  let availValue=0, pendingValue=0;
+  const preppedLeft={};
+  for(const p of (products||[])){
+    const oh=p.onhand||0, pend=p.pending_prep||0, prep=p.prepped||0;
+    const avail=Math.max(0, oh-pend-prep);
+    const pr=price[p.asin];
+    if(pr!=null){
+      availValue   += avail*pr;
+      pendingValue += pend*pr;
+    }
+    preppedLeft[p.asin]=prep;
+  }
+  // pair prepped components into duos, value at duo price
+  let preppedValue=0; const duosPrepped=[];
+  for(const bAsin in bundleComps){
+    const comps=[...bundleComps[bAsin]];
+    const dp=price[bAsin]; if(dp==null) continue;
+    let possible=Infinity;
+    for(const c of comps) possible=Math.min(possible, preppedLeft[c]||0);
+    if(!isFinite(possible)||possible<=0) continue;
+    for(const c of comps) preppedLeft[c]-=possible;
+    preppedValue += possible*dp;
+    duosPrepped.push({asin:bAsin, qty:possible, price:dp});
+  }
+  for(const a in preppedLeft){
+    const q=preppedLeft[a]||0;
+    if(q>0 && price[a]!=null) preppedValue += q*price[a];
+  }
+
+  const warehouseValue = availValue + pendingValue + preppedValue;
   const havePrices = Object.keys(price).length;
   return { fbaValue:Math.round(fbaValue), transitValue:Math.round(transitValue),
-           totalValue:Math.round(fbaValue+transitValue), fbaPriced, fbaUnpriced,
-           duosInTransit, havePrices };
+           totalValue:Math.round(fbaValue+transitValue),
+           availValue:Math.round(availValue), pendingValue:Math.round(pendingValue),
+           preppedValue:Math.round(preppedValue), warehouseValue:Math.round(warehouseValue),
+           grandTotal:Math.round(warehouseValue+transitValue+fbaValue),
+           fbaPriced, fbaUnpriced, duosInTransit, duosPrepped, havePrices };
 }
 
 function renderFbaInv(){
@@ -1080,17 +1116,21 @@ function renderFbaInv(){
     '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div>'+
     '<div class="card" style="border-top:3px solid #0f1b2d"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL UNITS</div></div></div>';
   // ---- retail value of what's at Amazon / heading there ----
-  const V = window._fbaVal || computeFbaValuation(window._fbaData||[]);
+  const V = computeFbaValuation(window._fbaData||[]);
   if(V && V.havePrices!==0){
+    h+='<div style="font-weight:800;font-size:15px;margin:4px 0 8px;color:#5a6472">💵 RETAIL VALUE — FULL PIPELINE</div>';
     h+='<div class="cards" style="flex-wrap:wrap">'+
-      '<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+V.fbaValue.toLocaleString()+'</div><div class="l">Retail Value AT AMAZON</div></div>'+
-      '<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+V.transitValue.toLocaleString()+'</div><div class="l">Retail Value IN TRANSIT</div></div>'+
-      '<div class="card" style="border-top:3px solid #0f1b2d"><div class="n">$'+V.totalValue.toLocaleString()+'</div><div class="l">AMAZON + IN TRANSIT</div></div>'+
+      '<div class="card" style="border-top:3px solid #b7791f"><div class="n">$'+V.warehouseValue.toLocaleString()+'</div><div class="l">In Warehouse</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">avail $'+V.availValue.toLocaleString()+' · pend $'+V.pendingValue.toLocaleString()+' · prepped $'+V.preppedValue.toLocaleString()+'</div></div>'+
+      '<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+V.transitValue.toLocaleString()+'</div><div class="l">In Transit</div></div>'+
+      '<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+V.fbaValue.toLocaleString()+'</div><div class="l">At Amazon</div></div>'+
+      '<div class="card" style="border-top:4px solid #0f1b2d;background:#f9fafb"><div class="n">$'+V.grandTotal.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL INVENTORY</div></div>'+
       '</div>';
-    if(V.duosInTransit && V.duosInTransit.length){
+    h+='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">$'+V.totalValue.toLocaleString()+'</div><div class="l">Amazon + In Transit</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">already out of the building</div></div></div>';
+    const allDuos=[...(V.duosInTransit||[]).map(x=>({...x,where:'transit'})), ...(V.duosPrepped||[]).map(x=>({...x,where:'prepped'}))];
+    if(allDuos.length){
       h+='<div class="box" style="padding:10px 14px;background:#fdf6f5;border:1px solid #f3d9d6"><div style="font-size:12.5px;color:#5a6472"><b style="color:#c0392b">Duo pairing applied:</b> '+
-        V.duosInTransit.map(x=>`${x.qty} × <a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;font-family:monospace;font-weight:700;text-decoration:none">${x.asin}</a> @ $${x.price.toFixed(2)}`).join(' · ')+
-        ' — matched component pairs in transit were valued at the duo price instead of two single prices.</div></div>';
+        allDuos.map(x=>`${x.qty} × <a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;font-family:monospace;font-weight:700;text-decoration:none">${x.asin}</a> @ $${x.price.toFixed(2)} <span style="color:#9db0c9">(${x.where})</span>`).join(' · ')+
+        ' — matched component pairs were valued at the duo price instead of two single prices.</div></div>';
     }
     if(V.fbaUnpriced>0){
       h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are excluded. Load the Value or Market Data tab to pull more prices.</div>';
