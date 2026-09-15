@@ -1088,6 +1088,29 @@ function computeFbaValuation(rows){
 function renderFbaInv(){
   let d=window._fbaData||[]; const s=window._fbaSort;
   const b=document.getElementById('fbaInvBody');
+  // ---- normalise warehouse figures from LIVE product data ----
+  // (the server may still be returning raw on-hand as "warehouse")
+  const liveP={};
+  for(const p of (products||[])){
+    liveP[p.asin]={
+      onhand:p.onhand||0, pend:p.pending_prep||0, prep:p.prepped||0, transit:p.transit||0
+    };
+  }
+  d.forEach(x=>{
+    const L=liveP[x.asin];
+    if(L){
+      x.pending_prep = L.pend;
+      x.prepped      = L.prep;
+      x.warehouse    = Math.max(0, L.onhand - L.pend - L.prep);   // AVAILABLE
+      x.onhand_total = L.onhand;
+      if(!x.transit) x.transit = L.transit;
+      x.grand_total  = L.onhand + (x.transit||0) + (x.fba_total||0);
+    } else {
+      x.pending_prep = x.pending_prep||0;
+      x.prepped      = x.prepped||0;
+      x.onhand_total = x.onhand_total||x.warehouse||0;
+    }
+  });
   // filter out the noise
   const ff=(document.getElementById('fbaFilter')||{}).value||'anystock';
   const fq=((document.getElementById('fbaSearch')||{}).value||'').toLowerCase();
