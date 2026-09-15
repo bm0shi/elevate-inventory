@@ -133,6 +133,8 @@ async function initDb() {
       duration_sec INTEGER
     );
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS in_plan BOOLEAN DEFAULT false;
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS in_plan_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
       qty INTEGER NOT NULL DEFAULT 0,
@@ -363,6 +365,22 @@ app.get('/api/products', auth, async (req, res) => {
       partnersByAsin[r.asin].push({ asin: r.partner_asin, name: r.partner_name, onhand: r.partner_onhand, bundle_asin: r.bundle_asin });
     }
   }
+  // layer in the last FBA inventory pull (what's already at Amazon)
+  let fbaByAsin = {}, fbaAsOf = null;
+  try {
+    const fc = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='fba_inventory'");
+    if (fc.rows.length) {
+      fbaAsOf = fc.rows[0].updated_at;
+      for (const f of (fc.rows[0].data||[])) {
+        fbaByAsin[f.asin] = {
+          fulfillable: f.fba_fulfillable||0,
+          inbound: f.fba_inbound||0,
+          total: f.fba_total||0
+        };
+      }
+    }
+  } catch(e) {}
+
   // layer in cached Keepa market data (sales rank + monthly sold) for prioritization
   let mByAsin = {};
   try {
@@ -1925,7 +1943,7 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, p.name, p.sku, p.fnsku, p.image
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      WHERE pp.qty > 0 ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
   // for duos, also return the component names so the worker knows what to grab
@@ -1944,6 +1962,15 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
   }
   const totalUnits = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
   res.json({ items: out, totalRequests: out.length, totalUnits });
+});
+
+// Mark / unmark a job as added to the 3rd-party shipment plan software
+app.post('/api/pending-prep/in-plan', auth, async (req, res) => {
+  const { id, inPlan } = req.body;
+  if (!id) return res.status(400).json({ error: 'id required' });
+  if (inPlan) await pool.query('UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE id=$1', [id]);
+  else await pool.query('UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id=$1', [id]);
+  res.json({ ok: true });
 });
 
 // Claim a prep job (worker starts on it)
