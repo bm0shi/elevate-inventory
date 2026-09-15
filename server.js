@@ -1833,20 +1833,47 @@ app.get('/api/market-data', ownerAuth, async (req, res) => {
   }
 });
 
+// ---- Background inventory-value job (avoids Railway request timeouts) ----
+let valJob = { running:false, done:false, error:null, progress:'', count:0, startedAt:null, finishedAt:null };
+
+app.post('/api/inventory-value/start', ownerAuth, async (req, res) => {
+  if (valJob.running) return res.json({ ok:true, alreadyRunning:true, job:valJob });
+  valJob = { running:true, done:false, error:null, progress:'starting…', count:0, startedAt:new Date(), finishedAt:null };
+  res.json({ ok:true, started:true });
+  (async () => {
+    try {
+      const r = await runInventoryValuePull((msg)=>{ valJob.progress = msg; });
+      valJob.count = r.length; valJob.done = true; valJob.progress = 'complete';
+    } catch (err) {
+      valJob.error = err.message || String(err);
+      valJob.progress = 'failed';
+      console.error('[Value] background pull failed:', valJob.error);
+    } finally { valJob.running = false; valJob.finishedAt = new Date(); }
+  })();
+});
+app.get('/api/inventory-value/status', ownerAuth, (req,res)=>res.json(valJob));
+
 // Inventory value (owner) — units on hand × cost, needs cost per item
-app.get('/api/inventory-value', ownerAuth, async (req, res) => {
+async function runInventoryValuePull(onProgress) {
   const rows = await pool.query(
     `SELECT p.asin, p.sku, p.name, s.onhand, s.transit
      FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
      WHERE s.onhand > 0`);
-  // always pull current Amazon prices (by ASIN)
-  let retail = {};
   const asins = rows.rows.map(r => r.asin).filter(Boolean);
-  try { retail = await getMyPrices(asins); } catch(e) { console.error('retail fetch failed:', e.message); }
+  if (onProgress) onProgress(`pulling Amazon prices for ${asins.length} products…`);
+  let retail = {};
+  try { retail = await getMyPrices(asins, onProgress); }
+  catch(e) { console.error('retail fetch failed:', e.message); }
   const out = rows.rows.map(r => ({ ...r, amazon_price: retail[r.asin] || null }));
   out.sort((a,b)=>((b.amazon_price||0)*b.onhand)-((a.amazon_price||0)*a.onhand));
   await saveCache('inventory_value', out);
-  res.json(out);
+  return out;
+}
+
+// Direct pull (may time out on large catalogs — prefer the background job)
+app.get('/api/inventory-value', ownerAuth, async (req, res) => {
+  try { res.json(await runInventoryValuePull()); }
+  catch(err){ res.status(400).json({ error: err.message }); }
 });
 
 // Manually set/override a product's unit cost (owner)
