@@ -998,6 +998,57 @@ function fbaSort(col){
   if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=-1; }
   renderFbaInv();
 }
+// ---- FBA value (computed client-side so it never depends on a server deploy) ----
+function computeFbaValuation(rows){
+  // 1) price lookup: Value-tab prices first, then Keepa buy box
+  const price = {};
+  for(const v of (window._valData||[])) if(v.amazon_price) price[v.asin]=parseFloat(v.amazon_price);
+  for(const m of (window._mktData||[])) if(price[m.asin]==null && m.buyBoxPrice!=null) price[m.asin]=m.buyBoxPrice;
+
+  // 2) rebuild bundle definitions from products[].partners  (component -> {bundle, partner})
+  const bundleComps = {};   // bundleAsin -> Set(componentAsins)
+  for(const p of (products||[])){
+    if(!p.partners) continue;
+    for(const pt of p.partners){
+      if(!pt.bundle_asin) continue;
+      if(!bundleComps[pt.bundle_asin]) bundleComps[pt.bundle_asin]=new Set();
+      bundleComps[pt.bundle_asin].add(p.asin);
+      bundleComps[pt.bundle_asin].add(pt.asin);
+    }
+  }
+
+  // 3) transit: pair matched components back into duos, value at the DUO price
+  const transitLeft = {};
+  for(const r of rows) transitLeft[r.asin]=(r.transit||0);
+  let transitValue=0; const duosInTransit=[];
+  for(const bAsin in bundleComps){
+    const comps=[...bundleComps[bAsin]];
+    const dp=price[bAsin];
+    if(dp==null) continue;
+    let possible=Infinity;
+    for(const c of comps) possible=Math.min(possible, transitLeft[c]||0);
+    if(!isFinite(possible)||possible<=0) continue;
+    for(const c of comps) transitLeft[c]-=possible;
+    transitValue += possible*dp;
+    duosInTransit.push({asin:bAsin, qty:possible, price:dp});
+  }
+  for(const a in transitLeft){
+    const q=transitLeft[a]||0;
+    if(q>0 && price[a]!=null) transitValue += q*price[a];
+  }
+
+  // 4) FBA: Amazon reports real ASINs (duo ASINs included) — value each at its own price
+  let fbaValue=0, fbaPriced=0, fbaUnpriced=0;
+  for(const r of rows){
+    const q=r.fba_total||0; if(q<=0) continue;
+    if(price[r.asin]!=null){ fbaValue+=q*price[r.asin]; fbaPriced++; } else fbaUnpriced++;
+  }
+  const havePrices = Object.keys(price).length;
+  return { fbaValue:Math.round(fbaValue), transitValue:Math.round(transitValue),
+           totalValue:Math.round(fbaValue+transitValue), fbaPriced, fbaUnpriced,
+           duosInTransit, havePrices };
+}
+
 function renderFbaInv(){
   let d=window._fbaData||[]; const s=window._fbaSort;
   const b=document.getElementById('fbaInvBody');
@@ -1029,8 +1080,8 @@ function renderFbaInv(){
     '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div>'+
     '<div class="card" style="border-top:3px solid #0f1b2d"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL UNITS</div></div></div>';
   // ---- retail value of what's at Amazon / heading there ----
-  const V=window._fbaVal;
-  if(V){
+  const V = window._fbaVal || computeFbaValuation(window._fbaData||[]);
+  if(V && V.havePrices!==0){
     h+='<div class="cards" style="flex-wrap:wrap">'+
       '<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+V.fbaValue.toLocaleString()+'</div><div class="l">Retail Value AT AMAZON</div></div>'+
       '<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+V.transitValue.toLocaleString()+'</div><div class="l">Retail Value IN TRANSIT</div></div>'+
@@ -1042,8 +1093,10 @@ function renderFbaInv(){
         ' — matched component pairs in transit were valued at the duo price instead of two single prices.</div></div>';
     }
     if(V.fbaUnpriced>0){
-      h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are excluded from the value. Refresh the Value tab to pull more prices.</div>';
+      h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are excluded. Load the Value or Market Data tab to pull more prices.</div>';
     }
+  } else {
+    h+='<div class="hint" style="color:#b7791f;padding:10px">No prices available yet — open the <b>Value</b> tab (or <b>Market Data</b>) once to pull Amazon prices, then come back here for the retail valuation.</div>';
   }
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'name\')">Product'+arrow('name')+'</th>'+
