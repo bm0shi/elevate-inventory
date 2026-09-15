@@ -859,13 +859,13 @@ function loadDashboard(){
       h+='<div style="font-weight:800;font-size:17px;color:#c0392b">🚀 POTENTIAL FOR MERCHANT FULFILLED</div>';
       h+='<button onclick="runMfnScan()" id="mfnScanBtn" style="padding:7px 14px;font-size:12px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:6px;cursor:pointer">↻ Scan Now</button>';
       h+='</div>';
-      h+='<div class="hint" style="margin-bottom:10px"><b>Checked live against Amazon</b> (not cached market data). Items you have in the warehouse where Amazon is actually sold out or nobody holds the buy box — list these MFN and ship yourself.'+(m.updatedAt?' Last scan: '+new Date(m.updatedAt).toLocaleString()+'.':'')+(m.total?' Showing top '+m.items.length+' of '+m.total+'.':'')+'</div>';
+      h+='<div class="hint" style="margin-bottom:10px">Items you have in the warehouse where <b>Amazon itself has no live offer</b>. Source: Keepa, which tracks the Amazon retail offer directly — typically refreshed within the hour, so <b>verify on the listing before you act</b>.'+(m.updatedAt?' Last scan: '+new Date(m.updatedAt).toLocaleString()+'.':'')+(m.total?' Showing top '+m.items.length+' of '+m.total+'.':'')+'</div>';
       h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>Available</th><th>Amazon</th><th>Buy Box</th><th>Offers</th><th>Rank</th><th>Why</th></tr></thead><tbody>';
       h+=m.items.map(x=>{
         const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${(x.name||x.asin).slice(0,52)}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${x.asin}</div>`;
         const amz = x.amazonSelling
           ? '<span style="color:#5a6472;font-weight:700">selling</span>'
-          : '<span style="background:#c0392b;color:#fff;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:800">SOLD OUT</span>';
+          : '<span style="background:#c0392b;color:#fff;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:800">NOT SELLING</span>';
         const bb = x.buyBoxPrice!=null ? '$'+x.buyBoxPrice.toFixed(2)+(x.buyBoxIsFba?'<div style="font-size:9px;color:#9db0c9">FBA</div>':'') : '<span style="color:#c0392b;font-weight:700">none</span>';
         return `<tr><td>${link}</td><td class="onhand-num" style="color:#1e8449">${x.available}</td><td>${amz}</td><td>${bb}</td><td>${x.totalOffers!=null?x.totalOffers:'—'}</td><td>${x.salesRank!=null?x.salesRank.toLocaleString():'—'}</td><td style="font-size:12px;color:#c0392b;font-weight:600">${x.reason||''}</td></tr>`;
       }).join('');
