@@ -51,15 +51,73 @@ async function processInvoiceText(text) {
 }
 
 const app = express();
+app.set('trust proxy', 1); // Railway sits behind a proxy — needed for a real req.ip
 app.use(express.json({ limit: '2mb' }));
 
-// ---- Simple password gate (set APP_PASSWORD in Railway) ----
-const APP_PASSWORD = process.env.APP_PASSWORD || 'changeme';
-// Set AUTH_DISABLED=true in Railway to turn off the password gate (e.g. while testing).
-// Remove it or set to false to re-enable. No code change needed.
-const AUTH_DISABLED = String(process.env.AUTH_DISABLED || '').toLowerCase() === 'true';
-// Separate password for owner-only data tabs (velocity, profit, inventory value).
-const OWNER_PASSWORD = process.env.OWNER_PASSWORD || APP_PASSWORD;
+// ============================================================
+// PASSWORD GATES
+// ------------------------------------------------------------
+// Two independent gates:
+//
+//   APP_PASSWORD   - warehouse floor. Scan, receive, prep, ship.
+//   OWNER_PASSWORD - admin/analytics. Margin, velocity, value,
+//                    restock plan, market data, MFN scan.
+//
+// AUTH_DISABLED=true opens the WAREHOUSE gate only. It no longer
+// opens the owner gate — business data stays protected even while
+// the floor runs password-free. Set OWNER_PASSWORD and it is
+// enforced regardless of AUTH_DISABLED.
+// ============================================================
+const crypto = require('crypto');
+
+const APP_PASSWORD   = process.env.APP_PASSWORD   || '';
+const OWNER_PASSWORD = process.env.OWNER_PASSWORD || '';
+const AUTH_DISABLED  = String(process.env.AUTH_DISABLED || '').toLowerCase() === 'true';
+
+if (AUTH_DISABLED) {
+  console.warn('[Auth] AUTH_DISABLED=true — warehouse routes are OPEN to anyone with the URL.');
+  console.warn('[Auth] Owner/admin routes are still gated by OWNER_PASSWORD.');
+} else if (!APP_PASSWORD) {
+  console.error('[Auth] APP_PASSWORD not set and AUTH_DISABLED not set — every route will reject.');
+}
+if (!OWNER_PASSWORD) {
+  console.error('[Auth] OWNER_PASSWORD not set — all owner/admin routes will reject. Set it in Railway.');
+}
+
+// Constant-time compare. False on empty or length-mismatched input.
+function safeEq(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || !a || !b) return false;
+  const ba = Buffer.from(a, 'utf8');
+  const bb = Buffer.from(b, 'utf8');
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
+
+// ---- Brute-force brake ----
+// Only FAILED attempts count, so the "remember this device" re-check on
+// page load never trips the limit for a whole warehouse behind one IP.
+const loginHits = new Map();
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_MAX_FAILS = 20;
+
+function loginKey(req) { return req.ip || req.socket.remoteAddress || 'unknown'; }
+
+function loginLimiter(req, res, next) {
+  const rec = loginHits.get(loginKey(req));
+  if (rec && Date.now() < rec.reset && rec.n >= LOGIN_MAX_FAILS) {
+    return res.status(429).json({ ok: false, error: 'too many failed attempts — wait 15 minutes' });
+  }
+  next();
+}
+
+function noteLoginFail(req) {
+  const k = loginKey(req), now = Date.now();
+  const rec = loginHits.get(k);
+  if (!rec || now > rec.reset) loginHits.set(k, { n: 1, reset: now + LOGIN_WINDOW_MS });
+  else rec.n++;
+}
+
+function clearLoginFails(req) { loginHits.delete(loginKey(req)); }
 
 // Normalize a scanned/typed code so 12 vs 13 digit UPC/EAN variants of the SAME
 // barcode match. Strips leading zeros for numeric codes; leaves ASIN/SKU alone.
@@ -264,33 +322,42 @@ async function initDb() {
   console.log('[Inventory] DB ready.');
 }
 
-// ---- Auth middleware (very simple header check) ----
+// ---- Auth middleware ----
+
+// Warehouse gate. Honors AUTH_DISABLED.
 function auth(req, res, next) {
   if (AUTH_DISABLED) return next();
-  if (req.headers['x-app-password'] === APP_PASSWORD) return next();
+  if (safeEq(req.headers['x-app-password'], APP_PASSWORD)) return next();
   return res.status(401).json({ error: 'unauthorized' });
 }
+
+// Owner/admin gate. Does NOT honor AUTH_DISABLED, and deliberately does NOT
+// accept the app password — warehouse staff hold APP_PASSWORD and must not
+// see velocity, margin, or inventory value.
 function ownerAuth(req, res, next) {
-  // owner gate removed — treat like regular auth
-  if (AUTH_DISABLED) return next();
-  if (req.headers['x-app-password'] === APP_PASSWORD) return next();
-  if (req.headers['x-owner-password'] === OWNER_PASSWORD) return next();
-  return next(); // open for now
+  if (safeEq(req.headers['x-owner-password'], OWNER_PASSWORD)) return next();
+  return res.status(403).json({ error: 'owner access required' });
 }
-app.post('/api/owner-login', (req, res) => {
-  return res.json({ ok: true }); // owner gate removed
+
+app.post('/api/owner-login', loginLimiter, (req, res) => {
+  const pw = req.body && req.body.password;
+  if (safeEq(pw, OWNER_PASSWORD)) { clearLoginFails(req); return res.json({ ok: true }); }
+  noteLoginFail(req);
+  return res.status(401).json({ ok: false });
 });
 
 // ---- API ROUTES ----
 
 // login check
-app.post('/api/login', (req, res) => {
+app.post('/api/login', loginLimiter, (req, res) => {
   if (AUTH_DISABLED) return res.json({ ok: true, disabled: true });
-  if (req.body.password === APP_PASSWORD) return res.json({ ok: true });
-  res.status(401).json({ ok: false });
+  const pw = req.body && req.body.password;
+  if (safeEq(pw, APP_PASSWORD)) { clearLoginFails(req); return res.json({ ok: true }); }
+  noteLoginFail(req);
+  return res.status(401).json({ ok: false });
 });
 
-// Tell the UI whether auth is disabled (so it can skip the login screen)
+// Tell the UI whether the warehouse gate is off (so it can skip the login screen)
 app.get('/api/auth-status', (req, res) => {
   res.json({ disabled: AUTH_DISABLED });
 });
