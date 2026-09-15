@@ -622,30 +622,48 @@ function api(path, opts={}) {
 }
 function toast(m, err) { const t=document.getElementById('toast'); t.textContent=m; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',1800); }
 
+// Drop the login screen and start the app.
+function enterApp(pw){
+  PW = pw || '';
+  localStorage_set('appPw', PW);   // remember this device — no re-login on refresh
+  document.getElementById('login').style.display='none';
+  document.getElementById('mainApp').style.display='block';
+  loadProducts();
+  loadPendingPrep();
+}
+
 function doLogin() {
   const pw = document.getElementById('pw').value;
   fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
     .then(r=>r.json()).then(d=>{
-      if(d.ok){ PW=pw; document.getElementById('login').style.display='none'; document.getElementById('mainApp').style.display='block'; loadProducts(); loadPendingPrep(); }
+      if(d.ok){ enterApp(pw); }
       else document.getElementById('loginErr').textContent='Wrong password';
-    });
+    })
+    .catch(()=>{ document.getElementById('loginErr').textContent='Login failed — check connection'; });
 }
+
+// Forget this device. Next load shows the login screen again.
+function forgetDevice(){ localStorage_set('appPw',''); sessionStorage_set('adminUnlocked',''); sessionStorage_set('adminPw',''); location.reload(); }
+
 document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 
-// If auth is disabled on the server, skip the login screen automatically
+// Boot: skip the login screen if the warehouse gate is off, OR if this
+// device already logged in once (password kept in localStorage).
 fetch('/api/auth-status').then(r=>r.json()).then(d=>{
-  if(d.disabled){
-    PW='';  // no password needed
-    document.getElementById('login').style.display='none';
-    document.getElementById('mainApp').style.display='block';
-    loadProducts();
-    loadPendingPrep();
-  }
+  if(d.disabled){ enterApp(''); return; }
+  const saved = localStorage_get('appPw') || '';
+  if(!saved) return;   // show the login screen
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:saved})})
+    .then(r=>r.json()).then(v=>{
+      if(v.ok) enterApp(saved);
+      else localStorage_set('appPw','');   // stale password, make them log in again
+    })
+    .catch(()=>{});
 }).catch(()=>{});
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||PW; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
   if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
