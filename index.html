@@ -2342,7 +2342,10 @@ function renderShipments(){
         const recTxt = (s.status==='received' && rec!=null)
           ? `${rec} / ${it.qty}` + (isShort?` <span class="short-flag">(short ${it.qty-rec})</span>`:'')
           : `${it.qty} sent`;
-        return `<div class="ship-item-row ${isShort?'short':''}"><span>${it.name}</span><span class="qty-cmp">${recTxt}</span></div>`;
+        const idPill=(icon,label,val,color)=>val?`<span style="display:inline-flex;align-items:center;gap:3px;margin-right:10px"><span style="font-size:9px;font-weight:800;color:#5a6472;text-transform:uppercase">${icon} ${label}</span><span style="font-family:monospace;font-size:12px;font-weight:700;color:#1a2b4a;background:${color};padding:2px 7px;border-radius:4px;cursor:pointer" onclick="copyText('${val}',this)" title="click to copy">${val}</span></span>`:'';
+        const ids=`<div style="margin-top:4px">${idPill('🏷️','ASIN',it.asin,'#eef4fb')}${idPill('📦','FNSKU',it.fnsku,'#fdf3e6')}${it.sku?idPill('🔖','SKU',it.sku,'#f0f4ef'):''}</div>`;
+        const img=it.image?`<img src="${it.image}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0;margin-right:10px">`:'';
+        return `<div class="ship-item-row ${isShort?'short':''}" style="align-items:flex-start"><span style="flex:1;display:flex;align-items:flex-start">${img}<span><a href="https://www.amazon.com/dp/${it.asin}" target="_blank" style="color:#1f2733;text-decoration:none;font-weight:600">${it.name}</a>${ids}</span></span><span class="qty-cmp" style="white-space:nowrap;font-weight:700;padding-left:10px">${recTxt}</span></div>`;
       }).join('');
       return `<div class="ship-card">
         <div class="ship-head" onclick="document.getElementById('si${i}').classList.toggle('open')">
