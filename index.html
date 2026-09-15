@@ -301,6 +301,8 @@
         <option value="singles">Singles only</option>
         <option value="unclaimed">Unclaimed only</option>
         <option value="inprogress">In progress only</option>
+        <option value="notinplan">Not in shipment plan yet</option>
+        <option value="inplan">Already in shipment plan</option>
       </select>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
@@ -1818,6 +1820,7 @@ function renderPendingPrep(){
   const b=document.getElementById('pendingPrepBody');
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
   const claimedCount=d.items.filter(x=>x.claimed_by).length;
+  const inPlanCount=d.items.filter(x=>x.in_plan).length;
   // sort + filter
   const ppSort=(document.getElementById('ppSort')||{}).value||'qty_desc';
   const ppFilter=(document.getElementById('ppFilter')||{}).value||'all';
@@ -1828,6 +1831,8 @@ function renderPendingPrep(){
     if(ppFilter==='singles' && x.is_duo) return false;
     if(ppFilter==='unclaimed' && x.claimed_by) return false;
     if(ppFilter==='inprogress' && !x.claimed_by) return false;
+    if(ppFilter==='notinplan' && x.in_plan) return false;
+    if(ppFilter==='inplan' && !x.in_plan) return false;
     return true;
   });
   items.sort((a,b2)=>{
@@ -1839,7 +1844,7 @@ function renderPendingPrep(){
       default: return b2.qty-a.qty;
     }
   });
-  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div></div>';
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
   h+='<div class="pcards">';
   h+=items.map(x=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
@@ -1869,7 +1874,13 @@ function renderPendingPrep(){
          <button onclick="finishPrepJob(${x.id},'${safeName}',${x.qty},${x.is_duo})" style="width:100%;padding:14px;font-size:16px;font-weight:800;background:#127a7a;color:#fff;border:none;border-radius:0 0 8px 8px;cursor:pointer;letter-spacing:0.4px">✅ PREP FINISHED</button>`
       : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
     const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
-    return `<div class="pcard ppcard" style="flex-direction:column;align-items:stretch;gap:0;${cardBorder}"><div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
+    const inPlan = !!x.in_plan;
+    const planBadge = `<div style="position:absolute;top:10px;right:12px;z-index:2">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:5px 10px;border-radius:6px;background:${inPlan?'#eafaf1':'#f4f6f9'};border:1.5px solid ${inPlan?'#1e8449':'#d8dee6'}" title="${inPlan?'Added to shipment plan'+(x.in_plan_at?' — '+new Date(x.in_plan_at).toLocaleString():''):'Check when you have added this ASIN to the shipment plan software'}">
+          <input type="checkbox" ${inPlan?'checked':''} onclick="toggleInPlan(${x.id}, this.checked)" style="width:17px;height:17px;cursor:pointer">
+          <span style="font-size:10px;font-weight:800;letter-spacing:0.3px;color:${inPlan?'#1e8449':'#8a97a6'};text-transform:uppercase">${inPlan?'✓ In Plan':'In Plan?'}</span>
+        </label></div>`;
+    return `<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint">Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done (or scan them in on Prepped &amp; Ready).</div>';
   b.innerHTML=h;
@@ -1886,6 +1897,18 @@ function updateElapsed(){
   });
 }
 setInterval(updateElapsed, 1000);
+function toggleInPlan(id, on){
+  api('/api/pending-prep/in-plan',{method:'POST',body:JSON.stringify({id,inPlan:on})}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    toast(on?'Marked as added to shipment plan':'Unmarked');
+    // update local copy so the 30s auto-refresh does not flicker it back
+    if(window._pendingPrepData && window._pendingPrepData.items){
+      const it=window._pendingPrepData.items.find(i=>i.id===id);
+      if(it){ it.in_plan=on; it.in_plan_at = on ? new Date().toISOString() : null; }
+    }
+    renderPendingPrep();
+  });
+}
 function claimPrepJob(id){
   let who = localStorage_get('prepWorkerName') || '';
   who = prompt('Who is prepping this? (your name)', who);
