@@ -534,6 +534,16 @@
       <div style="font-weight:700">FBA + Warehouse Inventory</div>
       <div class="hint">Total units across your warehouse, in-transit, and Amazon FBA. Pulls live from Amazon.</div>
       <button class="action full" onclick="loadFbaInv()" id="fbaInvBtn" style="margin-top:8px">Load FBA Inventory</button>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+        <select id="fbaFilter" onchange="renderFbaInv()" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px;background:#fff">
+          <option value="anystock">Has stock somewhere (default)</option>
+          <option value="all">Show all products</option>
+          <option value="atfba">At FBA only</option>
+          <option value="nofba">Zero at FBA (send these)</option>
+          <option value="transit">In transit only</option>
+        </select>
+        <input type="text" id="fbaSearch" placeholder="Search..." onkeyup="renderFbaInv()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
+      </div>
     </div>
     <div id="fbaInvBody"></div>
   </div>
@@ -989,9 +999,22 @@ function fbaSort(col){
   renderFbaInv();
 }
 function renderFbaInv(){
-  const d=window._fbaData||[]; const s=window._fbaSort;
+  let d=window._fbaData||[]; const s=window._fbaSort;
   const b=document.getElementById('fbaInvBody');
-  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; d.forEach(x=>{tot.w+=x.warehouse;tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
+  // filter out the noise
+  const ff=(document.getElementById('fbaFilter')||{}).value||'anystock';
+  const fq=((document.getElementById('fbaSearch')||{}).value||'').toLowerCase();
+  const allCount=d.length;
+  d=d.filter(x=>{
+    if(fq && !(x.name||'').toLowerCase().includes(fq) && !(x.asin||'').toLowerCase().includes(fq)) return false;
+    const any=(x.warehouse||0)+(x.pending_prep||0)+(x.prepped||0)+(x.transit||0)+(x.fba_total||0);
+    if(ff==='anystock' && any<=0) return false;
+    if(ff==='atfba' && (x.fba_total||0)<=0) return false;
+    if(ff==='nofba' && ((x.fba_total||0)>0 || (x.warehouse||0)<=0)) return false;
+    if(ff==='transit' && (x.transit||0)<=0) return false;
+    return true;
+  });
+  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=x.warehouse;tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
   const sorted=[...d].sort((a,b2)=>{
     let av,bv;
     if(s.col==='name'){ av=(a.name||'').toLowerCase(); bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
@@ -1158,7 +1181,7 @@ function renderValue(){
     return `<tr><td>${link}</td><td style="font-weight:700;color:${x.onhand>0?'#1e8449':'#c0392b'}">${x.onhand}</td><td>${x._onhandTotal||0}${committed>0?`<div style="font-size:10px;color:#9db0c9">${committed} committed</div>`:''}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
-  h+='<div class="hint"><b>Available</b> = warehouse stock free to commit (on hand − pending prep − prepped); the main value figure uses this. <b>Warehouse</b> = all physical units you hold. Quantities are live; prices come from the last Amazon price pull.';
+  h+='<div class="hint">Showing '+d.length+' of '+allCount+' products. <b>Available</b> = warehouse stock free to commit (on hand − pending prep − prepped); the main value figure uses this. <b>Warehouse</b> = all physical units you hold. Quantities are live; prices come from the last Amazon price pull.';
   if(window._valLoadedAt) h+=' Last loaded: '+window._valLoadedAt.toLocaleString()+'.';
   h+='</div>';
   b.innerHTML=h;
