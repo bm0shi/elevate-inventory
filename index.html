@@ -949,8 +949,10 @@ function renderHistory(){
 function loadFbaCache(){
   document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
   api('/api/cache/fba_inventory').then(c=>{
-    if(c.cached && c.data && c.data.length){
-      window._fbaData=c.data; window._fbaSort={col:'grand_total',dir:-1};
+    if(c.cached && c.data && (c.data.length || (c.data.items&&c.data.items.length))){
+      window._fbaData = Array.isArray(c.data) ? c.data : (c.data.items||[]);
+      window._fbaVal = Array.isArray(c.data) ? null : (c.data.valuation||null);
+      window._fbaSort={col:'grand_total',dir:-1};
       window._fbaLoadedAt=new Date(c.updated_at);
       renderFbaInv();
     } else {
@@ -975,7 +977,9 @@ function loadFbaInv(){
   api('/api/fba-inventory').then(d=>{
     btn.textContent='Load FBA Inventory'; btn.disabled=false;
     if(d.error){ document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
-    window._fbaData=d; window._fbaSort={col:'grand_total',dir:-1}; window._fbaLoadedAt=new Date();
+    window._fbaData = Array.isArray(d) ? d : (d.items||[]);
+    window._fbaVal = Array.isArray(d) ? null : (d.valuation||null);
+    window._fbaSort={col:'grand_total',dir:-1}; window._fbaLoadedAt=new Date();
     renderFbaInv();
   });
 }
@@ -1001,6 +1005,23 @@ function renderFbaInv(){
     '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div>'+
     '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div>'+
     '<div class="card" style="border-top:3px solid #0f1b2d"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL UNITS</div></div></div>';
+  // ---- retail value of what's at Amazon / heading there ----
+  const V=window._fbaVal;
+  if(V){
+    h+='<div class="cards" style="flex-wrap:wrap">'+
+      '<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+V.fbaValue.toLocaleString()+'</div><div class="l">Retail Value AT AMAZON</div></div>'+
+      '<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+V.transitValue.toLocaleString()+'</div><div class="l">Retail Value IN TRANSIT</div></div>'+
+      '<div class="card" style="border-top:3px solid #0f1b2d"><div class="n">$'+V.totalValue.toLocaleString()+'</div><div class="l">AMAZON + IN TRANSIT</div></div>'+
+      '</div>';
+    if(V.duosInTransit && V.duosInTransit.length){
+      h+='<div class="box" style="padding:10px 14px;background:#fdf6f5;border:1px solid #f3d9d6"><div style="font-size:12.5px;color:#5a6472"><b style="color:#c0392b">Duo pairing applied:</b> '+
+        V.duosInTransit.map(x=>`${x.qty} × <a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;font-family:monospace;font-weight:700;text-decoration:none">${x.asin}</a> @ $${x.price.toFixed(2)}`).join(' · ')+
+        ' — matched component pairs in transit were valued at the duo price instead of two single prices.</div></div>';
+    }
+    if(V.fbaUnpriced>0){
+      h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are excluded from the value. Refresh the Value tab to pull more prices.</div>';
+    }
+  }
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'name\')">Product'+arrow('name')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'warehouse\')">Available'+arrow('warehouse')+'</th>'+
