@@ -1847,11 +1847,24 @@ app.get('/api/inventory-value/status', ownerAuth, (req,res)=>res.json(valJob));
 
 // Inventory value (owner) — units on hand × cost, needs cost per item
 async function runInventoryValuePull(onProgress) {
+  // include everything we hold ANYWHERE: warehouse, in transit, or sitting at FBA
+  let fbaAsins = new Set();
+  try {
+    const fc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'");
+    if (fc.rows.length) {
+      const d = fc.rows[0].data;
+      const list = Array.isArray(d) ? d : (d.items || []);
+      for (const f of list) if ((f.fba_total||0) > 0) fbaAsins.add(f.asin);
+    }
+  } catch(e) {}
+
   const rows = await pool.query(
-    `SELECT p.asin, p.sku, p.name, s.onhand, s.transit
-     FROM inv_products p JOIN inv_stock s ON s.asin=p.asin
-     WHERE s.onhand > 0`);
+    `SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin
+     WHERE COALESCE(s.onhand,0) > 0 OR COALESCE(s.transit,0) > 0 OR p.asin = ANY($1::text[])`,
+    [[...fbaAsins]]);
   const asins = rows.rows.map(r => r.asin).filter(Boolean);
+  console.log(`[Value] pricing ${asins.length} products (warehouse + transit + FBA)`);
   if (onProgress) onProgress(`pulling Amazon prices for ${asins.length} products…`);
   let retail = {};
   try { retail = await getMyPrices(asins, onProgress); }
