@@ -217,7 +217,7 @@ async function getSalesVelocity(days = 30) {
 // Get Amazon prices per ASIN. Uses the getItemOffers endpoint per-ASIN which is
 // more reliable for returning a current price than the batch price endpoint.
 // Returns { asin: price }. Also returns diagnostics via a global.
-async function getMyPrices(asins) {
+async function getMyPrices(asins, onProgress) {
   const token = await getAccessToken();
   const prices = {};
   const unique = [...new Set(asins.filter(Boolean))];
