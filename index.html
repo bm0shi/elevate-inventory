@@ -224,6 +224,8 @@
         <option value="sold_desc">Most Sold/mo</option>
         <option value="cover_asc">Lowest Days Cover (prep first!)</option>
         <option value="duos_desc">Duos buildable: high→low</option>
+        <option value="fba_asc">Lowest at FBA (send these!)</option>
+        <option value="fbacover_asc">Lowest FBA days cover</option>
       </select>
       <select id="filterOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
         <option value="all">Show all</option>
@@ -2467,6 +2469,7 @@ function renderOnhand(){
     }
     const pend=p.pending_prep||0;
     const available=Math.max(0, o - pend - prep);
+    const fbaF=p.fba_fulfillable||0, fbaIn=p.fba_inbound||0;
     const buildBtn=`<button onclick="requestPrep('${p.asin}',${p.is_component||p.is_bundle?'true':'false'})" title="Request prep" style="margin-top:6px;padding:5px 10px;font-size:11px;font-weight:700;background:#1a2b4a;color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">🔧 PREP</button>`;
     // Keepa market signals for prioritization
     let mktRow='';
@@ -2475,18 +2478,21 @@ function renderOnhand(){
       const soldTxt = p.monthlySold!=null ? p.monthlySold.toLocaleString() : '—';
       // days of cover at market demand (rough priority signal)
       const perDay = p.monthlySold ? p.monthlySold/30 : 0;
-      const daysTxt = perDay>0 ? Math.round(available/perDay)+'d' : '—';
-      const daysColor = (perDay>0 && available/perDay < 21) ? '#c0392b' : '#1a2b4a';
+      // days of cover AT FBA (what actually matters for restocking Amazon)
+      const fbaDays = perDay>0 ? Math.round((fbaF+fbaIn)/perDay) : null;
+      const daysTxt = fbaDays!=null ? fbaDays+'d' : '—';
+      const daysColor = (fbaDays!=null && fbaDays < 21) ? '#c0392b' : '#1a2b4a';
       const canBuild = duosBuildable(p);
       mktRow=`<div class="mktrow">
         ${canBuild>0?`<div class="mk"><span class="v" style="color:#c0392b">${canBuild}</span><span class="k">Duos Buildable</span></div>`:''}
         <div class="mk"><span class="v">#${rankTxt}</span><span class="k">Rank</span></div>
         <div class="mk"><span class="v">${soldTxt}</span><span class="k">Sold/mo</span></div>
-        <div class="mk"><span class="v" style="color:${daysColor}">${daysTxt}</span><span class="k">Cover</span></div>
+        <div class="mk"><span class="v" style="color:${fbaF>0?'#127a7a':'#c0392b'}">${fbaF}</span><span class="k">At FBA</span></div>
+        <div class="mk"><span class="v" style="color:${daysColor}">${daysTxt}</span><span class="k">FBA Cover</span></div>
         ${p.sellers!=null?`<div class="mk"><span class="v">${p.sellers}</span><span class="k">Sellers</span></div>`:''}
       </div>`;
     }
-    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} total</div>${buildBtn}</div></div>${mktRow}</div>`;
+    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${mktRow}</div>`;
   }).join('')+'</div>';
   // full breakdown totals (across ALL products, not just the filtered view)
   let sumOnhand=0, sumPending=0, sumPrepped=0, sumTransit=0;
