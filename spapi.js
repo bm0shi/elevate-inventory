@@ -284,4 +284,49 @@ async function getCatalogImages(asins) {
   return images;
 }
 
-module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages };
+// LIVE offer check per ASIN — accurate "is Amazon actually selling right now?"
+// Amazon's own seller id on the US marketplace is ATVPDKIKX0DER.
+const AMAZON_SELLER_ID = 'ATVPDKIKX0DER';
+async function getLiveOffers(asins, onProgress) {
+  const token = await getAccessToken();
+  const out = {};
+  let i = 0;
+  for (const asin of asins) {
+    i++;
+    if (onProgress && i % 10 === 0) onProgress(`checking ${i} of ${asins.length} listings…`);
+    try {
+      const resp = await axios.get(
+        `${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
+        { headers: { 'x-amz-access-token': token } }
+      );
+      const payload = resp.data.payload || {};
+      const offers = payload.Offers || [];
+      const summary = payload.Summary || {};
+
+      // Is Amazon (the retailer) among the live offers?
+      const amazonOffer = offers.find(o => o.SellerId === AMAZON_SELLER_ID);
+      // Who currently holds the buy box?
+      const bbOffer = offers.find(o => o.IsBuyBoxWinner === true);
+      const bbSeller = bbOffer ? bbOffer.SellerId : null;
+
+      out[asin] = {
+        amazonSelling: !!amazonOffer,                       // LIVE: Amazon has an offer
+        amazonHasBuyBox: bbSeller === AMAZON_SELLER_ID,
+        buyBoxExists: !!bbOffer,
+        buyBoxPrice: bbOffer?.ListingPrice?.Amount ?? null,
+        buyBoxIsFba: bbOffer?.IsFulfilledByAmazon ?? null,
+        totalOffers: summary.TotalOfferCount ?? offers.length,
+        lowestPrice: summary.LowestPrices?.[0]?.ListingPrice?.Amount ?? null,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (err) {
+      const st = err.response?.status;
+      if (st === 429) { await sleep(4000); asins.push(asin); continue; }  // retry later
+      out[asin] = { error: err.response?.data?.errors?.[0]?.message || err.message };
+    }
+    await sleep(2100);  // ~0.47/sec, under Amazon's getItemOffers limit
+  }
+  return out;
+}
+
+module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getLiveOffers };
