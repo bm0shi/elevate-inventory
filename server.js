@@ -496,7 +496,7 @@ app.get('/api/all-shipments', auth, async (req, res) => {
     `SELECT shipment_id, shipment_name, status, created_at, received_at, has_discrepancy
      FROM inv_shipments ORDER BY created_at DESC LIMIT 200`);
   const items = await pool.query(
-    `SELECT si.shipment_id, si.asin, si.qty, si.qty_received, p.name
+    `SELECT si.shipment_id, si.asin, si.qty, si.qty_received, p.name, p.sku, p.fnsku, p.image
      FROM inv_shipment_items si JOIN inv_products p ON p.asin = si.asin`);
   const byShip = {};
   for (const it of items.rows) {
