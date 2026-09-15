@@ -1844,7 +1844,7 @@ function renderPendingPrep(){
       default: return b2.qty-a.qty;
     }
   });
-  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Total Units</div></div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
   h+='<div class="pcards">';
   h+=items.map(x=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
@@ -1882,7 +1882,7 @@ function renderPendingPrep(){
         </label></div>`;
     return `<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
-  h+='</div><div class="hint">Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done (or scan them in on Prepped &amp; Ready).</div>';
+  h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
   b.innerHTML=h;
   updateElapsed();
 }
@@ -2132,7 +2132,9 @@ function renderPrepList(){
       default: return b2.prepped-a.prepped;
     }
   });
-  let h='<div class="cards"><div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Total Units Prepped</div></div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
+  const bottlesPrepped = d.items.reduce((s,x)=> s + (x.isBundle ? x.prepped*2 : x.prepped), 0);
+  const anyDuo = d.items.some(x=>x.isBundle);
+  let h='<div class="cards"><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(anyDuo?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+bottlesPrepped.toLocaleString()+' bottles</div>':'')+'</div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
   h+='<div class="pcards">';
   h+=items.map(x=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
@@ -2143,7 +2145,7 @@ function renderPrepList(){
     const border=x.isBundle?'border:1px solid #fdeceb;':'';
     return `<div class="pcard" style="${border};align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
   }).join('');
-  h+='</div><div class="hint">Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
+  h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — matches your shipment plan software. Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
   b.innerHTML=h;
 }
 function copyText(txt, el){
