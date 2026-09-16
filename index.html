@@ -439,8 +439,17 @@
         <button class="subtab" onclick="showSubTab('fbainv',event)">🏬 FBA Inventory</button>
         <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
         <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
+        <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
         <button class="subtab" onclick="adminLock()" style="margin-left:auto;background:#e2e8f0;color:#5a6472">🔒 Lock</button>
       </div>
+<div id="sub-maphealth" class="subpanel">
+    <div class="box">
+      <h3 style="margin-bottom:4px">Cosmoprof → Product Mapping Health</h3>
+      <div class="hint">A mapping is <b>verified</b> only once a physical barcode scan confirmed it. Anything seeded or hand-picked is a guess until then — this is where a shampoo linked to a conditioner shows up.</div>
+      <button class="action full" onclick="loadMappingHealth()" style="margin-top:10px;background:#5a6472">↻ Check mappings</button>
+    </div>
+    <div id="mapHealthBody"><div class="hint" style="padding:16px">Hit “Check mappings” to audit every link.</div></div>
+  </div>
 <div id="sub-dashboard" class="subpanel active">
     <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
   </div>
@@ -1904,6 +1913,7 @@ function showSubTab(name, ev){
   if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
+  if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
   if(name==='shipments') renderShipments();
   if(name==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
@@ -2498,15 +2508,19 @@ function editLocation(asin){
 // An unmapped Cosmoprof line is resolved by PICKING the product, not by
 // opening a case and scanning a bottle. Once picked, the Cosmo# -> ASIN link
 // is permanent and every future invoice recognises it automatically.
-function candBtn(cosmoNum, asin, name, conf){
+function candBtn(cosmoNum, asin, name, conf, image){
   const safe=String(name||'').replace(/\\/g,'').replace(/'/g,"\\'").replace(/"/g,'');
   const confHtml = conf!=null
-    ? '<span style="display:inline-block;min-width:40px;font-weight:800;color:'+(conf>=70?'#1e8449':'#b7791f')+'">'+conf+'%</span> '
+    ? '<span style="display:inline-block;min-width:42px;font-weight:800;font-size:13px;color:'+(conf>=70?'#1e8449':'#b7791f')+'">'+conf+'%</span>'
     : '';
+  const img = image
+    ? '<img src="'+image+'" onerror="this.style.display=\'none\'" style="width:46px;height:46px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">'
+    : '<div style="width:46px;height:46px;border-radius:5px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
   return '<button onclick="mapCosmo(\''+cosmoNum+'\',\''+asin+'\',\''+safe+'\')" '
-    +'style="display:block;width:100%;text-align:left;margin-top:5px;padding:9px 10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;cursor:pointer;font-size:12.5px;line-height:1.35">'
-    +confHtml+'<span style="font-weight:600">'+String(name||'').slice(0,64)+'</span>'
-    +'<div style="font-family:monospace;font-size:11px;color:#2563a8;margin-top:2px">'+asin+'</div></button>';
+    +'style="display:flex;gap:10px;align-items:center;width:100%;text-align:left;margin-top:6px;padding:9px 10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;cursor:pointer;font-size:12.5px;line-height:1.35">'
+    +img+'<span style="flex:1">'+confHtml
+    +'<span style="font-weight:600">'+String(name||'').slice(0,62)+'</span>'
+    +'<div style="font-family:monospace;font-size:11px;color:#2563a8;margin-top:2px">'+asin+'</div></span></button>';
 }
 
 function mapCosmo(cosmoNum, asin, name){
@@ -2529,8 +2543,76 @@ function searchMapCandidates(inp, cosmoNum){
     (p.sku||'').toLowerCase().includes(q)
   ).slice(0,8);
   box.innerHTML = hits.length
-    ? hits.map(p=>candBtn(cosmoNum,p.asin,p.name,null)).join('')
+    ? hits.map(p=>candBtn(cosmoNum,p.asin,p.name,null,p.image)).join('')
     : '<div class="hint" style="padding:6px 2px">No match in the catalog — add the product on the Receiving page first, then come back.</div>';
+}
+
+// The barcode says one product; the invoice line is linked to another.
+// This is exactly how a shampoo ends up mapped to a conditioner.
+function handleMappingMismatch(d, code){
+  const msg =
+    '⚠ MAPPING MISMATCH\n\n'+
+    'You scanned:\n  '+d.scanned.name+'\n  '+d.scanned.asin+'\n\n'+
+    'But invoice line #'+d.suspect.cosmo_num+'\n  "'+d.suspect.description+'"\n'+
+    'is currently linked to:\n  '+(d.suspect.mapped_name||d.suspect.mapped_asin||'nothing')+'\n\n'+
+    'The barcode is physical proof; the link is a guess.\n\n'+
+    'OK = repoint #'+d.suspect.cosmo_num+' to what you scanned (and mark it verified)\n'+
+    'Cancel = leave it alone';
+  if(!confirm(msg)){ toast('Left unchanged',true); return; }
+  api('/api/cosmo-map/fix',{method:'POST',body:JSON.stringify({
+    cosmo_num:d.suspect.cosmo_num, asin:d.scanned.asin, upc:code, order:currentInvoice
+  })}).then(r=>{
+    if(r && r.error){ toast(r.error,true); return; }
+    toast('✅ Remapped and verified — scan again to count it');
+    renderReconLines();
+  });
+}
+
+// ==================== MAPPING HEALTH ====================
+function loadMappingHealth(){
+  const b=document.getElementById('mapHealthBody'); if(!b)return;
+  b.innerHTML='<div class="hint" style="padding:16px">Auditing mappings…</div>';
+  api('/api/mapping-health').then(d=>{
+    if(!d || !d.rows){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load — deploy the latest server.js.</div>'; return; }
+    const pct = d.mapped ? Math.round((d.verifiedCount/d.mapped)*100) : 0;
+    let h='<div class="cards">'
+      +'<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+d.verifiedCount+'</div><div class="l">Barcode Verified</div></div>'
+      +'<div class="card" style="border-top:3px solid #c0392b"><div class="n">'+d.unverifiedCount+'</div><div class="l">Unverified (guessed)</div></div>'
+      +'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.unmappedProducts+'</div><div class="l">Catalog Not Mapped</div></div>'
+      +'<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+pct+'%</div><div class="l">Trust Level</div></div>'
+      +'</div>';
+
+    if(d.orphanCount){
+      h+='<div class="box" style="border:2px solid #c0392b;background:#fdf0ee"><b style="color:#c0392b">⚠ '+d.orphanCount+' mapping'+(d.orphanCount===1?'':'s')+' point at an ASIN that is not in your catalog.</b><div class="hint">These will always fail. Fix or delete them.</div></div>';
+    }
+
+    const unv=d.rows.filter(r=>!r.verified);
+    const ver=d.rows.filter(r=>r.verified);
+
+    const row=(r)=>{
+      const img=r.image?'<img src="'+r.image+'" onerror="this.style.display=\'none\'" style="width:40px;height:40px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:40px;height:40px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+      return '<div style="display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6">'
+        +img
+        +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;line-height:1.3">'+(r.name||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
+        +'<div style="font-size:11px;color:#8a97a6;margin-top:2px">Cosmo# '+r.cosmo_num+' · <span style="font-family:monospace;color:#2563a8">'+(r.asin||'—')+'</span>'
+        +(r.is_component?' · <b style="color:#c0392b">DUO COMPONENT</b>':'')+'</div></div>'
+        +'<span style="white-space:nowrap;font-size:11px;font-weight:800;padding:3px 9px;border-radius:5px;background:'+(r.verified?'#eafaf1':'#fdeceb')+';color:'+(r.verified?'#1e8449':'#c0392b')+'">'+(r.verified?'✅ VERIFIED':'⚠ GUESS')+'</span>'
+        +'</div>';
+    };
+
+    if(unv.length){
+      const dups=unv.filter(r=>r.is_component);
+      h+='<div class="box"><div style="font-weight:800;color:#c0392b;font-size:15px">⚠ Unverified — '+unv.length+'</div>'
+        +'<div class="hint" style="margin-bottom:6px">No barcode has ever confirmed these. '+(dups.length?'<b>'+dups.length+' are duo components</b> — those are the risky ones, since shampoo and conditioner names differ by one word.':'')+' They verify themselves the next time someone scans that item during check-in.</div>'
+        +unv.map(row).join('')+'</div>';
+    }
+    if(ver.length){
+      h+='<div class="box"><div style="font-weight:800;color:#1e8449;font-size:15px">✅ Verified — '+ver.length+'</div>'
+        +'<div class="hint" style="margin-bottom:6px">Confirmed by a physical barcode scan.</div>'
+        +ver.map(row).join('')+'</div>';
+    }
+    b.innerHTML=h;
+  }).catch(()=>{ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load mapping health.</div>'; });
 }
 
 function collectLocations(){
@@ -2609,8 +2691,11 @@ function renderReconLines(){
         locBlock='<div style="margin-top:9px;padding:11px;background:#fff;border:1px solid #e8dcc0;border-radius:6px">'
           +'<div style="font-size:12.5px;font-weight:800;color:#b7791f">Link this to a product</div>'
           +'<div class="hint" style="margin:3px 0 8px">Cosmo# '+l.cosmo_num+' — pick the match below. No need to open a case. Saved permanently.</div>'
+          +((cands.length && cands[0].ambiguous)
+              ? '<div style="padding:8px 10px;background:#fdeceb;border:1px solid #f3d9d6;border-radius:6px;color:#c0392b;font-size:12px;font-weight:700;margin-bottom:4px">⚠ Close call — these look almost identical. Check <u>shampoo vs conditioner</u> and the <u>size</u> before picking.</div>'
+              : '')
           +(cands.length
-              ? cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,c.confidence)).join('')
+              ? cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,c.confidence,c.image)).join('')
               : '<div class="hint" style="padding:2px">No confident match — search below.</div>')
           +'<input type="text" placeholder="Search all products…" oninput="searchMapCandidates(this,\''+l.cosmo_num+'\')" style="width:100%;margin-top:9px;padding:9px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:13px">'
           +'<div id="mapres_'+l.cosmo_num+'"></div>'
@@ -2653,13 +2738,19 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
   // First, look up what product this is (qty 0 = just identify, don't add yet)
   api('/api/find/'+encodeURIComponent(code)).then(f=>{
     if(!f.found){ toast('Unknown barcode — assign it in Receiving (Manual) first',true); if(window._resetScan)window._resetScan('Recon'); return; }
+    window._lastScanCode = code;
     // pop up quantity entry
     const qtyStr = prompt('How many of "'+(f.product.name||'').slice(0,40)+'" did you receive?', '1');
     if(qtyStr===null){ if(window._resetScan)window._resetScan('Recon'); return; } // cancelled
     const qty = parseInt(qtyStr);
     if(!qty || qty<1){ toast('Enter a valid quantity',true); if(window._resetScan)window._resetScan('Recon'); return; }
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
-      if(d.ok){ scanFeedback(); toast('+'+qty+' '+(d.line.name||'').slice(0,20)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')'); renderReconLines(); }
+      if(d.ok){
+        scanFeedback();
+        toast((d.justVerified?'✅ VERIFIED · ':'')+'+'+qty+' '+(d.line.name||'').slice(0,20)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')');
+        renderReconLines();
+      }
+      else if(d.reason==='mapping_mismatch'){ handleMappingMismatch(d, code); }
       else if(d.reason==='not_on_invoice'){ toast('That item is not on this invoice',true); }
       else { toast('Could not add',true); }
       if(window._resetScan)window._resetScan('Recon');
