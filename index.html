@@ -1577,13 +1577,26 @@ function renderToAdd(){
     '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDepositMoReal\')">Net Deposit/mo'+arrow('_netDepositMoReal')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_profitMoMax\')">Max Profit/mo'+arrow('_profitMoMax')+'</th>'+
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Realistic Profit/mo'+arrow('_profitMo')+'</th>'+
-    '<th>Status</th></tr></thead><tbody>';
+    '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th></tr></thead><tbody>';
   h+=list.slice(0,300).map(x=>{
     const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${x.title||x.asin}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const units=x.ssUnits!=null?x.ssUnits.toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
+    // Everything already held for this ASIN, in one cell. _have is exactly what
+    // _orderQty subtracts, so the two columns can never disagree.
+    const _hp=[];
+    if(x.available) _hp.push(x.available+' avail');
+    if(x.pendingPrep) _hp.push(x.pendingPrep+' pend');
+    if(x.prepped) _hp.push(x.prepped+' prep');
+    if(x.transit) _hp.push(x.transit+' transit');
+    if(x.fba) _hp.push(x.fba+' FBA');
+    const haveCell = x._have
+      ? '<b>'+x._have.toLocaleString()+'</b><div style="font-size:10px;color:#9db0c9">'+_hp.join(' · ')+'</div>'
+      : (x.carried
+          ? '<b style="color:#c0392b">0</b><div style="font-size:10px;color:#9db0c9">carried, none held</div>'
+          : '<span style="color:#9db0c9">\u2014</span><div style="font-size:10px;color:#c0392b;font-weight:700">not carried</div>');
     const status=x.carried?'<span style="background:#eafaf1;color:#1e8449;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">CARRIED</span>':'<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">ADD</span>';
     const orderCell = x._orderQty>0
       ? `<span style="font-weight:800;color:#c0392b;font-size:17px">${x._orderQty.toLocaleString()}</span><div style="font-size:10px;color:#9db0c9">${coverMonths}mo cover${x._have>0?' · have '+x._have:''}</div>`
@@ -1598,7 +1611,7 @@ function renderToAdd(){
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">${Math.round(x._capture*100)}% capture · ~${Math.round(x._unitsReal)} u/mo</div>`
       : '<span style="color:#9db0c9">—</span>';
     const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
-    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${status}</td></tr>`;
+    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${haveCell}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
