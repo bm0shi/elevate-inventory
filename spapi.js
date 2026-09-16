@@ -367,4 +367,64 @@ async function getCatalogItems(asins, onProgress) {
   return out;
 }
 
-module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
+// Hazmat / dangerous-goods status per ASIN.
+// Two independent sources, because neither is populated for every listing:
+//   1. Catalog Items attributes -> supplier_declared_dg_hz_regulation
+//      (the seller-declared dangerous-goods regulation; "not_applicable" = clean)
+//   2. FBA Inbound Eligibility -> ineligibility reasons mentioning hazmat
+// Returns { asin: { hazmat: true|false|null, detail, source } }. null = unknown,
+// which is deliberately NOT treated as safe.
+async function getHazmatStatus(asins, onProgress) {
+  const token = await getAccessToken();
+  const out = {};
+  const unique = [...new Set(asins.filter(Boolean))];
+  let i = 0;
+
+  for (const asin of unique) {
+    i++;
+    if (onProgress && i % 5 === 0) onProgress(`${i} of ${unique.length} checked…`);
+    let hazmat = null, detail = '', source = '';
+
+    // --- 1. seller-declared dangerous goods on the listing ---
+    try {
+      const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=attributes`;
+      const r = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+      const attrs = r.data.attributes || {};
+      const dg = attrs.supplier_declared_dg_hz_regulation;
+      if (Array.isArray(dg) && dg.length) {
+        const vals = dg.map(x => String(x.value || '').toLowerCase()).filter(Boolean);
+        if (vals.length) {
+          const clean = vals.every(v => v === 'not_applicable' || v === 'none');
+          hazmat = !clean;
+          detail = vals.join(', ');
+          source = 'amazon-dg';
+        }
+      }
+    } catch (e) {
+      if (e.response?.status === 429) { await sleep(3000); unique.push(asin); continue; }
+    }
+    await sleep(600);
+
+    // --- 2. inbound eligibility, when the listing declared nothing ---
+    if (hazmat === null) {
+      try {
+        const url = `${SP_API_BASE}/fba/inbound/v1/eligibility/itemPreview?marketplaceIds=${MARKETPLACE_ID}&program=INBOUND&asinList=${asin}`;
+        const r = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+        const items = r.data.payload || [];
+        const it = Array.isArray(items) ? items[0] : items;
+        if (it) {
+          const reasons = (it.ineligibilityReasonList || []).map(x => String(x).toUpperCase());
+          const haz = reasons.filter(x => /HAZMAT|DANGEROUS|FLAMMABLE|AEROSOL/.test(x));
+          if (haz.length) { hazmat = true; detail = haz.join(', '); source = 'amazon-inbound'; }
+          else if (it.isEligibleForProgram === true) { hazmat = false; detail = 'inbound eligible'; source = 'amazon-inbound'; }
+        }
+      } catch (e) { /* endpoint not available on every account — leave unknown */ }
+      await sleep(600);
+    }
+
+    out[asin] = { asin, hazmat, detail, source };
+  }
+  return out;
+}
+
+module.exports = { getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
