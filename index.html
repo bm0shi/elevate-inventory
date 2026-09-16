@@ -2643,6 +2643,15 @@ function handleMappingMismatch(d, code){
 }
 
 // ==================== MAPPING HEALTH ====================
+function unlinkCosmo(cosmoNum){
+  if(!confirm('Unlink Cosmoprof #'+cosmoNum+'?\n\nIt becomes unmapped and will ask to be linked again on the next check-in.\n\nStock already received is not affected.'))return;
+  api('/api/cosmo-map/unlink',{method:'POST',body:JSON.stringify({cosmo_num:cosmoNum})}).then(d=>{
+    if(d && d.error){ toast(d.error,true); return; }
+    toast('#'+cosmoNum+' unlinked');
+    loadMappingHealth();
+  }).catch(()=>toast('Unlink failed',true));
+}
+
 function loadMappingHealth(){
   const b=document.getElementById('mapHealthBody'); if(!b)return;
   b.innerHTML='<div class="hint" style="padding:16px">Auditing mappings…</div>';
@@ -2650,11 +2659,34 @@ function loadMappingHealth(){
     if(!d || !d.rows){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load — deploy the latest server.js.</div>'; return; }
     const pct = d.mapped ? Math.round((d.verifiedCount/d.mapped)*100) : 0;
     let h='<div class="cards">'
+      +'<div class="card" style="border-top:3px solid #c0392b"><div class="n">'+(d.collisionCount||0)+'</div><div class="l">⚠ Collisions</div></div>'
       +'<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+d.verifiedCount+'</div><div class="l">Barcode Verified</div></div>'
-      +'<div class="card" style="border-top:3px solid #c0392b"><div class="n">'+d.unverifiedCount+'</div><div class="l">Unverified (guessed)</div></div>'
-      +'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.unmappedProducts+'</div><div class="l">Catalog Not Mapped</div></div>'
+      +'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.unverifiedCount+'</div><div class="l">Unverified (guessed)</div></div>'
       +'<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+pct+'%</div><div class="l">Trust Level</div></div>'
       +'</div>';
+
+    // ---- COLLISIONS: two Cosmo numbers pointing at one ASIN ----
+    if(d.collisions && d.collisions.length){
+      h+='<div class="box" style="border:2px solid #c0392b;background:#fdf0ee">'
+        +'<div style="font-weight:800;color:#c0392b;font-size:16px">⚠ '+d.collisions.length+' collision'+(d.collisions.length===1?'':'s')+' — at least one link in each pair is WRONG</div>'
+        +'<div class="hint" style="margin-bottom:10px">Cosmoprof issues a separate item number for every size and variant. Two numbers on one ASIN means a liter is booked as a 10.1oz — or a conditioner as a shampoo. Unlink the wrong one, then re-link it during check-in.</div>';
+      for(const c of d.collisions){
+        const img=c.image?'<img src="'+c.image+'" onerror="this.style.display=\'none\'" style="width:44px;height:44px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:44px;height:44px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+        h+='<div style="background:#fff;border:1px solid #f3d9d6;border-radius:7px;padding:10px;margin-bottom:8px">'
+          +'<div style="display:flex;gap:10px;align-items:center;margin-bottom:7px">'+img
+          +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px;line-height:1.3">'+(c.name||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
+          +'<div style="font-family:monospace;font-size:11px;color:#2563a8;margin-top:2px">'+c.asin+'</div></div></div>';
+        for(const nm of c.numbers){
+          h+='<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid #f7eceb;flex-wrap:wrap">'
+            +'<span style="font-family:monospace;font-weight:800;font-size:12.5px;min-width:60px">'+nm.cosmo_num+'</span>'
+            +'<span style="flex:1;min-width:140px;font-size:12px;color:#5a6472">'+(nm.description||'<i>no invoice description yet</i>')+'</span>'
+            +'<button onclick="unlinkCosmo(\''+nm.cosmo_num+'\')" style="padding:5px 10px;font-size:11px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:5px;cursor:pointer">Unlink</button>'
+            +'</div>';
+        }
+        h+='</div>';
+      }
+      h+='</div>';
+    }
 
     if(d.orphanCount){
       h+='<div class="box" style="border:2px solid #c0392b;background:#fdf0ee"><b style="color:#c0392b">⚠ '+d.orphanCount+' mapping'+(d.orphanCount===1?'':'s')+' point at an ASIN that is not in your catalog.</b><div class="hint">These will always fail. Fix or delete them.</div></div>';
