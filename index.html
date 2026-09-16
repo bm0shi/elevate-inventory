@@ -305,6 +305,7 @@
         <button class="action" onclick="practiceInvoice()" style="flex:1;min-width:190px;background:#7a4fb5">🧪 Practice Run — nothing saved</button>
       </div>
       <button class="action full" onclick="completeInvoice()" style="margin-top:8px">Mark Complete → Add to On Hand</button>
+      <button class="action full" onclick="completeInvoiceNoStock()" style="margin-top:8px;background:#b7791f">📋 Already Received — record WITHOUT changing quantities</button>
       <button class="action danger full" onclick="deleteInvoice()" style="margin-top:8px">Delete This Invoice</button>
     </div>
   </div>
@@ -3378,23 +3379,44 @@ function deleteInvoice(){
     loadInvoiceList();
   });
 }
-function completeInvoice(force){
+// For an invoice whose goods were physically counted into On Hand at some
+// earlier point. Records cost lots, pallet locations and the received stamp,
+// but never touches stock — so quantities cannot be double-added.
+function completeInvoiceNoStock(){
   if(!currentInvoice)return;
   const c=collectLocations();
-  if(!force){
+  const msg='Record invoice '+currentInvoice+' WITHOUT changing any quantities?\n\n'
+    +'Use this only when these units are ALREADY counted in On Hand.\n\n'
+    +'WILL happen:\n'
+    +'  • invoice marked received\n'
+    +'  • unit costs saved to cost history\n'
+    +'  • pallet locations saved\n\n'
+    +'WILL NOT happen:\n'
+    +'  • no units added to On Hand\n\n'
+    +'If these units are NOT already in On Hand, cancel and use Mark Complete instead.';
+  if(!confirm(msg))return;
+  completeInvoice(true, true);
+}
+
+function completeInvoice(force, skipStock){
+  if(!currentInvoice)return;
+  const c=collectLocations();
+  if(!force && !skipStock){
     if(c.missing && !confirm(c.missing+' item'+(c.missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
     if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
   }
-  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations:c.locations,force:!!force})}).then(d=>{
+  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations:c.locations,force:!!force,skipStock:!!skipStock})}).then(d=>{
     // HARD STOP — unlinked lines would be silently lost, so the server refuses.
     if(d && d.ok===false && d.error==='unmapped_lines'){
       const list=(d.unmapped||[]).map(u=>'  • #'+u.cosmo_num+'  '+String(u.description||'').slice(0,44)+'  ('+(u.qty_received||u.qty_expected||0)+' units)').join('\n');
       const go=confirm('STOP — '+d.unmapped.length+' line'+(d.unmapped.length===1?' is':'s are')+' not linked to a product:\n\n'+list
         +'\n\nThese '+d.unmappedUnits+' units would be DISCARDED and never reach On Hand.\n\nOK = discard them anyway\nCancel = go back and link them (recommended)');
-      if(go) completeInvoice(true);
+      if(go) completeInvoice(true, skipStock);
       return;
     }
-    let msg='Added '+d.added+' units to on hand.';
+    let msg = d.skipStock
+      ? 'Recorded '+d.added+' units WITHOUT changing On Hand.\nCosts and locations saved.'
+      : 'Added '+d.added+' units to on hand.';
     if(d.locationsSet) msg+='\nPallet locations set: '+d.locationsSet+'.';
     if(d.unmappedCount) msg+='\nDISCARDED (not linked): '+d.unmappedCount+' line'+(d.unmappedCount===1?'':'s')+'.';
     if(d.discrepancies && d.discrepancies.length){
