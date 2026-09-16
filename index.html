@@ -265,6 +265,18 @@
         <option value="">— pick an invoice —</option>
       </select>
     </div>
+    <div class="box" style="border:2px solid #2563a8">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <b style="font-size:15px">🔎 Audit a past receipt</b>
+        <button onclick="toggleAudit()" id="auditBtn" style="padding:6px 12px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Show</button>
+      </div>
+      <div class="hint">Paste any invoice you already received. Compares the paper against what the database actually holds. <b>Writes nothing.</b></div>
+      <div id="auditWrap" style="display:none;margin-top:10px">
+        <textarea id="auditText" placeholder="Paste the full invoice text here (Ctrl+A in the PDF, then copy)…" style="width:100%;height:120px;padding:10px;border:2px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:monospace"></textarea>
+        <button class="action full" onclick="runAudit()" style="margin-top:8px;background:#2563a8">Run audit</button>
+        <div id="auditOut"></div>
+      </div>
+    </div>
     <div class="box">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
         <b style="font-size:15px">All invoices</b>
@@ -2463,6 +2475,64 @@ function loadInvoiceList(){
     if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   });
 }
+function toggleAudit(){
+  const w=document.getElementById('auditWrap'), b=document.getElementById('auditBtn');
+  if(!w)return;
+  const showing=w.style.display!=='none';
+  w.style.display=showing?'none':'block';
+  if(b) b.textContent=showing?'Show':'Hide';
+}
+
+function runAudit(){
+  const t=(document.getElementById('auditText').value||'').trim();
+  const out=document.getElementById('auditOut');
+  if(!t){ toast('Paste the invoice text first',true); return; }
+  out.innerHTML='<div class="hint" style="padding:10px">Comparing…</div>';
+  api('/api/invoices/audit',{method:'POST',body:JSON.stringify({text:t})}).then(d=>{
+    if(!d || !d.ok){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">'+((d&&d.error)||'Audit failed')+'</div>'; return; }
+    let h='';
+    for(const r of d.report){
+      const bad = !r.inDatabase || r.missing.length || r.qtyMismatch.length || r.extra.length;
+      h+='<div class="box" style="margin-top:10px;border:2px solid '+(bad?'#c0392b':'#1e8449')+';background:'+(bad?'#fdf0ee':'#f4fbf7')+'">';
+      h+='<div style="font-weight:800;font-size:15px;color:'+(bad?'#c0392b':'#1e8449')+'">'+(bad?'⚠':'✅')+' Invoice #'+r.orderNumber+'</div>';
+      if(!r.inDatabase){
+        h+='<div style="font-size:13px;margin-top:6px">This invoice is <b>not in the database at all</b> — it was never imported, or it was deleted.</div></div>';
+        continue;
+      }
+      h+='<div style="font-size:12.5px;color:#5a6472;margin:6px 0 8px">Status: <b>'+(r.status||'?')+'</b> · paper has <b>'+r.paperLines+'</b> lines / <b>'+r.paperUnits.toLocaleString()+'</b> units across '+r.pages+' page'+(r.pages===1?'':'s')+' · database has <b>'+r.dbLines+'</b> lines / '+r.dbExpectedUnits.toLocaleString()+' expected / <b>'+r.dbReceivedUnits.toLocaleString()+'</b> received</div>';
+
+      if(r.missing.length){
+        const lost=r.missing.reduce((n,x)=>n+x.paperQty,0);
+        h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px;margin-bottom:7px">'
+          +'<b style="color:#c0392b">❌ '+r.missing.length+' line'+(r.missing.length===1?'':'s')+' on the paper are MISSING from the database ('+lost.toLocaleString()+' units)</b>'
+          +'<div class="hint" style="margin:3px 0 5px">This is the multi-page bug — these never made it in, so they were never received.</div>';
+        for(const m of r.missing) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description).slice(0,48)+' · <b>'+m.paperQty+' units</b></div>';
+        h+='</div>';
+      }
+      if(r.qtyMismatch.length){
+        h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px;margin-bottom:7px"><b style="color:#b7791f">⚠ '+r.qtyMismatch.length+' quantity mismatch(es)</b>';
+        for(const m of r.qtyMismatch) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description).slice(0,42)+' · paper '+m.paperQty+' vs db '+m.dbExpected+' (received '+m.dbReceived+')</div>';
+        h+='</div>';
+      }
+      if(r.extra.length){
+        h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px;margin-bottom:7px"><b style="color:#b7791f">⚠ '+r.extra.length+' line(s) in the database that are NOT on this paper</b>';
+        for(const m of r.extra) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description||'').slice(0,48)+'</div>';
+        h+='</div>';
+      }
+      if(r.suspect.length){
+        const units=r.suspect.reduce((n,x)=>n+x.received,0);
+        h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px"><b style="color:#c0392b">🔀 '+units.toLocaleString()+' received units sit on a COLLIDING cosmo number</b>'
+          +'<div class="hint" style="margin:3px 0 5px">Two numbers share that ASIN, so this stock may be on the wrong product.</div>';
+        for(const m of r.suspect) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description).slice(0,40)+' → <b>'+String(m.mappedName||m.asin).slice(0,38)+'</b> ('+m.received+' units)</div>';
+        h+='</div>';
+      }
+      if(!bad && !r.suspect.length) h+='<div style="font-size:13px;color:#1e8449;font-weight:700">Paper and database match. Nothing lost.</div>';
+      h+='</div>';
+    }
+    out.innerHTML=h;
+  }).catch(()=>{ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Audit failed.</div>'; });
+}
+
 function toggleInvoiceManager(){
   const box=document.getElementById('invManager');
   const btn=document.getElementById('invMgrBtn');
