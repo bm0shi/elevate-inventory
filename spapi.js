@@ -329,4 +329,42 @@ async function getLiveOffers(asins, onProgress) {
   return out;
 }
 
-module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getLiveOffers };
+// Current Amazon title (and main image) per ASIN.
+// Product names in inv_products are frozen from the original seed file, but
+// brands rewrite listings — "The Original Leave-In Conditioner" is now titled
+// "The Conditioner". A stale title breaks description matching on invoices, so
+// this pulls the live title straight from the Catalog Items API.
+async function getCatalogItems(asins, onProgress) {
+  const token = await getAccessToken();
+  const out = {};
+  const unique = [...new Set(asins.filter(Boolean))];
+  let i = 0;
+  for (const asin of unique) {
+    i++;
+    if (onProgress && i % 5 === 0) onProgress(`${i} of ${unique.length} looked up…`);
+    try {
+      const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=summaries,images`;
+      const resp = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+
+      const sum = (resp.data.summaries || [])[0] || {};
+      const name = sum.itemName || null;
+      const brand = sum.brand || null;
+
+      let image = null;
+      for (const g of (resp.data.images || [])) {
+        const imgs = g.images || [];
+        const main = imgs.find(x => x.variant === 'MAIN') || imgs[0];
+        if (main && main.link) { image = main.link; break; }
+      }
+      if (name || image) out[asin] = { asin, name, brand, image };
+    } catch (e) {
+      const st = e.response?.status;
+      if (st === 429) { await sleep(3000); unique.push(asin); continue; }  // retry later
+      out[asin] = { asin, error: e.response?.data?.errors?.[0]?.message || e.message };
+    }
+    await sleep(600); // Catalog Items rate limit ~2/sec
+  }
+  return out;
+}
+
+module.exports = { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
