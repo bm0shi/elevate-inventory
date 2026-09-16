@@ -289,6 +289,7 @@
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
       <select id="ppSort" onchange="renderPendingPrep()" style="padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
+        <option value="active_first">🔨 In progress first (default)</option>
         <option value="qty_desc">Quantity: high→low</option>
         <option value="qty_asc">Quantity: low→high</option>
         <option value="duos_desc">Duos: highest qty first</option>
@@ -2043,7 +2044,7 @@ function renderPendingPrep(){
   const claimedCount=d.items.filter(x=>x.claimed_by).length;
   const inPlanCount=d.items.filter(x=>x.in_plan).length;
   // sort + filter
-  const ppSort=(document.getElementById('ppSort')||{}).value||'qty_desc';
+  const ppSort=(document.getElementById('ppSort')||{}).value||'active_first';
   const ppFilter=(document.getElementById('ppFilter')||{}).value||'all';
   const ppQ=((document.getElementById('ppSearch')||{}).value||'').toLowerCase();
   let items=d.items.filter(x=>{
@@ -2056,18 +2057,32 @@ function renderPendingPrep(){
     if(ppFilter==='inplan' && !x.in_plan) return false;
     return true;
   });
+  // DEFAULT ('active_first'): anything a worker has claimed floats to the top,
+  // longest-running first, so the floor sees live jobs without scrolling.
+  // Everything not started falls back to quantity high->low underneath.
+  const activeFirst=(a,b2)=>{
+    const ca=a.claimed_by?0:1, cb=b2.claimed_by?0:1;
+    if(ca!==cb) return ca-cb;
+    if(ca===0) return new Date(a.claimed_at||0)-new Date(b2.claimed_at||0);
+    return b2.qty-a.qty;
+  };
   items.sort((a,b2)=>{
     switch(ppSort){
+      case 'active_first': return activeFirst(a,b2);
       case 'qty_asc': return a.qty-b2.qty;
+      case 'qty_desc': return b2.qty-a.qty;
       case 'duos_desc': { const ad=a.is_duo?1:0, bd=b2.is_duo?1:0; if(ad!==bd) return bd-ad; return b2.qty-a.qty; }
       case 'name': return (a.name||'').localeCompare(b2.name||'');
       case 'oldest': return new Date(a.created_at||0)-new Date(b2.created_at||0);
-      default: return b2.qty-a.qty;
+      default: return activeFirst(a,b2);
     }
   });
   let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
+  // Default view only: divider after the last in-progress card.
+  const showDivider=(ppSort==='active_first') && items.some(x=>x.claimed_by) && items.some(x=>!x.claimed_by);
+  const lastActiveIdx=showDivider ? items.map(x=>!!x.claimed_by).lastIndexOf(true) : -1;
   h+='<div class="pcards">';
-  h+=items.map(x=>{
+  h+=items.map((x,idx)=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
     const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${x.name}</a>`;
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
@@ -2101,7 +2116,10 @@ function renderPendingPrep(){
           <input type="checkbox" ${inPlan?'checked':''} onclick="toggleInPlan(${x.id}, this.checked)" style="width:17px;height:17px;cursor:pointer">
           <span style="font-size:10px;font-weight:800;letter-spacing:0.3px;color:${inPlan?'#1e8449':'#8a97a6'};text-transform:uppercase">${inPlan?'✓ In Plan':'In Plan?'}</span>
         </label></div>`;
-    return `<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
+    const divider=(idx===lastActiveIdx)
+      ? `<div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;margin:8px 0 2px"><div style="flex:1;height:1px;background:#d8dee6"></div><span style="font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6;text-transform:uppercase">Not started</span><div style="flex:1;height:1px;background:#d8dee6"></div></div>`
+      : '';
+    return `${divider}<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
   b.innerHTML=h;
