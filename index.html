@@ -2716,11 +2716,14 @@ function handleBindUnmapped(d, code, qty){
   const cands=d.candidates||[];
   if(!cands.length){ toast('That item is not on this invoice',true); return; }
 
+  const lineLabel=(c,i)=>(i+1)+') '+(c.warnings&&c.warnings.length?'⚠ ':'')+c.description+'   ('+c.qty_expected+' units)'
+    +((c.warnings||[]).map(w=>'\n      ⚠ '+w.message).join(''));
+
   let pick=d.autoPick;
   if(!pick){
     let msg='📷 '+d.scanned.name+'\n\nWhich invoice line is this?\n\n';
-    cands.forEach((c,i)=>{ msg+=(i+1)+') '+c.description+'   ('+c.qty_expected+' units'+(c.confidence?', '+c.confidence+'% match':'')+')\n'; });
-    msg+='\nEnter a number, or Cancel.';
+    cands.forEach((c,i)=>{ msg+=lineLabel(c,i)+'\n'; });
+    msg+='\nLines marked ⚠ disagree with the bottle you scanned.\n\nEnter a number, or Cancel.';
     const ans=prompt(msg,'1');
     if(ans===null) return;
     const idx=parseInt(ans,10)-1;
@@ -2729,13 +2732,21 @@ function handleBindUnmapped(d, code, qty){
   } else {
     if(!confirm('📷 '+d.scanned.name+'\n\nLink this barcode to invoice line:\n  #'+pick.cosmo_num+'  '+pick.description+'\n\nSaved permanently and marked barcode-verified.\n\nOK = link and count '+qty+'\nCancel = choose a different line')){
       let msg='Which invoice line is this?\n\n';
-      cands.forEach((c,i)=>{ msg+=(i+1)+') '+c.description+'   ('+c.qty_expected+' units)\n'; });
+      cands.forEach((c,i)=>{ msg+=lineLabel(c,i)+'\n'; });
       const ans=prompt(msg,'1');
       if(ans===null) return;
       const idx=parseInt(ans,10)-1;
       if(isNaN(idx) || idx<0 || idx>=cands.length){ toast('Nothing selected',true); return; }
       pick=cands[idx];
     }
+  }
+
+  // Final gate: never let a disputed link through on a single OK.
+  if(pick.warnings && pick.warnings.length){
+    const w=pick.warnings.map(x=>'  ⚠ '+x.message).join('\n');
+    if(!confirm('⚠ STOP — this does not look right\n\nYou scanned:\n  '+d.scanned.name
+      +'\n\nYou picked invoice line:\n  #'+pick.cosmo_num+'  '+pick.description
+      +'\n\n'+w+'\n\nLinking this wrong puts stock on the wrong product, permanently.\n\nOK = I have checked the bottle, link it anyway\nCancel = go back')) return;
   }
 
   api('/api/cosmo-map/fix',{method:'POST',body:JSON.stringify({
@@ -2824,6 +2835,22 @@ function searchNewUpc(inp){
 function assignNewUpc(asin, name){
   const code=window._newUpc;
   if(!code){ toast('No barcode pending',true); return; }
+  // Cross-check the chosen product against every line on this invoice first.
+  api('/api/upc-precheck',{method:'POST',body:JSON.stringify({asin:asin, order:currentInvoice})})
+    .then(pc=>{ doAssignNewUpc(asin,name,code,pc); })
+    .catch(()=>{ doAssignNewUpc(asin,name,code,null); });
+}
+
+function doAssignNewUpc(asin, name, code, pc){
+  if(pc && pc.ok && !pc.anyCompatible && pc.lines && pc.lines.length){
+    const b=pc.best;
+    const w=(b && b.warnings||[]).map(x=>'  ⚠ '+x.message).join('\n');
+    if(!confirm('⚠ STOP — this does not match anything on the invoice\n\nYou picked:\n  '+name
+      +'\n\nClosest invoice line:\n  #'+(b?b.cosmo_num:'?')+'  '+(b?b.description:'')
+      +'\n\n'+w+'\n\nEvery line on this invoice disagrees with this product on type or size. '
+      +'Check the bottle label before continuing — a wrong barcode here poisons everything downstream.'
+      +'\n\nOK = I have checked the bottle, assign anyway\nCancel = go back')) return;
+  }
   if(!confirm('Assign barcode '+code+' to:\n\n'+name+'\n\nSaved permanently — this bottle is recognised everywhere from now on.'))return;
   api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin:asin, upc:code})}).then(r=>{
     if(r && r.error){ toast(r.error,true); return; }
