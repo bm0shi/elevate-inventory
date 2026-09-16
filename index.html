@@ -297,6 +297,7 @@
         </div>
         <div class="hint">Each scan adds 1 to that item's received count. Discrepancies show below in real time.</div>
       </div>
+      <div id="newUpcPanel"></div>
       <div id="reconLines"></div>
       <div id="reconPreview"></div>
       <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
@@ -2776,6 +2777,73 @@ function handleMappingMismatch(d, code){
 }
 
 // ==================== MAPPING HEALTH ====================
+// ==================== NEW BARCODE, ASSIGNED INLINE ====================
+// A barcode nobody has assigned yet. Identify it ONCE here — from the bottle
+// in your hand, not from a truncated invoice line — and the app learns three
+// things at once: UPC -> ASIN, Cosmo# -> ASIN, and the received count.
+function openNewUpcPanel(code){
+  window._newUpc = code;
+  const el=document.getElementById('newUpcPanel'); if(!el)return;
+  el.innerHTML='<div class="box" style="border:2px solid #b7791f;background:#fffdf7;margin-bottom:10px">'
+    +'<div style="font-weight:800;color:#b7791f;font-size:15px">🆕 New barcode — never seen before</div>'
+    +'<div style="font-family:monospace;font-size:15px;font-weight:800;margin:4px 0 2px">'+code+'</div>'
+    +'<div class="hint" style="margin-bottom:8px">Read the bottle in your hand and find it below. Assigned once — this barcode is recognised everywhere from now on.</div>'
+    +'<input type="text" id="newUpcSearch" placeholder="Type part of the product name…" oninput="searchNewUpc(this)" style="width:100%;padding:10px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">'
+    +'<div id="newUpcResults"></div>'
+    +'<button class="action full" onclick="closeNewUpcPanel()" style="margin-top:8px;background:#5a6472">Cancel</button>'
+    +'</div>';
+  el.scrollIntoView({behavior:'smooth',block:'center'});
+  setTimeout(()=>{ const i=document.getElementById('newUpcSearch'); if(i) i.focus(); },120);
+}
+
+function closeNewUpcPanel(){
+  window._newUpc=null;
+  const el=document.getElementById('newUpcPanel'); if(el) el.innerHTML='';
+}
+
+function searchNewUpc(inp){
+  const q=(inp.value||'').toLowerCase().trim();
+  const box=document.getElementById('newUpcResults'); if(!box)return;
+  if(q.length<2){ box.innerHTML=''; return; }
+  const hits=(products||[]).filter(p=>
+    (p.name||'').toLowerCase().includes(q) ||
+    (p.asin||'').toLowerCase().includes(q) ||
+    (p.sku||'').toLowerCase().includes(q)
+  ).slice(0,8);
+  if(!hits.length){ box.innerHTML='<div class="hint" style="padding:6px 2px">No match — add the product on the Receiving (Manual) page first.</div>'; return; }
+  box.innerHTML=hits.map(p=>{
+    const safe=String(p.name||'').replace(/\\/g,'').replace(/'/g,"\\'").replace(/"/g,'');
+    const img=p.image?'<img src="'+p.image+'" onerror="this.style.display=\'none\'" style="width:46px;height:46px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:46px;height:46px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+    return '<div style="display:flex;gap:10px;align-items:center;margin-top:7px;padding:10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;font-size:13px;line-height:1.4">'
+      +img+'<div style="flex:1;min-width:0"><div style="font-weight:600">'+p.name+'</div>'
+      +'<div style="margin-top:4px"><a href="https://www.amazon.com/dp/'+p.asin+'" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8">'+p.asin+' ↗</a></div></div>'
+      +'<button onclick="assignNewUpc(\''+p.asin+'\',\''+safe+'\')" style="padding:9px 15px;font-size:12.5px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;flex-shrink:0">This one</button></div>';
+  }).join('');
+}
+
+function assignNewUpc(asin, name){
+  const code=window._newUpc;
+  if(!code){ toast('No barcode pending',true); return; }
+  if(!confirm('Assign barcode '+code+' to:\n\n'+name+'\n\nSaved permanently — this bottle is recognised everywhere from now on.'))return;
+  api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin:asin, upc:code})}).then(r=>{
+    if(r && r.error){ toast(r.error,true); return; }
+    toast('Barcode assigned');
+    closeNewUpcPanel();
+    const qtyStr=prompt('How many of "'+String(name).slice(0,40)+'" did you receive?','1');
+    if(qtyStr===null) return;
+    const qty=parseInt(qtyStr);
+    if(!qty||qty<1){ toast('Enter a valid quantity',true); return; }
+    // Now run the normal scan — it will count it, or offer to link the
+    // Cosmo number if that invoice line is still unmapped.
+    api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d=>{
+      if(d.ok){ scanFeedback(); toast('+'+qty+' '+(d.line.name||'').slice(0,20)); renderReconLines(); }
+      else if(d.reason==='bind_unmapped'){ handleBindUnmapped(d, code, qty); }
+      else if(d.reason==='mapping_mismatch'){ handleMappingMismatch(d, code); }
+      else { toast('Barcode saved, but that item is not on this invoice',true); renderReconLines(); }
+    });
+  }).catch(()=>toast('Could not assign barcode',true));
+}
+
 // ---- Refresh product names from Amazon (preview first) ----
 function startNameRefresh(){
   const btn=document.getElementById('nameRefreshBtn');
@@ -3047,7 +3115,7 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
   e.target.value='';
   // First, look up what product this is (qty 0 = just identify, don't add yet)
   api('/api/find/'+encodeURIComponent(code)).then(f=>{
-    if(!f.found){ toast('Unknown barcode — assign it in Receiving (Manual) first',true); if(window._resetScan)window._resetScan('Recon'); return; }
+    if(!f.found){ openNewUpcPanel(code); if(window._resetScan)window._resetScan('Recon'); return; }
     window._lastScanCode = code;
     // pop up quantity entry
     const qtyStr = prompt('How many of "'+(f.product.name||'').slice(0,40)+'" did you receive?', '1');
