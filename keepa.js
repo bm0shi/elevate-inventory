@@ -15,10 +15,15 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const IDX = { AMAZON:0, NEW:1, SALES:3, COUNT_NEW:11, BUY_BOX:18 };
 
 // Fetch product data for ASINs (up to 100 per request). stats=90 for 90-day stats.
-async function getProducts(asins, onProgress) {
+// onBatch(products, info) is called after EVERY successful batch so the caller
+// can persist progress. A batch that fails after its retries is recorded and
+// skipped rather than throwing away the whole run — previously one bad batch
+// discarded all the tokens already spent.
+async function getProducts(asins, onProgress, onBatch) {
   if (!keyOk()) throw new Error('KEEPA_API_KEY not set');
   const key = process.env.KEEPA_API_KEY;
   const out = [];
+  const failed = [];
   let tokensLeft = null;
   for (let i = 0; i < asins.length; i += 100) {
     const batch = asins.slice(i, i + 100);
@@ -48,13 +53,15 @@ async function getProducts(asins, onProgress) {
           attempts++;
           if (attempts < 4) { await sleep(5000); continue; }
         }
-        throw new Error(`Keepa ${status || ''}: ${body}`);
+        console.error(`[Keepa] ${status || ''}: ${String(body).slice(0,120)}`);
+        break; // abandon this batch, keep everything already fetched
       }
       // response might not be JSON (Keepa returned an error page)
       if (typeof resp.data === 'string') {
         attempts++;
         if (attempts < 4) { await sleep(5000); continue; }
-        throw new Error('Keepa returned a non-JSON response (likely overloaded or out of tokens). Try again in a minute.');
+        console.error('[Keepa] non-JSON response (overloaded or out of tokens) — abandoning this batch.');
+        break;
       }
       if (resp.data.error && resp.data.error.type === 'NOT_ENOUGH_TOKEN') {
         const refillIn = resp.data.refillIn || 20000;
@@ -69,8 +76,13 @@ async function getProducts(asins, onProgress) {
       }
       tokensLeft = resp.data.tokensLeft;
       const products = resp.data.products || [];
-      for (const p of products) out.push(simplify(p));
+      const simplified = products.map(simplify);
+      for (const p of simplified) out.push(p);
       done = true;
+      if (onBatch) {
+        try { await onBatch(simplified, { tokensLeft, batchIndex: Math.floor(i/100), done: out.length, total: asins.length }); }
+        catch (e) { console.error('[Keepa] onBatch handler failed (non-fatal):', e.message); }
+      }
 
       // if tokens are running low, wait for the bucket to refill before next batch
       if (tokensLeft != null && tokensLeft < 50 && i + 100 < asins.length) {
@@ -80,9 +92,13 @@ async function getProducts(asins, onProgress) {
         await sleep(1200);
       }
     }
-    if (!done) throw new Error('Keepa: exhausted retries waiting for tokens');
+    if (!done) {
+      failed.push({ batch: Math.floor(i/100) + 1, asins: batch.length });
+      console.error(`[Keepa] batch ${Math.floor(i/100)+1} gave up after retries — continuing with the rest.`);
+      if (onProgress) onProgress(`batch ${Math.floor(i/100)+1} failed, continuing…`);
+    }
   }
-  return { products: out, tokensLeft };
+  return { products: out, tokensLeft, failed };
 }
 
 function cents(v){ return (v == null || v < 0) ? null : v / 100; }
