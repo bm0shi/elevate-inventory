@@ -1270,15 +1270,60 @@ app.get('/api/mapping-health', auth, async (req, res) => {
   const verified = rows.filter(r => r.verified);
   const unverified = rows.filter(r => !r.verified);
   const orphans = rows.filter(r => !r.name);
+
+  // ---- COLLISIONS ----
+  // Cosmoprof issues a separate item number per SIZE and per variant, so two
+  // numbers pointing at one ASIN means at least one of them is wrong. This is
+  // deterministic — no barcode needed — and it is the highest-signal error in
+  // the whole map.
+  const coll = await pool.query(
+    `SELECT c.asin, p.name, p.image,
+            array_agg(c.cosmo_num ORDER BY c.cosmo_num) AS nums,
+            COUNT(*)::int AS n
+     FROM inv_cosmo_map c LEFT JOIN inv_products p ON p.asin = c.asin
+     WHERE c.asin IS NOT NULL AND c.asin <> ''
+     GROUP BY c.asin, p.name, p.image
+     HAVING COUNT(*) > 1
+     ORDER BY COUNT(*) DESC, p.name`);
+
+  // Most recent invoice description for each colliding number, so the user can
+  // see WHICH is the liter and which is the 10.1oz.
+  const descRows = await pool.query(
+    `SELECT DISTINCT ON (cosmo_num) cosmo_num, description
+     FROM inv_invoice_items WHERE description IS NOT NULL
+     ORDER BY cosmo_num, id DESC`);
+  const descMap = {};
+  for (const d of descRows.rows) descMap[d.cosmo_num] = d.description;
+
+  const collisions = coll.rows.map(c => ({
+    asin: c.asin, name: c.name, image: c.image, count: c.n,
+    numbers: c.nums.map(nm => ({ cosmo_num: nm, description: descMap[nm] || null }))
+  }));
+
   res.json({
     mapped: rows.length,
     catalog: total.rows[0].n,
     verifiedCount: verified.length,
     unverifiedCount: unverified.length,
     orphanCount: orphans.length,
+    collisionCount: collisions.length,
+    collisions,
     unmappedProducts: total.rows[0].n - rows.length,
     rows
   });
+});
+
+// Break a bad link so the number shows as unmapped again and can be re-picked.
+app.post('/api/cosmo-map/unlink', auth, async (req, res) => {
+  const { cosmo_num } = req.body || {};
+  if (!cosmo_num) return res.status(400).json({ error: 'cosmo_num required' });
+  await pool.query('DELETE FROM inv_cosmo_map WHERE cosmo_num=$1', [cosmo_num]);
+  await pool.query(
+    `UPDATE inv_invoice_items SET asin=NULL WHERE cosmo_num=$1
+     AND order_number IN (SELECT order_number FROM inv_invoices WHERE status <> 'received')`,
+    [cosmo_num]);
+  console.log(`[Verify] Cosmo# ${cosmo_num} UNLINKED.`);
+  res.json({ ok: true });
 });
 
 // Set the EXPECTED quantity on a line (fix scrambled parse)
