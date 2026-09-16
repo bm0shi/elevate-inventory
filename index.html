@@ -2691,6 +2691,53 @@ function searchMapCandidates(inp, cosmoNum){
     : '<div class="hint" style="padding:6px 2px">No match in the catalog — add the product on the Receiving page first, then come back.</div>';
 }
 
+// The scanned bottle is a product we know, and this invoice has line(s) with no
+// product linked yet. The barcode settles it — bind the Cosmo# to the scanned
+// ASIN, mark it barcode-verified, then let the scan count. One scan per new
+// SKU, ever.
+function handleBindUnmapped(d, code, qty){
+  const cands=d.candidates||[];
+  if(!cands.length){ toast('That item is not on this invoice',true); return; }
+
+  let pick=d.autoPick;
+  if(!pick){
+    let msg='📷 '+d.scanned.name+'\n\nWhich invoice line is this?\n\n';
+    cands.forEach((c,i)=>{ msg+=(i+1)+') '+c.description+'   ('+c.qty_expected+' units'+(c.confidence?', '+c.confidence+'% match':'')+')\n'; });
+    msg+='\nEnter a number, or Cancel.';
+    const ans=prompt(msg,'1');
+    if(ans===null) return;
+    const idx=parseInt(ans,10)-1;
+    if(isNaN(idx) || idx<0 || idx>=cands.length){ toast('Nothing selected',true); return; }
+    pick=cands[idx];
+  } else {
+    if(!confirm('📷 '+d.scanned.name+'\n\nLink this barcode to invoice line:\n  #'+pick.cosmo_num+'  '+pick.description+'\n\nSaved permanently and marked barcode-verified.\n\nOK = link and count '+qty+'\nCancel = choose a different line')){
+      let msg='Which invoice line is this?\n\n';
+      cands.forEach((c,i)=>{ msg+=(i+1)+') '+c.description+'   ('+c.qty_expected+' units)\n'; });
+      const ans=prompt(msg,'1');
+      if(ans===null) return;
+      const idx=parseInt(ans,10)-1;
+      if(isNaN(idx) || idx<0 || idx>=cands.length){ toast('Nothing selected',true); return; }
+      pick=cands[idx];
+    }
+  }
+
+  api('/api/cosmo-map/fix',{method:'POST',body:JSON.stringify({
+    cosmo_num:pick.cosmo_num, asin:d.scanned.asin, upc:code, order:currentInvoice
+  })}).then(r=>{
+    if(r && r.error){ toast(r.error,true); return; }
+    // linked — now count the scan that created it
+    api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d2=>{
+      if(d2 && d2.ok){
+        scanFeedback();
+        toast('🔗 Linked + ✅ verified · +'+qty+' '+(d2.line.name||'').slice(0,18));
+      } else {
+        toast('Linked — scan again to count it');
+      }
+      renderReconLines();
+    });
+  }).catch(()=>toast('Could not save the link',true));
+}
+
 // The barcode says one product; the invoice line is linked to another.
 // This is exactly how a shampoo ends up mapped to a conditioner.
 function handleMappingMismatch(d, code){
@@ -2728,7 +2775,9 @@ function loadMappingHealth(){
   api('/api/mapping-health').then(d=>{
     if(!d || !d.rows){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load — deploy the latest server.js.</div>'; return; }
     const pct = d.mapped ? Math.round((d.verifiedCount/d.mapped)*100) : 0;
+    const upcPct = d.catalog ? Math.round(((d.productsWithUpc||0)/d.catalog)*100) : 0;
     let h='<div class="cards">'
+      +'<div class="card" style="border-top:3px solid '+(upcPct>=90?'#1e8449':'#b7791f')+'"><div class="n">'+upcPct+'%</div><div class="l">UPC Coverage</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">'+(d.productsWithUpc||0)+' / '+d.catalog+' products · '+(d.barcodes||0)+' barcodes</div></div>'
       +'<div class="card" style="border-top:3px solid #c0392b"><div class="n">'+(d.collisionCount||0)+'</div><div class="l">⚠ Collisions</div></div>'
       +'<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+d.verifiedCount+'</div><div class="l">Barcode Verified</div></div>'
       +'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.unverifiedCount+'</div><div class="l">Unverified (guessed)</div></div>'
@@ -2760,6 +2809,26 @@ function loadMappingHealth(){
 
     if(d.orphanCount){
       h+='<div class="box" style="border:2px solid #c0392b;background:#fdf0ee"><b style="color:#c0392b">⚠ '+d.orphanCount+' mapping'+(d.orphanCount===1?'':'s')+' point at an ASIN that is not in your catalog.</b><div class="hint">These will always fail. Fix or delete them.</div></div>';
+    }
+
+    // ---- Products with no barcode yet ----
+    if(d.missingUpc && d.missingUpc.length){
+      const inStock=d.missingUpc.filter(x=>x.onhand>0);
+      h+='<div class="box" style="border:2px solid #b7791f">'
+        +'<div style="font-weight:800;color:#b7791f;font-size:15px">📷 '+d.missingUpc.length+' product'+(d.missingUpc.length===1?'':'s')+' with no barcode yet</div>'
+        +'<div class="hint" style="margin-bottom:8px">Scan one bottle of each in <b>Receiving (Manual)</b> to assign it. After that the barcode identifies it everywhere — and links its Cosmoprof number automatically on the next invoice.'
+        +(inStock.length?' <b>'+inStock.length+' of these are in stock right now</b>, so the bottles are on your floor today.':'')+'</div>';
+      for(const m of d.missingUpc.slice(0,40)){
+        const img=m.image?'<img src="'+m.image+'" onerror="this.style.display=\'none\'" style="width:38px;height:38px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:38px;height:38px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+        h+='<div style="display:flex;gap:9px;align-items:center;padding:7px 0;border-bottom:1px solid #eef2f6">'+img
+          +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12.5px;line-height:1.3">'+m.name+'</div>'
+          +'<div style="font-size:11px;color:#8a97a6;margin-top:2px"><span style="font-family:monospace;color:#2563a8">'+m.asin+'</span>'
+          +(m.location?' · 📍'+m.location:'')+(m.is_component?' · <b style="color:#c0392b">DUO COMPONENT</b>':'')+'</div></div>'
+          +'<span style="white-space:nowrap;font-weight:800;font-size:13px;color:'+(m.onhand>0?'#1e8449':'#9db0c9')+'">'+m.onhand+'</span>'
+          +'</div>';
+      }
+      if(d.missingUpc.length>40) h+='<div class="hint" style="margin-top:6px">…+ '+(d.missingUpc.length-40)+' more</div>';
+      h+='</div>';
     }
 
     const unv=d.rows.filter(r=>!r.verified);
@@ -2926,6 +2995,7 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
         toast((d.justVerified?'✅ VERIFIED · ':'')+'+'+qty+' '+(d.line.name||'').slice(0,20)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')');
         renderReconLines();
       }
+      else if(d.reason==='bind_unmapped'){ handleBindUnmapped(d, code, qty); }
       else if(d.reason==='mapping_mismatch'){ handleMappingMismatch(d, code); }
       else if(d.reason==='not_on_invoice'){ toast('That item is not on this invoice',true); }
       else { toast('Could not add',true); }
