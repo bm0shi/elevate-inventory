@@ -1363,7 +1363,8 @@ function uploadPdf(){
       btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false;
       document.getElementById('pdfFile').value='';
       if(d.ok){
-        let msg=d.created.map(c=>`#${c.orderNumber}: ${c.items} items (${c.mapped} mapped${c.unmapped?', '+c.unmapped+' need mapping':''})`).join('\n');
+        let msg=d.created.map(c=>`#${c.orderNumber}: ${c.items} items${c.pages>1?' across '+c.pages+' pages':''} (${c.mapped} mapped${c.unmapped?', '+c.unmapped+' need linking':''})${c.merged?' · '+c.merged+' duplicate line(s) merged':''}${c.rejected?' · ⚠ '+c.rejected+' line(s) did NOT parse':''}`).join('\n');
+        if(d.errors && d.errors.length) msg+='\n\n⚠ '+d.errors.join('\n⚠ ');
         toast('Added '+d.created.length+' order(s) from PDF');
         alert('Created '+d.created.length+' invoice(s):\n\n'+msg+'\n\nSelect one below to receive against it.');
         loadInvoiceList();
