@@ -257,12 +257,18 @@ function matchScore(desc, name) {
 
 // Best candidate products for an unmapped invoice description.
 function suggestProducts(desc, catalog, limit = 5) {
-  return catalog
+  const ranked = catalog
     .map(p => ({ asin: p.asin, name: p.name, sku: p.sku, image: p.image, location: p.location, score: matchScore(desc, p.name) }))
     .filter(x => x.score >= 0.34)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map(x => ({ ...x, confidence: Math.min(99, Math.round(x.score * 100)) }));
+  // Flag close calls — near-identical Paul Mitchell names (shampoo vs
+  // conditioner vs colour-safe, 10.1oz vs liter) are exactly where a fast
+  // click goes wrong.
+  const ambiguous = ranked.length > 1 && (ranked[0].confidence - ranked[1].confidence) <= 10;
+  if (ambiguous) for (const r of ranked) r.ambiguous = true;
+  return ranked;
 }
 
 // ---- Postgres ----
@@ -458,6 +464,19 @@ async function initDb() {
     await pool.query('ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS location TEXT');
     console.log('[Inventory] Location column ready.');
   } catch(e) { console.error('location migration skipped:', e.message); }
+
+  // ---- Cosmo-map verification columns (idempotent) ----
+  // A mapping is only TRUSTED once a physical barcode scan has confirmed it.
+  // Everything seeded or hand-picked starts unverified.
+  try {
+    await pool.query(`
+      ALTER TABLE inv_cosmo_map ADD COLUMN IF NOT EXISTS verified BOOLEAN DEFAULT false;
+      ALTER TABLE inv_cosmo_map ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+      ALTER TABLE inv_cosmo_map ADD COLUMN IF NOT EXISTS verified_upc TEXT;
+      ALTER TABLE inv_cosmo_map ADD COLUMN IF NOT EXISTS source TEXT;
+    `);
+    console.log('[Inventory] Cosmo-map verification columns ready.');
+  } catch(e) { console.error('cosmo verification migration skipped:', e.message); }
 
   console.log('[Inventory] DB ready.');
 }
@@ -1130,12 +1149,98 @@ app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
     asin = r.rows[0]?.asin;
   }
   if (!asin) return res.json({ ok: false, reason: 'unknown_code', code });
+
   // find the matching invoice line
-  const line = await pool.query('SELECT id, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1 AND asin=$2 LIMIT 1', [order, asin]);
-  if (!line.rows.length) return res.json({ ok: false, reason: 'not_on_invoice', asin });
+  const line = await pool.query('SELECT id, cosmo_num, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1 AND asin=$2 LIMIT 1', [order, asin]);
+
+  if (!line.rows.length) {
+    // The scanned bottle is a real product but no line on this invoice is bound
+    // to it. If some OTHER line's cosmo_num points at a different ASIN and its
+    // description looks like this product, the mapping is probably wrong.
+    const prod = await pool.query('SELECT asin, name FROM inv_products WHERE asin=$1', [asin]);
+    const others = await pool.query(
+      `SELECT ii.cosmo_num, ii.description, ii.asin, p.name AS mapped_name
+       FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin=ii.asin
+       WHERE ii.order_number=$1`, [order]);
+    let suspect = null, bestScore = 0;
+    for (const o of others.rows) {
+      const sc = matchScore(o.description, prod.rows[0] ? prod.rows[0].name : '');
+      if (sc > bestScore && sc >= 0.4) { bestScore = sc; suspect = o; }
+    }
+    if (suspect) {
+      return res.json({
+        ok: false, reason: 'mapping_mismatch', code,
+        scanned: { asin, name: prod.rows[0] ? prod.rows[0].name : asin },
+        suspect: {
+          cosmo_num: suspect.cosmo_num, description: suspect.description,
+          mapped_asin: suspect.asin, mapped_name: suspect.mapped_name
+        },
+        confidence: Math.min(99, Math.round(bestScore * 100))
+      });
+    }
+    return res.json({ ok: false, reason: 'not_on_invoice', asin });
+  }
+
   await pool.query('UPDATE inv_invoice_items SET qty_received = qty_received + $1 WHERE id=$2', [qty, line.rows[0].id]);
+
+  // The barcode agrees with the mapping -> promote it to VERIFIED.
+  let verified = false;
+  const cnum = line.rows[0].cosmo_num;
+  if (cnum) {
+    try {
+      const r = await pool.query(
+        `UPDATE inv_cosmo_map SET verified=true, verified_at=now(), verified_upc=$1
+         WHERE cosmo_num=$2 AND asin=$3 AND verified IS NOT true RETURNING cosmo_num`,
+        [normCode(code), cnum, asin]);
+      verified = r.rowCount > 0;
+      if (verified) console.log(`[Verify] Cosmo# ${cnum} -> ${asin} confirmed by barcode ${code}.`);
+    } catch (e) { console.error('[Verify] failed (non-fatal):', e.message); }
+  }
+
   const np = await pool.query('SELECT p.name, ii.qty_expected, ii.qty_received FROM inv_invoice_items ii JOIN inv_products p ON p.asin=ii.asin WHERE ii.id=$1', [line.rows[0].id]);
-  res.json({ ok: true, asin, line: np.rows[0] });
+  res.json({ ok: true, asin, line: np.rows[0], justVerified: verified });
+});
+
+// Repoint a cosmo_num at the ASIN a scan proved, and mark it verified.
+app.post('/api/cosmo-map/fix', auth, async (req, res) => {
+  const { cosmo_num, asin, upc, order } = req.body || {};
+  if (!cosmo_num || !asin) return res.status(400).json({ error: 'cosmo_num + asin required' });
+  await pool.query(
+    `INSERT INTO inv_cosmo_map(cosmo_num, asin, verified, verified_at, verified_upc, source)
+     VALUES($1,$2,true,now(),$3,'barcode-fix')
+     ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2, verified=true, verified_at=now(), verified_upc=$3, source='barcode-fix'`,
+    [cosmo_num, asin, upc ? normCode(upc) : null]);
+  // repoint the invoice line(s) using this cosmo_num
+  if (order) {
+    await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE order_number=$2 AND cosmo_num=$3', [asin, order, cosmo_num]);
+  } else {
+    await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2', [asin, cosmo_num]);
+  }
+  console.log(`[Verify] Cosmo# ${cosmo_num} REPOINTED to ${asin} by barcode.`);
+  res.json({ ok: true });
+});
+
+// Mapping health — which cosmo_num -> ASIN links are barcode-proven vs guessed.
+app.get('/api/mapping-health', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT c.cosmo_num, c.asin, c.verified, c.verified_at, c.source,
+            p.name, p.image, p.location,
+            EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=c.asin) AS is_component
+     FROM inv_cosmo_map c LEFT JOIN inv_products p ON p.asin=c.asin
+     ORDER BY c.verified NULLS FIRST, p.name`);
+  const total = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products');
+  const verified = rows.filter(r => r.verified);
+  const unverified = rows.filter(r => !r.verified);
+  const orphans = rows.filter(r => !r.name);
+  res.json({
+    mapped: rows.length,
+    catalog: total.rows[0].n,
+    verifiedCount: verified.length,
+    unverifiedCount: unverified.length,
+    orphanCount: orphans.length,
+    unmappedProducts: total.rows[0].n - rows.length,
+    rows
+  });
 });
 
 // Set the EXPECTED quantity on a line (fix scrambled parse)
@@ -1161,7 +1266,12 @@ app.post('/api/invoices/:orderNumber/set-line', auth, async (req, res) => {
 // Assign a Cosmoprof number to a product (for unmapped lines)
 app.post('/api/cosmo-map', auth, async (req, res) => {
   const { cosmo_num, asin } = req.body;
-  await pool.query('INSERT INTO inv_cosmo_map(cosmo_num, asin) VALUES($1,$2) ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2', [cosmo_num, asin]);
+  // A human pick is a SUGGESTION, not proof — it stays unverified until a
+  // barcode scan confirms it.
+  await pool.query(
+    `INSERT INTO inv_cosmo_map(cosmo_num, asin, verified, source) VALUES($1,$2,false,'picked')
+     ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2, verified=false, verified_at=NULL, verified_upc=NULL, source='picked'`,
+    [cosmo_num, asin]);
   // backfill any invoice lines using this cosmo_num
   await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2 AND asin IS NULL', [asin, cosmo_num]);
   res.json({ ok: true });
