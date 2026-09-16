@@ -86,9 +86,11 @@ async function processInvoiceText(text) {
       if (asin) mapped++; else unmapped++;
       await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,0,$6)`,
         [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, it.unit_cost || null]);
-      // update product's latest known cost
+      // NOTE: deliberately NOT writing inv_products.unit_cost here. A sale
+      // invoice would overwrite the regular cost permanently. Cost is recorded
+      // as a lot at check-in completion and blended in recomputeCosts().
       if (asin && it.unit_cost) {
-        await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2', [it.unit_cost, asin]);
+        await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [it.unit_cost, asin]);
       }
     }
     console.log(`[Invoice] ${orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
@@ -638,6 +640,30 @@ async function initDb() {
     await pool.query('ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS location TEXT');
     console.log('[Inventory] Location column ready.');
   } catch(e) { console.error('location migration skipped:', e.message); }
+
+  // ---- Cost history (idempotent) ----
+  // One row per ASIN per invoice — a purchase LOT. Previously the importer did
+  // UPDATE inv_products SET unit_cost, so a twice-yearly sale permanently
+  // overwrote the regular cost. Lots preserve what was actually paid, when,
+  // and how many, which is the only way to get a true blended cost.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_cost_history (
+        id SERIAL PRIMARY KEY,
+        asin TEXT NOT NULL,
+        order_number TEXT NOT NULL,
+        invoice_date TEXT,
+        unit_cost NUMERIC NOT NULL,
+        qty INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (order_number, asin)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cost_hist_asin ON inv_cost_history(asin);
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS avg_cost NUMERIC;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS regular_cost NUMERIC;
+    `);
+    console.log('[Inventory] Cost history ready.');
+  } catch(e) { console.error('cost history migration skipped:', e.message); }
 
   // ---- Hazmat flags (idempotent) ----
   // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
@@ -1666,6 +1692,135 @@ app.post('/api/upc-precheck', auth, async (req, res) => {
   });
 });
 
+// ============================================================
+// COST ENGINE
+// regular_cost = the price paid for the LARGEST share of units. Cosmoprof runs
+//                sales roughly twice a year, so the price behind most of the
+//                volume is the standing price, not the cheapest one seen.
+// avg_cost     = weighted average across every lot = what the stock actually
+//                cost. This is the number margin should be measured against.
+// A lot is "on sale" when it is meaningfully under the regular price.
+// ============================================================
+const SALE_THRESHOLD = 0.97;   // >3% under regular counts as a sale lot
+
+function blendCosts(lots) {
+  if (!lots.length) return null;
+  // regular = cost carrying the most units
+  const byCost = {};
+  for (const l of lots) {
+    const c = Number(l.unit_cost).toFixed(4);
+    byCost[c] = (byCost[c] || 0) + (l.qty || 0);
+  }
+  let regular = null, bestQty = -1;
+  for (const c of Object.keys(byCost)) {
+    if (byCost[c] > bestQty) { bestQty = byCost[c]; regular = parseFloat(c); }
+  }
+  let spend = 0, units = 0, saleUnits = 0, saleSpend = 0, regUnits = 0, regSpend = 0;
+  const priced = lots.map(l => {
+    const cost = Number(l.unit_cost), qty = l.qty || 0;
+    const onSale = cost < regular * SALE_THRESHOLD;
+    spend += cost * qty; units += qty;
+    if (onSale) { saleUnits += qty; saleSpend += cost * qty; }
+    else { regUnits += qty; regSpend += cost * qty; }
+    return { ...l, unit_cost: cost, onSale };
+  });
+  return {
+    regular,
+    avg: units ? spend / units : regular,
+    units, spend,
+    saleUnits, saleSpend, regUnits, regSpend,
+    lowestSale: saleUnits ? Math.min(...priced.filter(l => l.onSale).map(l => l.unit_cost)) : null,
+    saved: regUnits || saleUnits ? (regular * saleUnits - saleSpend) : 0,
+    lots: priced.sort((a, b) => String(b.invoice_date || '').localeCompare(String(a.invoice_date || '')))
+  };
+}
+
+// Recompute blended costs for every ASIN that has purchase history.
+async function recomputeCosts() {
+  const { rows } = await pool.query('SELECT asin, order_number, invoice_date, unit_cost, qty FROM inv_cost_history WHERE qty > 0');
+  const byAsin = {};
+  for (const r of rows) (byAsin[r.asin] = byAsin[r.asin] || []).push(r);
+  let n = 0;
+  for (const asin of Object.keys(byAsin)) {
+    const b = blendCosts(byAsin[asin]);
+    if (!b) continue;
+    await pool.query('UPDATE inv_products SET avg_cost=$1, regular_cost=$2, unit_cost=$3 WHERE asin=$4',
+      [b.avg, b.regular, b.avg, asin]);
+    n++;
+  }
+  console.log(`[Costs] Reblended ${n} products from ${rows.length} purchase lots.`);
+  return n;
+}
+
+app.post('/api/costs/recompute', ownerAuth, async (req, res) => {
+  try { const n = await recomputeCosts(); res.json({ ok: true, products: n }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Full cost + margin picture per product.
+app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
+  const hist = await pool.query('SELECT asin, order_number, invoice_date, unit_cost, qty FROM inv_cost_history WHERE qty > 0');
+  const byAsin = {};
+  for (const r of hist.rows) (byAsin[r.asin] = byAsin[r.asin] || []).push(r);
+
+  const prods = await pool.query('SELECT asin, name, image, sku FROM inv_products');
+  const nameByAsin = {}; for (const p of prods.rows) nameByAsin[p.asin] = p;
+
+  // market price + Amazon fees from the Keepa cache
+  let mkt = {};
+  try {
+    const c = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+    if (c.rows.length) for (const m of (c.rows[0].data || [])) mkt[m.asin] = m;
+  } catch (e) {}
+  // units actually sold, from the velocity cache
+  let soldByAsin = {};
+  try {
+    const c = await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'");
+    const items = c.rows.length ? (c.rows[0].data?.items || []) : [];
+    for (const v of items) if (v.asin) soldByAsin[v.asin] = { sold: v.sold || 0, perDay: v.perDay || 0 };
+  } catch (e) {}
+  const velDays = 30;
+
+  const out = [];
+  let totalSpend = 0, totalUnits = 0, totalSaved = 0;
+  for (const asin of Object.keys(byAsin)) {
+    const b = blendCosts(byAsin[asin]);
+    const p = nameByAsin[asin] || {};
+    const m = mkt[asin] || {};
+    const price = m.buyBoxPrice || null;
+    const refPct = (m.referralPct != null ? m.referralPct : 15) / 100;
+    const fbaFee = m.pickPackFee != null ? m.pickPackFee : null;
+    const net = price ? Math.max(0, price - price * refPct - (fbaFee || 0)) : null;
+    const profitUnit = (net != null && b.avg != null) ? net - b.avg : null;
+    const marginPct = (profitUnit != null && price) ? (profitUnit / price) * 100 : null;
+    const roi = (profitUnit != null && b.avg) ? (profitUnit / b.avg) * 100 : null;
+    const sold = soldByAsin[asin] ? soldByAsin[asin].sold : 0;
+
+    totalSpend += b.spend; totalUnits += b.units; totalSaved += (b.saved || 0);
+    out.push({
+      asin, name: p.name || asin, image: p.image || null, sku: p.sku || '',
+      regularCost: b.regular, avgCost: b.avg, lowestSale: b.lowestSale,
+      units: b.units, spend: b.spend,
+      regUnits: b.regUnits, saleUnits: b.saleUnits, saved: b.saved,
+      lots: b.lots.slice(0, 12),
+      price, feesEstimated: (m.referralPct == null || m.pickPackFee == null),
+      netDeposit: net, profitUnit, marginPct, roi,
+      soldLast30: sold,
+      profitLast30: (profitUnit != null) ? profitUnit * sold : null
+    });
+  }
+  out.sort((a, b2) => (b2.profitLast30 || 0) - (a.profitLast30 || 0));
+  res.json({
+    items: out,
+    totals: {
+      spend: totalSpend, units: totalUnits, saved: totalSaved,
+      avgCost: totalUnits ? totalSpend / totalUnits : null,
+      profitLast30: out.reduce((n, x) => n + (x.profitLast30 || 0), 0),
+      velDays
+    }
+  });
+});
+
 // Owner override — always wins over Amazon's declaration.
 app.post('/api/hazmat/set', auth, async (req, res) => {
   const { asin, hazmat } = req.body || {};
@@ -1808,8 +1963,10 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   const force  = !!(req.body && req.body.force);
 
   const lines = await pool.query(
-    'SELECT asin, cosmo_num, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1',
+    'SELECT asin, cosmo_num, description, qty_expected, qty_received, unit_cost FROM inv_invoice_items WHERE order_number=$1',
     [order]);
+  const invMeta = await pool.query('SELECT invoice_date FROM inv_invoices WHERE order_number=$1', [order]);
+  const invDate = invMeta.rows[0] ? invMeta.rows[0].invoice_date : null;
 
   // ---- HARD STOP: never silently drop unmapped lines ----
   const unmapped = lines.rows.filter(l => !l.asin);
@@ -1859,8 +2016,20 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
           ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
       }
       added += l.qty_received;
+      // Record the purchase lot: what was paid, when, how many. Sale pricing is
+      // preserved rather than overwriting the regular cost.
+      if (!dryRun && l.unit_cost != null && l.qty_received > 0) {
+        try {
+          await pool.query(
+            `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
+             VALUES($1,$2,$3,$4,$5)
+             ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
+            [l.asin, order, invDate, l.unit_cost, l.qty_received]);
+        } catch (e) { console.error('[Costs] lot insert failed:', e.message); }
+      }
       preview.push({ description: l.description, asin: l.asin, qty: l.qty_received,
-                     expected: l.qty_expected, location: locs[l.asin] || null, willAdd: true });
+                     expected: l.qty_expected, location: locs[l.asin] || null,
+                     unitCost: l.unit_cost != null ? Number(l.unit_cost) : null, willAdd: true });
     } else {
       preview.push({ description: l.description, asin: l.asin, qty: 0,
                      expected: l.qty_expected, willAdd: false, reason: 'nothing received' });
@@ -1872,6 +2041,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
 
   if (!dryRun) {
     await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
+    try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
   }
 
   res.json({
