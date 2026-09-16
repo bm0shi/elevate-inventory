@@ -1680,6 +1680,7 @@ function renderToAdd(){
       +'<b style="color:#b7791f">Nothing matches the current filters.</b>'
       +'<div class="hint">Hazmat buckets in the full list: <b>'+nHaz+'</b> hazmat · <b>'+nOk+'</b> non-hazmat · <b>'+nUnk+'</b> unknown.'
       +((nHaz===0&&nOk===0)?' <b style="color:#c0392b">No product carries a hazmat flag at all</b> — if you have been tagging them, the flags are not saving. Check that the newest server.js is deployed.':'')
+      +((filter==='notcarried'&&(nHaz+nOk)>0&&(hz==='nonhaz'||hz==='haz'))?' <b style="color:#c0392b">Every flagged product is one you already carry</b>, so combining <i>Not carried</i> with a hazmat-only filter can never match. Switch to <b>✅ Non-hazmat + ❓ unknown</b>, or tag some not-carried ASINs first.':'')
       +' Other filters may also be excluding rows: min price, min units, min profit, search box, and the carried filter.</div></div>';
   }
   if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
