@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
+const { getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -639,6 +639,18 @@ async function initDb() {
     console.log('[Inventory] Location column ready.');
   } catch(e) { console.error('location migration skipped:', e.message); }
 
+  // ---- Hazmat flags (idempotent) ----
+  // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
+  // a manual call by the owner always outranks Amazon's declaration.
+  try {
+    await pool.query(`
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat BOOLEAN;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_source TEXT;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_detail TEXT;
+    `);
+    console.log('[Inventory] Hazmat columns ready.');
+  } catch(e) { console.error('hazmat migration skipped:', e.message); }
+
   // ---- Cosmo-map verification columns (idempotent) ----
   // A mapping is only TRUSTED once a physical barcode scan has confirmed it.
   // Everything seeded or hand-picked starts unverified.
@@ -721,7 +733,7 @@ app.get('/api/products', auth, async (req, res) => {
   //  - direct prepped of this asin (singles), PLUS
   //  - prepped bundles that consume this asin as a component
   const { rows } = await pool.query(
-    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, p.location, s.onhand, s.transit,
+    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, p.location, p.hazmat, p.hazmat_source, s.onhand, s.transit,
       (
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
@@ -1654,6 +1666,44 @@ app.post('/api/upc-precheck', auth, async (req, res) => {
   });
 });
 
+// Owner override — always wins over Amazon's declaration.
+app.post('/api/hazmat/set', auth, async (req, res) => {
+  const { asin, hazmat } = req.body || {};
+  if (!asin) return res.status(400).json({ error: 'asin required' });
+  const v = (hazmat === null || hazmat === undefined || hazmat === '') ? null : !!hazmat;
+  await pool.query('UPDATE inv_products SET hazmat=$1, hazmat_source=$2, hazmat_detail=$3 WHERE asin=$4',
+    [v, v === null ? null : 'manual', v === null ? null : 'set by owner', asin]);
+  res.json({ ok: true, asin, hazmat: v });
+});
+
+// Background scan of Amazon's hazmat data. Never overwrites a manual call.
+let hazJob = { running:false, done:false, error:null, progress:'', found:0, checked:0 };
+app.post('/api/hazmat/scan', auth, async (req, res) => {
+  if (hazJob.running) return res.json({ ok:true, already:true });
+  hazJob = { running:true, done:false, error:null, progress:'starting…', found:0, checked:0 };
+  res.json({ ok:true });
+  (async () => {
+    try {
+      const { rows } = await pool.query("SELECT asin FROM inv_products WHERE hazmat_source IS DISTINCT FROM 'manual'");
+      hazJob.progress = `checking ${rows.length} products…`;
+      const r = await getHazmatStatus(rows.map(x=>x.asin), p => { hazJob.progress = p; });
+      for (const asin of Object.keys(r)) {
+        const h = r[asin];
+        if (h.hazmat === null) continue;
+        await pool.query(
+          "UPDATE inv_products SET hazmat=$1, hazmat_source=$2, hazmat_detail=$3 WHERE asin=$4 AND hazmat_source IS DISTINCT FROM 'manual'",
+          [h.hazmat, h.source, h.detail, asin]);
+        hazJob.checked++;
+        if (h.hazmat) hazJob.found++;
+      }
+      hazJob.progress = `${hazJob.checked} resolved, ${hazJob.found} flagged hazmat.`;
+      hazJob.running = false; hazJob.done = true;
+      console.log(`[Hazmat] ${hazJob.checked} resolved, ${hazJob.found} hazmat.`);
+    } catch (e) { hazJob.running=false; hazJob.error=e.message; console.error('[Hazmat] scan failed:', e.message); }
+  })();
+});
+app.get('/api/hazmat/status', auth, (req,res)=>res.json(hazJob));
+
 // Age + size of every cached data set, for the freshness bar.
 app.get('/api/cache-status', auth, async (req, res) => {
   const { rows } = await pool.query('SELECT cache_key, updated_at, data FROM inv_cache');
@@ -2338,7 +2388,7 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
 
   // our full stock picture per ASIN (available / committed / transit / FBA)
   const stockRows = await pool.query(`
-    SELECT p.asin, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
+    SELECT p.asin, p.hazmat, p.hazmat_source, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
       (
         COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
@@ -2387,6 +2437,8 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       amazonOOS: m.amazonOOS,
       buyBoxPrice: m.buyBoxPrice,
       carried: carried.has(m.asin),
+      hazmat: (st.hazmat === true || st.hazmat === false) ? st.hazmat : null,
+      hazmatSource: st.hazmat_source || null,
       available: st.onhand ? Math.max(0, st.onhand - (st.pending_prep||0) - (st.prepped||0)) : 0,
       pendingPrep: st.pending_prep||0,
       prepped: st.prepped||0,
