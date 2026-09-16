@@ -1961,6 +1961,11 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   const order = req.params.orderNumber;
   const dryRun = !!(req.body && req.body.dryRun);
   const force  = !!(req.body && req.body.force);
+  // skipStock: the goods were physically received and counted into On Hand at
+  // some earlier point (before this invoice was loaded, or by a manual count).
+  // Record everything EXCEPT the stock increment, so quantities are not
+  // double-added. Cost lots, locations and the received stamp still happen.
+  const skipStock = !!(req.body && req.body.skipStock);
 
   const lines = await pool.query(
     'SELECT asin, cosmo_num, description, qty_expected, qty_received, unit_cost FROM inv_invoice_items WHERE order_number=$1',
@@ -2011,9 +2016,15 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     }
     if (l.qty_received > 0) {
       if (!dryRun) {
-        await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
-        await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
-          ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
+        if (!skipStock) {
+          await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
+          await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+            ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
+        } else {
+          // audit trail only — zero quantity so no count moves
+          await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+            ['in', l.asin, 0, 'Invoice ' + order + ' recorded — stock NOT added (already counted)']);
+        }
       }
       added += l.qty_received;
       // Record the purchase lot: what was paid, when, how many. Sale pricing is
@@ -2029,7 +2040,9 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
       }
       preview.push({ description: l.description, asin: l.asin, qty: l.qty_received,
                      expected: l.qty_expected, location: locs[l.asin] || null,
-                     unitCost: l.unit_cost != null ? Number(l.unit_cost) : null, willAdd: true });
+                     unitCost: l.unit_cost != null ? Number(l.unit_cost) : null,
+                     willAdd: !skipStock,
+                     reason: skipStock ? 'cost + location recorded, stock unchanged' : undefined });
     } else {
       preview.push({ description: l.description, asin: l.asin, qty: 0,
                      expected: l.qty_expected, willAdd: false, reason: 'nothing received' });
@@ -2044,8 +2057,10 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
   }
 
+  if (skipStock && !dryRun) console.log(`[Invoice] ${order} recorded WITHOUT adding ${added} units (already on hand).`);
+
   res.json({
-    ok: true, dryRun, added, discrepancies, preview,
+    ok: true, dryRun, skipStock, added, discrepancies, preview,
     locationsSet: locSet,
     unmappedCount: unmapped.length,
     lineCount: lines.rows.length
