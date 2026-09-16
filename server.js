@@ -13,6 +13,8 @@ const multer = require('multer');
 const pdfParse = require('pdf-parse');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
+// PURE parser — text in, orders map out. No database access, so it can be
+// reused by the read-only audit endpoint.
 // Shared: parse Cosmoprof invoice text (multi-order) into created invoices.
 //
 // IMPORTANT: Cosmoprof repeats "FOR ORDER NUMBER: xxx" on EVERY page of a
@@ -21,7 +23,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // writing per-segment used to wipe the earlier pages — a 2-page invoice kept
 // only its last page, silently. We now merge every segment sharing an order
 // number BEFORE touching the database.
-async function processInvoiceText(text) {
+function parseInvoiceText(text) {
   const parts = text.split(/FOR ORDER NUMBER:\s*(\d+)/);
   const created = [], errors = [];
 
@@ -46,6 +48,14 @@ async function processInvoiceText(text) {
       if (/^\s*\d{6}\s+\S/.test(line)) o.rejected.push(line.trim().slice(0, 90));
     }
   }
+
+  return orders;
+}
+
+// Parse + persist.
+async function processInvoiceText(text) {
+  const orders = parseInvoiceText(text);
+  const created = [], errors = [];
 
   for (const [orderNumber, o] of orders) {
     const date = o.date;
@@ -1065,6 +1075,78 @@ function parseCosmoInvoice(text) {
 }
 
 // Multi-order: split pasted text by "FOR ORDER NUMBER:" and create each invoice
+// ============================================================
+// RECEIPT AUDIT — READ ONLY, WRITES NOTHING
+// Paste the paper invoice; compare it against what the database actually holds
+// for that order. Catches both historic failure modes at once:
+//   * pages lost to the old per-page DELETE bug (lines missing entirely)
+//   * quantities that do not match the paper
+// Also reports which received units landed on a COLLIDING cosmo number, i.e.
+// stock that may sit on the wrong ASIN.
+// ============================================================
+app.post('/api/invoices/audit', auth, async (req, res) => {
+  const text = (req.body && req.body.text) || '';
+  if (!text.trim()) return res.status(400).json({ error: 'Paste the invoice text first.' });
+
+  const orders = parseInvoiceText(text);
+  if (!orders.size) return res.status(400).json({ error: 'No "FOR ORDER NUMBER:" headers found in that text.' });
+
+  // Cosmo numbers that more than one mapping claims — stock on these is suspect.
+  const collRows = await pool.query(
+    `SELECT cosmo_num FROM inv_cosmo_map WHERE asin IN (
+       SELECT asin FROM inv_cosmo_map WHERE asin IS NOT NULL AND asin <> ''
+       GROUP BY asin HAVING COUNT(*) > 1)`);
+  const colliding = new Set(collRows.rows.map(r => r.cosmo_num));
+
+  const report = [];
+  for (const [orderNumber, o] of orders) {
+    // paper side (merged the same way the importer merges)
+    const paper = new Map();
+    for (const it of o.items) {
+      const prev = paper.get(it.cosmo_num);
+      if (prev) prev.qty += it.qty_shipped;
+      else paper.set(it.cosmo_num, { cosmo_num: it.cosmo_num, description: it.description, qty: it.qty_shipped });
+    }
+
+    const inv = await pool.query('SELECT order_number, invoice_date, status FROM inv_invoices WHERE order_number=$1', [orderNumber]);
+    const dbRows = await pool.query(
+      `SELECT ii.cosmo_num, ii.description, ii.asin, ii.qty_expected, ii.qty_received, p.name
+       FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin=ii.asin
+       WHERE ii.order_number=$1`, [orderNumber]);
+    const db = new Map();
+    for (const r of dbRows.rows) db.set(r.cosmo_num, r);
+
+    const missing = [], qtyMismatch = [], suspect = [], extra = [];
+    for (const [cn, pp] of paper) {
+      const d = db.get(cn);
+      if (!d) { missing.push({ cosmo_num: cn, description: pp.description, paperQty: pp.qty }); continue; }
+      if (d.qty_expected !== pp.qty) {
+        qtyMismatch.push({ cosmo_num: cn, description: pp.description, paperQty: pp.qty, dbExpected: d.qty_expected, dbReceived: d.qty_received });
+      }
+      if (colliding.has(cn) && d.qty_received > 0) {
+        suspect.push({ cosmo_num: cn, description: pp.description, received: d.qty_received, asin: d.asin, mappedName: d.name });
+      }
+    }
+    for (const [cn, d] of db) if (!paper.has(cn)) extra.push({ cosmo_num: cn, description: d.description, dbExpected: d.qty_expected });
+
+    const paperUnits = [...paper.values()].reduce((n, x) => n + x.qty, 0);
+    const dbExpectedUnits = dbRows.rows.reduce((n, r) => n + (r.qty_expected || 0), 0);
+    const dbReceivedUnits = dbRows.rows.reduce((n, r) => n + (r.qty_received || 0), 0);
+
+    report.push({
+      orderNumber,
+      inDatabase: inv.rows.length > 0,
+      status: inv.rows[0] ? inv.rows[0].status : null,
+      pages: o.pages,
+      paperLines: paper.size, dbLines: dbRows.rows.length,
+      paperUnits, dbExpectedUnits, dbReceivedUnits,
+      missing, qtyMismatch, extra, suspect,
+      clean: inv.rows.length > 0 && missing.length === 0 && qtyMismatch.length === 0 && extra.length === 0
+    });
+  }
+  res.json({ ok: true, report });
+});
+
 app.post('/api/invoices/add-multi', auth, async (req, res) => {
   const { created, errors } = await processInvoiceText(req.body.text || '');
   if (!created.length) return res.status(400).json({ error: 'No orders found. Text needs "FOR ORDER NUMBER:" headers.', errors });
