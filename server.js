@@ -222,6 +222,49 @@ async function buildLocationContext(asins) {
   return out;
 }
 
+// ============================================================
+// DESCRIPTION MATCHING
+// Cosmoprof invoice descriptions are abbreviated ("AWAPUHI MOIST
+// SHAMPOO 10.1"); our product names are full Amazon titles. Score by
+// token overlap with prefix matching so abbreviations still hit, and
+// weight numbers (sizes) heavily since they disambiguate variants.
+// ============================================================
+const MATCH_STOPWORDS = new Set(['OZ','FLOZ','FL','ML','THE','AND','BY','FOR','WITH','OF','A','AN','NEW','PACK','CT','EA','SIZE','INC','LLC']);
+
+function matchTokens(str) {
+  return String(str || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9.]+/g, ' ')
+    .split(/\s+/)
+    .filter(t => t && t.length > 1 && !MATCH_STOPWORDS.has(t));
+}
+
+function matchScore(desc, name) {
+  const d = matchTokens(desc), n = matchTokens(name);
+  if (!d.length || !n.length) return 0;
+  let hit = 0;
+  for (const dt of d) {
+    const isNum = /^[0-9.]+$/.test(dt);
+    let best = 0;
+    for (const nt of n) {
+      if (nt === dt) { best = isNum ? 1.6 : 1; break; }
+      if (!isNum && dt.length >= 3 && (nt.startsWith(dt) || dt.startsWith(nt))) best = Math.max(best, 0.7);
+    }
+    hit += best;
+  }
+  return hit / d.length;
+}
+
+// Best candidate products for an unmapped invoice description.
+function suggestProducts(desc, catalog, limit = 5) {
+  return catalog
+    .map(p => ({ asin: p.asin, name: p.name, sku: p.sku, image: p.image, location: p.location, score: matchScore(desc, p.name) }))
+    .filter(x => x.score >= 0.34)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+    .map(x => ({ ...x, confidence: Math.min(99, Math.round(x.score * 100)) }));
+}
+
 // ---- Postgres ----
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -1016,6 +1059,19 @@ app.get('/api/invoices/:orderNumber', auth, async (req, res) => {
      FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin = ii.asin
      WHERE ii.order_number=$1 ORDER BY ii.id`, [req.params.orderNumber]);
 
+  // Self-healing: for every line we could NOT map to an ASIN, suggest the most
+  // likely products by description so the receiver can bind it in one tap —
+  // no need to open a case and scan a bottle.
+  try {
+    const unmapped = rows.filter(r => !r.asin);
+    if (unmapped.length) {
+      const cat = await pool.query('SELECT asin, name, sku, image, location FROM inv_products ORDER BY name');
+      for (const r of unmapped) r.candidates = suggestProducts(r.description, cat.rows);
+    }
+  } catch (e) {
+    console.error('[Match] candidate build failed (non-fatal):', e.message);
+  }
+
   // Attach pallet-location context so check-in can pre-fill known items and
   // flag brand-new ones that still need a slot.
   try {
@@ -1135,10 +1191,49 @@ app.get('/api/cosmo-map', auth, async (req, res) => {
 });
 
 // Complete an invoice -> push RECEIVED quantities into on-hand
+// Set every line's received qty to the expected qty (clean truck, no exceptions).
+app.post('/api/invoices/:orderNumber/receive-all', auth, async (req, res) => {
+  const order = req.params.orderNumber;
+  const r = await pool.query(
+    'UPDATE inv_invoice_items SET qty_received = qty_expected WHERE order_number=$1 AND asin IS NOT NULL RETURNING id',
+    [order]);
+  res.json({ ok: true, lines: r.rowCount });
+});
+
+// Complete a check-in.
+//   dryRun: true  -> PRACTICE. Computes and returns the full preview, writes
+//                    NOTHING to stock, activity, locations, or invoice status.
+//   force:  true  -> proceed even though some lines are still unmapped
+//                    (those units are discarded — the UI must say so).
+// Without force, unmapped lines hard-stop with 409 so nothing is silently lost.
 app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   const order = req.params.orderNumber;
-  const lines = await pool.query('SELECT asin, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1', [order]);
-  let added = 0, discrepancies = [];
+  const dryRun = !!(req.body && req.body.dryRun);
+  const force  = !!(req.body && req.body.force);
+
+  const lines = await pool.query(
+    'SELECT asin, cosmo_num, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1',
+    [order]);
+
+  // ---- HARD STOP: never silently drop unmapped lines ----
+  const unmapped = lines.rows.filter(l => !l.asin);
+  if (unmapped.length && !force) {
+    return res.status(409).json({
+      ok: false,
+      error: 'unmapped_lines',
+      unmapped: unmapped.map(l => ({
+        cosmo_num: l.cosmo_num,
+        description: l.description,
+        qty_expected: l.qty_expected,
+        qty_received: l.qty_received
+      })),
+      unmappedUnits: unmapped.reduce((n, l) => n + (l.qty_received || l.qty_expected || 0), 0)
+    });
+  }
+
+  let added = 0;
+  const discrepancies = [];
+  const preview = [];
 
   // Pallet locations picked during check-in: { asin: 'A-1', ... }
   const locs = (req.body && req.body.locations) || {};
@@ -1146,26 +1241,49 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   for (const [asin, raw] of Object.entries(locs)) {
     const loc = normLoc(raw);
     if (!loc) continue;
-    try {
-      await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
-      locSet++;
-    } catch (e) { console.error('[Location] set failed for', asin, e.message); }
+    if (!dryRun) {
+      try {
+        await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
+      } catch (e) { console.error('[Location] set failed for', asin, e.message); continue; }
+    }
+    locSet++;
   }
-  if (locSet) console.log(`[Location] Set ${locSet} pallet locations from invoice ${order}.`);
+  if (locSet && !dryRun) console.log(`[Location] Set ${locSet} pallet locations from invoice ${order}.`);
+
   for (const l of lines.rows) {
-    if (!l.asin) continue; // unmapped lines skipped
+    if (!l.asin) {
+      preview.push({ description: l.description, cosmo_num: l.cosmo_num, asin: null,
+                     qty: l.qty_received, expected: l.qty_expected, willAdd: false, reason: 'unmapped — DISCARDED' });
+      continue;
+    }
     if (l.qty_received > 0) {
-      await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
-      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
-        ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
+      if (!dryRun) {
+        await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
+        await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+          ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
+      }
       added += l.qty_received;
+      preview.push({ description: l.description, asin: l.asin, qty: l.qty_received,
+                     expected: l.qty_expected, location: locs[l.asin] || null, willAdd: true });
+    } else {
+      preview.push({ description: l.description, asin: l.asin, qty: 0,
+                     expected: l.qty_expected, willAdd: false, reason: 'nothing received' });
     }
     if (l.qty_received !== l.qty_expected) {
       discrepancies.push({ description: l.description, expected: l.qty_expected, received: l.qty_received });
     }
   }
-  await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
-  res.json({ ok: true, added, discrepancies, locationsSet: locSet });
+
+  if (!dryRun) {
+    await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
+  }
+
+  res.json({
+    ok: true, dryRun, added, discrepancies, preview,
+    locationsSet: locSet,
+    unmappedCount: unmapped.length,
+    lineCount: lines.rows.length
+  });
 });
 
 // Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs
