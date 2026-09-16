@@ -1654,6 +1654,18 @@ app.post('/api/upc-precheck', auth, async (req, res) => {
   });
 });
 
+// Age + size of every cached data set, for the freshness bar.
+app.get('/api/cache-status', auth, async (req, res) => {
+  const { rows } = await pool.query('SELECT cache_key, updated_at, data FROM inv_cache');
+  const out = {};
+  for (const r of rows) {
+    let n = 0;
+    try { n = Array.isArray(r.data) ? r.data.length : (r.data && r.data.items ? r.data.items.length : 0); } catch(e) {}
+    out[r.cache_key] = { updated_at: r.updated_at, count: n };
+  }
+  res.json(out);
+});
+
 // Break a bad link so the number shows as unmapped again and can be re-picked.
 app.post('/api/cosmo-map/unlink', auth, async (req, res) => {
   const { cosmo_num } = req.body || {};
@@ -2340,9 +2352,14 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
   const carried = new Set(stockRows.rows.map(r=>r.asin));
   // FBA quantities from the last FBA pull
   let fbaByAsin = {};
+  let transitViaDuoByAsin = {};
   try {
     const fc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'");
-    if (fc.rows.length) for (const f of (fc.rows[0].data||[])) fbaByAsin[f.asin] = f.fba_total||0;
+    if (fc.rows.length) for (const f of (fc.rows[0].data||[])) {
+      // effective = own units + bottles sitting inside duos at Amazon
+      fbaByAsin[f.asin] = (f.fba_effective != null ? f.fba_effective : (f.fba_total||0));
+      transitViaDuoByAsin[f.asin] = f.transit_via_duo || 0;
+    }
   } catch(e) {}
 
   // optional SmartScout enrichment (units/revenue where we have it)
@@ -2373,7 +2390,7 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       available: st.onhand ? Math.max(0, st.onhand - (st.pending_prep||0) - (st.prepped||0)) : 0,
       pendingPrep: st.pending_prep||0,
       prepped: st.prepped||0,
-      transit: st.transit||0,
+      transit: (st.transit||0) + (transitViaDuoByAsin[m.asin]||0),
       fba: fbaByAsin[m.asin]||0,
     };
   });
@@ -2456,8 +2473,9 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     const f = fbaByAsin[p.asin] || fbaBySku[p.sku] || {};
 
     const onhand = p.onhand || 0;
-    const transit = p.transit || 0;
-    const fbaTotal = f.fba_total || 0;
+    // include component bottles riding inside duos, both at FBA and in transit
+    const transit = (p.transit || 0) + (f.transit_via_duo || 0);
+    const fbaTotal = (f.fba_effective != null ? f.fba_effective : (f.fba_total || 0));
     const fbaFulfillable = f.fba_fulfillable || 0;
     const fbaInbound = f.fba_inbound || 0;
 
@@ -2879,6 +2897,22 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   }
   console.log(`[FBA] Captured/updated ${fnskusSaved} FNSKUs. ${Object.keys(fba).length} SKUs collapsed to ${Object.keys(fbaByAsin).length} ASINs.`);
 
+  // ---- DUO EXPLOSION ----
+  // A duo at Amazon is ONE sellable unit but TWO physical bottles. FBA reports
+  // it against the bundle ASIN only, so a component whose bottles are sitting
+  // inside hundreds of duos reads as zero at FBA — and the reorder tools then
+  // tell you to buy more of a bottle you already have plenty of. Prep already
+  // explodes bundles into components; this does the same for FBA and transit.
+  const bundles = await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles');
+  const viaDuoFba = {}, viaDuoTransit = {};
+  for (const b of bundles.rows) {
+    const per = b.qty || 1;
+    const bFba     = (fbaByAsin[b.bundle_asin] || {}).total || 0;
+    const bTransit = (byAsin[b.bundle_asin] || {}).transit || 0;
+    if (bFba)     viaDuoFba[b.component_asin]     = (viaDuoFba[b.component_asin]     || 0) + bFba * per;
+    if (bTransit) viaDuoTransit[b.component_asin] = (viaDuoTransit[b.component_asin] || 0) + bTransit * per;
+  }
+
   const out = [];
   const allAsins = new Set([...Object.keys(byAsin), ...Object.keys(fbaByAsin)]);
   for (const asin of allAsins) {
@@ -2886,6 +2920,8 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     const a = fbaByAsin[asin] || { total:0, fulfillable:0, inbound:0, skus:[] };
     const warehouse = o.onhand || 0;
     const transit   = o.transit || 0;
+    const fbaViaDuo     = viaDuoFba[asin] || 0;
+    const transitViaDuo = viaDuoTransit[asin] || 0;
     out.push({
       asin,
       sku: o.sku || a.skus[0] || '',
@@ -2895,11 +2931,26 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
       pending_prep: o.pending_prep || 0,
       prepped: o.prepped || 0,
       available: Math.max(0, warehouse - (o.pending_prep||0) - (o.prepped||0)),
+      // fba_total stays THIS ASIN's own units so page totals never double-count
       fba_total: a.total, fba_fulfillable: a.fulfillable, fba_inbound: a.inbound,
+      // …and the effective figures include bottles held inside duos. Reorder
+      // maths must use these, display totals must not.
+      fba_via_duo: fbaViaDuo,
+      transit_via_duo: transitViaDuo,
+      fba_effective: a.total + fbaViaDuo,
+      transit_effective: transit + transitViaDuo,
       grand_total: warehouse + transit + a.total
     });
   }
   out.sort((a,b)=>b.grand_total-a.grand_total);
+
+  // PERSIST — products-to-add and the restock plan read this cache. Nothing
+  // wrote it before, so both were treating FBA stock as zero.
+  try {
+    await saveCache('fba_inventory', out);
+    console.log(`[FBA] Cached ${out.length} ASINs.`);
+  } catch(e) { console.error('[FBA] cache save failed (non-fatal):', e.message); }
+
   res.json(out);
 });
 
