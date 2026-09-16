@@ -265,6 +265,14 @@
         <option value="">— pick an invoice —</option>
       </select>
     </div>
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <b style="font-size:15px">All invoices</b>
+        <button onclick="toggleInvoiceManager()" id="invMgrBtn" style="padding:6px 12px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Show</button>
+      </div>
+      <div class="hint">Open or delete any invoice — including ones already marked complete.</div>
+      <div id="invManager" style="display:none;margin-top:10px"></div>
+    </div>
     <div id="reconcileWork" style="display:none">
       <div class="box">
         <label>Scan items as you unpack</label>
@@ -2451,8 +2459,73 @@ function loadInvoiceList(){
     const pending=list.filter(i=>i.status==='pending');
     sel.innerHTML='<option value="">— pick an invoice —</option>'+
       pending.map(i=>`<option value="${i.order_number}">#${i.order_number} · ${i.invoice_date} · ${i.received}/${i.expected} received</option>`).join('');
+    const mgr=document.getElementById('invManager');
+    if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   });
 }
+function toggleInvoiceManager(){
+  const box=document.getElementById('invManager');
+  const btn=document.getElementById('invMgrBtn');
+  if(!box)return;
+  const showing = box.style.display!=='none';
+  box.style.display = showing?'none':'block';
+  if(btn) btn.textContent = showing?'Show':'Hide';
+  if(!showing) renderInvoiceManager();
+}
+
+function renderInvoiceManager(){
+  const box=document.getElementById('invManager'); if(!box)return;
+  box.innerHTML='<div class="hint">Loading…</div>';
+  api('/api/invoices').then(list=>{
+    if(!list || !list.length){ box.innerHTML='<div class="hint">No invoices loaded.</div>'; return; }
+    box.innerHTML = list.map(i=>{
+      const done = i.status==='received';
+      const badge = '<span style="font-size:10.5px;font-weight:800;padding:3px 8px;border-radius:5px;white-space:nowrap;background:'
+        +(done?'#eafaf1':'#fdf6e3')+';color:'+(done?'#1e8449':'#b7791f')+'">'+(done?'✓ COMPLETE':'PENDING')+'</span>';
+      return '<div style="display:flex;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6;flex-wrap:wrap">'
+        +'<div style="flex:1;min-width:150px">'
+        +'<div style="font-weight:700;font-size:13.5px">#'+i.order_number+' <span style="color:#8a97a6;font-weight:500">· '+(i.invoice_date||'no date')+'</span></div>'
+        +'<div style="font-size:11.5px;color:#8a97a6;margin-top:2px">'+i.lines+' line'+(i.lines===1?'':'s')+' · '+i.received+' / '+i.expected+' units received</div>'
+        +'</div>'+badge
+        +'<button onclick="openInvoiceFromManager(\''+i.order_number+'\')" style="padding:6px 11px;font-size:11.5px;font-weight:700;background:#1a2b4a;color:#fff;border:none;border-radius:5px;cursor:pointer">Open</button>'
+        +'<button onclick="deleteInvoiceByNumber(\''+i.order_number+'\',\''+i.status+'\','+i.received+')" style="padding:6px 11px;font-size:11.5px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:5px;cursor:pointer">Delete</button>'
+        +'</div>';
+    }).join('');
+  }).catch(()=>{ box.innerHTML='<div class="hint" style="color:#c0392b">Could not load invoices.</div>'; });
+}
+
+function openInvoiceFromManager(order){
+  const sel=document.getElementById('invoicePick');
+  // A completed invoice is not in the dropdown — add it so it can be opened.
+  if(sel && !Array.from(sel.options).some(o=>o.value===order)){
+    const o=document.createElement('option'); o.value=order; o.textContent='#'+order+' (completed)'; sel.appendChild(o);
+  }
+  if(sel) sel.value=order;
+  loadInvoice();
+  document.getElementById('reconcileWork').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+function deleteInvoiceByNumber(order, status, received){
+  let msg='Delete invoice #'+order+'?\n\nThis removes the invoice and all of its lines.';
+  if(status==='received' && received>0){
+    msg+='\n\n⚠ WARNING: this invoice was already marked complete and '+received
+      +' units were added to On Hand.\n\nDeleting the invoice does NOT remove those units — your stock counts stay as they are. '
+      +'You would need to adjust On Hand manually if you want them reversed.';
+  }
+  msg+='\n\nThis cannot be undone.';
+  if(!confirm(msg))return;
+  api('/api/invoices/'+order+'/delete',{method:'POST'}).then(()=>{
+    toast('Invoice #'+order+' deleted');
+    if(currentInvoice===order){
+      currentInvoice=null;
+      document.getElementById('reconcileWork').style.display='none';
+      document.getElementById('invoicePick').value='';
+    }
+    loadInvoiceList();
+    renderInvoiceManager();
+  }).catch(()=>toast('Delete failed',true));
+}
+
 function loadInvoice(){
   const order=document.getElementById('invoicePick').value;
   currentInvoice=order;
