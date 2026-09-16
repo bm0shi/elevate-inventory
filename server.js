@@ -2816,16 +2816,21 @@ let mktJob = { running:false, done:false, error:null, startedAt:null, finishedAt
 
 app.post('/api/market-data/start', ownerAuth, async (req, res) => {
   if (mktJob.running) return res.json({ ok:true, alreadyRunning:true, job:mktJob });
-  mktJob = { running:true, done:false, error:null, startedAt:new Date(), finishedAt:null, progress:'starting…', count:0, tokensLeft:null };
+  const opts = { minPrice: req.body && req.body.minPrice, maxAgeDays: req.body && req.body.maxAgeDays };
+  mktJob = { running:true, done:false, error:null, startedAt:new Date(), finishedAt:null, progress:'starting…', count:0, tokensLeft:null, pulled:0, skippedCheap:0, skippedFresh:0, failed:[] };
   res.json({ ok:true, started:true });      // respond immediately
 
   // run in background
   (async () => {
     try {
       mktJob.progress = 'pulling from Keepa…';
-      const result = await runMarketDataPull((msg)=>{ mktJob.progress = msg; });
+      const result = await runMarketDataPull((msg)=>{ mktJob.progress = msg; }, opts);
       mktJob.count = result.count;
       mktJob.tokensLeft = result.tokensLeft;
+      mktJob.pulled = result.pulled;
+      mktJob.skippedCheap = result.skippedCheap;
+      mktJob.skippedFresh = result.skippedFresh;
+      mktJob.failed = result.failed || [];
       mktJob.done = true;
       mktJob.progress = 'complete';
     } catch (err) {
@@ -2945,55 +2950,103 @@ setTimeout(()=>{ runMfnScan().catch(e=>console.error('[MFN] scheduled scan faile
 setInterval(()=>{ runMfnScan().catch(e=>console.error('[MFN] scheduled scan failed:', e.message)); }, 12*60*60*1000);
 
 // Shared pull used by BOTH the direct endpoint and the background job
-async function runMarketDataPull(onProgress) {
+async function runMarketDataPull(onProgress, opts = {}) {
   if (!keepa.keyOk()) throw new Error('KEEPA_API_KEY not set in Railway variables');
   let asins;
   try { asins = JSON.parse(fs.readFileSync(path.join(__dirname, 'keepa_asins.json'), 'utf8')); }
   catch(e){ asins = []; }
   if (!asins.length) throw new Error('No target ASINs configured');
 
-  if (onProgress) onProgress(`pulling ${asins.length} ASINs from Keepa…`);
-  const r = await keepa.getProducts(asins, onProgress);
-  const products = r.products, tokensLeft = r.tokensLeft;
+  const minPrice   = Number(opts.minPrice) || 0;     // skip cheap items entirely
+  const maxAgeDays = Number(opts.maxAgeDays) || 0;   // 0 = refresh everything
 
-  if (onProgress) onProgress('saving…');
+  // ---- existing cache becomes the base, so a partial run still adds value ----
+  const prev = {};
+  try {
+    const c = await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'");
+    if (c.rows.length) for (const m of (c.rows[0].data || [])) prev[m.asin] = m;
+  } catch(e) {}
+
+  const carried = new Set();
+  try {
+    const cr = await pool.query('SELECT asin FROM inv_products');
+    for (const r of cr.rows) carried.add(r.asin);
+  } catch(e) {}
+
+  // ---- decide what actually needs pulling ----
+  const now = Date.now();
+  let skippedCheap = 0, skippedFresh = 0;
+  const target = asins.filter(a => {
+    const p = prev[a];
+    // never skip something we stock — those numbers drive reordering
+    if (carried.has(a)) return true;
+    if (minPrice > 0 && p && p.buyBoxPrice != null && p.buyBoxPrice < minPrice) { skippedCheap++; return false; }
+    if (maxAgeDays > 0 && p && p.updatedAt && (now - new Date(p.updatedAt).getTime()) < maxAgeDays*86400000) { skippedFresh++; return false; }
+    return true;
+  });
+
+  if (onProgress) onProgress(`${target.length} ASINs to pull (${skippedCheap} under $${minPrice}, ${skippedFresh} still fresh)`);
+  if (!target.length) {
+    const items = Object.values(prev);
+    return { count: items.length, tokensLeft: null, items, skippedCheap, skippedFresh, pulled: 0, failed: [] };
+  }
+
   const onhandRows = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
   const byAsin = {}; for (const row of onhandRows.rows) byAsin[row.asin] = row;
 
-  let imgsSaved = 0;
-  for (const p of products) {
-    if (p.image && p.asin) {
-      try { const u = await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2', [p.image, p.asin]); if(u.rowCount) imgsSaved++; } catch(e){}
-    }
-  }
-  console.log('[Market] Images saved: ' + imgsSaved + ' of ' + products.length);
+  const merged = { ...prev };
+  let pulled = 0, imgsSaved = 0;
 
-  const out = products.map(p => {
-    const mine = byAsin[p.asin] || {};
-    return {
-      asin: p.asin,
-      name: mine.name || p.title,
-      onhand: mine.onhand || 0,
-      salesRank: p.salesRank,
-      monthlySold: p.monthlySold,
-      buyBoxPrice: p.buyBoxPrice,
-      amazonHasBuyBox: p.amazonHasBuyBox,
-      amazonOOS: p.amazonOOS,
-      offerCount: p.offerCount,
-      pickPackFee: p.pickPackFee,
-      referralPct: p.referralPct,
-    };
-  });
-  const seen = new Set();
-  const deduped = out.filter(x => { if(seen.has(x.asin)) return false; seen.add(x.asin); return true; });
-  deduped.sort((a,b)=>{
-    const ar = a.salesRank == null ? 1e12 : a.salesRank;
-    const br = b.salesRank == null ? 1e12 : b.salesRank;
-    return ar - br;
-  });
-  await saveCache('market_data', deduped);
-  return { count: deduped.length, tokensLeft, items: deduped };
+  // ---- SAVE AFTER EVERY BATCH ----
+  // Previously the cache was written once, at the very end. A single failed
+  // batch threw the whole run away, which is why repeated refreshes never
+  // moved the "last updated" stamp. Now every batch that lands is kept.
+  const persistBatch = async (products, info) => {
+    for (const p of products) {
+      if (!p.asin) continue;
+      const mine = byAsin[p.asin] || {};
+      merged[p.asin] = {
+        asin: p.asin,
+        name: mine.name || p.title,
+        onhand: mine.onhand || 0,
+        salesRank: p.salesRank,
+        monthlySold: p.monthlySold,
+        buyBoxPrice: p.buyBoxPrice,
+        amazonHasBuyBox: p.amazonHasBuyBox,
+        amazonOOS: p.amazonOOS,
+        offerCount: p.offerCount,
+        pickPackFee: p.pickPackFee,
+        referralPct: p.referralPct,
+        updatedAt: new Date().toISOString(),
+      };
+      pulled++;
+      if (p.image) {
+        try { const u = await pool.query('UPDATE inv_products SET image=$1 WHERE asin=$2', [p.image, p.asin]); if (u.rowCount) imgsSaved++; } catch(e) {}
+      }
+    }
+    const list = Object.values(merged);
+    list.sort((a,b)=>{
+      const ar = a.salesRank == null ? 1e12 : a.salesRank;
+      const br = b.salesRank == null ? 1e12 : b.salesRank;
+      return ar - br;
+    });
+    try {
+      await saveCache('market_data', list);
+      console.log(`[Market] Saved ${list.length} products after batch ${info.batchIndex + 1} (tokens left ${info.tokensLeft}).`);
+    } catch(e) { console.error('[Market] batch save failed:', e.message); }
+    if (onProgress) onProgress(`saved ${list.length} products · ${info.done}/${info.total} pulled · tokens ${info.tokensLeft}`);
+  };
+
+  const r = await keepa.getProducts(target, onProgress, persistBatch);
+
+  const items = Object.values(merged);
+  console.log(`[Market] Done. pulled ${pulled}, images ${imgsSaved}, failed batches ${(r.failed||[]).length}.`);
+  return {
+    count: items.length, tokensLeft: r.tokensLeft, items,
+    pulled, skippedCheap, skippedFresh, failed: r.failed || []
+  };
 }
+
 
 // Direct (synchronous) pull — kept for small sets; may time out on large ones
 app.get('/api/market-data', ownerAuth, async (req, res) => {
