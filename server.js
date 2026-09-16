@@ -665,6 +665,30 @@ async function initDb() {
     console.log('[Inventory] Cost history ready.');
   } catch(e) { console.error('cost history migration skipped:', e.message); }
 
+  // ---- Hazmat, keyed by ASIN (idempotent) ----
+  // Originally stored on inv_products, which only holds the ~111 products we
+  // actually carry. Products to Add is about the ~469 Keepa ASINs we DON'T
+  // carry, so those could never hold a flag and every one fell into "unknown".
+  // A standalone table lets any ASIN be tagged.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_hazmat (
+        asin TEXT PRIMARY KEY,
+        hazmat BOOLEAN,
+        source TEXT,
+        detail TEXT,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    // carry across anything already tagged on inv_products
+    await pool.query(`
+      INSERT INTO inv_hazmat(asin, hazmat, source, detail)
+      SELECT asin, hazmat, COALESCE(hazmat_source,'manual'), hazmat_detail
+      FROM inv_products WHERE hazmat IS NOT NULL
+      ON CONFLICT (asin) DO NOTHING`);
+    console.log('[Inventory] Hazmat table ready.');
+  } catch(e) { console.error('hazmat table migration skipped:', e.message); }
+
   // ---- Hazmat flags (idempotent) ----
   // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
   // a manual call by the owner always outranks Amazon's declaration.
@@ -1752,6 +1776,41 @@ async function recomputeCosts() {
   return n;
 }
 
+// Build cost history from invoice lines already in the database.
+// Lots are only captured when a check-in COMPLETES, so every invoice received
+// before that feature existed has its costs sitting unused in inv_invoice_items.
+// This backfills them. It never touches stock.
+app.post('/api/costs/backfill', ownerAuth, async (req, res) => {
+  try {
+    const includePending = !!(req.body && req.body.includePending);
+    const { rows } = await pool.query(`
+      SELECT ii.asin, ii.order_number, i.invoice_date, ii.unit_cost,
+             GREATEST(COALESCE(ii.qty_received,0), CASE WHEN $1 THEN COALESCE(ii.qty_expected,0) ELSE 0 END) AS qty
+      FROM inv_invoice_items ii
+      JOIN inv_invoices i ON i.order_number = ii.order_number
+      WHERE ii.asin IS NOT NULL AND ii.unit_cost IS NOT NULL
+        AND ($1 OR i.status = 'received')`, [includePending]);
+
+    let inserted = 0, skippedNoQty = 0;
+    for (const r of rows) {
+      const qty = parseInt(r.qty, 10) || 0;
+      if (qty <= 0) { skippedNoQty++; continue; }
+      await pool.query(
+        `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
+         VALUES($1,$2,$3,$4,$5)
+         ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
+        [r.asin, r.order_number, r.invoice_date, r.unit_cost, qty]);
+      inserted++;
+    }
+    const products = await recomputeCosts();
+    console.log(`[Costs] Backfilled ${inserted} lots (${skippedNoQty} had no quantity).`);
+    res.json({ ok: true, lots: inserted, skippedNoQty, products, candidates: rows.length });
+  } catch (e) {
+    console.error('[Costs] backfill failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/costs/recompute', ownerAuth, async (req, res) => {
   try { const n = await recomputeCosts(); res.json({ ok: true, products: n }); }
   catch (e) { res.status(500).json({ error: e.message }); }
@@ -1810,8 +1869,28 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
     });
   }
   out.sort((a, b2) => (b2.profitLast30 || 0) - (a.profitLast30 || 0));
+
+  // If there is nothing to show, say exactly why rather than rendering blank.
+  let diag = null;
+  if (!out.length) {
+    try {
+      const q = async (sql, params=[]) => (await pool.query(sql, params)).rows[0];
+      const lots   = await q('SELECT COUNT(*)::int AS n FROM inv_cost_history');
+      const lines  = await q('SELECT COUNT(*)::int AS n FROM inv_invoice_items');
+      const costed = await q('SELECT COUNT(*)::int AS n FROM inv_invoice_items WHERE unit_cost IS NOT NULL');
+      const mapped = await q('SELECT COUNT(*)::int AS n FROM inv_invoice_items WHERE unit_cost IS NOT NULL AND asin IS NOT NULL');
+      const recvd  = await q("SELECT COUNT(*)::int AS n FROM inv_invoices WHERE status='received'");
+      const withQty= await q('SELECT COUNT(*)::int AS n FROM inv_invoice_items WHERE unit_cost IS NOT NULL AND asin IS NOT NULL AND COALESCE(qty_received,0) > 0');
+      diag = {
+        costLots: lots.n, invoiceLines: lines.n, linesWithCost: costed.n,
+        linesWithCostAndAsin: mapped.n, linesReadyToBackfill: withQty.n,
+        receivedInvoices: recvd.n
+      };
+    } catch (e) { diag = { error: e.message }; }
+  }
+
   res.json({
-    items: out,
+    items: out, diag,
     totals: {
       spend: totalSpend, units: totalUnits, saved: totalSaved,
       avgCost: totalUnits ? totalSpend / totalUnits : null,
@@ -1826,6 +1905,16 @@ app.post('/api/hazmat/set', auth, async (req, res) => {
   const { asin, hazmat } = req.body || {};
   if (!asin) return res.status(400).json({ error: 'asin required' });
   const v = (hazmat === null || hazmat === undefined || hazmat === '') ? null : !!hazmat;
+  if (v === null) {
+    await pool.query('DELETE FROM inv_hazmat WHERE asin=$1', [asin]);
+  } else {
+    await pool.query(
+      `INSERT INTO inv_hazmat(asin, hazmat, source, detail, updated_at)
+       VALUES($1,$2,'manual','set by owner',now())
+       ON CONFLICT (asin) DO UPDATE SET hazmat=$2, source='manual', detail='set by owner', updated_at=now()`,
+      [asin, v]);
+  }
+  // mirror onto the product row so the On Hand side stays in step
   await pool.query('UPDATE inv_products SET hazmat=$1, hazmat_source=$2, hazmat_detail=$3 WHERE asin=$4',
     [v, v === null ? null : 'manual', v === null ? null : 'set by owner', asin]);
   res.json({ ok: true, asin, hazmat: v });
@@ -1839,12 +1928,24 @@ app.post('/api/hazmat/scan', auth, async (req, res) => {
   res.json({ ok:true });
   (async () => {
     try {
-      const { rows } = await pool.query("SELECT asin FROM inv_products WHERE hazmat_source IS DISTINCT FROM 'manual'");
-      hazJob.progress = `checking ${rows.length} products…`;
-      const r = await getHazmatStatus(rows.map(x=>x.asin), p => { hazJob.progress = p; });
+      // every ASIN we track, not just the ones we stock
+      let tracked = [];
+      try { tracked = JSON.parse(fs.readFileSync(path.join(__dirname, 'keepa_asins.json'), 'utf8')); } catch(e) {}
+      const owned = await pool.query('SELECT asin FROM inv_products');
+      const manual = await pool.query("SELECT asin FROM inv_hazmat WHERE source='manual'");
+      const skip = new Set(manual.rows.map(x=>x.asin));
+      const all = [...new Set([...tracked, ...owned.rows.map(x=>x.asin)])].filter(a => a && !skip.has(a));
+      hazJob.progress = `checking ${all.length} ASINs…`;
+      const r = await getHazmatStatus(all, p => { hazJob.progress = p; });
       for (const asin of Object.keys(r)) {
         const h = r[asin];
         if (h.hazmat === null) continue;
+        await pool.query(
+          `INSERT INTO inv_hazmat(asin, hazmat, source, detail, updated_at)
+           VALUES($1,$2,$3,$4,now())
+           ON CONFLICT (asin) DO UPDATE SET hazmat=$2, source=$3, detail=$4, updated_at=now()
+           WHERE inv_hazmat.source IS DISTINCT FROM 'manual'`,
+          [asin, h.hazmat, h.source, h.detail]);
         await pool.query(
           "UPDATE inv_products SET hazmat=$1, hazmat_source=$2, hazmat_detail=$3 WHERE asin=$4 AND hazmat_source IS DISTINCT FROM 'manual'",
           [h.hazmat, h.source, h.detail, asin]);
@@ -2584,6 +2685,12 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       )::int AS prepped
     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
   const stockByAsin = {}; for (const r of stockRows.rows) stockByAsin[r.asin] = r;
+  // Hazmat for EVERY tracked ASIN, carried or not.
+  const hazByAsin = {};
+  try {
+    const hz = await pool.query('SELECT asin, hazmat, source FROM inv_hazmat');
+    for (const r of hz.rows) hazByAsin[r.asin] = r;
+  } catch (e) {}
   const carried = new Set(stockRows.rows.map(r=>r.asin));
   // FBA quantities from the last FBA pull
   let fbaByAsin = {};
@@ -2622,8 +2729,9 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       amazonOOS: m.amazonOOS,
       buyBoxPrice: m.buyBoxPrice,
       carried: carried.has(m.asin),
-      hazmat: (st.hazmat === true || st.hazmat === false) ? st.hazmat : null,
-      hazmatSource: st.hazmat_source || null,
+      hazmat: hazByAsin[m.asin] ? hazByAsin[m.asin].hazmat
+              : ((st.hazmat === true || st.hazmat === false) ? st.hazmat : null),
+      hazmatSource: hazByAsin[m.asin] ? hazByAsin[m.asin].source : (st.hazmat_source || null),
       available: st.onhand ? Math.max(0, st.onhand - (st.pending_prep||0) - (st.prepped||0)) : 0,
       pendingPrep: st.pending_prep||0,
       prepped: st.prepped||0,
