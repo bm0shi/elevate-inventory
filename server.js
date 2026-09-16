@@ -14,27 +14,63 @@ const pdfParse = require('pdf-parse');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 // Shared: parse Cosmoprof invoice text (multi-order) into created invoices.
+//
+// IMPORTANT: Cosmoprof repeats "FOR ORDER NUMBER: xxx" on EVERY page of a
+// multi-page invoice, so splitting on that header yields one segment PER PAGE,
+// not per order. Each write begins with DELETE ... WHERE order_number, so
+// writing per-segment used to wipe the earlier pages — a 2-page invoice kept
+// only its last page, silently. We now merge every segment sharing an order
+// number BEFORE touching the database.
 async function processInvoiceText(text) {
   const parts = text.split(/FOR ORDER NUMBER:\s*(\d+)/);
   const created = [], errors = [];
+
+  const orders = new Map();
   for (let i = 1; i < parts.length; i += 2) {
     const orderNumber = parts[i].trim();
-    const body = parts[i+1] || '';
-    const dateM = (parts[i-1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
-    const date = dateM ? dateM[dateM.length-1] : '';
-    const items = [];
+    const body = parts[i + 1] || '';
+    const dateM = (parts[i - 1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
+    const date = dateM ? dateM[dateM.length - 1] : '';
+
+    if (!orders.has(orderNumber)) orders.set(orderNumber, { date, items: [], pages: 0, rejected: [] });
+    const o = orders.get(orderNumber);
+    o.pages++;
+    if (!o.date && date) o.date = date;
+
     for (const line of body.split(/\r?\n/)) {
       let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
-      if (m) { items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]), unit_cost: parseFloat(m[4]) }); continue; }
+      if (m) { o.items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]), unit_cost: parseFloat(m[4]) }); continue; }
       let m2 = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s*$/);
-      if (m2) { items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), incomplete: true }); }
+      if (m2) { o.items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), incomplete: true }); continue; }
+      // Looked like an item row but did not parse — surface it, never drop it.
+      if (/^\s*\d{6}\s+\S/.test(line)) o.rejected.push(line.trim().slice(0, 90));
     }
+  }
+
+  for (const [orderNumber, o] of orders) {
+    const date = o.date;
+
+    // Same item appearing on two pages (split shipment) becomes ONE line with
+    // quantities summed. The merge count is reported back so it is never silent.
+    const mergedMap = new Map();
+    let mergedCount = 0;
+    for (const it of o.items) {
+      const prev = mergedMap.get(it.cosmo_num);
+      if (prev) { prev.qty_shipped += it.qty_shipped; mergedCount++; }
+      else mergedMap.set(it.cosmo_num, Object.assign({}, it));
+    }
+    const items = [...mergedMap.values()];
+
     if (!items.length) { errors.push(`Order ${orderNumber}: no items parsed`); continue; }
+    if (o.rejected.length) {
+      errors.push(`Order ${orderNumber}: ${o.rejected.length} line(s) looked like items but did NOT parse — ${o.rejected.join(' | ')}`);
+    }
+
     await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending') ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [orderNumber, date]);
     await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
     let mapped = 0, unmapped = 0;
     for (const it of items) {
-      const c6 = (it.cosmo_num.length===7 && it.cosmo_num[0]==='1') ? it.cosmo_num.slice(1) : it.cosmo_num;
+      const c6 = (it.cosmo_num.length === 7 && it.cosmo_num[0] === '1') ? it.cosmo_num.slice(1) : it.cosmo_num;
       const mm = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
       const asin = mm.rows[0]?.asin || null;
       if (asin) mapped++; else unmapped++;
@@ -45,7 +81,9 @@ async function processInvoiceText(text) {
         await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2', [it.unit_cost, asin]);
       }
     }
-    created.push({ orderNumber, items: items.length, mapped, unmapped, date });
+    console.log(`[Invoice] ${orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
+    created.push({ orderNumber, items: items.length, mapped, unmapped, date,
+                   pages: o.pages, merged: mergedCount, rejected: o.rejected.length });
   }
   return { created, errors };
 }
@@ -1661,7 +1699,24 @@ app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res
     const data = await pdfParse(req.file.buffer);
     text = data.text || '';
   } catch (err) {
-    return res.status(400).json({ error: 'Could not read PDF: ' + err.message });
+    // pdf-parse bundles an old pdf.js that rejects some modern Cosmoprof PDFs
+    // (linearised, cross-reference streams). The file is usually fine — the
+    // reader is not. Say so, and point at the paste fallback.
+    const msg = String(err && err.message || err);
+    const known = /invalid pdf|structure|xref|startxref/i.test(msg);
+    console.error('[PDF] parse failed:', msg);
+    return res.status(400).json({
+      error: known
+        ? 'The PDF reader could not open this file ("' + msg + '"). The invoice itself is almost certainly fine — this reader rejects newer Cosmoprof PDFs. Open the PDF, select all the text (Ctrl+A), copy it, and use the PASTE option instead.'
+        : 'Could not read PDF: ' + msg,
+      pdfReaderFailed: true
+    });
+  }
+  if (!text.trim()) {
+    return res.status(400).json({
+      error: 'The PDF opened but contained no selectable text — it is probably a scan. Use the paste option, or re-download the invoice from Cosmoprof.',
+      pdfReaderFailed: true
+    });
   }
   if (!/FOR ORDER NUMBER:/i.test(text)) {
     return res.status(400).json({ error: 'No "FOR ORDER NUMBER:" found in PDF. It may be a different format — try the paste option.' });
