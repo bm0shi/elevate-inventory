@@ -2422,7 +2422,13 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
 
   // velocity is keyed by SKU — map sku->sold, and we need sku->asin from products
   // include prepped-committed quantity per component (singles + duo components)
-  const prodsRaw = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand, s.transit FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
+  const prodsRaw = await pool.query(`
+    SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
+      (
+        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+      )::int AS pending_prep
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
   // dedupe by ASIN — keep the row with the most on-hand (avoids duplicate-ASIN match misses)
   const _seenAsin = {};
   for (const r of prodsRaw.rows) {
@@ -2500,29 +2506,32 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     // opportunity: low competition
     if (sellers != null && sellers <= 3) score += 6;
     // you have warehouse stock to send (can act now)
-    const canSendNow = onhand > 0;
+    const canSendNow = (onhand - (p.pending_prep||0) - (preppedByAsin[p.asin]||0)) > 0;
     if (canSendNow) score += 5;
 
     const prepped = preppedByAsin[p.asin] || 0;
-    // Coverage already heading to FBA (units that will be sellable soon)
+    const pendingPrep = p.pending_prep || 0;
+    // FREE STOCK: on-hand minus everything already committed to a work order or
+    // already boxed. Sending a number you cannot physically pick is worse than
+    // sending none, so this — not raw on-hand — caps the suggestion.
+    const available = Math.max(0, onhand - pendingPrep - prepped);
+    // Coverage already heading to FBA. Pending-prep is deliberately EXCLUDED:
+    // it has not been prepped, boxed or shipped, so it is not coverage yet.
     const coverage = fbaTotal + transit + prepped;
     const coverageDays = demandPerDay > 0 ? coverage / demandPerDay : null;
-    // Suggested send: bring FBA coverage up to a 60-day target, drawing from on-hand.
-    // Prepped counts toward coverage (already staged), so we only recommend the ADDITIONAL
-    // units needed beyond what's prepped/inbound/in-transit.
     let suggestedSend = null;
     if (demandPerDay > 0) {
       const TARGET_DAYS = 60;
       const target = Math.ceil(demandPerDay * TARGET_DAYS);
       const gap = target - coverage;
-      const availableToSend = Math.max(0, onhand - prepped);
-      suggestedSend = Math.max(0, Math.min(gap, availableToSend));
+      suggestedSend = Math.max(0, Math.min(gap, available));
     }
 
     // only include items with some signal (selling OR ranked OR we hold stock)
+    const canSend = available > 0;
     if (demandPerDay > 0 || salesRank != null || onhand > 0) {
       rows.push({
-        asin: p.asin, name: p.name || m.title, onhand, transit, prepped,
+        asin: p.asin, name: p.name || m.title, onhand, transit, prepped, pendingPrep, available,
         fbaFulfillable: fbaTotal, fbaInbound,
         soldPerDay: Math.round(demandPerDay*10)/10,   // MARKET demand/day (the driver)
         ourSoldPerDay: Math.round(ourSoldPerDay*10)/10, // our actual (reference)
@@ -2836,28 +2845,59 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
         + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
       )::int AS prepped
     FROM inv_products p JOIN inv_stock s ON s.asin=p.asin`);
-  const byAsin = {}; for(const r of ours.rows) byAsin[r.asin]=r;
-  const out = [];
-  const seen = new Set();
+  // ---- DEDUPE OUR SIDE BY ASIN ----
+  // inv_products can hold several rows for one ASIN (different merchant SKUs),
+  // and a JOIN would then repeat that ASIN's warehouse/transit numbers.
+  const byAsin = {};
+  for (const r of ours.rows) {
+    if (!byAsin[r.asin] || (r.onhand||0) > (byAsin[r.asin].onhand||0)) byAsin[r.asin] = r;
+  }
+
+  // ---- AGGREGATE AMAZON'S SIDE BY ASIN ----
+  // Amazon returns FBA inventory per SELLER SKU. One ASIN commonly has several
+  // SKUs (old/new listings, duo variants). Emitting a row per SKU repeated the
+  // SAME warehouse and transit figures for each one, so the table double- or
+  // triple-counted. FBA quantities are summed across an ASIN's SKUs; warehouse
+  // and transit are taken ONCE.
+  const fbaByAsin = {};
   let fnskusSaved = 0;
   for (const sku in fba) {
     const f = fba[sku];
-    const o = byAsin[f.asin] || {};
-    seen.add(f.asin);
-    // capture FNSKU — match by SKU first, then ASIN
+    if (!f.asin) continue;
+    if (!fbaByAsin[f.asin]) fbaByAsin[f.asin] = { total:0, fulfillable:0, inbound:0, skus:[] };
+    const a = fbaByAsin[f.asin];
+    a.total       += f.total || 0;
+    a.fulfillable += f.fulfillable || 0;
+    a.inbound     += f.inbound || 0;
+    a.skus.push(sku);
+
     if (f.fnSku) {
       let ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2', [f.fnSku, sku]);
-      if (ur.rowCount === 0 && f.asin) ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [f.fnSku, f.asin]);
+      if (ur.rowCount === 0) ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [f.fnSku, f.asin]);
       if (ur.rowCount > 0) fnskusSaved++;
     }
-    out.push({ asin: f.asin, sku: sku, name: o.name || sku, warehouse: o.onhand||0, transit: o.transit||0,
-      fba_total: f.total, fba_fulfillable: f.fulfillable, fba_inbound: f.inbound,
-      grand_total: (o.onhand||0)+(o.transit||0)+f.total });
   }
-  console.log(`[FBA] Captured/updated ${fnskusSaved} FNSKUs.`);
-  // add our items not in FBA
-  for (const r of ours.rows) {
-    if (!seen.has(r.asin)) out.push({ asin:r.asin, name:r.name, warehouse:r.onhand, transit:r.transit, fba_total:0, fba_fulfillable:0, fba_inbound:0, grand_total:r.onhand+r.transit });
+  console.log(`[FBA] Captured/updated ${fnskusSaved} FNSKUs. ${Object.keys(fba).length} SKUs collapsed to ${Object.keys(fbaByAsin).length} ASINs.`);
+
+  const out = [];
+  const allAsins = new Set([...Object.keys(byAsin), ...Object.keys(fbaByAsin)]);
+  for (const asin of allAsins) {
+    const o = byAsin[asin] || {};
+    const a = fbaByAsin[asin] || { total:0, fulfillable:0, inbound:0, skus:[] };
+    const warehouse = o.onhand || 0;
+    const transit   = o.transit || 0;
+    out.push({
+      asin,
+      sku: o.sku || a.skus[0] || '',
+      skuCount: a.skus.length,
+      name: o.name || a.skus[0] || asin,
+      warehouse, transit,
+      pending_prep: o.pending_prep || 0,
+      prepped: o.prepped || 0,
+      available: Math.max(0, warehouse - (o.pending_prep||0) - (o.prepped||0)),
+      fba_total: a.total, fba_fulfillable: a.fulfillable, fba_inbound: a.inbound,
+      grand_total: warehouse + transit + a.total
+    });
   }
   out.sort((a,b)=>b.grand_total-a.grand_total);
   res.json(out);
