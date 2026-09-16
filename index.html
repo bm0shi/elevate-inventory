@@ -2654,8 +2654,11 @@ function editLocation(asin){
 // is permanent and every future invoice recognises it automatically.
 function candBtn(cosmoNum, asin, name, conf, image){
   const safe=String(name||'').replace(/\\/g,'').replace(/'/g,"\\'").replace(/"/g,'');
-  const confHtml = conf!=null
-    ? '<span style="display:inline-block;font-weight:800;font-size:13px;padding:1px 7px;border-radius:4px;margin-right:6px;background:'+(conf>=70?'#eafaf1':'#fdf3e6')+';color:'+(conf>=70?'#1e8449':'#b7791f')+'">'+conf+'%</span>'
+  // No percentage. Measured on the real catalog, a correct match scored 0.64
+  // while a wrong one scored 0.70 — any number shown here would be believed
+  // and would be wrong. Suggestions only appear when they are near-certain.
+  const confHtml = conf
+    ? '<span style="display:inline-block;font-weight:800;font-size:11px;padding:2px 8px;border-radius:4px;margin-right:7px;background:#eafaf1;color:#1e8449;letter-spacing:0.3px">LIKELY MATCH</span>'
     : '';
   const img = image
     ? '<img src="'+image+'" onerror="this.style.display=\'none\'" style="width:52px;height:52px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">'
@@ -2943,15 +2946,12 @@ function renderReconLines(){
         locBlock='<div style="margin-top:9px;padding:11px;background:#fff;border:1px solid #e8dcc0;border-radius:6px">'
           +'<div style="font-size:12.5px;font-weight:800;color:#b7791f">Link this to a product</div>'
           +'<div class="hint" style="margin:3px 0 8px">Cosmo# '+l.cosmo_num+' — pick the match below. No need to open a case. Saved permanently.</div>'
-          +((cands.length && cands[0].confidence < 70)
-              ? '<div style="padding:8px 10px;background:#fdf6e3;border:1px solid #e8dcc0;border-radius:6px;color:#b7791f;font-size:12px;font-weight:700;margin-bottom:4px">⚠ No strong match — best is only '+cands[0].confidence+'%. This product may not be in your catalog at all. Verify on Amazon before linking, or scan a bottle instead.</div>'
-              : '')
-          +((cands.length && cands[0].ambiguous)
-              ? '<div style="padding:8px 10px;background:#fdeceb;border:1px solid #f3d9d6;border-radius:6px;color:#c0392b;font-size:12px;font-weight:700;margin-bottom:4px">⚠ Close call — these look almost identical. Check <u>shampoo vs conditioner</u> and the <u>size</u> before picking.</div>'
-              : '')
           +(cands.length
-              ? cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,c.confidence,c.image)).join('')
-              : '<div class="hint" style="padding:2px">No confident match — search below.</div>')
+              ? '<div style="padding:8px 10px;background:#eafaf1;border:1px solid #cdebdb;border-radius:6px;color:#1e8449;font-size:12px;font-weight:700;margin-bottom:2px">Near-certain match found. Check the name and size, open the ASIN if unsure, then Link.</div>'
+                + cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,true,c.image)).join('')
+              : '<div style="padding:10px;background:#fdf6e3;border:1px solid #e8dcc0;border-radius:6px;color:#b7791f;font-size:12.5px;font-weight:700;margin-bottom:2px">'
+                + '📷 No reliable match — scan a bottle of this item.<br>'
+                + '<span style="font-weight:500;font-size:12px">The barcode identifies it exactly and links it permanently. Guessing from the description is unreliable for near-identical Paul Mitchell names, so nothing is suggested here on purpose. If you cannot open a case, search the catalog below and verify on Amazon before linking.</span></div>')
           +'<input type="text" placeholder="Search all products…" oninput="searchMapCandidates(this,\''+l.cosmo_num+'\')" style="width:100%;margin-top:9px;padding:9px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:13px">'
           +'<div id="mapres_'+l.cosmo_num+'"></div>'
           +'</div>';
