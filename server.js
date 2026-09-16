@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getLiveOffers } = require('./spapi');
+const { getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -1497,6 +1497,66 @@ app.get('/api/mapping-health', auth, async (req, res) => {
     unmappedProducts: total.rows[0].n - rows.length,
     rows
   });
+});
+
+// ============================================================
+// REFRESH PRODUCT NAMES FROM AMAZON
+// inv_products.name is frozen from the original seed file. Brands rewrite
+// listings, and a stale title silently breaks invoice description matching.
+// Long-running, so it runs as a background job and is PREVIEW-FIRST: nothing
+// is written until the user reviews the diffs and applies them.
+// ============================================================
+let nameJob = { running:false, done:false, error:null, progress:'', changes:[], checked:0, startedAt:null };
+
+app.post('/api/refresh-names/start', auth, async (req, res) => {
+  if (nameJob.running) return res.json({ ok:true, already:true });
+  nameJob = { running:true, done:false, error:null, progress:'starting…', changes:[], checked:0, startedAt:new Date() };
+  res.json({ ok:true });
+
+  (async () => {
+    try {
+      const { rows } = await pool.query('SELECT asin, name, image FROM inv_products ORDER BY name');
+      const asins = rows.map(r => r.asin);
+      nameJob.progress = `looking up ${asins.length} products on Amazon…`;
+      const live = await getCatalogItems(asins, p => { nameJob.progress = p; });
+
+      const changes = [];
+      for (const r of rows) {
+        const l = live[r.asin];
+        if (!l || l.error || !l.name) continue;
+        nameJob.checked++;
+        const oldName = (r.name || '').trim();
+        const newName = l.name.trim();
+        if (newName && newName !== oldName) {
+          changes.push({ asin: r.asin, oldName, newName, image: l.image || r.image || null });
+        }
+      }
+      nameJob.changes = changes;
+      nameJob.progress = `${changes.length} name change(s) found out of ${nameJob.checked} checked.`;
+      nameJob.running = false; nameJob.done = true;
+      console.log(`[Names] ${changes.length} of ${nameJob.checked} product titles differ from Amazon.`);
+    } catch (e) {
+      nameJob.running = false; nameJob.error = e.message;
+      console.error('[Names] refresh failed:', e.message);
+    }
+  })();
+});
+
+app.get('/api/refresh-names/status', auth, (req, res) => res.json(nameJob));
+
+// Apply reviewed name changes (optionally a subset, by ASIN).
+app.post('/api/refresh-names/apply', auth, async (req, res) => {
+  const only = (req.body && Array.isArray(req.body.asins)) ? new Set(req.body.asins) : null;
+  let applied = 0;
+  for (const c of nameJob.changes) {
+    if (only && !only.has(c.asin)) continue;
+    await pool.query('UPDATE inv_products SET name=$1 WHERE asin=$2', [c.newName, c.asin]);
+    if (c.image) await pool.query("UPDATE inv_products SET image=$1 WHERE asin=$2 AND (image IS NULL OR image='')", [c.image, c.asin]);
+    applied++;
+  }
+  nameJob.changes = nameJob.changes.filter(c => only ? !only.has(c.asin) : false);
+  console.log(`[Names] Applied ${applied} title updates.`);
+  res.json({ ok:true, applied });
 });
 
 // Break a bad link so the number shows as unmapped again and can be re-picked.
