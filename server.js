@@ -279,44 +279,108 @@ async function buildLocationContext(asins) {
 // ============================================================
 const MATCH_STOPWORDS = new Set(['OZ','FLOZ','FL','ML','THE','AND','BY','FOR','WITH','OF','A','AN','NEW','PACK','CT','EA','SIZE','INC','LLC']);
 
+// Cosmoprof descriptions truncate the product name and glue the size onto it:
+//   "PM TEA TREE COLORCARE CONDITIONLITER"   -> CONDITION + LITER
+//   "PM TEA TREE HAIR & BODY MOISTUR10.14 OZ" -> MOISTUR + 10.14 OZ
+//   "COLOR PROTECT SHAMPOO-33.8OZ-LI"         -> SHAMPOO + 33.8 OZ
+// Left glued, the word CONDITIONER never appears as a token — which is exactly
+// how a conditioner gets linked to a shampoo. Prise them apart, and translate
+// Paul Mitchell's "LITER" into the 33.8 fl oz that Amazon titles actually use,
+// so the size can do the job of separating variants.
+function normalizeSizeTerms(str) {
+  let s = String(str || '').toUpperCase();
+  s = s.replace(/LITERS?|LTR/g, ' LITER ');
+  s = s.replace(/([A-Z])(\d)/g, '$1 $2');
+  s = s.replace(/(\d)([A-Z])/g, '$1 $2');
+  s = s.replace(/\bLITER\b/g, ' 33.8 ');
+  return s;
+}
+
 function matchTokens(str) {
-  return String(str || '')
-    .toUpperCase()
+  return normalizeSizeTerms(str)
     .replace(/[^A-Z0-9.]+/g, ' ')
     .split(/\s+/)
     .filter(t => t && t.length > 1 && !MATCH_STOPWORDS.has(t));
 }
 
-function matchScore(desc, name) {
-  const d = matchTokens(desc), n = matchTokens(name);
-  if (!d.length || !n.length) return 0;
+// How well does one token list cover another?
+function coverage(from, against) {
+  if (!from.length || !against.length) return 0;
   let hit = 0;
-  for (const dt of d) {
-    const isNum = /^[0-9.]+$/.test(dt);
+  for (const ft of from) {
+    const isNum = /^[0-9.]+$/.test(ft);
     let best = 0;
-    for (const nt of n) {
-      if (nt === dt) { best = isNum ? 1.6 : 1; break; }
-      if (!isNum && dt.length >= 3 && (nt.startsWith(dt) || dt.startsWith(nt))) best = Math.max(best, 0.7);
+    for (const at of against) {
+      if (at === ft) { best = isNum ? 1.6 : 1; break; }
+      if (!isNum && ft.length >= 3 && (at.startsWith(ft) || ft.startsWith(at))) best = Math.max(best, 0.7);
     }
     hit += best;
   }
-  return hit / d.length;
+  return hit / from.length;
+}
+
+// Amazon titles here are "<product name>, <marketing copy>, <size>". The part
+// before the first comma is the real product name, and it is what distinguishes
+// "Tea Tree Special Shampoo" from "Tea Tree Special COLOR Shampoo".
+function productHead(name) {
+  const s = String(name || '');
+  const head = s.split(',')[0];
+  return head.length >= 6 ? head : s;
+}
+
+// Score BOTH directions:
+//   forward — how much of the invoice description the product explains
+//   reverse — how much of the product's own name the description accounts for
+// Reverse is what punishes an extra discriminating word like COLOR. Combined
+// with an F1 so a candidate must satisfy both to win.
+function matchScore(desc, name) {
+  const d = matchTokens(desc);
+  const n = matchTokens(name);
+  const h = matchTokens(productHead(name));
+  if (!d.length || !n.length) return 0;
+  const fwd = coverage(d, n);
+  const rev = coverage(h, d);
+  if (fwd <= 0 || rev <= 0) return 0;
+  return (2 * fwd * rev) / (fwd + rev);
 }
 
 // Best candidate products for an unmapped invoice description.
-function suggestProducts(desc, catalog, limit = 5) {
+// Suggest a product for an unmapped invoice description.
+//
+// Deliberately ALL-OR-NOTHING. Measured against the real catalog, a correct
+// match scored 0.68 while a wrong one scored 0.67 — the score cannot separate
+// right from wrong in the middle of the range, so any "% match" shown to a
+// worker is a guess wearing a lab coat. We therefore return AT MOST ONE
+// suggestion, and only when it is both strong in absolute terms and clearly
+// ahead of second place. Everything else returns nothing, and the worker is
+// told to scan a bottle (definitive) or search by hand (deliberate).
+// Thresholds calibrated against the real catalog and real invoice text, not
+// picked by feel. Measured: correct matches landed at 0.97/0.97/0.97/0.73/0.71/
+// 0.64, while a WRONG match landed at 0.70 and an absent product at 0.43. A
+// correct 0.64 sitting below a wrong 0.70 means the middle of the range cannot
+// be trusted at all. Above 0.90 the sample was clean, so that is the bar.
+// Everything below suggests NOTHING — scanning a bottle is the accurate answer,
+// and a blank is far cheaper than a confident wrong guess on the floor.
+const SUGGEST_MIN_SCORE = 0.90;
+const SUGGEST_MIN_GAP   = 0.10;
+
+function suggestProducts(desc, catalog) {
+  const seen = new Set();
   const ranked = catalog
     .map(p => ({ asin: p.asin, name: p.name, sku: p.sku, image: p.image, location: p.location, score: matchScore(desc, p.name) }))
-    .filter(x => x.score >= 0.34)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit)
-    .map(x => ({ ...x, confidence: Math.min(99, Math.round(x.score * 100)) }));
-  // Flag close calls — near-identical Paul Mitchell names (shampoo vs
-  // conditioner vs colour-safe, 10.1oz vs liter) are exactly where a fast
-  // click goes wrong.
-  const ambiguous = ranked.length > 1 && (ranked[0].confidence - ranked[1].confidence) <= 10;
-  if (ambiguous) for (const r of ranked) r.ambiguous = true;
-  return ranked;
+    .filter(x => { if (!x.asin || seen.has(x.asin)) return false; seen.add(x.asin); return true; })
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) return [];
+  const top = ranked[0];
+  const second = ranked[1] ? ranked[1].score : 0;
+
+  if (top.score < SUGGEST_MIN_SCORE) return [];
+  if (ranked.length > 1 && (top.score - second) < SUGGEST_MIN_GAP) return [];
+
+  // No percentage is returned on purpose — the number implies a precision this
+  // method does not have, and a worker will believe it.
+  return [{ asin: top.asin, name: top.name, sku: top.sku, image: top.image, location: top.location, strong: true }];
 }
 
 // ---- Postgres ----
