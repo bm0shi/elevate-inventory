@@ -131,6 +131,97 @@ function normCode(raw) {
   return c.toUpperCase();
 }
 
+// ============================================================
+// PALLET LOCATIONS
+// Fixed rack map: A-1..A-20 (duo-compatible) and B-1..B-20 (singles).
+// Extend LOC_ROWS to add more rows/positions later.
+// ============================================================
+const LOC_ROWS = { A: 20, B: 20 };
+const LOCATION_SLOTS = [];
+for (const row of Object.keys(LOC_ROWS)) {
+  for (let i = 1; i <= LOC_ROWS[row]; i++) LOCATION_SLOTS.push(row + '-' + i);
+}
+
+// Accepts a1, A1, a-1, "A - 1" -> "A-1". Returns null if outside the rack map.
+function normLoc(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().toUpperCase().replace(/\s+/g, '');
+  if (!s) return null;
+  const m = s.match(/^([A-Z])-?(\d{1,3})$/);
+  if (!m) return null;
+  const slot = m[1] + '-' + parseInt(m[2], 10);
+  return LOCATION_SLOTS.includes(slot) ? slot : null;
+}
+
+// Build location context for a set of ASINs: what they have now, and what to
+// suggest if they have nothing. Suggestion rules:
+//   1. Already has a location -> keep it (this is the "you already have this
+//      item in A-1, put these there too" case).
+//   2. Duo component whose partner is already placed -> take the neighbouring
+//      slot so shampoo/conditioner sit side by side.
+//   3. Otherwise -> first free slot in the right row (A if it is a duo
+//      component, B if it is singles-only).
+async function buildLocationContext(asins) {
+  const all = await pool.query(
+    `SELECT p.asin, p.name, p.location, COALESCE(s.onhand,0)::int AS onhand,
+            EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin`);
+
+  const byAsin = {}, used = new Set();
+  for (const r of all.rows) {
+    byAsin[r.asin] = r;
+    if (r.location) used.add(r.location);
+  }
+
+  const pm = await pool.query(
+    `SELECT b1.component_asin AS asin, b2.component_asin AS partner
+     FROM inv_bundles b1
+     JOIN inv_bundles b2 ON b2.bundle_asin = b1.bundle_asin
+                        AND b2.component_asin <> b1.component_asin`);
+  const partners = {};
+  for (const r of pm.rows) (partners[r.asin] = partners[r.asin] || []).push(r.partner);
+
+  const out = {};
+  for (const asin of asins) {
+    const p = byAsin[asin];
+    if (!p) continue;
+    const isComp = !!p.is_component;
+
+    if (p.location) {
+      out[asin] = {
+        location: p.location, suggested: p.location, onhand: p.onhand,
+        is_component: isComp,
+        status: p.onhand > 0 ? 'existing' : 'existing_empty'
+      };
+      continue;
+    }
+
+    const row = isComp ? 'A' : 'B';
+    let sug = null;
+
+    for (const pa of (partners[asin] || [])) {
+      const pl = byAsin[pa] && byAsin[pa].location;
+      if (!pl) continue;
+      const m = pl.match(/^([A-Z])-(\d+)$/);
+      if (!m) continue;
+      const n = parseInt(m[2], 10);
+      for (const cand of [m[1] + '-' + (n + 1), m[1] + '-' + (n - 1)]) {
+        if (LOCATION_SLOTS.includes(cand) && !used.has(cand)) { sug = cand; break; }
+      }
+      if (sug) break;
+    }
+
+    if (!sug) sug = LOCATION_SLOTS.find(sl => sl.startsWith(row + '-') && !used.has(sl)) || null;
+    if (sug) used.add(sug);
+
+    out[asin] = {
+      location: null, suggested: sug, onhand: p.onhand,
+      is_component: isComp, status: 'new'
+    };
+  }
+  return out;
+}
+
 // ---- Postgres ----
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -319,6 +410,12 @@ async function initDb() {
     }
     console.log(`[Inventory] Seeded costs for ${Object.keys(seedCosts).length} products (blanks only).`);
   } catch(e) { console.error('cost seed skipped:', e.message); }
+  // ---- Pallet location column (idempotent) ----
+  try {
+    await pool.query('ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS location TEXT');
+    console.log('[Inventory] Location column ready.');
+  } catch(e) { console.error('location migration skipped:', e.message); }
+
   console.log('[Inventory] DB ready.');
 }
 
@@ -388,7 +485,7 @@ app.get('/api/products', auth, async (req, res) => {
   //  - direct prepped of this asin (singles), PLUS
   //  - prepped bundles that consume this asin as a component
   const { rows } = await pool.query(
-    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, s.onhand, s.transit,
+    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, p.location, s.onhand, s.transit,
       (
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
@@ -918,7 +1015,50 @@ app.get('/api/invoices/:orderNumber', auth, async (req, res) => {
     `SELECT ii.cosmo_num, ii.description, ii.asin, p.name, ii.qty_expected, ii.qty_received
      FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin = ii.asin
      WHERE ii.order_number=$1 ORDER BY ii.id`, [req.params.orderNumber]);
+
+  // Attach pallet-location context so check-in can pre-fill known items and
+  // flag brand-new ones that still need a slot.
+  try {
+    const asins = rows.map(r => r.asin).filter(Boolean);
+    const ctx = await buildLocationContext(asins);
+    for (const r of rows) {
+      const c = r.asin ? ctx[r.asin] : null;
+      r.location      = c ? c.location   : null;
+      r.suggested_loc = c ? c.suggested  : null;
+      r.loc_status    = c ? c.status     : 'unmapped';
+      r.onhand        = c ? c.onhand     : 0;
+      r.is_component  = c ? c.is_component : false;
+    }
+  } catch (e) {
+    console.error('[Location] context build failed (non-fatal):', e.message);
+  }
+
   res.json(rows);
+});
+
+// Full rack map + who is sitting where (drives the check-in dropdown)
+app.get('/api/locations', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT p.asin, p.name, p.location, COALESCE(s.onhand,0)::int AS onhand
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
+     WHERE p.location IS NOT NULL ORDER BY p.name`);
+  const occupants = {};
+  for (const r of rows) (occupants[r.location] = occupants[r.location] || []).push(r);
+  res.json({ slots: LOCATION_SLOTS, occupants });
+});
+
+// Set or clear one product's pallet location
+app.post('/api/location', auth, async (req, res) => {
+  const { asin, location } = req.body || {};
+  if (!asin) return res.status(400).json({ error: 'asin required' });
+  if (location === '' || location == null) {
+    await pool.query('UPDATE inv_products SET location=NULL WHERE asin=$1', [asin]);
+    return res.json({ ok: true, location: null });
+  }
+  const loc = normLoc(location);
+  if (!loc) return res.status(400).json({ error: 'Invalid location — use A-1..A-20 or B-1..B-20.' });
+  await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
+  res.json({ ok: true, location: loc });
 });
 
 // Scan an item against an open invoice -> increment received for that line
@@ -999,6 +1139,19 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   const order = req.params.orderNumber;
   const lines = await pool.query('SELECT asin, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1', [order]);
   let added = 0, discrepancies = [];
+
+  // Pallet locations picked during check-in: { asin: 'A-1', ... }
+  const locs = (req.body && req.body.locations) || {};
+  let locSet = 0;
+  for (const [asin, raw] of Object.entries(locs)) {
+    const loc = normLoc(raw);
+    if (!loc) continue;
+    try {
+      await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
+      locSet++;
+    } catch (e) { console.error('[Location] set failed for', asin, e.message); }
+  }
+  if (locSet) console.log(`[Location] Set ${locSet} pallet locations from invoice ${order}.`);
   for (const l of lines.rows) {
     if (!l.asin) continue; // unmapped lines skipped
     if (l.qty_received > 0) {
@@ -1012,7 +1165,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     }
   }
   await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
-  res.json({ ok: true, added, discrepancies });
+  res.json({ ok: true, added, discrepancies, locationsSet: locSet });
 });
 
 // Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs
@@ -2061,7 +2214,7 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image, p.location
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      WHERE pp.qty > 0 ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
   // for duos, also return the component names so the worker knows what to grab
@@ -2070,7 +2223,7 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     let components = [];
     if (r.is_duo) {
       const c = await pool.query(
-        `SELECT b.component_asin AS asin, p.name, COALESCE(s.onhand,0) AS onhand
+        `SELECT b.component_asin AS asin, p.name, p.location, COALESCE(s.onhand,0) AS onhand
          FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin
          LEFT JOIN inv_stock s ON s.asin=b.component_asin
          WHERE b.bundle_asin=$1`, [r.asin]);
