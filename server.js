@@ -1274,23 +1274,44 @@ app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
   const line = await pool.query('SELECT id, cosmo_num, description, qty_expected, qty_received FROM inv_invoice_items WHERE order_number=$1 AND asin=$2 LIMIT 1', [order, asin]);
 
   if (!line.rows.length) {
-    // The scanned bottle is a real product but no line on this invoice is bound
-    // to it. If some OTHER line's cosmo_num points at a different ASIN and its
-    // description looks like this product, the mapping is probably wrong.
     const prod = await pool.query('SELECT asin, name FROM inv_products WHERE asin=$1', [asin]);
-    const others = await pool.query(
-      `SELECT ii.cosmo_num, ii.description, ii.asin, p.name AS mapped_name
+    const scannedName = prod.rows[0] ? prod.rows[0].name : '';
+    const all = await pool.query(
+      `SELECT ii.cosmo_num, ii.description, ii.asin, ii.qty_expected, ii.qty_received, p.name AS mapped_name
        FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin=ii.asin
        WHERE ii.order_number=$1`, [order]);
+
+    // ---- CASE 1: there are UNMAPPED lines. The barcode can create the
+    // Cosmo# -> ASIN link outright, which is the whole point: one scan per new
+    // SKU, ever, and the mapping is barcode-proven rather than typed.
+    const unmapped = all.rows.filter(r => !r.asin);
+    if (unmapped.length) {
+      const ranked = unmapped
+        .map(u => ({
+          cosmo_num: u.cosmo_num, description: u.description,
+          qty_expected: u.qty_expected,
+          confidence: Math.min(99, Math.round(matchScore(u.description, scannedName) * 100))
+        }))
+        .sort((a, b) => b.confidence - a.confidence);
+      return res.json({
+        ok: false, reason: 'bind_unmapped', code,
+        scanned: { asin, name: scannedName || asin },
+        candidates: ranked,
+        autoPick: (ranked.length === 1 || (ranked[0].confidence >= 55 && ranked[0].confidence - (ranked[1] ? ranked[1].confidence : 0) >= 15))
+                  ? ranked[0] : null
+      });
+    }
+
+    // ---- CASE 2: every line is mapped, so one of them is probably mapped WRONG.
     let suspect = null, bestScore = 0;
-    for (const o of others.rows) {
-      const sc = matchScore(o.description, prod.rows[0] ? prod.rows[0].name : '');
+    for (const o of all.rows) {
+      const sc = matchScore(o.description, scannedName);
       if (sc > bestScore && sc >= 0.4) { bestScore = sc; suspect = o; }
     }
     if (suspect) {
       return res.json({
         ok: false, reason: 'mapping_mismatch', code,
-        scanned: { asin, name: prod.rows[0] ? prod.rows[0].name : asin },
+        scanned: { asin, name: scannedName || asin },
         suspect: {
           cosmo_num: suspect.cosmo_num, description: suspect.description,
           mapped_asin: suspect.asin, mapped_name: suspect.mapped_name
@@ -1298,7 +1319,7 @@ app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
         confidence: Math.min(99, Math.round(bestScore * 100))
       });
     }
-    return res.json({ ok: false, reason: 'not_on_invoice', asin });
+    return res.json({ ok: false, reason: 'not_on_invoice', asin, scannedName });
   }
 
   await pool.query('UPDATE inv_invoice_items SET qty_received = qty_received + $1 WHERE id=$2', [qty, line.rows[0].id]);
@@ -1382,9 +1403,28 @@ app.get('/api/mapping-health', auth, async (req, res) => {
     numbers: c.nums.map(nm => ({ cosmo_num: nm, description: descMap[nm] || null }))
   }));
 
+  // ---- UPC COVERAGE ----
+  // The barcode is the anchor for everything else, so show exactly how much of
+  // the catalog can currently be identified by scanning a bottle.
+  const upcStats = await pool.query(
+    `SELECT (SELECT COUNT(*)::int FROM inv_upcs) AS barcodes,
+            (SELECT COUNT(DISTINCT asin)::int FROM inv_upcs) AS products_with_upc`);
+  const noUpc = await pool.query(
+    `SELECT p.asin, p.name, p.image, p.location,
+            EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
+            COALESCE(s.onhand,0)::int AS onhand
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin
+     WHERE NOT EXISTS(SELECT 1 FROM inv_upcs u WHERE u.asin=p.asin)
+       AND NOT EXISTS(SELECT 1 FROM inv_bundles b WHERE b.bundle_asin=p.asin)
+     ORDER BY COALESCE(s.onhand,0) DESC, p.name`);
+
   res.json({
     mapped: rows.length,
     catalog: total.rows[0].n,
+    barcodes: upcStats.rows[0].barcodes,
+    productsWithUpc: upcStats.rows[0].products_with_upc,
+    productsWithoutUpc: noUpc.rows.length,
+    missingUpc: noUpc.rows,
     verifiedCount: verified.length,
     unverifiedCount: unverified.length,
     orphanCount: orphans.length,
