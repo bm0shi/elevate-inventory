@@ -2091,7 +2091,7 @@ function renderPendingPrep(){
     if(x.is_duo && x.components && x.components.length){
       compLines='<div style="margin-top:10px;padding:10px 12px;background:#fdf6f5;border-radius:8px;border:1px solid #f3d9d6;font-size:12.5px">'+
         '<div style="font-weight:800;color:#c0392b;margin-bottom:6px;font-size:13px;letter-spacing:0.2px">⚡ GRAB '+x.qty+' OF EACH</div>'+
-        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1;line-height:1.3"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${c.name}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button></div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand}</span></div>`).join('')+
+        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1;line-height:1.3"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${c.name}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button>${c.location?`<span style="margin-left:5px;background:#1a2b4a;color:#fff;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;letter-spacing:0.3px;white-space:nowrap">📍 ${c.location}</span>`:`<span style="margin-left:5px;background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;white-space:nowrap">📍 none</span>`}</div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand}</span></div>`).join('')+
         '</div>';
     }
     const claimed = !!x.claimed_by;
@@ -2119,7 +2119,7 @@ function renderPendingPrep(){
     const divider=(idx===lastActiveIdx)
       ? `<div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;margin:8px 0 2px"><div style="flex:1;height:1px;background:#d8dee6"></div><span style="font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6;text-transform:uppercase">Not started</span><div style="flex:1;height:1px;background:#d8dee6"></div></div>`
       : '';
-    return `${divider}<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
+    return `${divider}<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#1a2b4a':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
   b.innerHTML=h;
@@ -2442,9 +2442,53 @@ function loadInvoice(){
   currentInvoice=order;
   if(!order){ document.getElementById('reconcileWork').style.display='none'; return; }
   document.getElementById('reconcileWork').style.display='block';
-  renderReconLines();
+  loadLocations().then(renderReconLines);
   setTimeout(()=>document.getElementById('scanRecon').focus(),100);
 }
+// ==================== PALLET LOCATIONS ====================
+// Fixed rack map from the server: A-1..A-20 (duo-compatible), B-1..B-20 (singles).
+let LOC = { slots: [], occupants: {} };
+function loadLocations(){ return api('/api/locations').then(d=>{ if(d && d.slots) LOC=d; }).catch(()=>{}); }
+
+// Build a <select> of every rack slot, showing who already sits there.
+function locOptions(selected, ownAsin){
+  const cur = selected || '';
+  let h = '<option value="">— no location —</option>';
+  let lastRow = null;
+  for(const sl of (LOC.slots||[])){
+    const row = sl.split('-')[0];
+    if(row!==lastRow){
+      if(lastRow!==null) h+='</optgroup>';
+      h+='<optgroup label="Row '+row+(row==='A'?' — duo-compatible':' — singles')+'">';
+      lastRow=row;
+    }
+    const occ = (LOC.occupants[sl]||[]).filter(o=>o.asin!==ownAsin);
+    const tag = occ.length ? ' · '+String(occ[0].name||'').slice(0,26)+(occ.length>1?' +'+(occ.length-1):'') : '';
+    h += '<option value="'+sl+'"'+(sl===cur?' selected':'')+'>'+sl+tag+'</option>';
+  }
+  if(lastRow!==null) h+='</optgroup>';
+  return h;
+}
+
+// Small chip used on On Hand and Pending Prep cards.
+function locChip(loc){
+  return loc
+    ? '<span style="background:#1a2b4a;color:#fff;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:800;letter-spacing:0.3px;white-space:nowrap">📍 '+loc+'</span>'
+    : '<span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:800;white-space:nowrap">📍 none</span>';
+}
+
+function editLocation(asin){
+  const prod=(products||[]).find(x=>x.asin===asin);
+  const cur=(prod && prod.location)?prod.location:'';
+  const v=prompt('Pallet location for:\n'+(prod?prod.name:asin)+'\n\nRow A = duo-compatible · Row B = singles\nA-1 to A-20, B-1 to B-20. Leave blank to clear.', cur);
+  if(v===null)return;
+  api('/api/location',{method:'POST',body:JSON.stringify({asin:asin,location:v.trim()})}).then(d=>{
+    if(d && d.error){ toast(d.error,true); return; }
+    toast(d.location?('Moved to '+d.location):'Location cleared');
+    loadLocations().then(()=>loadProducts());
+  });
+}
+
 function renderReconLines(){
   if(!currentInvoice)return;
   api('/api/invoices/'+currentInvoice).then(lines=>{
@@ -2459,12 +2503,28 @@ function renderReconLines(){
       else if(rec>0){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">short '+(exp-rec)+'</span>'; }
       else { status='<span style="color:#9db0c9">not scanned</span>'; }
       const nm=l.name||l.description;
+      // Pallet location: pre-filled when we already stock this item, flagged red when new.
+      let locBlock='';
+      if(l.asin){
+        const st=l.loc_status||'new';
+        const pre=l.location||l.suggested_loc||'';
+        const badge = st==='existing'
+          ? '<span style="color:#1e8449;font-weight:700">📍 Already at '+l.location+' · '+l.onhand+' on hand — put these on the same pallet</span>'
+          : st==='existing_empty'
+            ? '<span style="color:#b7791f;font-weight:700">📍 Was at '+l.location+', 0 on hand now — confirm or move it</span>'
+            : '<span style="color:#c0392b;font-weight:700">🆕 NEW ITEM — needs a location'+(l.suggested_loc?' (suggesting '+l.suggested_loc+(l.is_component?' · duo row':' · singles row')+')':'')+'</span>';
+        locBlock='<div style="margin-top:9px;padding:9px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px">'
+          +'<div style="font-size:11.5px;margin-bottom:6px;line-height:1.35">'+badge+'</div>'
+          +'<select data-locasin="'+l.asin+'" style="width:100%;padding:8px;border:1.5px solid '+(st==='new'?'#c0392b':'#e2e8f0')+';border-radius:6px;font-size:13px;background:#fff">'+locOptions(pre,l.asin)+'</select>'
+          +'</div>';
+      }
       return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
         <div style="font-weight:700;font-size:13px">${nm}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
           <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:64px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px"></span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${rec} / ${exp} &nbsp; ${status}</span>
         </div>
+        ${locBlock}
       </div>`;
     }).join('');
   });
@@ -2506,15 +2566,23 @@ function deleteInvoice(){
 }
 function completeInvoice(){
   if(!currentInvoice)return;
+  // Collect the pallet location picked for each line.
+  const locations={}; let missing=0;
+  document.querySelectorAll('[data-locasin]').forEach(sel=>{
+    const a=sel.getAttribute('data-locasin');
+    if(sel.value) locations[a]=sel.value; else missing++;
+  });
+  if(missing && !confirm(missing+' item'+(missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
   if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
-  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST'}).then(d=>{
+  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations})}).then(d=>{
     let msg='Added '+d.added+' units to on hand.';
+    if(d.locationsSet) msg+='\nPallet locations set: '+d.locationsSet+'.';
     if(d.discrepancies && d.discrepancies.length){
       msg+='\n\nDISCREPANCIES:\n'+d.discrepancies.map(x=>`${x.description}: expected ${x.expected}, received ${x.received}`).join('\n');
     }
     alert(msg);
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
-    loadInvoiceList(); loadProducts();
+    loadInvoiceList(); loadLocations(); loadProducts();
   });
 }
 
@@ -2756,7 +2824,7 @@ function renderOnhand(){
         ${p.sellers!=null?`<div class="mk"><span class="v">${p.sellers}</span><span class="k">Sellers</span></div>`:''}
       </div>`;
     }
-    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${mktRow}</div>`;
+    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${mktRow}</div>`;
   }).join('')+'</div>';
   // full breakdown totals (across ALL products, not just the filtered view)
   let sumOnhand=0, sumPending=0, sumPrepped=0, sumTransit=0;
