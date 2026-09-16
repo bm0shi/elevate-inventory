@@ -460,10 +460,22 @@
         <button class="subtab" onclick="showSubTab('fbainv',event)">🏬 FBA Inventory</button>
         <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
         <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
+        <button class="subtab" onclick="showSubTab('costs',event)">💵 Costs &amp; Profit</button>
         <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
         <button class="subtab" onclick="adminLock()" style="margin-left:auto;background:#e2e8f0;color:#5a6472">🔒 Lock</button>
       </div>
       <div id="freshnessBar" style="margin:8px 0 2px"></div>
+<div id="sub-costs" class="subpanel">
+    <div class="box">
+      <h3 style="margin-bottom:4px">True Cost &amp; Profit</h3>
+      <div class="hint">Built from what you actually paid on each invoice. Cosmoprof's twice-yearly sales are kept as separate purchase lots, so your <b>regular cost</b> never gets overwritten by a sale — and your <b>blended cost</b> reflects what the stock on your floor really cost.</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="action" onclick="loadCosts()" style="flex:1;min-width:170px;background:#127a7a">↻ Load cost analysis</button>
+        <button class="action" onclick="recomputeCosts()" style="flex:1;min-width:170px;background:#5a6472">Reblend from history</button>
+      </div>
+    </div>
+    <div id="costsBody"><div class="hint" style="padding:16px">Load to see cost and margin per product.</div></div>
+  </div>
 <div id="sub-maphealth" class="subpanel">
     <div class="box">
       <h3 style="margin-bottom:4px">Cosmoprof → Product Mapping Health</h3>
@@ -1980,6 +1992,7 @@ function showSubTab(name, ev){
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
   loadFreshness();
+  if(name==='costs'){ if(window._costData) renderCosts(); else loadCosts(); }
   if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
   if(name==='shipments') renderShipments();
@@ -2966,6 +2979,70 @@ function unlinkCosmo(cosmoNum){
     toast('#'+cosmoNum+' unlinked');
     loadMappingHealth();
   }).catch(()=>toast('Unlink failed',true));
+}
+
+// ==================== COSTS & PROFIT ====================
+function recomputeCosts(){
+  ownerApi('/api/costs/recompute',{method:'POST'}).then(d=>{
+    if(d&&d.error){ toast(d.error,true); return; }
+    toast('Reblended '+(d.products||0)+' products'); loadCosts();
+  }).catch(()=>toast('Reblend failed',true));
+}
+function loadCosts(){
+  document.getElementById('costsBody').innerHTML='<div class="hint" style="padding:16px">Loading…</div>';
+  ownerApi('/api/cost-analysis').then(d=>{
+    if(!d||!d.items){ document.getElementById('costsBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load — deploy the latest server.js.</div>'; return; }
+    window._costData=d; window._costSort={col:'profitLast30',dir:-1}; renderCosts();
+  }).catch(()=>{ document.getElementById('costsBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load cost analysis.</div>'; });
+}
+function costSort(c){ const s=window._costSort; s.dir=(s.col===c)?-s.dir:-1; s.col=c; renderCosts(); }
+function money(v){ return v==null?'—':'$'+Number(v).toFixed(2); }
+
+function renderCosts(){
+  const d=window._costData; if(!d)return;
+  const b=document.getElementById('costsBody');
+  if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px">No purchase history yet. Complete an invoice check-in and the cost lots start recording.</div>'; return; }
+  const t=d.totals;
+  let h='<div class="cards">'
+    +'<div class="card" style="border-top:3px solid #127a7a"><div class="n">$'+Math.round(t.spend).toLocaleString()+'</div><div class="l">Total Spend</div></div>'
+    +'<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+t.units.toLocaleString()+'</div><div class="l">Units Bought</div></div>'
+    +'<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(t.saved).toLocaleString()+'</div><div class="l">Saved On Sales</div></div>'
+    +'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">$'+Math.round(t.profitLast30||0).toLocaleString()+'</div><div class="l">Est. Profit / 30d</div></div>'
+    +'</div>';
+  h+='<div class="hint" style="margin-bottom:8px"><b>Blended</b> = weighted average of every lot — the true cost of stock you hold. <b>Regular</b> = the price behind the most units, i.e. the standing price. Margin uses blended cost against the current buy-box price minus Amazon fees.</div>';
+  const s=window._costSort;
+  const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
+  const th=(c,l)=>'<th style="cursor:pointer" onclick="costSort(\''+c+'\')">'+l+arrow(c)+'</th>';
+  h+='<table><thead><tr>'+th('name','Product')+th('regularCost','Regular')+th('avgCost','Blended')
+    +th('saleUnits','Sale Units')+th('units','Bought')+th('spend','Spend')
+    +th('price','Price')+th('profitUnit','Profit/Unit')+th('marginPct','Margin')+th('roi','ROI')
+    +th('profitLast30','Profit/30d')+'</tr></thead><tbody>';
+  const list=[...d.items].sort((a,b2)=>{
+    const c=s.col; let x=a[c],y=b2[c];
+    if(c==='name'){ return (String(x||'')).localeCompare(String(y||''))*(s.dir<0?-1:1); }
+    return ((y==null?-1e15:y)-(x==null?-1e15:x))*(s.dir<0?1:-1);
+  });
+  for(const x of list){
+    const savedTag=x.saleUnits?'<div style="font-size:10px;color:#1e8449;font-weight:700">saved $'+Math.round(x.saved).toLocaleString()+'</div>':'';
+    const marginCol=x.marginPct==null?'':(x.marginPct<15?'color:#c0392b;font-weight:700':(x.marginPct>=30?'color:#1e8449;font-weight:700':''));
+    h+='<tr>'
+      +'<td style="max-width:300px"><a href="https://www.amazon.com/dp/'+x.asin+'" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">'+x.name+'</a>'
+      +'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+x.asin+'</div></td>'
+      +'<td>'+money(x.regularCost)+'</td>'
+      +'<td><b>'+money(x.avgCost)+'</b>'+(x.lowestSale?'<div style="font-size:10px;color:#9db0c9">sale low '+money(x.lowestSale)+'</div>':'')+'</td>'
+      +'<td>'+(x.saleUnits?x.saleUnits.toLocaleString():'—')+savedTag+'</td>'
+      +'<td>'+x.units.toLocaleString()+'</td>'
+      +'<td>$'+Math.round(x.spend).toLocaleString()+'</td>'
+      +'<td>'+money(x.price)+(x.feesEstimated?'<div style="font-size:10px;color:#b7791f">fees est.</div>':'')+'</td>'
+      +'<td>'+money(x.profitUnit)+'</td>'
+      +'<td style="'+marginCol+'">'+(x.marginPct==null?'—':x.marginPct.toFixed(1)+'%')+'</td>'
+      +'<td>'+(x.roi==null?'—':Math.round(x.roi)+'%')+'</td>'
+      +'<td><b>'+(x.profitLast30==null?'—':'$'+Math.round(x.profitLast30).toLocaleString())+'</b>'
+      +(x.soldLast30?'<div style="font-size:10px;color:#9db0c9">'+x.soldLast30+' sold</div>':'')+'</td></tr>';
+  }
+  h+='</tbody></table>';
+  h+='<div class="hint"><b>Profit/30d</b> multiplies profit per unit by units sold in the last 30 days from the Velocity pull — so it is only as fresh as that. It uses the current buy-box price, not your actual settled revenue, so treat it as a strong estimate rather than accounting.</div>';
+  b.innerHTML=h;
 }
 
 // Click a hazmat badge to cycle unknown -> hazmat -> non-hazmat -> unknown.
