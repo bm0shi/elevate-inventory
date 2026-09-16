@@ -345,6 +345,68 @@ function matchScore(desc, name) {
 }
 
 // Best candidate products for an unmapped invoice description.
+// ============================================================
+// SAFETY CROSS-CHECK
+// The UPC -> ASIN assignment is the one step where a human can be wrong and
+// nothing downstream disagrees — the resulting Cosmo link inherits the error
+// and gets stamped "barcode-verified", which is false confidence rather than
+// no confidence. So before accepting an assignment, compare the chosen product
+// against the invoice wording on two axes that actually distinguish Paul
+// Mitchell SKUs: product TYPE and SIZE.
+// ============================================================
+const PRODUCT_TYPES = ['CONDITIONER','SHAMPOO','TREATMENT','MOISTURIZER','POMADE','SERUM',
+  'HAIRSPRAY','CREAM','WAX','GEL','FOAM','CLAY','PASTE','OIL','MASQUE','DETANGLER',
+  'RINSE','LOTION','TONIC','PRIMER','BALM','SPRAY'];
+
+// Known Paul Mitchell / Cosmoprof pack sizes. Restricting to these keeps stray
+// numbers ("Pack of 1", "2-in-1") from being read as sizes.
+const KNOWN_SIZES = new Set(['1.8','2.5','3','3.4','4.2','5.1','6.7','8.5','9','10.1','10.14','12','16.9','24','32','33.8','64','128']);
+
+function detectTypes(str) {
+  const s = ' ' + normalizeSizeTerms(str).replace(/[^A-Z0-9.]+/g, ' ') + ' ';
+  const out = new Set();
+  for (const t of PRODUCT_TYPES) {
+    // Cosmoprof truncates: CONDITIONLITER -> CONDITION, MOISTUR10.14 -> MOISTUR
+    for (let len = t.length; len >= Math.min(6, t.length); len--) {
+      if (s.includes(' ' + t.slice(0, len))) { out.add(t); break; }
+    }
+  }
+  return out;
+}
+
+function detectSizes(str) {
+  const s = normalizeSizeTerms(str);
+  const out = new Set();
+  for (const raw of (s.match(/\d{1,3}(?:\.\d{1,2})?/g) || [])) {
+    const norm = String(parseFloat(raw));
+    if (KNOWN_SIZES.has(norm) || KNOWN_SIZES.has(raw)) out.add(KNOWN_SIZES.has(norm) ? norm : raw);
+  }
+  return out;
+}
+
+const inter = (a, b) => [...a].some(x => b.has(x));
+
+// Compare an invoice description against a product name. Returns the reasons
+// they look incompatible — empty array means nothing objectionable found.
+function crossCheck(description, productName) {
+  const warnings = [];
+  const dT = detectTypes(description), pT = detectTypes(productName);
+  if (dT.size && pT.size && !inter(dT, pT)) {
+    warnings.push({
+      kind: 'type',
+      message: `The invoice says ${[...dT].join(' / ')} but this product is a ${[...pT].join(' / ')}.`
+    });
+  }
+  const dS = detectSizes(description), pS = detectSizes(productName);
+  if (dS.size && pS.size && !inter(dS, pS)) {
+    warnings.push({
+      kind: 'size',
+      message: `The invoice says ${[...dS].join(' / ')} oz but this product is ${[...pS].join(' / ')} oz. (A "LITER" is 33.8 oz.)`
+    });
+  }
+  return warnings;
+}
+
 // Suggest a product for an unmapped invoice description.
 //
 // Deliberately ALL-OR-NOTHING. Measured against the real catalog, a correct
@@ -1354,15 +1416,18 @@ app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
         .map(u => ({
           cosmo_num: u.cosmo_num, description: u.description,
           qty_expected: u.qty_expected,
-          confidence: Math.min(99, Math.round(matchScore(u.description, scannedName) * 100))
+          score: matchScore(u.description, scannedName),
+          warnings: crossCheck(u.description, scannedName)
         }))
-        .sort((a, b) => b.confidence - a.confidence);
+        .sort((a, b) => (a.warnings.length - b.warnings.length) || (b.score - a.score));
       return res.json({
         ok: false, reason: 'bind_unmapped', code,
         scanned: { asin, name: scannedName || asin },
         candidates: ranked,
-        autoPick: (ranked.length === 1 || (ranked[0].confidence >= 55 && ranked[0].confidence - (ranked[1] ? ranked[1].confidence : 0) >= 15))
-                  ? ranked[0] : null
+        // Only auto-propose a line when it is the sole candidate with no
+        // type/size objection — never pre-select something the cross-check
+        // already disputes.
+        autoPick: (ranked.length === 1 && !ranked[0].warnings.length) ? ranked[0] : null
       });
     }
 
@@ -1557,6 +1622,36 @@ app.post('/api/refresh-names/apply', auth, async (req, res) => {
   nameJob.changes = nameJob.changes.filter(c => only ? !only.has(c.asin) : false);
   console.log(`[Names] Applied ${applied} title updates.`);
   res.json({ ok:true, applied });
+});
+
+// Before a barcode is bound to a product, check that product against every line
+// on the invoice. If it conflicts with ALL of them on type or size, the person
+// is probably about to assign the wrong item.
+app.post('/api/upc-precheck', auth, async (req, res) => {
+  const { asin, order } = req.body || {};
+  if (!asin) return res.status(400).json({ error: 'asin required' });
+  const prod = await pool.query('SELECT asin, name FROM inv_products WHERE asin=$1', [asin]);
+  if (!prod.rows.length) return res.status(404).json({ error: 'product not found' });
+  const name = prod.rows[0].name || '';
+
+  if (!order) return res.json({ ok: true, name, lines: [], anyCompatible: true });
+
+  const lines = await pool.query(
+    'SELECT cosmo_num, description, asin FROM inv_invoice_items WHERE order_number=$1', [order]);
+
+  const checked = lines.rows.map(l => ({
+    cosmo_num: l.cosmo_num, description: l.description, alreadyLinked: !!l.asin,
+    warnings: crossCheck(l.description, name),
+    score: matchScore(l.description, name)
+  })).sort((a, b) => (a.warnings.length - b.warnings.length) || (b.score - a.score));
+
+  const compatible = checked.filter(c => c.warnings.length === 0);
+  res.json({
+    ok: true, name,
+    lines: checked.slice(0, 6),
+    anyCompatible: compatible.length > 0,
+    best: compatible[0] || checked[0] || null
+  });
 });
 
 // Break a bad link so the number shows as unmapped again and can be re-picked.
