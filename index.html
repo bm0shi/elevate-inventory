@@ -500,6 +500,14 @@
           <option value="all">All products</option>
           <option value="carried">Already carried</option>
         </select>
+        <button id="hazScanBtn" onclick="startHazmatScan()" style="padding:10px 12px;border:2px solid #e2e8f0;border-radius:6px;background:#fff;font-weight:700;font-size:13px;cursor:pointer;white-space:nowrap">⚠️ Check hazmat with Amazon</button>
+        <select id="toaddHaz" onchange="renderToAdd()" style="padding:10px;border:2px solid #e2e8f0;border-radius:6px" title="Hazmat storage filter">
+          <option value="all">Hazmat: show all</option>
+          <option value="nonhaz">✅ Non-hazmat only</option>
+          <option value="haz">⚠️ Hazmat only</option>
+          <option value="unknown">❓ Unknown only</option>
+          <option value="safe">✅ Non-hazmat + ❓ unknown</option>
+        </select>
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Min $
           <input type="number" id="toaddMinPrice" placeholder="0" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:82px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
         </label>
@@ -1527,6 +1535,12 @@ function renderToAdd(){
   let list=d.filter(x=>{
     if(filter==='notcarried' && x.carried) return false;
     if(filter==='carried' && !x.carried) return false;
+    // Hazmat. UNKNOWN is never treated as safe — it gets its own bucket.
+    const hz=(document.getElementById('toaddHaz')||{}).value||'all';
+    if(hz==='nonhaz'  && x.hazmat!==false) return false;
+    if(hz==='haz'     && x.hazmat!==true)  return false;
+    if(hz==='unknown' && (x.hazmat===true||x.hazmat===false)) return false;
+    if(hz==='safe'    && x.hazmat===true)  return false;
     if(q && !(x.title||'').toLowerCase().includes(q) && !(x.asin||'').toLowerCase().includes(q) && !(x.brand||'').toLowerCase().includes(q)) return false;
     if(minPrice>0 && !(x.buyBoxPrice && x.buyBoxPrice>=minPrice)) return false;
     if(minUnits>0 && (x._units||0)<minUnits) return false;
@@ -1578,6 +1592,7 @@ function renderToAdd(){
     '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDepositMoReal\')">Net Deposit/mo'+arrow('_netDepositMoReal')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_profitMoMax\')">Max Profit/mo'+arrow('_profitMoMax')+'</th>'+
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Realistic Profit/mo'+arrow('_profitMo')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'hazmat\')">Hazmat</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th></tr></thead><tbody>';
   h+=list.slice(0,300).map(x=>{
     const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${x.title||x.asin}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
@@ -1585,6 +1600,14 @@ function renderToAdd(){
     const units=x.ssUnits!=null?x.ssUnits.toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
+    // Hazmat. Click to override — your call outranks Amazon's declaration.
+    const hzv = x.hazmat;
+    const hzLabel = hzv===true?'⚠️ HAZMAT':(hzv===false?'✅ OK':'❓');
+    const hzBg    = hzv===true?'#fdeceb':(hzv===false?'#eafaf1':'#f4f6f9');
+    const hzFg    = hzv===true?'#c0392b':(hzv===false?'#1e8449':'#8a97a6');
+    const hazCell = '<span onclick="cycleHazmat(\''+x.asin+'\')" title="'+(x.hazmatSource?'source: '+x.hazmatSource:'not checked yet')+' — click to change" '
+      +'style="cursor:pointer;display:inline-block;background:'+hzBg+';color:'+hzFg+';padding:3px 9px;border-radius:10px;font-size:11px;font-weight:800;white-space:nowrap">'+hzLabel+'</span>';
+
     // Everything already held for this ASIN, in one cell. _have is exactly what
     // _orderQty subtracts, so the two columns can never disagree.
     const _hp=[];
@@ -1612,7 +1635,7 @@ function renderToAdd(){
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">${Math.round(x._capture*100)}% capture · ~${Math.round(x._unitsReal)} u/mo</div>`
       : '<span style="color:#9db0c9">—</span>';
     const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
-    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${haveCell}</td></tr>`;
+    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
@@ -2943,6 +2966,33 @@ function unlinkCosmo(cosmoNum){
     toast('#'+cosmoNum+' unlinked');
     loadMappingHealth();
   }).catch(()=>toast('Unlink failed',true));
+}
+
+// Click a hazmat badge to cycle unknown -> hazmat -> non-hazmat -> unknown.
+function cycleHazmat(asin){
+  const row=(window._toaddData||[]).find(x=>x.asin===asin); if(!row)return;
+  const next = row.hazmat===true ? false : (row.hazmat===false ? null : true);
+  api('/api/hazmat/set',{method:'POST',body:JSON.stringify({asin:asin, hazmat:next})}).then(d=>{
+    if(d && d.error){ toast(d.error,true); return; }
+    row.hazmat=d.hazmat; row.hazmatSource=d.hazmat===null?null:'manual';
+    renderToAdd();
+    toast(d.hazmat===true?'Marked HAZMAT':(d.hazmat===false?'Marked non-hazmat':'Cleared'));
+  }).catch(()=>toast('Could not save',true));
+}
+
+function startHazmatScan(){
+  const b=document.getElementById('hazScanBtn'); if(b){ b.disabled=true; b.textContent='Checking Amazon…'; }
+  api('/api/hazmat/scan',{method:'POST'}).then(()=>pollHazmat()).catch(()=>{ if(b){b.disabled=false;b.textContent='⚠️ Check hazmat with Amazon';} });
+}
+function pollHazmat(){
+  api('/api/hazmat/status').then(j=>{
+    const b=document.getElementById('hazScanBtn');
+    if(j.running){ if(b) b.textContent=j.progress||'checking…'; setTimeout(pollHazmat,4000); return; }
+    if(b){ b.disabled=false; b.textContent='⚠️ Check hazmat with Amazon'; }
+    if(j.error){ toast('Hazmat scan failed: '+j.error,true); return; }
+    toast(j.progress||'Done');
+    loadToAdd();
+  }).catch(()=>setTimeout(pollHazmat,5000));
 }
 
 // ---- DATA FRESHNESS BAR ----
