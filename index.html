@@ -468,6 +468,12 @@
       <div class="hint">A mapping is <b>verified</b> only once a physical barcode scan confirmed it. Anything seeded or hand-picked is a guess until then — this is where a shampoo linked to a conditioner shows up.</div>
       <button class="action full" onclick="loadMappingHealth()" style="margin-top:10px;background:#5a6472">↻ Check mappings</button>
     </div>
+    <div class="box" style="border:2px solid #2563a8">
+      <b style="font-size:15px">🔄 Refresh product names from Amazon</b>
+      <div class="hint">Your product names were frozen when the catalog was first loaded. Brands rewrite listings — <i>"The Original Leave-In Conditioner"</i> is titled <i>"The Conditioner"</i> on Amazon now — and a stale name silently breaks invoice matching. This shows you every difference first; nothing changes until you approve it.</div>
+      <button class="action full" onclick="startNameRefresh()" id="nameRefreshBtn" style="margin-top:10px;background:#2563a8">Check Amazon for updated names</button>
+      <div id="nameRefreshOut"></div>
+    </div>
     <div id="mapHealthBody"><div class="hint" style="padding:16px">Hit “Check mappings” to audit every link.</div></div>
   </div>
 <div id="sub-dashboard" class="subpanel active">
@@ -2770,6 +2776,55 @@ function handleMappingMismatch(d, code){
 }
 
 // ==================== MAPPING HEALTH ====================
+// ---- Refresh product names from Amazon (preview first) ----
+function startNameRefresh(){
+  const btn=document.getElementById('nameRefreshBtn');
+  btn.disabled=true; btn.textContent='Checking Amazon…';
+  document.getElementById('nameRefreshOut').innerHTML='<div class="hint" style="padding:10px">Starting…</div>';
+  api('/api/refresh-names/start',{method:'POST'}).then(()=>pollNameRefresh())
+    .catch(()=>{ btn.disabled=false; btn.textContent='Check Amazon for updated names'; toast('Could not start',true); });
+}
+
+function pollNameRefresh(){
+  api('/api/refresh-names/status').then(j=>{
+    const out=document.getElementById('nameRefreshOut');
+    const btn=document.getElementById('nameRefreshBtn');
+    if(j.running){
+      out.innerHTML='<div class="hint" style="padding:10px">'+(j.progress||'working…')+'</div>';
+      setTimeout(pollNameRefresh,3000); return;
+    }
+    btn.disabled=false; btn.textContent='Check Amazon for updated names';
+    if(j.error){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+j.error+'</div>'; return; }
+    if(!j.changes || !j.changes.length){
+      out.innerHTML='<div class="box" style="margin-top:10px;border:2px solid #1e8449;background:#f4fbf7"><b style="color:#1e8449">✅ All product names already match Amazon.</b> ('+j.checked+' checked)</div>';
+      return;
+    }
+    let h='<div class="box" style="margin-top:10px;border:2px solid #b7791f;background:#fffdf7">'
+      +'<div style="font-weight:800;color:#b7791f;font-size:15px">'+j.changes.length+' name'+(j.changes.length===1?'':'s')+' differ from Amazon</div>'
+      +'<div class="hint" style="margin-bottom:8px">Review, then apply. Nothing has changed yet.</div>';
+    for(const c of j.changes){
+      const img=c.image?'<img src="'+c.image+'" onerror="this.style.display=\'none\'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:42px;height:42px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+      h+='<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #f0ead9">'+img
+        +'<div style="flex:1;min-width:0;font-size:12.5px;line-height:1.4">'
+        +'<div style="color:#c0392b;text-decoration:line-through">'+c.oldName+'</div>'
+        +'<div style="color:#1e8449;font-weight:600;margin-top:3px">'+c.newName+'</div>'
+        +'<a href="https://www.amazon.com/dp/'+c.asin+'" target="_blank" rel="noopener" style="font-family:monospace;font-size:11px;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8">'+c.asin+' ↗</a>'
+        +'</div></div>';
+    }
+    h+='<button class="action full" onclick="applyNameRefresh()" style="margin-top:10px;background:#1e8449">Apply all '+j.changes.length+' updates</button></div>';
+    out.innerHTML=h;
+  }).catch(()=>{ setTimeout(pollNameRefresh,4000); });
+}
+
+function applyNameRefresh(){
+  if(!confirm('Update the product names to match Amazon?\n\nThis only changes display names — ASINs, stock, mappings and locations are untouched.'))return;
+  api('/api/refresh-names/apply',{method:'POST',body:JSON.stringify({})}).then(d=>{
+    toast('Updated '+(d.applied||0)+' names');
+    document.getElementById('nameRefreshOut').innerHTML='<div class="box" style="margin-top:10px;border:2px solid #1e8449;background:#f4fbf7"><b style="color:#1e8449">✅ Applied '+(d.applied||0)+' updates.</b></div>';
+    loadProducts();
+  }).catch(()=>toast('Apply failed',true));
+}
+
 function unlinkCosmo(cosmoNum){
   if(!confirm('Unlink Cosmoprof #'+cosmoNum+'?\n\nIt becomes unmapped and will ask to be linked again on the next check-in.\n\nStock already received is not affected.'))return;
   api('/api/cosmo-map/unlink',{method:'POST',body:JSON.stringify({cosmo_num:cosmoNum})}).then(d=>{
