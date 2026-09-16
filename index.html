@@ -555,6 +555,13 @@
         <div style="font-weight:700">Market Data (Keepa)</div>
         <div class="hint">What's selling across the line, where Amazon is weak, and where competition is low — cross-referenced with your on-hand. Uses Keepa API.</div>
         <button class="action full" onclick="loadMarket()" id="mktLoadBtn" style="margin-top:8px;background:#b7791f">↻ Refresh Market Data</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Skip under $
+          <input type="number" id="mktMinPrice" value="15" min="0" step="1" style="width:74px;padding:9px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px"></label>
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#5a6472;white-space:nowrap">Skip if newer than
+          <input type="number" id="mktMaxAge" value="7" min="0" step="1" style="width:64px;padding:9px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px"> days</label>
+        <span class="hint" style="margin:0">Products you stock are always refreshed, whatever these say.</span>
+      </div>
       </div>
       <div id="marketBody"><div class="hint" style="padding:20px;text-align:center">Loading last saved data…</div></div>
     </div>
@@ -1760,11 +1767,21 @@ function loadMarket(){
   const btn=document.getElementById('mktLoadBtn');
   btn.textContent='Starting…'; btn.disabled=true;
   const body=document.getElementById('marketBody');
-  ownerApi('/api/market-data/start',{method:'POST'}).then(d=>{
+  const minPrice=parseFloat((document.getElementById('mktMinPrice')||{}).value)||0;
+  const maxAgeDays=parseFloat((document.getElementById('mktMaxAge')||{}).value)||0;
+  ownerApi('/api/market-data/start',{method:'POST',body:JSON.stringify({minPrice:minPrice,maxAgeDays:maxAgeDays})}).then(d=>{
     if(d.error){ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+d.error+'</div>'; return; }
     body.innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pulling Keepa data…</div><div id="mktProgress" class="hint" style="margin-top:6px">starting…</div><div class="hint" style="margin-top:10px;color:#9db0c9">This runs in the background and can take several minutes for a large catalog. You can switch tabs — it keeps running.</div></div>';
     pollMarketJob();
   }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(err.message||err)+'</div>'; });
+}
+function mktJobSummary(j){
+  const bits=[];
+  if(j.pulled) bits.push(j.pulled+' pulled');
+  if(j.skippedCheap) bits.push(j.skippedCheap+' skipped (under price floor)');
+  if(j.skippedFresh) bits.push(j.skippedFresh+' skipped (still fresh)');
+  if(j.failed && j.failed.length) bits.push('<b style="color:#c0392b">'+j.failed.length+' batch(es) failed — run again to fill the gaps</b>');
+  return bits.length?'<div class="hint" style="margin-top:6px">'+bits.join(' · ')+'</div>':'';
 }
 function pollMarketJob(){
   ownerApi('/api/market-data/status').then(j=>{
