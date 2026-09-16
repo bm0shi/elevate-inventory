@@ -1692,38 +1692,80 @@ app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => 
 });
 
 // PDF upload -> extract text -> process (multi-order)
+// ============================================================
+// PDF TEXT EXTRACTION (two readers, tried in order)
+//   1. pdf-parse  — bundled, but ships a ~2018 pdf.js that rejects newer
+//                   Cosmoprof PDFs (linearised + /Type/XRef + ObjStm).
+//   2. pdfjs-dist — current pdf.js, loaded lazily. If the package is missing
+//                   or throws, we fall through cleanly and report the failure.
+// Never let reader #2 being absent break the endpoint.
+// ============================================================
+async function extractPdfText(buffer) {
+  const tried = [];
+
+  try {
+    const data = await pdfParse(buffer);
+    if (data && data.text && data.text.trim()) return { text: data.text, via: 'pdf-parse' };
+    tried.push('pdf-parse: opened but produced no text');
+  } catch (e) {
+    tried.push('pdf-parse: ' + (e && e.message ? e.message : e));
+  }
+
+  try {
+    const pdfjs = require('pdfjs-dist/legacy/build/pdf.mjs');
+    const doc = await pdfjs.getDocument({
+      data: new Uint8Array(buffer),
+      isEvalSupported: false,
+      useSystemFonts: true
+    }).promise;
+
+    let out = '';
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const content = await page.getTextContent();
+      // Cosmoprof invoices are column-laid-out, so rebuild physical lines by
+      // Y position and order each line left-to-right by X.
+      const rows = new Map();
+      for (const it of content.items) {
+        if (!it.str) continue;
+        const y = Math.round(it.transform[5]);
+        if (!rows.has(y)) rows.set(y, []);
+        rows.get(y).push({ x: it.transform[4], s: it.str });
+      }
+      for (const y of [...rows.keys()].sort((a, b) => b - a)) {
+        const line = rows.get(y).sort((a, b) => a.x - b.x).map(t => t.s).join(' ').replace(/\s+/g, ' ').trim();
+        if (line) out += line + '\n';
+      }
+      out += '\n';
+    }
+    if (out.trim()) return { text: out, via: 'pdfjs-dist' };
+    tried.push('pdfjs-dist: opened but produced no text (likely a scan)');
+  } catch (e) {
+    tried.push('pdfjs-dist: ' + (e && e.message ? e.message : e));
+  }
+
+  return { text: '', via: null, tried };
+}
+
 app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  let text;
-  try {
-    const data = await pdfParse(req.file.buffer);
-    text = data.text || '';
-  } catch (err) {
-    // pdf-parse bundles an old pdf.js that rejects some modern Cosmoprof PDFs
-    // (linearised, cross-reference streams). The file is usually fine — the
-    // reader is not. Say so, and point at the paste fallback.
-    const msg = String(err && err.message || err);
-    const known = /invalid pdf|structure|xref|startxref/i.test(msg);
-    console.error('[PDF] parse failed:', msg);
+  const extracted = await extractPdfText(req.file.buffer);
+  const text = extracted.text;
+  if (!text || !text.trim()) {
+    console.error('[PDF] all readers failed:', (extracted.tried || []).join(' | '));
     return res.status(400).json({
-      error: known
-        ? 'The PDF reader could not open this file ("' + msg + '"). The invoice itself is almost certainly fine — this reader rejects newer Cosmoprof PDFs. Open the PDF, select all the text (Ctrl+A), copy it, and use the PASTE option instead.'
-        : 'Could not read PDF: ' + msg,
-      pdfReaderFailed: true
+      error: 'Neither PDF reader could get text out of this file. The invoice is probably fine — open it, select all the text (Ctrl+A), copy, and use the PASTE option instead.',
+      pdfReaderFailed: true,
+      tried: extracted.tried || []
     });
   }
-  if (!text.trim()) {
-    return res.status(400).json({
-      error: 'The PDF opened but contained no selectable text — it is probably a scan. Use the paste option, or re-download the invoice from Cosmoprof.',
-      pdfReaderFailed: true
-    });
-  }
+  console.log(`[PDF] Text extracted via ${extracted.via} (${text.length} chars).`);
   if (!/FOR ORDER NUMBER:/i.test(text)) {
     return res.status(400).json({ error: 'No "FOR ORDER NUMBER:" found in PDF. It may be a different format — try the paste option.' });
   }
   const { created, errors } = await processInvoiceText(text);
-  if (!created.length) return res.status(400).json({ error: 'Found order headers but no line items parsed. Try paste as backup.', errors });
-  res.json({ ok: true, created, errors });
+  if (!created.length) return res.status(400).json({ error: 'Found order headers but no line items parsed. Try paste as backup.', errors, via: extracted.via });
+  res.json({ ok: true, created, errors, via: extracted.via });
 });
 
 // ============================================================
