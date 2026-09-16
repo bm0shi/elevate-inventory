@@ -278,7 +278,12 @@
         <div class="hint">Each scan adds 1 to that item's received count. Discrepancies show below in real time.</div>
       </div>
       <div id="reconLines"></div>
-      <button class="action full" onclick="completeInvoice()" style="margin-top:12px">Mark Complete → Add to On Hand</button>
+      <div id="reconPreview"></div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <button class="action" onclick="receiveAllExpected()" style="flex:1;min-width:190px;background:#127a7a">✓ Receive All As Expected</button>
+        <button class="action" onclick="practiceInvoice()" style="flex:1;min-width:190px;background:#7a4fb5">🧪 Practice Run — nothing saved</button>
+      </div>
+      <button class="action full" onclick="completeInvoice()" style="margin-top:8px">Mark Complete → Add to On Hand</button>
       <button class="action danger full" onclick="deleteInvoice()" style="margin-top:8px">Delete This Invoice</button>
     </div>
   </div>
@@ -2489,6 +2494,100 @@ function editLocation(asin){
   });
 }
 
+// ==================== SELF-HEALING INVOICE MAPPING ====================
+// An unmapped Cosmoprof line is resolved by PICKING the product, not by
+// opening a case and scanning a bottle. Once picked, the Cosmo# -> ASIN link
+// is permanent and every future invoice recognises it automatically.
+function candBtn(cosmoNum, asin, name, conf){
+  const safe=String(name||'').replace(/\\/g,'').replace(/'/g,"\\'").replace(/"/g,'');
+  const confHtml = conf!=null
+    ? '<span style="display:inline-block;min-width:40px;font-weight:800;color:'+(conf>=70?'#1e8449':'#b7791f')+'">'+conf+'%</span> '
+    : '';
+  return '<button onclick="mapCosmo(\''+cosmoNum+'\',\''+asin+'\',\''+safe+'\')" '
+    +'style="display:block;width:100%;text-align:left;margin-top:5px;padding:9px 10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;cursor:pointer;font-size:12.5px;line-height:1.35">'
+    +confHtml+'<span style="font-weight:600">'+String(name||'').slice(0,64)+'</span>'
+    +'<div style="font-family:monospace;font-size:11px;color:#2563a8;margin-top:2px">'+asin+'</div></button>';
+}
+
+function mapCosmo(cosmoNum, asin, name){
+  if(!confirm('Link Cosmoprof #'+cosmoNum+' to:\n\n'+name+'\n\nSaved permanently — future invoices recognise it automatically.')) return;
+  api('/api/cosmo-map',{method:'POST',body:JSON.stringify({cosmo_num:cosmoNum, asin:asin})}).then(d=>{
+    if(d && d.error){ toast(d.error,true); return; }
+    toast('Linked — saved for all future invoices');
+    loadLocations().then(renderReconLines);
+  }).catch(()=>toast('Could not save mapping',true));
+}
+
+function searchMapCandidates(inp, cosmoNum){
+  const q=(inp.value||'').toLowerCase().trim();
+  const box=document.getElementById('mapres_'+cosmoNum);
+  if(!box) return;
+  if(q.length<2){ box.innerHTML=''; return; }
+  const hits=(products||[]).filter(p=>
+    (p.name||'').toLowerCase().includes(q) ||
+    (p.asin||'').toLowerCase().includes(q) ||
+    (p.sku||'').toLowerCase().includes(q)
+  ).slice(0,8);
+  box.innerHTML = hits.length
+    ? hits.map(p=>candBtn(cosmoNum,p.asin,p.name,null)).join('')
+    : '<div class="hint" style="padding:6px 2px">No match in the catalog — add the product on the Receiving page first, then come back.</div>';
+}
+
+function collectLocations(){
+  const locations={}; let missing=0;
+  document.querySelectorAll('[data-locasin]').forEach(sel=>{
+    const a=sel.getAttribute('data-locasin');
+    if(sel.value) locations[a]=sel.value; else missing++;
+  });
+  return { locations:locations, missing:missing };
+}
+
+function receiveAllExpected(){
+  if(!currentInvoice)return;
+  if(!confirm('Set every linked line to its invoice quantity?\n\nUse this when the truck matched the paperwork — then scan or edit only the exceptions.'))return;
+  api('/api/invoices/'+currentInvoice+'/receive-all',{method:'POST'}).then(d=>{
+    toast('Set '+(d.lines||0)+' lines to expected');
+    renderReconLines();
+  });
+}
+
+// PRACTICE RUN — full preview, writes nothing anywhere.
+function practiceInvoice(){
+  if(!currentInvoice)return;
+  const c=collectLocations();
+  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations:c.locations,dryRun:true,force:true})}).then(d=>{
+    if(!d || !d.ok){ toast('Practice run failed',true); return; }
+    showReconPreview(d);
+  });
+}
+
+function showReconPreview(d){
+  const box=document.getElementById('reconPreview'); if(!box)return;
+  const willAdd=(d.preview||[]).filter(x=>x.willAdd);
+  let h='<div class="box" style="border:2px solid #7a4fb5;background:#faf7fd;margin-top:12px">';
+  h+='<div style="font-weight:800;font-size:16px;color:#7a4fb5">🧪 Practice Run — nothing was saved</div>';
+  h+='<div class="hint" style="margin-bottom:10px">Exactly what “Mark Complete” would do. On Hand is untouched.</div>';
+  h+='<div style="font-size:14px;font-weight:700;margin-bottom:8px">Would add <b>'+d.added+'</b> units across '+willAdd.length+' item'+(willAdd.length===1?'':'s')+' · '+d.locationsSet+' pallet location'+(d.locationsSet===1?'':'s')+' set</div>';
+  if(d.unmappedCount){
+    h+='<div style="padding:9px;background:#fdeceb;border-radius:6px;color:#c0392b;font-weight:700;font-size:13px;margin-bottom:8px">⚠ '+d.unmappedCount+' line'+(d.unmappedCount===1?'':'s')+' not linked to a product — those units would be DISCARDED. Link them above first.</div>';
+  }
+  h+='<div style="max-height:320px;overflow:auto;font-size:12.5px;border-top:1px solid #ece6f5">';
+  for(const r of (d.preview||[])){
+    h+='<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid #ece6f5">'
+      +'<span style="flex:1;line-height:1.3">'+(r.willAdd?'✅':'⛔')+' '+String(r.description||'').slice(0,54)
+      +(r.location?' <b style="color:#1a2b4a">📍'+r.location+'</b>':'')+'</span>'
+      +'<span style="font-weight:800;white-space:nowrap;color:'+(r.willAdd?'#1e8449':'#c0392b')+'">'+(r.willAdd?'+'+r.qty:(r.reason||'—'))+'</span></div>';
+  }
+  h+='</div>';
+  if(d.discrepancies && d.discrepancies.length){
+    h+='<div style="margin-top:10px;font-weight:800;color:#c0392b;font-size:13px">Discrepancies ('+d.discrepancies.length+')</div>';
+    for(const x of d.discrepancies) h+='<div style="font-size:12px;color:#c0392b;margin-top:2px">• '+String(x.description).slice(0,50)+': expected '+x.expected+', received '+x.received+'</div>';
+  }
+  h+='<button class="action full" onclick="document.getElementById(\'reconPreview\').innerHTML=\'\'" style="margin-top:12px;background:#5a6472">Close preview</button></div>';
+  box.innerHTML=h;
+  box.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
 function renderReconLines(){
   if(!currentInvoice)return;
   api('/api/invoices/'+currentInvoice).then(lines=>{
@@ -2497,14 +2596,27 @@ function renderReconLines(){
     lines.map(l=>{
       const exp=l.qty_expected, rec=l.qty_received;
       let cls='', status='';
-      if(!l.asin){ cls='style="background:#fdf6e3"'; status='<span style="color:#b7791f">⚠ needs mapping</span>'; }
+      if(!l.asin){ cls='style="background:#fdf6e3;border:2px solid #b7791f"'; status='<span style="color:#b7791f;font-weight:800">⚠ NOT LINKED</span>'; }
       else if(rec===exp && rec>0){ cls='style="background:#eafaf1"'; status='<span style="color:#1e8449">✓ match</span>'; }
       else if(rec>exp){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">over +'+(rec-exp)+'</span>'; }
       else if(rec>0){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">short '+(exp-rec)+'</span>'; }
       else { status='<span style="color:#9db0c9">not scanned</span>'; }
       const nm=l.name||l.description;
-      // Pallet location: pre-filled when we already stock this item, flagged red when new.
+      // Unmapped line -> resolve it by picking the product (no case opening).
       let locBlock='';
+      if(!l.asin){
+        const cands=l.candidates||[];
+        locBlock='<div style="margin-top:9px;padding:11px;background:#fff;border:1px solid #e8dcc0;border-radius:6px">'
+          +'<div style="font-size:12.5px;font-weight:800;color:#b7791f">Link this to a product</div>'
+          +'<div class="hint" style="margin:3px 0 8px">Cosmo# '+l.cosmo_num+' — pick the match below. No need to open a case. Saved permanently.</div>'
+          +(cands.length
+              ? cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,c.confidence)).join('')
+              : '<div class="hint" style="padding:2px">No confident match — search below.</div>')
+          +'<input type="text" placeholder="Search all products…" oninput="searchMapCandidates(this,\''+l.cosmo_num+'\')" style="width:100%;margin-top:9px;padding:9px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:13px">'
+          +'<div id="mapres_'+l.cosmo_num+'"></div>'
+          +'</div>';
+      }
+      // Pallet location: pre-filled when we already stock this item, flagged red when new.
       if(l.asin){
         const st=l.loc_status||'new';
         const pre=l.location||l.suggested_loc||'';
@@ -2564,19 +2676,25 @@ function deleteInvoice(){
     loadInvoiceList();
   });
 }
-function completeInvoice(){
+function completeInvoice(force){
   if(!currentInvoice)return;
-  // Collect the pallet location picked for each line.
-  const locations={}; let missing=0;
-  document.querySelectorAll('[data-locasin]').forEach(sel=>{
-    const a=sel.getAttribute('data-locasin');
-    if(sel.value) locations[a]=sel.value; else missing++;
-  });
-  if(missing && !confirm(missing+' item'+(missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
-  if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
-  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations})}).then(d=>{
+  const c=collectLocations();
+  if(!force){
+    if(c.missing && !confirm(c.missing+' item'+(c.missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
+    if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
+  }
+  api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations:c.locations,force:!!force})}).then(d=>{
+    // HARD STOP — unlinked lines would be silently lost, so the server refuses.
+    if(d && d.ok===false && d.error==='unmapped_lines'){
+      const list=(d.unmapped||[]).map(u=>'  • #'+u.cosmo_num+'  '+String(u.description||'').slice(0,44)+'  ('+(u.qty_received||u.qty_expected||0)+' units)').join('\n');
+      const go=confirm('STOP — '+d.unmapped.length+' line'+(d.unmapped.length===1?' is':'s are')+' not linked to a product:\n\n'+list
+        +'\n\nThese '+d.unmappedUnits+' units would be DISCARDED and never reach On Hand.\n\nOK = discard them anyway\nCancel = go back and link them (recommended)');
+      if(go) completeInvoice(true);
+      return;
+    }
     let msg='Added '+d.added+' units to on hand.';
     if(d.locationsSet) msg+='\nPallet locations set: '+d.locationsSet+'.';
+    if(d.unmappedCount) msg+='\nDISCARDED (not linked): '+d.unmappedCount+' line'+(d.unmappedCount===1?'':'s')+'.';
     if(d.discrepancies && d.discrepancies.length){
       msg+='\n\nDISCREPANCIES:\n'+d.discrepancies.map(x=>`${x.description}: expected ${x.expected}, received ${x.received}`).join('\n');
     }
