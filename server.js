@@ -24,7 +24,11 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // only its last page, silently. We now merge every segment sharing an order
 // number BEFORE touching the database.
 function parseInvoiceText(text) {
-  const parts = text.split(/FOR ORDER NUMBER:\s*(\d+)/);
+  // Cosmoprof has sent at least three layouts. Accept every header style seen:
+  //   "FOR ORDER NUMBER: 261642335"   (printed customer invoice)
+  //   "Order Number: 261975620"       (order-confirmation screen capture)
+  //   "Order #: 261964502"            (order-entry screen)
+  const parts = text.split(/(?:FOR\s+)?ORDER\s*(?:NUMBER|NO\.?|#)\s*:?\s*(\d{6,})/i);
   const created = [], errors = [];
 
   const orders = new Map();
@@ -57,6 +61,7 @@ async function processInvoiceText(text) {
   const orders = parseInvoiceText(text);
   const created = [], errors = [];
 
+  const empties = [];
   for (const [orderNumber, o] of orders) {
     const date = o.date;
 
@@ -71,7 +76,7 @@ async function processInvoiceText(text) {
     }
     const items = [...mergedMap.values()];
 
-    if (!items.length) { errors.push(`Order ${orderNumber}: no items parsed`); continue; }
+    if (!items.length) { empties.push(orderNumber); continue; }
     if (o.rejected.length) {
       errors.push(`Order ${orderNumber}: ${o.rejected.length} line(s) looked like items but did NOT parse — ${o.rejected.join(' | ')}`);
     }
@@ -96,6 +101,11 @@ async function processInvoiceText(text) {
     console.log(`[Invoice] ${orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
     created.push({ orderNumber, items: items.length, mapped, unmapped, date,
                    pages: o.pages, merged: mergedCount, rejected: o.rejected.length });
+  }
+  // Only complain about empty segments if NOTHING parsed — a header with no
+  // line items is normal in these screen captures.
+  if (empties.length && !created.length) {
+    errors.push(`Found order header(s) ${empties.join(', ')} but no line items parsed.`);
   }
   return { created, errors };
 }
