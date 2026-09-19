@@ -462,10 +462,43 @@
         <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
         <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
         <button class="subtab" onclick="showSubTab('costs',event)">💵 Costs &amp; Profit</button>
+        <button class="subtab" onclick="showSubTab('labor',event)">👷 Labor</button>
         <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
         <button class="subtab" onclick="adminLock()" style="margin-left:auto;background:#e2e8f0;color:#5a6472">🔒 Lock</button>
       </div>
       <div id="freshnessBar" style="margin:8px 0 2px"></div>
+<div id="sub-labor" class="subpanel">
+    <div class="box">
+      <h3 style="margin-bottom:4px">Labor &amp; Timesheets</h3>
+      <div class="hint">Upload the Homebase <b>timesheets CSV</b> once per pay period. Actual punches are what prep times get measured against — a job left open overnight is clamped to the hours somebody was really clocked in, instead of reading as 17 hours. <b>Wage data is owner-only.</b></div>
+    </div>
+
+    <div class="box">
+      <b style="font-size:15px">Team</b>
+      <div class="hint">Short names appear on the prep dropdown. The Homebase name is only used to match rows on import.</div>
+      <div id="empBody" style="margin-top:8px"><div class="hint">Loading…</div></div>
+      <button class="action full" onclick="addEmployee()" style="margin-top:10px;background:#5a6472">+ Add team member</button>
+    </div>
+
+    <div class="box" style="border:2px solid #127a7a">
+      <b style="font-size:15px">Import a pay period</b>
+      <div class="hint">Homebase → Timesheets → Download → <b>all timecards</b> (CSV). Re-importing the same period is safe — shifts update rather than duplicate.</div>
+      <input type="file" id="tsFile" accept=".csv,text/csv,text/plain" onchange="tsFilePicked(this)" style="margin-top:10px;width:100%;padding:10px;border:2px dashed #cfd8e3;border-radius:8px;background:#fff;font-size:13px">
+      <div class="hint" style="margin:8px 0 4px">— or paste the CSV text —</div>
+      <textarea id="tsText" placeholder="Paste the Homebase CSV here…" style="width:100%;height:90px;padding:10px;border:2px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:monospace"></textarea>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <button class="action" onclick="importTimesheets(true)" style="flex:1;min-width:170px;background:#7a4fb5">🧪 Preview — nothing saved</button>
+        <button class="action" onclick="importTimesheets(false)" style="flex:1;min-width:170px;background:#127a7a">Import pay period</button>
+      </div>
+      <div id="tsOut"></div>
+    </div>
+
+    <div class="box">
+      <b style="font-size:15px">Punches on file</b>
+      <button class="action full" onclick="loadCoverage()" style="margin-top:8px;background:#5a6472">↻ Refresh</button>
+      <div id="covBody" style="margin-top:8px"></div>
+    </div>
+  </div>
 <div id="sub-costs" class="subpanel">
     <div class="box">
       <h3 style="margin-bottom:4px">True Cost &amp; Profit</h3>
@@ -2035,6 +2068,7 @@ function showSubTab(name, ev){
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
   loadFreshness();
+  if(name==='labor'){ loadEmployees(); loadCoverage(); }
   if(name==='costs'){ if(window._costData) renderCosts(); else loadCosts(); }
   if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
@@ -3022,6 +3056,97 @@ function unlinkCosmo(cosmoNum){
     toast('#'+cosmoNum+' unlinked');
     loadMappingHealth();
   }).catch(()=>toast('Unlink failed',true));
+}
+
+// ==================== LABOR & TIMESHEETS ====================
+function loadEmployees(){
+  api('/api/employees').then(list=>{
+    const b=document.getElementById('empBody'); if(!b)return;
+    if(!list||!list.length){ b.innerHTML='<div class="hint">No team members yet.</div>'; return; }
+    window._emps=list;
+    b.innerHTML='<table><thead><tr><th>Name (shown on prep)</th><th>Homebase name</th><th>Wage</th><th>Shifts</th><th>Hours</th><th></th></tr></thead><tbody>'
+      +list.map(e=>'<tr'+(e.active?'':' style="opacity:.45"')+'>'
+        +'<td><b>'+e.display_name+'</b></td>'
+        +'<td style="font-size:12px;color:#5a6472">'+(e.homebase_name||'<i style="color:#c0392b">not set</i>')+'</td>'
+        +'<td>'+(e.wage?'$'+Number(e.wage).toFixed(2)+'/hr':'<i style="color:#b7791f">—</i>')+'</td>'
+        +'<td>'+(e.shifts||0)+'</td>'
+        +'<td>'+(e.total_hours?Number(e.total_hours).toFixed(1)+'h':'—')+'</td>'
+        +'<td><button onclick="editEmployee('+e.id+')" style="padding:5px 10px;font-size:11px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer">edit</button></td>'
+        +'</tr>').join('')+'</tbody></table>';
+  }).catch(()=>{ const b=document.getElementById('empBody'); if(b) b.innerHTML='<div class="hint" style="color:#c0392b">Could not load — deploy the latest server.js.</div>'; });
+}
+
+function addEmployee(){
+  const n=prompt('Short name shown on the prep dropdown (e.g. Zaia):'); if(!n)return;
+  const hb=prompt('Exact name as it appears in Homebase (e.g. ZAIA JELOW):', n)||'';
+  const w=prompt('Hourly wage (blank to fill from the next import):','')||'';
+  ownerApi('/api/employees',{method:'POST',body:JSON.stringify({display_name:n.trim(), homebase_name:hb.trim(), wage:w?parseFloat(w):null})})
+    .then(()=>{ toast('Added'); loadEmployees(); }).catch(()=>toast('Could not add',true));
+}
+
+function editEmployee(id){
+  const e=(window._emps||[]).find(x=>x.id===id); if(!e)return;
+  const n=prompt('Short name:', e.display_name); if(n===null)return;
+  const hb=prompt('Homebase name (must match the CSV exactly):', e.homebase_name||''); if(hb===null)return;
+  const w=prompt('Hourly wage:', e.wage!=null?e.wage:''); if(w===null)return;
+  const act=confirm('Active?\n\nOK = active (shows on the prep dropdown)\nCancel = inactive');
+  ownerApi('/api/employees',{method:'POST',body:JSON.stringify({id:id, display_name:n.trim(), homebase_name:hb.trim(), wage:w?parseFloat(w):null, active:act})})
+    .then(()=>{ toast('Saved'); loadEmployees(); }).catch(()=>toast('Could not save',true));
+}
+
+function tsFilePicked(inp){
+  const f=inp.files&&inp.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{ document.getElementById('tsText').value=r.result||''; toast('Loaded '+f.name+' — hit Preview'); };
+  r.onerror=()=>toast('Could not read that file',true);
+  r.readAsText(f);
+}
+
+function importTimesheets(dry){
+  const t=(document.getElementById('tsText').value||'').trim();
+  const out=document.getElementById('tsOut');
+  if(!t){ toast('Choose a CSV file or paste the text first',true); return; }
+  out.innerHTML='<div class="hint" style="padding:10px">Working…</div>';
+  ownerApi('/api/timesheets/import',{method:'POST',body:JSON.stringify({text:t, dryRun:!!dry})}).then(d=>{
+    if(!d||d.error){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">'+((d&&d.error)||'Import failed')+'</div>'; return; }
+    let h='<div class="box" style="margin-top:10px;border:2px solid '+(dry?'#7a4fb5':'#1e8449')+';background:'+(dry?'#faf7fd':'#f4fbf7')+'">';
+    h+='<div style="font-weight:800;font-size:15px;color:'+(dry?'#7a4fb5':'#1e8449')+'">'+(dry?'🧪 Preview — nothing saved':'✅ Imported')+'</div>';
+    h+='<div class="hint">'+d.shifts+' shift'+(d.shifts===1?'':'s')+' in the file'
+      +(dry?' · '+d.matchedCount+' matched to a team member':' · '+d.inserted+' new, '+d.updated+' updated')+'</div>';
+    const names=Object.keys(d.summary||{});
+    if(names.length){
+      h+='<table style="margin-top:8px"><thead><tr><th>Person</th><th>Shifts</th><th>Hours</th><th>Wage</th><th>Labor cost</th></tr></thead><tbody>';
+      let th=0,tc=0;
+      for(const n of names){ const v=d.summary[n]; th+=v.hours; tc+=v.cost;
+        h+='<tr><td><b>'+n+'</b></td><td>'+v.shifts+'</td><td>'+v.hours.toFixed(2)+'h</td><td>'+(v.wage?'$'+Number(v.wage).toFixed(2):'—')+'</td><td><b>$'+v.cost.toFixed(2)+'</b></td></tr>'; }
+      h+='<tr style="border-top:2px solid #cfd8e3"><td><b>Total</b></td><td></td><td><b>'+th.toFixed(2)+'h</b></td><td></td><td><b>$'+tc.toFixed(2)+'</b></td></tr>';
+      h+='</tbody></table>';
+    }
+    if(d.unmatched && d.unmatched.length){
+      h+='<div style="margin-top:10px;padding:9px;background:#fdeceb;border:1px solid #f3d9d6;border-radius:6px">'
+        +'<b style="color:#c0392b">⚠ '+d.unmatched.length+' name(s) in the file do not match a team member</b>'
+        +'<div class="hint">Their hours were NOT imported. Edit the team member above and set the Homebase name to match exactly.</div>';
+      for(const u of d.unmatched) h+='<div style="font-size:12px;padding:2px 0"><b>'+u.name+'</b> — '+u.shifts+' shift'+(u.shifts===1?'':'s')+'</div>';
+      h+='</div>';
+    }
+    if(d.warnings && d.warnings.length) h+='<div class="hint" style="color:#b7791f;margin-top:6px">'+d.warnings.join(' · ')+'</div>';
+    h+='</div>';
+    out.innerHTML=h;
+    if(!dry){ loadEmployees(); loadCoverage(); }
+  }).catch(()=>{ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Import failed.</div>'; });
+}
+
+function loadCoverage(){
+  const b=document.getElementById('covBody'); if(!b)return;
+  ownerApi('/api/timesheets/coverage').then(list=>{
+    if(!list||!list.length){ b.innerHTML='<div class="hint">No punches on file yet.</div>'; return; }
+    b.innerHTML='<table><thead><tr><th>Person</th><th>Shifts</th><th>From</th><th>To</th><th>Hours</th><th>Labor cost</th></tr></thead><tbody>'
+      +list.map(r=>'<tr><td><b>'+r.display_name+'</b></td><td>'+(r.shifts||0)+'</td>'
+        +'<td>'+(r.first_day?String(r.first_day).slice(0,10):'—')+'</td>'
+        +'<td>'+(r.last_day?String(r.last_day).slice(0,10):'—')+'</td>'
+        +'<td>'+(Number(r.hours)||0).toFixed(1)+'h</td>'
+        +'<td>$'+(Number(r.cost)||0).toFixed(2)+'</td></tr>').join('')+'</tbody></table>';
+  }).catch(()=>{ b.innerHTML='<div class="hint" style="color:#c0392b">Could not load.</div>'; });
 }
 
 // ==================== COSTS & PROFIT ====================
