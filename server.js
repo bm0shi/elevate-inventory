@@ -696,6 +696,47 @@ async function initDb() {
     console.log('[Inventory] Cost history ready.');
   } catch(e) { console.error('cost history migration skipped:', e.message); }
 
+  // ---- Employees + timecards (idempotent) ----
+  // display_name is what the floor picks from a dropdown; homebase_name is the
+  // exact string Homebase exports, used to match rows on import.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_employees (
+        id SERIAL PRIMARY KEY,
+        display_name TEXT NOT NULL UNIQUE,
+        homebase_name TEXT,
+        wage NUMERIC,
+        active BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS inv_timecards (
+        id SERIAL PRIMARY KEY,
+        employee_id INTEGER REFERENCES inv_employees(id) ON DELETE CASCADE,
+        homebase_name TEXT,
+        work_date DATE NOT NULL,
+        clock_in TIMESTAMPTZ NOT NULL,
+        clock_out TIMESTAMPTZ NOT NULL,
+        break_minutes INTEGER DEFAULT 0,
+        wage NUMERIC,
+        actual_hours NUMERIC,
+        paid_hours NUMERIC,
+        ot_hours NUMERIC,
+        source TEXT DEFAULT 'homebase-csv',
+        created_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (employee_id, clock_in)
+      );
+      CREATE INDEX IF NOT EXISTS idx_timecards_emp_date ON inv_timecards(employee_id, work_date);
+    `);
+    const seed = [['Zaia','ZAIA JELOW'],['Samantha','Samantha Rodriguez'],['Nasser','Nasser Shaba']];
+    for (const [disp, hb] of seed) {
+      await pool.query(
+        `INSERT INTO inv_employees(display_name, homebase_name) VALUES($1,$2)
+         ON CONFLICT (display_name) DO UPDATE SET homebase_name=COALESCE(inv_employees.homebase_name,$2)`,
+        [disp, hb]);
+    }
+    console.log('[Inventory] Employees + timecards ready.');
+  } catch(e) { console.error('employee migration skipped:', e.message); }
+
   // ---- Hazmat, keyed by ASIN (idempotent) ----
   // Originally stored on inv_products, which only holds the ~111 products we
   // actually carry. Products to Add is about the ~469 Keepa ASINs we DON'T
@@ -1933,6 +1974,235 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
       velDays
     }
   });
+});
+
+// ============================================================
+// HOMEBASE TIMESHEET IMPORT
+// The Homebase API is Enterprise-only ($120/mo). The CSV export carries the
+// same fields we need — per-person punches and wage — so it is uploaded once
+// per pay period instead. Punches are what prep-job durations get clamped to,
+// which is how a job left open overnight stops reading as 17 hours.
+// ============================================================
+
+// Minimal RFC4180-ish CSV line splitter (handles quoted fields with commas).
+function splitCsvLine(line) {
+  const out = []; let cur = '', q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (c === '"') q = false;
+      else cur += c;
+    } else {
+      if (c === '"') q = true;
+      else if (c === ',') { out.push(cur); cur = ''; }
+      else cur += c;
+    }
+  }
+  out.push(cur);
+  return out.map(x => x.trim());
+}
+
+const HB_MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,
+                   august:7,september:8,october:9,november:10,december:11,
+                   jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
+
+// "August 31 2026" | "8/31/2026" | "2026-08-31"
+function hbDate(str) {
+  const t = String(str || '').trim();
+  if (!t || t === '-') return null;
+  let m = t.match(/^([A-Za-z]+)\s+(\d{1,2})\s*,?\s*(\d{4})$/);
+  if (m && HB_MONTHS[m[1].toLowerCase()] != null) return { y:+m[3], mo:HB_MONTHS[m[1].toLowerCase()], d:+m[2] };
+  m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return { y:+m[3], mo:+m[1]-1, d:+m[2] };
+  m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return { y:+m[1], mo:+m[2]-1, d:+m[3] };
+  return null;
+}
+
+// "8:07am" | "8:07 AM" | "16:12"
+function hbMinutes(str) {
+  const t = String(str || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!t || t === '-') return null;
+  let m = t.match(/^(\d{1,2}):(\d{2})(am|pm)$/);
+  if (m) {
+    let h = +m[1];
+    if (m[3] === 'pm' && h !== 12) h += 12;
+    if (m[3] === 'am' && h === 12) h = 0;
+    return h * 60 + (+m[2]);
+  }
+  m = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) return (+m[1]) * 60 + (+m[2]);
+  return null;
+}
+
+function mkTs(dt, mins) {
+  // Local wall-clock time as recorded by the time clock.
+  const d = new Date(dt.y, dt.mo, dt.d, Math.floor(mins/60), mins % 60, 0);
+  return d;
+}
+
+// Parse the Homebase CSV export into shift rows.
+function parseHomebaseCsv(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const rows = [], warnings = [];
+  let cols = null;
+
+  const idx = (name) => {
+    if (!cols) return -1;
+    const want = name.toLowerCase();
+    return cols.findIndex(c => c.toLowerCase() === want);
+  };
+
+  for (const raw of lines) {
+    if (!raw || !raw.trim()) continue;
+    const f = splitCsvLine(raw);
+    const first = (f[0] || '').trim();
+
+    // repeated header block before each employee
+    if (/^name$/i.test(first) && f.some(x => /clock in/i.test(x))) { cols = f; continue; }
+    if (!cols) continue;
+    if (!first || first === '-' || /^totals/i.test(first) || /^payroll period/i.test(first)) continue;
+
+    const ciD = hbDate(f[idx('Clock in date')]);
+    const ciT = hbMinutes(f[idx('Clock in time')]);
+    const coD = hbDate(f[idx('Clock out date')]);
+    const coT = hbMinutes(f[idx('Clock out time')]);
+    // employee heading rows have a name but no punch — skip quietly
+    if (!ciD || ciT == null || !coD || coT == null) continue;
+
+    const inTs = mkTs(ciD, ciT);
+    let outTs = mkTs(coD, coT);
+    if (outTs <= inTs) { outTs = new Date(outTs.getTime() + 24*3600*1000); } // crossed midnight
+
+    const num = (v) => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
+    const brk = num(f[idx('Break length')]) || 0;
+
+    rows.push({
+      homebase_name: first,
+      work_date: `${ciD.y}-${String(ciD.mo+1).padStart(2,'0')}-${String(ciD.d).padStart(2,'0')}`,
+      clock_in: inTs, clock_out: outTs,
+      break_minutes: Math.round(brk > 12 ? brk : brk * 60), // minutes or decimal hours
+      wage: num(f[idx('Wage rate')]),
+      actual_hours: num(f[idx('Actual hours')]),
+      paid_hours: num(f[idx('Total paid hours')]),
+      ot_hours: num(f[idx('OT hours')])
+    });
+  }
+  if (!cols) warnings.push('No Homebase header row found — is this the timesheets CSV export?');
+  return { rows, warnings };
+}
+
+// ---- Employees ----
+app.get('/api/employees', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT e.*,
+            (SELECT COUNT(*)::int FROM inv_timecards t WHERE t.employee_id=e.id) AS shifts,
+            (SELECT ROUND(SUM(t.actual_hours)::numeric,2) FROM inv_timecards t WHERE t.employee_id=e.id) AS total_hours
+     FROM inv_employees e ORDER BY e.active DESC, e.display_name`);
+  res.json(rows);
+});
+
+app.post('/api/employees', ownerAuth, async (req, res) => {
+  const { id, display_name, homebase_name, wage, active } = req.body || {};
+  if (id) {
+    await pool.query(
+      `UPDATE inv_employees SET display_name=COALESCE($2,display_name),
+         homebase_name=COALESCE($3,homebase_name), wage=COALESCE($4,wage),
+         active=COALESCE($5,active) WHERE id=$1`,
+      [id, display_name || null, homebase_name || null, wage != null ? wage : null,
+       typeof active === 'boolean' ? active : null]);
+    return res.json({ ok: true, id });
+  }
+  if (!display_name) return res.status(400).json({ error: 'display_name required' });
+  const r = await pool.query(
+    `INSERT INTO inv_employees(display_name, homebase_name, wage) VALUES($1,$2,$3)
+     ON CONFLICT (display_name) DO UPDATE SET homebase_name=EXCLUDED.homebase_name, wage=EXCLUDED.wage
+     RETURNING id`, [display_name, homebase_name || null, wage != null ? wage : null]);
+  res.json({ ok: true, id: r.rows[0].id });
+});
+
+// ---- Timesheet import ----
+// dryRun previews the match before anything is written.
+app.post('/api/timesheets/import', ownerAuth, async (req, res) => {
+  const text = (req.body && req.body.text) || '';
+  const dryRun = !!(req.body && req.body.dryRun);
+  if (!text.trim()) return res.status(400).json({ error: 'Paste or upload the Homebase CSV first.' });
+
+  const { rows, warnings } = parseHomebaseCsv(text);
+  if (!rows.length) {
+    return res.status(400).json({ error: 'No shifts found in that file.', warnings });
+  }
+
+  const emps = await pool.query('SELECT id, display_name, homebase_name FROM inv_employees');
+  const norm = (x) => String(x || '').toLowerCase().replace(/[^a-z]/g, '');
+  const byHb = {};
+  for (const e of emps.rows) {
+    if (e.homebase_name) byHb[norm(e.homebase_name)] = e;
+    byHb[norm(e.display_name)] = byHb[norm(e.display_name)] || e;
+  }
+  // also match on first name, since display names are short
+  const byFirst = {};
+  for (const e of emps.rows) {
+    const f = norm((e.homebase_name || e.display_name).split(/\s+/)[0]);
+    if (f && !byFirst[f]) byFirst[f] = e;
+  }
+
+  const matched = [], unmatched = {};
+  for (const r of rows) {
+    const k = norm(r.homebase_name);
+    const e = byHb[k] || byFirst[norm(r.homebase_name.split(/\s+/)[0])] || null;
+    if (e) matched.push({ ...r, employee_id: e.id, display_name: e.display_name });
+    else (unmatched[r.homebase_name] = unmatched[r.homebase_name] || []).push(r);
+  }
+
+  const summary = {};
+  for (const m of matched) {
+    const s2 = summary[m.display_name] = summary[m.display_name] || { shifts:0, hours:0, wage:m.wage, cost:0 };
+    s2.shifts++;
+    s2.hours += (m.actual_hours || 0);
+    s2.cost  += (m.actual_hours || 0) * (m.wage || 0);
+  }
+
+  if (dryRun) {
+    return res.json({ ok: true, dryRun: true, shifts: rows.length, matchedCount: matched.length,
+      unmatched: Object.keys(unmatched).map(n => ({ name: n, shifts: unmatched[n].length })),
+      summary, warnings });
+  }
+
+  let inserted = 0, updated = 0;
+  for (const m of matched) {
+    const r2 = await pool.query(
+      `INSERT INTO inv_timecards(employee_id, homebase_name, work_date, clock_in, clock_out,
+                                 break_minutes, wage, actual_hours, paid_hours, ot_hours)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (employee_id, clock_in) DO UPDATE SET
+         clock_out=$5, break_minutes=$6, wage=$7, actual_hours=$8, paid_hours=$9, ot_hours=$10
+       RETURNING (xmax = 0) AS was_insert`,
+      [m.employee_id, m.homebase_name, m.work_date, m.clock_in, m.clock_out,
+       m.break_minutes, m.wage, m.actual_hours, m.paid_hours, m.ot_hours]);
+    if (r2.rows[0] && r2.rows[0].was_insert) inserted++; else updated++;
+    // keep the employee's current wage in step with the latest punch
+    if (m.wage) await pool.query('UPDATE inv_employees SET wage=$1 WHERE id=$2', [m.wage, m.employee_id]);
+  }
+
+  console.log(`[Timesheets] ${inserted} new, ${updated} updated, ${Object.keys(unmatched).length} unmatched names.`);
+  res.json({ ok: true, shifts: rows.length, inserted, updated,
+    unmatched: Object.keys(unmatched).map(n => ({ name: n, shifts: unmatched[n].length })),
+    summary, warnings });
+});
+
+// What punches do we hold, and for when?
+app.get('/api/timesheets/coverage', ownerAuth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT e.display_name, COUNT(t.id)::int AS shifts,
+            MIN(t.work_date) AS first_day, MAX(t.work_date) AS last_day,
+            ROUND(COALESCE(SUM(t.actual_hours),0)::numeric,2) AS hours,
+            ROUND(COALESCE(SUM(t.actual_hours * t.wage),0)::numeric,2) AS cost,
+            MAX(t.wage) AS wage
+     FROM inv_employees e LEFT JOIN inv_timecards t ON t.employee_id=e.id
+     WHERE e.active GROUP BY e.display_name ORDER BY e.display_name`);
+  res.json(rows);
 });
 
 // Owner override — always wins over Amazon's declaration.
