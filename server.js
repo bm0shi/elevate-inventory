@@ -222,9 +222,22 @@ function normLoc(raw) {
 //   3. Otherwise -> first free slot in the right row (A if it is a duo
 //      component, B if it is singles-only).
 async function buildLocationContext(asins) {
+  // On-hand is the RAW warehouse figure — it is never reduced when units are
+  // committed to a work order, boxed, or consumed building a duo. Showing it at
+  // check-in overstates what is physically free on the pallet, so compute the
+  // available figure the same way the rest of the app does, duos included.
   const all = await pool.query(
     `SELECT p.asin, p.name, p.location, COALESCE(s.onhand,0)::int AS onhand,
-            EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component
+       (
+         COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+       + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
+       )::int AS pending_prep,
+       (
+         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
+       + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
+       )::int AS prepped,
+       COALESCE(s.transit,0)::int AS transit,
+       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin`);
 
   const byAsin = {}, used = new Set();
@@ -247,11 +260,17 @@ async function buildLocationContext(asins) {
     if (!p) continue;
     const isComp = !!p.is_component;
 
+    const pend = p.pending_prep || 0, prep = p.prepped || 0;
+    const avail = Math.max(0, (p.onhand || 0) - pend - prep);
+
     if (p.location) {
       out[asin] = {
-        location: p.location, suggested: p.location, onhand: p.onhand,
+        location: p.location, suggested: p.location,
+        onhand: p.onhand, pendingPrep: pend, prepped: prep,
+        transit: p.transit || 0, available: avail,
         is_component: isComp,
-        status: p.onhand > 0 ? 'existing' : 'existing_empty'
+        // "empty" now means nothing FREE on the pallet, not merely zero on-hand
+        status: avail > 0 ? 'existing' : 'existing_empty'
       };
       continue;
     }
@@ -275,7 +294,9 @@ async function buildLocationContext(asins) {
     if (sug) used.add(sug);
 
     out[asin] = {
-      location: null, suggested: sug, onhand: p.onhand,
+      location: null, suggested: sug,
+      onhand: p.onhand, pendingPrep: pend, prepped: prep,
+      transit: p.transit || 0, available: avail,
       is_component: isComp, status: 'new'
     };
   }
@@ -1420,6 +1441,10 @@ app.get('/api/invoices/:orderNumber', auth, async (req, res) => {
       r.suggested_loc = c ? c.suggested  : null;
       r.loc_status    = c ? c.status     : 'unmapped';
       r.onhand        = c ? c.onhand     : 0;
+      r.available     = c ? c.available  : 0;
+      r.pendingPrep   = c ? c.pendingPrep: 0;
+      r.prepped       = c ? c.prepped    : 0;
+      r.transit       = c ? c.transit    : 0;
       r.is_component  = c ? c.is_component : false;
     }
   } catch (e) {
