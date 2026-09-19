@@ -696,6 +696,26 @@ async function initDb() {
     console.log('[Inventory] Cost history ready.');
   } catch(e) { console.error('cost history migration skipped:', e.message); }
 
+  // ---- Preppers on a job (idempotent) ----
+  // One row per person per job, each with their own join/leave time. That is
+  // what lets two or three work the same SKU, someone join late, and someone
+  // leave early — and still get honest elapsed vs labour minutes.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_prep_crew (
+        id SERIAL PRIMARY KEY,
+        job_id INTEGER NOT NULL,
+        employee TEXT NOT NULL,
+        joined_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        left_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_prep_crew_job ON inv_prep_crew(job_id);
+      CREATE INDEX IF NOT EXISTS idx_prep_crew_open ON inv_prep_crew(employee) WHERE left_at IS NULL;
+    `);
+    console.log('[Inventory] Prep crew ready.');
+  } catch(e) { console.error('prep crew migration skipped:', e.message); }
+
   // ---- Employees + timecards (idempotent) ----
   // display_name is what the floor picks from a dropdown; homebase_name is the
   // exact string Homebase exports, used to match rows on import.
@@ -3741,6 +3761,18 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
   // Bottles actually handled on the floor (duo = 2 bottles) — for prep-labor context
   const totalBottles = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
   const duoCount = out.filter(x=>x.is_duo).reduce((s,x)=> s + x.qty, 0);
+
+  // Who is on each job right now, and since when.
+  try {
+    const cr = await pool.query(
+      'SELECT job_id, employee, joined_at FROM inv_prep_crew WHERE left_at IS NULL ORDER BY joined_at');
+    const byJob = {};
+    for (const c of cr.rows) (byJob[c.job_id] = byJob[c.job_id] || []).push({ employee: c.employee, since: c.joined_at });
+    for (const x of out) x.crew = byJob[x.id] || [];
+  } catch (e) {
+    for (const x of out) x.crew = [];
+  }
+
   res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount });
 });
 
@@ -3754,23 +3786,100 @@ app.post('/api/pending-prep/in-plan', auth, async (req, res) => {
 });
 
 // Claim a prep job (worker starts on it)
+// Resolve a submitted name to an active team member, or null.
+async function resolveEmployee(name) {
+  const who = String(name || '').trim();
+  if (!who) return null;
+  const r = await pool.query(
+    'SELECT display_name FROM inv_employees WHERE active AND lower(display_name)=lower($1)', [who]);
+  return r.rows.length ? r.rows[0].display_name : null;
+}
+
+// Is this person already open on a DIFFERENT job?
+async function openJobElsewhere(employee, exceptJobId) {
+  const r = await pool.query(
+    `SELECT c.job_id, c.joined_at, p.name
+     FROM inv_prep_crew c
+     LEFT JOIN inv_pending_prep pp ON pp.id = c.job_id
+     LEFT JOIN inv_products p ON p.asin = pp.asin
+     WHERE c.left_at IS NULL AND lower(c.employee)=lower($1) AND c.job_id <> $2
+       AND pp.id IS NOT NULL
+     LIMIT 1`, [employee, exceptJobId || -1]);
+  return r.rows.length ? { id: r.rows[0].job_id, name: r.rows[0].name || 'another item', since: r.rows[0].joined_at } : null;
+}
+
+// Add a prepper to a job that is already running.
+app.post('/api/pending-prep/crew/join', auth, async (req, res) => {
+  const { id, name } = req.body || {};
+  if (!id) return res.status(400).json({ error: 'id required' });
+  const who = await resolveEmployee(name);
+  if (!who) return res.status(400).json({ error: 'Pick your name from the list.' });
+
+  const dup = await pool.query(
+    'SELECT 1 FROM inv_prep_crew WHERE job_id=$1 AND lower(employee)=lower($2) AND left_at IS NULL', [id, who]);
+  if (dup.rows.length) return res.json({ ok: false, already: true, employee: who });
+
+  const busy = await openJobElsewhere(who, id);
+  if (busy) return res.json({ ok: false, alreadyOnJob: true, other: busy });
+
+  await pool.query('INSERT INTO inv_prep_crew(job_id, employee) VALUES($1,$2)', [id, who]);
+  res.json({ ok: true, employee: who });
+});
+
+// One person steps off a job that keeps running.
+app.post('/api/pending-prep/crew/leave', auth, async (req, res) => {
+  const { id, name } = req.body || {};
+  if (!id || !name) return res.status(400).json({ error: 'id + name required' });
+  const r = await pool.query(
+    `UPDATE inv_prep_crew SET left_at=now()
+     WHERE job_id=$1 AND lower(employee)=lower($2) AND left_at IS NULL RETURNING employee, joined_at`,
+    [id, name]);
+  if (!r.rows.length) return res.json({ ok: false, notOnJob: true });
+
+  // If that was the last one, the job goes back to unclaimed.
+  const left = await pool.query('SELECT employee FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL', [id]);
+  if (!left.rows.length) {
+    await pool.query('UPDATE inv_pending_prep SET claimed_by=NULL, claimed_at=NULL WHERE id=$1', [id]);
+  } else {
+    await pool.query('UPDATE inv_pending_prep SET claimed_by=$1 WHERE id=$2', [left.rows[0].employee, id]);
+  }
+  res.json({ ok: true, employee: r.rows[0].employee, remaining: left.rows.length });
+});
+
 app.post('/api/pending-prep/claim', auth, async (req, res) => {
   const { id, name } = req.body;
   const who = (name||'').trim();
   if (!id || !who) return res.status(400).json({ error: 'id + name required' });
-  // don't steal someone else's claim
+
+  // Free text produced "Z", "Sam" and "ZAIA" for one person, which cannot be
+  // matched to timesheets later. Only a listed team member may claim.
+  const canonical = await resolveEmployee(who);
+  if (!canonical) return res.status(400).json({ error: 'Pick your name from the list — free text is not accepted.' });
+
   const cur = await pool.query('SELECT claimed_by FROM inv_pending_prep WHERE id=$1', [id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Job not found' });
-  if (cur.rows[0].claimed_by && cur.rows[0].claimed_by.toLowerCase() !== who.toLowerCase()) {
-    return res.json({ ok: false, takenBy: cur.rows[0].claimed_by });
+
+  // ONE JOB AT A TIME per person.
+  const busy = await openJobElsewhere(canonical, id);
+  if (busy) return res.json({ ok: false, alreadyOnJob: true, other: busy });
+
+  const already = await pool.query(
+    'SELECT 1 FROM inv_prep_crew WHERE job_id=$1 AND lower(employee)=lower($2) AND left_at IS NULL', [id, canonical]);
+  if (!already.rows.length) {
+    await pool.query('INSERT INTO inv_prep_crew(job_id, employee) VALUES($1,$2)', [id, canonical]);
   }
-  await pool.query('UPDATE inv_pending_prep SET claimed_by=$1, claimed_at=now() WHERE id=$2', [who, id]);
-  res.json({ ok: true, claimedBy: who });
+  if (!cur.rows[0].claimed_by) {
+    await pool.query('UPDATE inv_pending_prep SET claimed_by=$1, claimed_at=now() WHERE id=$2', [canonical, id]);
+  }
+  res.json({ ok: true, claimedBy: canonical });
 });
 
 // Release a claim
+// Release the WHOLE job — everyone still on it steps off.
 app.post('/api/pending-prep/release', auth, async (req, res) => {
-  await pool.query('UPDATE inv_pending_prep SET claimed_by=NULL, claimed_at=NULL WHERE id=$1', [req.body.id]);
+  const id = req.body && req.body.id;
+  await pool.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [id]);
+  await pool.query('UPDATE inv_pending_prep SET claimed_by=NULL, claimed_at=NULL WHERE id=$1', [id]);
   res.json({ ok: true });
 });
 
