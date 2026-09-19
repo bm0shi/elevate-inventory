@@ -735,6 +735,7 @@ function enterApp(pw){
   document.getElementById('mainApp').style.display='block';
   loadProducts();
   loadPendingPrep();
+  loadTeam();
 }
 
 function doLogin() {
@@ -2267,14 +2268,30 @@ function renderPendingPrep(){
         '</div>';
     }
     const claimed = !!x.claimed_by;
+    // Everyone currently on this job, each with their own clock and a Leave chip.
+    const crew = (x.crew && x.crew.length) ? x.crew
+                 : (x.claimed_by ? [{employee:x.claimed_by, since:x.claimed_at}] : []);
+    const crewNames = crew.length ? crew.map(c=>String(c.employee).toUpperCase()).join(' + ') : '—';
+    const crewChips = crew.map(c=>{
+      const nm=String(c.employee).replace(/'/g,"\\'");
+      return '<span style="display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.95);color:#1e8449;padding:6px 8px 6px 12px;border-radius:16px;font-size:12.5px;font-weight:800;white-space:nowrap">'
+        +'👷 '+c.employee
+        +'<b class="elapsed" data-since="'+(c.since||'')+'" style="font-weight:700;color:#5a6472">—</b>'
+        +'<button onclick="leavePrepper('+x.id+',\''+nm+'\')" title="'+c.employee+' steps off this job" '
+        +'style="padding:3px 9px;font-size:10.5px;font-weight:800;background:#eef2f6;color:#5a6472;border:none;border-radius:12px;cursor:pointer">leave</button>'
+        +'</span>';
+    }).join('');
     const safeName=String(x.name).replace(/'/g,"\\'").replace(/"/g,'');
     const claimBanner = claimed
       ? `<div style="margin-top:12px;padding:11px 14px;background:#1e8449;border-radius:8px 8px 0 0">
            <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-             <span style="color:#fff;font-weight:800;font-size:15px;letter-spacing:0.4px">🔨 CURRENTLY BEING PREPPED BY ${String(x.claimed_by).toUpperCase()}</span>
-             <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release</button>
+             <span style="color:#fff;font-weight:800;font-size:15px;letter-spacing:0.4px">🔨 BEING PREPPED BY ${crewNames}</span>
+             <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release all</button>
            </div>
-           <div style="color:#d4f5e2;font-size:12.5px;margin-top:6px;display:flex;gap:16px;flex-wrap:wrap">
+           <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">${crewChips}
+             <button onclick="addPrepper(${x.id})" style="padding:7px 13px;font-size:12.5px;font-weight:800;background:rgba(255,255,255,0.22);color:#fff;border:1.5px dashed rgba(255,255,255,0.6);border-radius:16px;cursor:pointer;white-space:nowrap">+ Add prepper</button>
+           </div>
+           <div style="color:#d4f5e2;font-size:12.5px;margin-top:9px;display:flex;gap:16px;flex-wrap:wrap">
              <span>⏱ Started ${x.claimed_at ? new Date(x.claimed_at).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'}) : '—'}</span>
              <span><b class="elapsed" data-since="${x.claimed_at||''}" style="color:#fff;font-size:14px">—</b> elapsed</span>
            </div>
@@ -2320,18 +2337,61 @@ function toggleInPlan(id, on){
     renderPendingPrep();
   });
 }
+// Active team members, kept in memory for the prep picker.
+let TEAM = [];
+function loadTeam(){
+  return api('/api/employees').then(list=>{
+    TEAM = (list||[]).filter(e=>e.active!==false).map(e=>e.display_name);
+  }).catch(()=>{ TEAM=[]; });
+}
+
+// Pick a worker. No free text — typed names produced "Z", "Sam" and "ZAIA" for
+// the same person, which cannot be matched to timesheets afterwards.
+function pickWorker(cb){
+  const go = ()=>{
+    if(!TEAM.length){
+      toast('No team members set up — add them in Admin → Labor',true);
+      return;
+    }
+    if(TEAM.length===1){ cb(TEAM[0]); return; }
+    const last = localStorage_get('prepWorkerName') || '';
+    const body = document.createElement('div');
+    body.id='workerPickWrap';
+    body.style.cssText='position:fixed;inset:0;background:rgba(15,23,35,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:18px';
+    body.innerHTML='<div style="background:#fff;border-radius:14px;max-width:420px;width:100%;padding:20px;box-shadow:0 18px 50px rgba(0,0,0,.3)">'
+      +'<div style="font-weight:800;font-size:18px;margin-bottom:4px">Who is prepping this?</div>'
+      +'<div style="font-size:13px;color:#8a97a6;margin-bottom:14px">Tap your name.</div>'
+      +TEAM.map(n=>'<button onclick="_workerChose(\''+String(n).replace(/'/g,"\\'")+'\')" '
+        +'style="display:block;width:100%;text-align:left;margin-bottom:9px;padding:16px 18px;border:2px solid '
+        +(n===last?'#127a7a':'#e2e8f0')+';border-radius:10px;background:'+(n===last?'#f0faf9':'#fff')
+        +';font-size:17px;font-weight:700;cursor:pointer">'+n+(n===last?' <span style="font-size:11px;color:#127a7a;font-weight:600">last used</span>':'')+'</button>').join('')
+      +'<button onclick="_workerChose(null)" style="width:100%;margin-top:4px;padding:12px;border:none;border-radius:10px;background:#eef2f6;color:#5a6472;font-weight:700;font-size:14px;cursor:pointer">Cancel</button>'
+      +'</div>';
+    document.body.appendChild(body);
+    window._workerChose = (n)=>{
+      const w=document.getElementById('workerPickWrap'); if(w) w.remove();
+      window._workerChose=null;
+      if(n){ localStorage_set('prepWorkerName', n); cb(n); }
+    };
+  };
+  if(TEAM.length) go(); else loadTeam().then(go);
+}
+
 function claimPrepJob(id){
-  let who = localStorage_get('prepWorkerName') || '';
-  who = prompt('Who is prepping this? (your name)', who);
-  if(who===null) return;
-  who = who.trim();
-  if(!who){ toast('Enter a name',true); return; }
-  localStorage_set('prepWorkerName', who);
-  api('/api/pending-prep/claim',{method:'POST',body:JSON.stringify({id,name:who})}).then(d=>{
-    if(d.error){ toast(d.error,true); return; }
-    if(!d.ok && d.takenBy){ alert('⚠ Already claimed by '+d.takenBy+'.\n\nIf they are done or not working on it, have them release it first.'); return; }
-    toast('Started — '+who);
-    loadPendingPrep();
+  pickWorker(function(who){
+    api('/api/pending-prep/claim',{method:'POST',body:JSON.stringify({id,name:who})}).then(d=>{
+      if(d.error){ toast(d.error,true); return; }
+      if(!d.ok && d.alreadyOnJob){
+        const o=d.other||{};
+        const since=o.since?new Date(o.since).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):'';
+        alert('⛔ '+who+' is already on a job\n\n'+(o.name||'Another item')+(since?'\nstarted '+since:'')
+          +'\n\nFinish it, or release it, before starting something new.\n\nOne job at a time keeps the prep times accurate.');
+        loadPendingPrep(); return;
+      }
+      if(!d.ok && d.takenBy){ alert('⚠ Already claimed by '+d.takenBy+'.\n\nIf they are done or not working on it, have them release it first.'); return; }
+      toast('Started — '+(d.claimedBy||who));
+      loadPendingPrep();
+    });
   });
 }
 function finishPrepJob(id, name, requestedQty, isDuo){
@@ -2379,8 +2439,38 @@ function submitFinishPrep(id){
     loadPendingPrep(); loadProducts();
   });
 }
+// Add another person to a job that is already running.
+function addPrepper(id){
+  pickWorker(function(who){
+    api('/api/pending-prep/crew/join',{method:'POST',body:JSON.stringify({id,name:who})}).then(d=>{
+      if(d.error){ toast(d.error,true); return; }
+      if(!d.ok && d.already){ toast(who+' is already on this job',true); return; }
+      if(!d.ok && d.alreadyOnJob){
+        const o=d.other||{};
+        const since=o.since?new Date(o.since).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):'';
+        alert('⛔ '+who+' is already on a job\n\n'+(o.name||'Another item')+(since?'\nstarted '+since:'')
+          +'\n\nStep off that one first — one job at a time keeps the prep times accurate.');
+        return;
+      }
+      toast(who+' joined');
+      loadPendingPrep();
+    });
+  });
+}
+
+// One person steps off; the job keeps running for everyone else.
+function leavePrepper(id, name){
+  if(!confirm(name+' is done with this job?\n\nTheir time stops now. Anyone else stays on it.')) return;
+  api('/api/pending-prep/crew/leave',{method:'POST',body:JSON.stringify({id,name})}).then(d=>{
+    if(d.error){ toast(d.error,true); return; }
+    if(!d.ok && d.notOnJob){ toast(name+' is not on this job',true); loadPendingPrep(); return; }
+    toast(name+' stepped off'+(d.remaining?' · '+d.remaining+' still on it':' · job now free'));
+    loadPendingPrep();
+  });
+}
+
 function releasePrepJob(id){
-  if(!confirm('Release this job so someone else can take it?')) return;
+  if(!confirm('Release this job completely?\n\nEveryone still on it steps off and the job goes back to unclaimed.\n\nTo remove just one person, use the "leave" button on their name instead.')) return;
   api('/api/pending-prep/release',{method:'POST',body:JSON.stringify({id})}).then(()=>{ toast('Released'); loadPendingPrep(); });
 }
 // tiny helpers (localStorage not available in artifacts but fine in the real app)
