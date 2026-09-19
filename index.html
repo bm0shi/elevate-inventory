@@ -3382,10 +3382,21 @@ function renderReconLines(){
       if(l.asin){
         const st=l.loc_status||'new';
         const pre=l.location||l.suggested_loc||'';
+        // Show what is actually FREE on the pallet. Raw on-hand never drops when
+        // units are committed to prep, boxed, or used building duos.
+        const _av=(l.available!=null?l.available:l.onhand)||0;
+        const _oh=l.onhand||0, _pp=l.pendingPrep||0, _pr=l.prepped||0, _tr=l.transit||0;
+        const _bits=[];
+        if(_pp) _bits.push(_pp+' pending prep');
+        if(_pr) _bits.push(_pr+' prepped');
+        const _detail=(_pp||_pr)
+          ? ' <span style="font-weight:400;color:#8a97a6">('+_oh+' on hand − '+_bits.join(' − ')+')</span>'
+          : '';
+        const _trTag=_tr?' <span style="font-weight:400;color:#8a97a6">· '+_tr+' in transit</span>':'';
         const badge = st==='existing'
-          ? '<span style="color:#1e8449;font-weight:700">📍 Already at '+l.location+' · '+l.onhand+' on hand — put these on the same pallet</span>'
+          ? '<span style="color:#1e8449;font-weight:700">📍 Already at '+l.location+' · '+_av+' available on the pallet</span>'+_detail+_trTag+' <span style="color:#1e8449;font-weight:700">— put these on the same pallet</span>'
           : st==='existing_empty'
-            ? '<span style="color:#b7791f;font-weight:700">📍 Was at '+l.location+', 0 on hand now — confirm or move it</span>'
+            ? '<span style="color:#b7791f;font-weight:700">📍 Was at '+l.location+', nothing free there now</span>'+_detail+_trTag+' <span style="color:#b7791f;font-weight:700">— confirm or move it</span>'
             : '<span style="color:#c0392b;font-weight:700">🆕 NEW ITEM — needs a location'+(l.suggested_loc?' (suggesting '+l.suggested_loc+(l.is_component?' · duo row':' · singles row')+')':'')+'</span>';
         locBlock='<div style="margin-top:9px;padding:9px 10px;background:#fff;border:1px solid #e2e8f0;border-radius:6px">'
           +'<div style="font-size:11.5px;margin-bottom:6px;line-height:1.35">'+badge+'</div>'
