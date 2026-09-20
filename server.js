@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'settlement-instrumented-0920-0758';
+const BUILD_ID = 'batched-insert-0920-0811';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2290,14 +2290,15 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       }
 
       console.log(`[Settlement] ${reports.length} listed, ${pending.length} not yet imported, downloading ${todo.length} this run (about 1 per minute).`);
-      let n = 0;
+      let n2 = 0;
       for (const rep of todo) {
-        n++;
-        console.log(`[Settlement] downloading ${n}/${todo.length} — report ${rep.reportId} (${rep.start || '?'} to ${rep.end || '?'})`);
-        const mins = Math.max(0, Math.round((todo.length - n) * 1.1));
-        settleJob.progress = `report ${n} of ${todo.length}` + (mins ? ` · about ${mins} min left (Amazon limits this to ~1 per minute)` : '');
+        n2++;
+        const n = n2;
+        console.log(`[Settlement] downloading ${n2}/${todo.length} — report ${rep.reportId} (${rep.start || '?'} to ${rep.end || '?'})`);
+        const mins = Math.max(0, Math.round((todo.length - n2) * 1.1));
+        settleJob.progress = `report ${n2} of ${todo.length}` + (mins ? ` · about ${mins} min left (Amazon limits this to ~1 per minute)` : '');
         let text;
-        try { text = await downloadReportDocument(rep.documentId, m => { settleJob.progress = `report ${n} of ${todo.length} — ${m}`; }); }
+        try { text = await downloadReportDocument(rep.documentId, m => { settleJob.progress = `report ${n2} of ${todo.length} — ${m}`; }); }
         catch (e) {
           console.error('[Settlement] download failed:', e.message);
           settleJob.failed = (settleJob.failed || 0) + 1;
@@ -2321,7 +2322,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
             [rep.reportId, header.settlement_id]);
           settleJob.skipped++;
           settleJob.progress = `settlement ${header.settlement_id} already on file`;
-          if (n < todo.length) await new Promise(r => setTimeout(r, 62000));
+          if (n2 < todo.length) await new Promise(r => setTimeout(r, 62000));
           continue;
         }
 
@@ -2332,19 +2333,35 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
           for (const r of pr.rows) skuMap[String(r.sku).toLowerCase()] = r.asin;
         } catch (e) {}
 
+        // BATCHED INSERT. One row at a time meant ~8,400 round-trips per
+        // settlement and ~50,000 across the set — slow enough that a run never
+        // finished. 500 rows per statement is ~5,500 parameters, well inside
+        // Postgres's 65,535 limit.
         let inserted = 0;
-        for (const r of rows) {
-          const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
+        const CHUNK = 500;
+        for (let off = 0; off < rows.length; off += CHUNK) {
+          const slice = rows.slice(off, off + CHUNK);
+          const vals = [], params = [];
+          let n = 0;
+          for (const r of slice) {
+            const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
+            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11})`);
+            params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
+                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date);
+            n += 11;
+          }
           try {
-            await pool.query(
+            const res2 = await pool.query(
               `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
                  amount_type, amount_description, amount, quantity, deposit_date)
-               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-               ON CONFLICT DO NOTHING`,
-              [r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
-               r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date]);
-            inserted++;
-          } catch (e) { /* duplicate row */ }
+               VALUES ${vals.join(',')} ON CONFLICT DO NOTHING`, params);
+            inserted += res2.rowCount || 0;
+          } catch (e) {
+            console.error(`[Settlement] batch insert failed at row ${off}: ${e.message}`);
+          }
+          if (off % 2000 === 0) {
+            settleJob.progress = `report ${n2}/${todo.length} — storing ${off + slice.length}/${rows.length} lines…`;
+          }
         }
         await pool.query(
           `INSERT INTO inv_settlements(settlement_id, start_date, end_date, deposit_date, total_amount, lines)
@@ -2401,7 +2418,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         if (!inserted) console.error(`[Settlement] ${header.settlement_id}: parsed ${rows.length} row(s) but stored 0 — check the column list above.`);
         console.log(`[Settlement] ${header.settlement_id}: ${inserted} line(s) stored from ${rows.length} parsed.`);
         // stay under the ~1/min document limit on the next loop
-        if (n < todo.length) await new Promise(r => setTimeout(r, 62000));
+        if (n2 < todo.length) await new Promise(r => setTimeout(r, 62000));
       }
       settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines`
         + (settleJob.skipped ? `, ${settleJob.skipped} already on file` : '')
