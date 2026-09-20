@@ -526,6 +526,7 @@
       <div class="hint">Pulls what Amazon <b>actually deposited</b> — every fee by name, every refund, every adjustment. This replaces Keepa's fee estimate with the real numbers.</div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         <button class="action" onclick="syncSettlements()" id="setSyncBtn" style="flex:1;min-width:190px;background:#1e8449">⤓ Pull settlements from Amazon</button>
+        <button class="action" onclick="syncSettlements(true)" style="flex:1;min-width:170px;background:#b7791f">↻ Re-import all</button>
         <button class="action" onclick="loadSettlementSummary()" style="flex:1;min-width:170px;background:#5a6472">↻ Show real economics</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
@@ -3432,7 +3433,8 @@ function loadPnl(){
 }
 
 // ==================== REAL SETTLEMENTS ====================
-function syncSettlements(){
+function syncSettlements(force){
+  if(force && !confirm('Re-download and re-parse every settlement?\n\nUse this after a parser fix. Takes about a minute per report.')) return;
   const b=document.getElementById('setSyncBtn'); if(b){ b.disabled=true; b.textContent='Asking Amazon…'; }
   // Use the From date to size the pull window, so the boxes actually drive it.
   const f=(document.getElementById('setFrom')||{}).value||'';
@@ -3442,7 +3444,7 @@ function syncSettlements(){
     if(d>0) sinceDays=Math.min(720, d+7);
   }
   document.getElementById('setOut').innerHTML='<div class="hint" style="padding:10px">Asking Amazon for the last '+sinceDays+' days…</div>';
-  ownerApi('/api/settlements/sync',{method:'POST',body:JSON.stringify({sinceDays:sinceDays})})
+  ownerApi('/api/settlements/sync',{method:'POST',body:JSON.stringify({sinceDays:sinceDays, force:!!force, maxReports: force?6:3})})
     .then(()=>pollSettlements())
     .catch(()=>{ if(b){b.disabled=false;b.textContent='⤓ Pull settlements from Amazon';} toast('Could not start',true); });
 }
