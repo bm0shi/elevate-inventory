@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'rowidx-key-0920-0817';
+const BUILD_ID = 'skumap-0920-0820';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -796,6 +796,21 @@ async function initDb() {
           END;
         END IF;
       END $$;`);
+    // Every seller SKU that has ever pointed at an ASIN. inv_products holds one
+    // SKU per ASIN, but a single ASIN commonly has several seller SKUs — the
+    // same thing that caused the FBA double-count. Settlement lines arrive with
+    // whichever SKU sold, so without the full map most lines resolve to no ASIN
+    // and can never be costed.
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_sku_map (
+      sku TEXT PRIMARY KEY,
+      asin TEXT,
+      source TEXT,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    )`);
+    await pool.query(`INSERT INTO inv_sku_map(sku, asin, source)
+      SELECT sku, asin, 'products' FROM inv_products WHERE sku IS NOT NULL AND asin IS NOT NULL
+      ON CONFLICT (sku) DO NOTHING`);
+    console.log('[Inventory] SKU map ready.');
     console.log('[Inventory] Settlement tables ready.');
   } catch(e) { console.error('settlement migration skipped:', e.message); }
 
@@ -2353,7 +2368,10 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         try {
           const pr = await pool.query('SELECT sku, asin FROM inv_products WHERE sku IS NOT NULL');
           for (const r of pr.rows) skuMap[String(r.sku).toLowerCase()] = r.asin;
-        } catch (e) {}
+          const sm = await pool.query('SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL');
+          for (const r of sm.rows) skuMap[String(r.sku).toLowerCase()] = r.asin;
+          console.log(`[Settlement] ${Object.keys(skuMap).length} SKU -> ASIN mapping(s) available.`);
+        } catch (e) { console.error('[Settlement] sku map load failed:', e.message); }
 
         // BATCHED INSERT. One row at a time meant ~8,400 round-trips per
         // settlement and ~50,000 across the set — slow enough that a run never
@@ -2447,6 +2465,13 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
 
         settleJob.imported++; settleJob.lines += inserted;
         if (!inserted) console.error(`[Settlement] ${header.settlement_id}: parsed ${rows.length} row(s) but stored 0 — check the column list above.`);
+        try {
+          const rr = await pool.query(
+            `SELECT COUNT(*) FILTER (WHERE asin IS NOT NULL)::int AS matched,
+                    COUNT(*) FILTER (WHERE asin IS NULL AND sku IS NOT NULL)::int AS unmatched
+             FROM inv_settlement_lines WHERE settlement_id=$1`, [header.settlement_id]);
+          console.log(`[Settlement] ${header.settlement_id}: ${rr.rows[0].matched} line(s) matched to an ASIN, ${rr.rows[0].unmatched} with a SKU but no ASIN.`);
+        } catch (e) {}
         console.log(`[Settlement] ${header.settlement_id}: ${inserted} line(s) stored from ${rows.length} parsed.`);
         // stay under the ~1/min document limit on the next loop
         if (n2 < todo.length) await new Promise(r => setTimeout(r, 62000));
@@ -2461,6 +2486,53 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       console.error('[Settlement] SYNC FAILED:', e.message, e.stack ? e.stack.split('\n')[1] : '');
     }
   })();
+});
+
+// Re-resolve ASINs on settlement lines ALREADY stored. Costing depends on the
+// SKU map, which fills in over time; without this the only way to benefit from
+// a better map is another full download at a minute per report.
+app.post('/api/settlements/relink', ownerAuth, async (req, res) => {
+  try {
+    const before = await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE asin IS NOT NULL)::int AS matched,
+              COUNT(*) FILTER (WHERE asin IS NULL AND sku IS NOT NULL)::int AS unmatched
+       FROM inv_settlement_lines`);
+    const upd = await pool.query(
+      `UPDATE inv_settlement_lines l SET asin = m.asin
+       FROM inv_sku_map m
+       WHERE l.asin IS NULL AND l.sku IS NOT NULL AND lower(l.sku) = lower(m.sku) AND m.asin IS NOT NULL`);
+    const upd2 = await pool.query(
+      `UPDATE inv_settlement_lines l SET asin = p.asin
+       FROM inv_products p
+       WHERE l.asin IS NULL AND l.sku IS NOT NULL AND lower(l.sku) = lower(p.sku) AND p.asin IS NOT NULL`);
+    const after = await pool.query(
+      `SELECT COUNT(*) FILTER (WHERE asin IS NOT NULL)::int AS matched,
+              COUNT(*) FILTER (WHERE asin IS NULL AND sku IS NOT NULL)::int AS unmatched
+       FROM inv_settlement_lines`);
+    // Which SKUs still have nowhere to go, biggest money first.
+    const orphans = await pool.query(
+      `SELECT sku, COUNT(*)::int AS lines, SUM(quantity)::int AS units, ROUND(SUM(amount)::numeric,2) AS amount
+       FROM inv_settlement_lines WHERE asin IS NULL AND sku IS NOT NULL
+       GROUP BY sku ORDER BY ABS(SUM(amount)) DESC LIMIT 40`);
+    console.log(`[Settlement] relink: ${upd.rowCount + upd2.rowCount} line(s) gained an ASIN.`);
+    res.json({ ok:true, linked: upd.rowCount + upd2.rowCount,
+               before: before.rows[0], after: after.rows[0], orphans: orphans.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Attach an unmatched settlement SKU to an ASIN by hand, then relink its lines.
+app.post('/api/sku-map', ownerAuth, async (req, res) => {
+  const { sku, asin } = req.body || {};
+  if (!sku || !asin) return res.status(400).json({ error: 'sku and asin required' });
+  try {
+    await pool.query(
+      `INSERT INTO inv_sku_map(sku, asin, source, updated_at) VALUES($1,$2,'manual',now())
+       ON CONFLICT (sku) DO UPDATE SET asin=EXCLUDED.asin, source='manual', updated_at=now()`,
+      [sku, asin]);
+    const upd = await pool.query(
+      'UPDATE inv_settlement_lines SET asin=$2 WHERE lower(sku)=lower($1) AND asin IS NULL', [sku, asin]);
+    res.json({ ok:true, linked: upd.rowCount });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/settlements/status', ownerAuth, (req, res) => res.json({ ...settleJob, build: BUILD_ID }));
@@ -2956,6 +3028,9 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     netProfit,
     marginPct: netSales ? (netProfit / netSales) * 100 : null,
     hasSettlements: lines.rows.length > 0,
+    unmatchedSkuLines: (await pool.query(
+      `SELECT COUNT(*)::int AS n FROM inv_settlement_lines WHERE asin IS NULL AND sku IS NOT NULL`)).rows[0].n,
+    pricedAsins: Object.keys(landed).filter(a => landed[a].productCost != null).length,
     coverage: coverage.rows[0]
   });
 });
@@ -4566,6 +4641,23 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     await saveCache('fba_inventory', out);
     console.log(`[FBA] Cached ${out.length} ASINs.`);
   } catch(e) { console.error('[FBA] cache save failed (non-fatal):', e.message); }
+
+  // Record EVERY seller SKU seen, not just the first. This is the only place
+  // the full SKU list exists, and settlement costing depends on it.
+  try {
+    let mapped = 0;
+    for (const asin of Object.keys(fbaByAsin)) {
+      for (const sk of (fbaByAsin[asin].skus || [])) {
+        if (!sk) continue;
+        await pool.query(
+          `INSERT INTO inv_sku_map(sku, asin, source, updated_at) VALUES($1,$2,'fba',now())
+           ON CONFLICT (sku) DO UPDATE SET asin=EXCLUDED.asin, source='fba', updated_at=now()`,
+          [sk, asin]);
+        mapped++;
+      }
+    }
+    if (mapped) console.log(`[FBA] Recorded ${mapped} seller SKU -> ASIN mapping(s).`);
+  } catch(e) { console.error('[FBA] sku map save failed (non-fatal):', e.message); }
 
   res.json(out);
 });
