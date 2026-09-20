@@ -2105,15 +2105,23 @@ let settleJob = { running:false, done:false, error:null, progress:'', reports:0,
 app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
   if (settleJob.running) return res.json({ ok:true, already:true });
   const sinceDays = Number(req.body && req.body.sinceDays) || 180;
-  settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0 };
+  settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0, attempts:[], skipped:0 };
   res.json({ ok:true });
 
   (async () => {
     try {
-      const reports = await listSettlementReports(sinceDays);
+      const listed = await listSettlementReports(sinceDays);
+      const reports = listed.reports || [];
+      settleJob.attempts = listed.attempts || [];
       settleJob.reports = reports.length;
       if (!reports.length) {
-        settleJob.progress = 'Amazon returned no settlement reports for that window.';
+        const errs = settleJob.attempts.filter(a => a.error);
+        const denied = errs.find(a => /403|Access to requested resource is denied|Unauthorized/i.test(a.error || ''));
+        settleJob.progress = denied
+          ? 'Amazon refused access to settlement reports. Your SP-API app needs the Finance and Accounting role — add it in Seller Central under Apps & Services → Develop Apps, then re-authorise.'
+          : (errs.length
+              ? 'Amazon returned an error listing settlement reports — see the detail below.'
+              : 'Amazon listed no settlement reports at all. If this account has had a disbursement, the app may lack the Finance and Accounting role.');
         settleJob.running = false; settleJob.done = true; return;
       }
       // Skip settlements already stored.
@@ -2130,7 +2138,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
 
         const { header, rows } = parseSettlementFlatFile(text);
         if (!header || !header.settlement_id) continue;
-        if (known.has(header.settlement_id)) { settleJob.progress = `settlement ${header.settlement_id} already imported`; continue; }
+        if (known.has(header.settlement_id)) { settleJob.skipped++; settleJob.progress = `settlement ${header.settlement_id} already imported`; continue; }
 
         // resolve SKU -> ASIN once per settlement
         const skuMap = {};
