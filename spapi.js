@@ -435,9 +435,12 @@ async function getHazmatStatus(asins, onProgress) {
 // on its own disbursement schedule and CANNOT be requested on demand — they
 // are listed, then downloaded.
 // ============================================================
+// Order matters. On this account the _V2 variant returns 403 Unauthorized while
+// the plain flat file works, so the working type is tried FIRST — three wasted
+// calls per run is three minutes of a one-per-minute rate budget.
 const SETTLEMENT_TYPES = [
-  'GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2',
-  'GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE'
+  'GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE',
+  'GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2'
 ];
 
 // Returns { reports, attempts } — attempts records what each variation actually
@@ -495,6 +498,12 @@ async function listSettlementReports(sinceDays = 180) {
       attempts.push({ reportType: rt, variant: v.label, seen, withDocs: found.length, error: err });
       console.log(`[Settlement] list ${rt} (${v.label}): ${seen} report(s) seen, ${found.length} with documents${err ? ' — ' + err : ''}`);
       if (found.length) break;
+      // A 403 means this report type is not available on the account at all —
+      // trying other query shapes against it just burns the rate budget.
+      if (err && /403|Unauthorized|forbidden/i.test(err)) {
+        console.log(`[Settlement] ${rt} is not permitted on this account — skipping its remaining query variants.`);
+        break;
+      }
     }
     if (found.length) break;
   }
