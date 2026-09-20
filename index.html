@@ -463,10 +463,19 @@
         <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
         <button class="subtab" onclick="showSubTab('costs',event)">💵 Costs &amp; Profit</button>
         <button class="subtab" onclick="showSubTab('labor',event)">👷 Labor</button>
+        <button class="subtab" onclick="showSubTab('audit',event)">🔎 Stock Audit</button>
         <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
         <button class="subtab" onclick="adminLock()" style="margin-left:auto;background:#e2e8f0;color:#5a6472">🔒 Lock</button>
       </div>
       <div id="freshnessBar" style="margin:8px 0 2px"></div>
+<div id="sub-audit" class="subpanel">
+    <div class="box">
+      <h3 style="margin-bottom:4px">Stock Audit</h3>
+      <div class="hint">On Hand is a running balance built from every receipt and shipment. If the number looks wrong, this traces it back to the movements that made it — and flags the same invoice being received twice.</div>
+      <button class="action full" onclick="loadStockAudit()" style="margin-top:10px;background:#c0392b">🔎 Trace my on-hand numbers</button>
+    </div>
+    <div id="auditBody"></div>
+  </div>
 <div id="sub-labor" class="subpanel">
     <div class="box">
       <h3 style="margin-bottom:4px">Labor &amp; Timesheets</h3>
@@ -2084,6 +2093,7 @@ function showSubTab(name, ev){
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
   loadFreshness();
   if(name==='labor'){ loadEmployees(); loadCoverage(); }
+  if(name==='audit') loadStockAudit();
   if(name==='costs'){ if(window._costData) renderCosts(); else loadCosts(); }
   if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
@@ -3160,6 +3170,65 @@ function unlinkCosmo(cosmoNum){
     toast('#'+cosmoNum+' unlinked');
     loadMappingHealth();
   }).catch(()=>toast('Unlink failed',true));
+}
+
+// ==================== STOCK AUDIT ====================
+function loadStockAudit(){
+  const b=document.getElementById('auditBody'); if(!b)return;
+  b.innerHTML='<div class="hint" style="padding:16px">Tracing…</div>';
+  ownerApi('/api/stock-audit').then(d=>{
+    if(!d||!d.rows){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load — deploy the latest server.js.</div>'; return; }
+    const t=d.totals||{onhand:0,net:0};
+    const drift=t.onhand-t.net;
+    let h='<div class="cards">'
+      +'<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+t.onhand.toLocaleString()+'</div><div class="l">On Hand (balance)</div></div>'
+      +'<div class="card" style="border-top:3px solid #5a6472"><div class="n">'+t.net.toLocaleString()+'</div><div class="l">Net of All Movements</div></div>'
+      +'<div class="card" style="border-top:3px solid '+(drift?'#c0392b':'#1e8449')+'"><div class="n">'+(drift>0?'+':'')+drift.toLocaleString()+'</div><div class="l">Unexplained Drift</div></div>'
+      +'<div class="card" style="border-top:3px solid '+(d.duplicates.length?'#c0392b':'#1e8449')+'"><div class="n">'+d.duplicates.length+'</div><div class="l">Double Receipts</div></div>'
+      +'</div>';
+
+    if(d.duplicates.length){
+      const units=d.duplicates.reduce((n,x)=>n+x.units,0);
+      h+='<div class="box" style="border:2px solid #c0392b;background:#fdf0ee">'
+        +'<div style="font-weight:800;color:#c0392b;font-size:16px">⚠ The same invoice was received more than once</div>'
+        +'<div class="hint" style="margin-bottom:8px">'+units.toLocaleString()+' units were added twice. Subtract the extra from On Hand on the affected products.</div>'
+        +'<table><thead><tr><th>Invoice</th><th>Product</th><th>Times</th><th>Units added</th><th>First</th><th>Last</th></tr></thead><tbody>'
+        +d.duplicates.map(x=>'<tr><td style="font-size:12px">'+x.note+'</td>'
+          +'<td style="font-family:monospace;font-size:11px">'+(x.asin||'—')+'</td>'
+          +'<td style="color:#c0392b;font-weight:800">'+x.times+'×</td>'
+          +'<td><b>'+x.units.toLocaleString()+'</b></td>'
+          +'<td style="font-size:11px">'+new Date(x.first_ts).toLocaleString()+'</td>'
+          +'<td style="font-size:11px">'+new Date(x.last_ts).toLocaleString()+'</td></tr>').join('')
+        +'</tbody></table></div>';
+    }
+
+    if(d.bundleStock && d.bundleStock.length){
+      h+='<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">⚠ Stock sitting on a duo/bundle ASIN</b>'
+        +'<div class="hint">Duos are meant to be held as components. Units on the bundle ASIN itself are likely counted twice.</div>'
+        +d.bundleStock.map(x=>'<div style="font-size:12.5px;padding:3px 0">'+(x.name||x.asin)+' — <b>'+x.onhand+'</b></div>').join('')+'</div>';
+    }
+    if(d.orphans && d.orphans.length){
+      h+='<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">⚠ Stock with no product record</b>'
+        +d.orphans.map(x=>'<div style="font-size:12.5px;padding:3px 0"><span style="font-family:monospace">'+x.asin+'</span> — <b>'+x.onhand+'</b></div>').join('')+'</div>';
+    }
+
+    h+='<div class="box"><b style="font-size:15px">Receipts booked into stock</b>'
+      +'<div class="hint">Newest first. The same invoice appearing twice here is the usual cause of an inflated On Hand.</div>'
+      +'<table style="margin-top:6px"><thead><tr><th>Invoice</th><th>SKUs</th><th>Units</th><th>When</th></tr></thead><tbody>'
+      +(d.receipts||[]).map(r=>'<tr><td style="font-size:12px">'+r.note+'</td><td>'+r.skus+'</td><td><b>'+r.units.toLocaleString()+'</b></td>'
+        +'<td style="font-size:11px">'+new Date(r.ts).toLocaleString()+'</td></tr>').join('')
+      +'</tbody></table></div>';
+
+    h+='<div class="box"><b style="font-size:15px">Per product</b>'
+      +'<div class="hint"><b>Drift</b> is On Hand minus everything the activity log accounts for. Non-zero usually means stock was set by hand, or seeded before logging began — not necessarily an error.</div>'
+      +'<table style="margin-top:6px"><thead><tr><th>Product</th><th>On Hand</th><th>In</th><th>Out</th><th>Net</th><th>Drift</th></tr></thead><tbody>'
+      +d.rows.map(r=>'<tr><td style="max-width:320px">'+(r.name||r.asin)+'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+r.asin+'</div></td>'
+        +'<td><b>'+r.onhand.toLocaleString()+'</b></td><td>'+r.total_in.toLocaleString()+'</td><td>'+r.total_out.toLocaleString()+'</td>'
+        +'<td>'+r.net_movement.toLocaleString()+'</td>'
+        +'<td style="'+(r.drift?'color:#c0392b;font-weight:700':'color:#1e8449')+'">'+(r.drift>0?'+':'')+r.drift.toLocaleString()+'</td></tr>').join('')
+      +'</tbody></table></div>';
+    b.innerHTML=h;
+  }).catch(()=>{ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load the audit.</div>'; });
 }
 
 // ==================== LABOR & TIMESHEETS ====================
