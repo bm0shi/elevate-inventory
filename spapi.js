@@ -443,6 +443,7 @@ const SETTLEMENT_TYPES = [
 // Returns { reports, attempts } — attempts records what each variation actually
 // did, so an empty result can be diagnosed instead of guessed at.
 async function listSettlementReports(sinceDays = 180) {
+  console.log(`[Settlement] listing reports for the last ${sinceDays} days…`);
   const token = await getAccessToken();
   const after = new Date(Date.now() - sinceDays * 24 * 3600 * 1000).toISOString();
   const found = [];
@@ -475,6 +476,7 @@ async function listSettlementReports(sinceDays = 180) {
         } catch (e) {
           const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 220) : String(e.message);
           err = `HTTP ${e.response?.status || '?'} ${body}`;
+          console.error(`[Settlement] LIST FAILED ${rt} (${v.label}): ${err}`);
           break;
         }
         const list = resp.data.reports || [];
@@ -491,10 +493,12 @@ async function listSettlementReports(sinceDays = 180) {
       } while (nextToken && pages < 10);
 
       attempts.push({ reportType: rt, variant: v.label, seen, withDocs: found.length, error: err });
+      console.log(`[Settlement] list ${rt} (${v.label}): ${seen} report(s) seen, ${found.length} with documents${err ? ' — ' + err : ''}`);
       if (found.length) break;
     }
     if (found.length) break;
   }
+  console.log(`[Settlement] listing done: ${found.length} report(s) with documents across ${attempts.length} attempt(s).`);
   return { reports: found, attempts };
 }
 
