@@ -2091,10 +2091,9 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
 function parseSettlementFlatFile(text) {
   const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
   if (!lines.length) return { header: null, rows: [] };
-  // Header names differ between the V2 and plain flat-file variants, and across
-  // marketplaces: 'amount-type', 'Amount Type', 'amount_type'. Normalise both
-  // sides to letters+digits only so any of them match. A missed column meant
-  // every row was skipped while the file still looked imported.
+
+  // Header names differ between variants and marketplaces: 'amount-type',
+  // 'Amount Type', 'amount_type'. Normalise both sides to letters+digits.
   const rawCols = lines[0].split('\t').map(c => c.trim());
   const cols = rawCols.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
   const at = (name) => cols.indexOf(String(name).toLowerCase().replace(/[^a-z0-9]/g, ''));
@@ -2102,13 +2101,38 @@ function parseSettlementFlatFile(text) {
   const iSet = at('settlement-id'), iStart = at('settlement-start-date'), iEnd = at('settlement-end-date');
   const iDep = at('deposit-date'), iTotal = at('total-amount');
   const iTxn = at('transaction-type'), iOrder = at('order-id'), iSku = at('sku');
-  const iType = at('amount-type'), iDesc = at('amount-description'), iAmt = at('amount');
+  const iShip = at('shipment-id');
   const iQty = at('quantity-purchased'), iPosted = at('posted-date');
+
+  // TALL layout (V2): one amount per row.
+  const iType = at('amount-type'), iDesc = at('amount-description'), iAmt = at('amount');
+  // WIDE layout (V1): several typed amounts per row, each its own column pair.
+  const PAIRS = [
+    { type: at('price-type'),            amt: at('price-amount'),            kind: 'ItemPrice' },
+    { type: at('item-related-fee-type'), amt: at('item-related-fee-amount'), kind: 'ItemFees'  },
+    { type: at('shipment-fee-type'),     amt: at('shipment-fee-amount'),     kind: 'ItemFees'  },
+    { type: at('order-fee-type'),        amt: at('order-fee-amount'),        kind: 'ItemFees'  },
+    { type: at('promotion-type'),        amt: at('promotion-amount'),        kind: 'Promotion' },
+    { type: at('direct-payment-type'),   amt: at('direct-payment-amount'),   kind: 'other-transaction' },
+  ];
+  // Amounts with no type column of their own.
+  const iMisc = at('misc-fee-amount');
+  const iOtherFee = at('other-fee-amount'), iOtherReason = at('other-fee-reason-description');
+  const iOtherAmt = at('other-amount');
+
+  const isWide = PAIRS.some(p2 => p2.type >= 0 && p2.amt >= 0) || iOtherFee >= 0;
+  const isTall = iType >= 0 && iAmt >= 0;
+
+  console.log('[Settlement] columns:', JSON.stringify(rawCols));
+  console.log(`[Settlement] layout detected: ${isWide ? 'WIDE (flat file v1)' : (isTall ? 'TALL (v2)' : 'UNKNOWN')}`);
+  if (!isWide && !isTall) console.error('[Settlement] neither layout recognised — no amount columns found.');
 
   const num = (v) => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
   const date = (v) => {
     const t = String(v || '').trim();
     if (!t) return null;
+    const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);         // 2026-08-29T13:34:05+00:00
+    if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
     const m = t.match(/^(\d{1,2})[-\/.]([A-Za-z]{3}|\d{1,2})[-\/.](\d{4})/);
     if (m) {
       const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
@@ -2119,45 +2143,81 @@ function parseSettlementFlatFile(text) {
     return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
   };
 
-  // Report what we found, so a mismatch is obvious instead of silent.
-  const wanted = { 'settlement-id':iSet, 'amount-type':iType, 'amount-description':iDesc,
-                   'amount':iAmt, 'transaction-type':iTxn, 'sku':iSku, 'posted-date':iPosted };
-  const missing = Object.keys(wanted).filter(k => wanted[k] < 0);
-  console.log('[Settlement] columns:', JSON.stringify(rawCols));
-  if (missing.length) console.error('[Settlement] MISSING COLUMNS:', missing.join(', '));
-
   let header = null;
   const rows = [];
+
   for (let i = 1; i < lines.length; i++) {
     const f = lines[i].split('\t');
     const settlementId = (f[iSet] || '').trim();
     if (!settlementId) continue;
 
-    // The summary row carries totals and no transaction detail.
-    if (!header && f[iTotal]) {
+    // The first row carries the settlement totals and no transaction detail.
+    if (!header && iTotal >= 0 && f[iTotal] && String(f[iTotal]).trim()) {
       header = {
         settlement_id: settlementId,
         start_date: date(f[iStart]), end_date: date(f[iEnd]),
         deposit_date: date(f[iDep]), total_amount: num(f[iTotal])
       };
     }
-    const amt = num(f[iAmt]);
-    if (amt == null) continue;
 
-    rows.push({
+    const base = {
       settlement_id: settlementId,
       posted_date: date(f[iPosted]) || (header && header.end_date) || null,
       transaction_type: (f[iTxn] || '').trim() || null,
       order_id: (f[iOrder] || '').trim() || null,
+      shipment_id: iShip >= 0 ? ((f[iShip] || '').trim() || null) : null,
       sku: (f[iSku] || '').trim() || null,
-      amount_type: (f[iType] || '').trim() || null,
-      amount_description: (f[iDesc] || '').trim() || null,
-      amount: amt,
       quantity: iQty >= 0 ? (parseInt(f[iQty], 10) || 0) : 0,
       deposit_date: header ? header.deposit_date : null
-    });
+    };
+
+    if (isTall) {
+      const amt = num(f[iAmt]);
+      if (amt == null) continue;
+      rows.push({ ...base,
+        amount_type: (f[iType] || '').trim() || null,
+        amount_description: (f[iDesc] || '').trim() || null,
+        amount: amt });
+      continue;
+    }
+
+    // WIDE: emit one row per populated (type, amount) pair on this line.
+    let emitted = 0;
+    for (const pr of PAIRS) {
+      if (pr.amt < 0) continue;
+      const amt = num(f[pr.amt]);
+      if (amt == null || amt === 0) continue;
+      const desc = (pr.type >= 0 ? (f[pr.type] || '').trim() : '') || pr.kind;
+      rows.push({ ...base, amount_type: pr.kind, amount_description: desc, amount: amt });
+      emitted++;
+      // quantity belongs to the sale line only, never to a fee
+      if (pr.kind !== 'ItemPrice') rows[rows.length - 1].quantity = 0;
+    }
+    if (iMisc >= 0) {
+      const a = num(f[iMisc]);
+      if (a != null && a !== 0) { rows.push({ ...base, quantity: 0, amount_type: 'ItemFees', amount_description: 'MiscFee', amount: a }); emitted++; }
+    }
+    if (iOtherFee >= 0) {
+      const a = num(f[iOtherFee]);
+      if (a != null && a !== 0) {
+        const reason = (iOtherReason >= 0 ? (f[iOtherReason] || '').trim() : '') || 'OtherFee';
+        // Inbound transport / placement fees arrive here.
+        rows.push({ ...base, quantity: 0, amount_type: 'other-transaction', amount_description: reason, amount: a });
+        emitted++;
+      }
+    }
+    if (iOtherAmt >= 0) {
+      const a = num(f[iOtherAmt]);
+      if (a != null && a !== 0) {
+        rows.push({ ...base, quantity: 0, amount_type: 'other-transaction',
+                    amount_description: base.transaction_type || 'Other', amount: a });
+        emitted++;
+      }
+    }
   }
-  if (!header) header = { settlement_id: rows.length ? rows[0].settlement_id : null, start_date:null, end_date:null, deposit_date:null, total_amount:null };
+
+  if (!header) header = { settlement_id: rows.length ? rows[0].settlement_id : null,
+                          start_date: null, end_date: null, deposit_date: null, total_amount: null };
   return { header, rows };
 }
 
@@ -2300,7 +2360,9 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
           for (const r of rows) {
             const desc = r.amount_description || '';
             if (!INBOUND_FEE_PATTERNS.test(desc)) continue;
-            const shipRef = (r.order_id || '').trim();   // Amazon sometimes puts FBA… here
+            // The wide flat file has a real shipment-id column; fall back to
+            // order-id only for layouts that lack it.
+            const shipRef = (r.shipment_id || r.order_id || '').trim();
             let linked = null;
             if (shipRef) {
               const m = await pool.query('SELECT shipment_id FROM inv_shipments WHERE shipment_id=$1', [shipRef]);
