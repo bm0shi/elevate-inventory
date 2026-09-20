@@ -2762,6 +2762,23 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
   const netProfit = deposited - cogs - inboundAllocated
                     - (labor || 0) - (supplies || 0) - (overhead || 0);
 
+  // What inbound cost has been CAPTURED, regardless of whether anything has
+  // sold yet. Capture and allocation are different states: money recorded
+  // against a shipment is not the same as money charged against a sale.
+  let inboundCaptured = 0, inboundShipments = 0, inboundUnits = 0;
+  try {
+    const cap = await pool.query(`
+      SELECT COALESCE(SUM(c.amount),0)::numeric AS total,
+             COUNT(DISTINCT c.shipment_id)::int AS ships
+      FROM inv_shipment_costs c`);
+    inboundCaptured = Number(cap.rows[0].total) || 0;
+    inboundShipments = cap.rows[0].ships || 0;
+    const u = await pool.query(`
+      SELECT COALESCE(SUM(i.qty),0)::int AS units FROM inv_shipment_items i
+      WHERE i.shipment_id IN (SELECT DISTINCT shipment_id FROM inv_shipment_costs)`);
+    inboundUnits = u.rows[0].units || 0;
+  } catch (e) {}
+
   const coverage = await pool.query(
     'SELECT MIN(posted_date) AS first_day, MAX(posted_date) AS last_day, COUNT(DISTINCT settlement_id)::int AS settlements FROM inv_settlement_lines');
 
@@ -2775,6 +2792,8 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     cogs: cogsMissing.length === Object.keys(unitsByAsin).length ? null : cogs,
     cogsMissingCount: cogsMissing.length,
     inboundAllocated: inboundAllocated || null,
+    inboundCaptured, inboundShipments, inboundUnits,
+    inboundPerUnitCaptured: inboundUnits ? inboundCaptured / inboundUnits : null,
     labor, supplies, overhead,
     netProfit,
     marginPct: netSales ? (netProfit / netSales) * 100 : null,
