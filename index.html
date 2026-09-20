@@ -3456,6 +3456,8 @@ function pollSettlements(){
     let head='<div class="box" style="margin-top:10px;border:2px solid '+(ok?'#1e8449':'#b7791f')+';background:'+(ok?'#f4fbf7':'#fffdf7')+'">'
       +'<div style="font-weight:800;color:'+(ok?'#1e8449':'#b7791f')+'">'+(ok?'✅ ':'⚠️ ')+(j.progress||'Done')+'</div>';
     if(j.reports) head+='<div class="hint">'+j.reports+' report(s) found · '+(j.imported||0)+' imported · '+(j.skipped||0)+' already on file · '+(j.lines||0)+' lines</div>';
+    if(j.build) head+='<div class="hint" style="font-family:monospace;font-size:11px">server build: '+j.build+'</div>';
+    if(j.reports>0 && !j.imported && !j.skipped) head+='<div class="hint" style="color:#c0392b;font-weight:700">Reports were found but none downloaded. Check the Railway log for [Settlement] lines after &ldquo;listing done&rdquo;.</div>';
     if(j.attempts && j.attempts.length){
       head+='<div class="hint" style="margin-top:8px"><b>What Amazon returned:</b></div>'
         +'<table style="margin-top:4px"><thead><tr><th>Report type</th><th>Query</th><th>Seen</th><th>Result</th></tr></thead><tbody>'
