@@ -3360,7 +3360,7 @@ function loadCoverage(){
 }
 
 function relinkSettlements(){
-  const box=document.getElementById('setSyncResult');
+  const box=document.getElementById('setOut');
   if(box) box.innerHTML='<div class="hint">Matching…</div>';
   ownerApi('/api/settlements/relink',{method:'POST',body:'{}'}).then(d=>{
     if(!d||d.error){ if(box) box.innerHTML='<div class="hint" style="color:#c0392b">'+((d&&d.error)||'Failed')+'</div>'; return; }
