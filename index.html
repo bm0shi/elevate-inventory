@@ -461,6 +461,7 @@
         <button class="subtab" onclick="showSubTab('fbainv',event)">🏬 FBA Inventory</button>
         <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
         <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
+        <button class="subtab" onclick="showSubTab('pnl',event)">📊 Monthly P&amp;L</button>
         <button class="subtab" onclick="showSubTab('costs',event)">💵 Costs &amp; Profit</button>
         <button class="subtab" onclick="showSubTab('labor',event)">👷 Labor</button>
         <button class="subtab" onclick="showSubTab('audit',event)">🔎 Stock Audit</button>
@@ -507,6 +508,17 @@
       <button class="action full" onclick="loadCoverage()" style="margin-top:8px;background:#5a6472">↻ Refresh</button>
       <div id="covBody" style="margin-top:8px"></div>
     </div>
+  </div>
+<div id="sub-pnl" class="subpanel">
+    <div class="box">
+      <h3 style="margin-bottom:4px">Monthly P&amp;L</h3>
+      <div class="hint">Every line shows where it came from. Lines with no data yet are left blank rather than counted as zero — a visible gap beats a confident wrong total.</div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap">
+        <label style="font-size:13px;font-weight:700;color:#5a6472">Month <input type="month" id="pnlMonth" onchange="loadPnl()" style="padding:9px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px"></label>
+        <button class="action" onclick="loadPnl()" style="flex:1;min-width:150px;background:#127a7a">Show P&amp;L</button>
+      </div>
+    </div>
+    <div id="pnlBody"></div>
   </div>
 <div id="sub-costs" class="subpanel">
     <div class="box" style="border:2px solid #1e8449">
@@ -2094,6 +2106,7 @@ function showSubTab(name, ev){
   loadFreshness();
   if(name==='labor'){ loadEmployees(); loadCoverage(); }
   if(name==='audit') loadStockAudit();
+  if(name==='pnl') loadPnl();
   if(name==='costs'){ if(window._costData) renderCosts(); else loadCosts(); }
   if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
@@ -3342,6 +3355,68 @@ function loadCoverage(){
         +'<td>'+(Number(r.hours)||0).toFixed(1)+'h</td>'
         +'<td>$'+(Number(r.cost)||0).toFixed(2)+'</td></tr>').join('')+'</tbody></table>';
   }).catch(()=>{ b.innerHTML='<div class="hint" style="color:#c0392b">Could not load.</div>'; });
+}
+
+// ==================== MONTHLY P&L ====================
+function loadPnl(){
+  const b=document.getElementById('pnlBody'); if(!b)return;
+  let m=(document.getElementById('pnlMonth')||{}).value||'';
+  if(!m){ const d=new Date(); m=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+          const el=document.getElementById('pnlMonth'); if(el) el.value=m; }
+  b.innerHTML='<div class="hint" style="padding:16px">Building…</div>';
+  ownerApi('/api/pnl?month='+encodeURIComponent(m)).then(d=>{
+    if(!d||d.error){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">'+((d&&d.error)||'Could not load — deploy the latest server.js.')+'</div>'; return; }
+    const money=v=>(v==null?null:(v<0?'-$':'$')+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}));
+    const line=(label,val,opts)=>{
+      opts=opts||{};
+      const missing=(val==null);
+      return '<tr'+(opts.bold?' style="font-weight:800"':'')+(opts.top?' style="border-top:2px solid #cfd8e3;font-weight:800"':'')+'>'
+        +'<td style="padding:7px 0">'+label
+        +(opts.note?'<div style="font-size:11px;color:#9db0c9;font-weight:400">'+opts.note+'</div>':'')+'</td>'
+        +'<td style="text-align:right;white-space:nowrap;'+(opts.neg?'color:#c0392b;':'')+(opts.bold||opts.top?'font-size:16px;':'')+'">'
+        +(missing?'<span style="color:#b7791f;font-weight:700">— not tracked yet</span>':money(val))+'</td>'
+        +'<td style="text-align:right;width:120px">'+(opts.src||'')+'</td></tr>';
+    };
+    const tag=(t,c)=>'<span style="font-size:10px;font-weight:800;padding:2px 7px;border-radius:9px;background:'+c+'">'+t+'</span>';
+    const REAL=tag('ACTUAL','#eafaf1'), CALC=tag('CALC','#eef4fb'), TODO=tag('TO DO','#fdf3e6');
+
+    let h='';
+    if(!d.hasSettlements){
+      h+='<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">No settlement data for this month</b>'
+        +'<div class="hint">Revenue and Amazon fees come from settlement reports. Pull them from <b>Costs &amp; Profit → Real Amazon settlements</b> first. Everything below will be zero until then.</div></div>';
+    }
+    h+='<div class="box"><table style="width:100%"><tbody>';
+    h+=line('Revenue', d.revenue||0, {src:REAL});
+    h+=line('Refunds', d.refunds||0, {neg:true, src:REAL});
+    h+=line('Net sales', d.netSales||0, {top:true});
+    h+=line('Amazon selling fees', d.amazonFees||0, {neg:true, src:REAL, note:'referral, FBA, refund commission'});
+    if(d.inboundFeesFromSettlement) h+=line('Inbound fees (settled)', d.inboundFeesFromSettlement, {neg:true, src:REAL});
+    h+=line('Deposited', d.deposited||0, {top:true});
+    h+=line('Product cost (COGS)', d.cogs==null?null:-d.cogs, {neg:true, src:CALC,
+      note:'units sold × blended cost'+(d.cogsMissingCount?' · '+d.cogsMissingCount+' ASIN(s) have no cost lot yet':'')});
+    h+=line('Inbound freight + placement', d.inboundAllocated==null?null:-d.inboundAllocated, {neg:true, src:CALC, note:'per shipment, spread over its units'});
+    h+=line('Prep labor', d.labor, {neg:true, src:TODO, note:'needs a timesheet upload'});
+    h+=line('Supplies', d.supplies, {neg:true, src:TODO, note:'needs per-unit costs by size'});
+    h+=line('Overhead', d.overhead, {neg:true, src:TODO, note:'rent, insurance, utilities'});
+    h+=line('NET PROFIT', d.netProfit||0, {top:true});
+    h+='</tbody></table>';
+    h+='<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid #eef2f6">'
+      +'<div><div style="font-size:11px;color:#8a97a6;font-weight:700">MARGIN ON NET SALES</div><div style="font-size:22px;font-weight:800;color:'+((d.marginPct||0)>=20?'#1e8449':'#b7791f')+'">'+(d.marginPct==null?'—':d.marginPct.toFixed(1)+'%')+'</div></div>'
+      +'<div><div style="font-size:11px;color:#8a97a6;font-weight:700">UNITS SOLD</div><div style="font-size:22px;font-weight:800">'+(d.unitsSold||0).toLocaleString()+'</div></div>'
+      +'<div><div style="font-size:11px;color:#8a97a6;font-weight:700">FEES AS % OF SALES</div><div style="font-size:22px;font-weight:800">'+(d.netSales?(Math.abs(d.amazonFees)/d.netSales*100).toFixed(1)+'%':'—')+'</div></div>'
+      +'</div></div>';
+
+    h+='<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">Net profit is incomplete</b>'
+      +'<div class="hint">Three lines are still blank, so the figure above is <b>higher than the truth</b>. It will come down as labor, supplies and overhead are added.</div></div>';
+
+    if(d.feeDetail && Object.keys(d.feeDetail).length){
+      h+='<div class="box"><b style="font-size:15px">Amazon fees, by name</b><table style="margin-top:6px"><tbody>'
+        +Object.keys(d.feeDetail).sort((a,b2)=>Math.abs(d.feeDetail[b2])-Math.abs(d.feeDetail[a]))
+          .map(k=>'<tr><td>'+k+'</td><td style="text-align:right;color:#c0392b">'+money(d.feeDetail[k])+'</td></tr>').join('')
+        +'</tbody></table></div>';
+    }
+    b.innerHTML=h;
+  }).catch(()=>{ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not build the P&L.</div>'; });
 }
 
 // ==================== REAL SETTLEMENTS ====================
