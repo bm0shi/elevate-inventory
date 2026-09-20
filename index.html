@@ -3394,7 +3394,19 @@ function loadPnl(){
     h+=line('Deposited', d.deposited||0, {top:true});
     h+=line('Product cost (COGS)', d.cogs==null?null:-d.cogs, {neg:true, src:CALC,
       note:'units sold × blended cost'+(d.cogsMissingCount?' · '+d.cogsMissingCount+' ASIN(s) have no cost lot yet':'')});
-    h+=line('Inbound freight + placement', d.inboundAllocated==null?null:-d.inboundAllocated, {neg:true, src:CALC, note:'per shipment, spread over its units'});
+    if(d.inboundAllocated==null && d.inboundCaptured>0){
+      // captured but nothing has sold yet to carry it
+      h+='<tr><td style="padding:7px 0">Inbound freight + placement'
+        +'<div style="font-size:11px;color:#9db0c9;font-weight:400">per shipment, spread over its units</div></td>'
+        +'<td style="text-align:right;white-space:nowrap"><span style="color:#2563a8;font-weight:700">$'
+        +d.inboundCaptured.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+' captured</span>'
+        +'<div style="font-size:11px;color:#9db0c9">'+d.inboundShipments+' shipment(s) · '+(d.inboundUnits||0).toLocaleString()+' units'
+        +(d.inboundPerUnitCaptured!=null?' · $'+d.inboundPerUnitCaptured.toFixed(3)+'/unit':'')+'</div>'
+        +'<div style="font-size:11px;color:#b7791f;font-weight:700">nothing sold yet to charge it against</div></td>'
+        +'<td style="text-align:right;width:120px">'+CALC+'</td></tr>';
+    } else {
+      h+=line('Inbound freight + placement', d.inboundAllocated==null?null:-d.inboundAllocated, {neg:true, src:CALC, note:'per shipment, spread over its units'});
+    }
     h+=line('Prep labor', d.labor, {neg:true, src:TODO, note:'needs a timesheet upload'});
     h+=line('Supplies', d.supplies, {neg:true, src:TODO, note:'needs per-unit costs by size'});
     h+=line('Overhead', d.overhead, {neg:true, src:TODO, note:'rent, insurance, utilities'});
