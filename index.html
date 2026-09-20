@@ -3256,8 +3256,15 @@ function loadCoverage(){
 // ==================== REAL SETTLEMENTS ====================
 function syncSettlements(){
   const b=document.getElementById('setSyncBtn'); if(b){ b.disabled=true; b.textContent='Asking Amazon…'; }
-  document.getElementById('setOut').innerHTML='<div class="hint" style="padding:10px">Starting…</div>';
-  ownerApi('/api/settlements/sync',{method:'POST',body:JSON.stringify({sinceDays:180})})
+  // Use the From date to size the pull window, so the boxes actually drive it.
+  const f=(document.getElementById('setFrom')||{}).value||'';
+  let sinceDays=180;
+  if(f){
+    const d=Math.ceil((Date.now()-new Date(f).getTime())/86400000);
+    if(d>0) sinceDays=Math.min(720, d+7);
+  }
+  document.getElementById('setOut').innerHTML='<div class="hint" style="padding:10px">Asking Amazon for the last '+sinceDays+' days…</div>';
+  ownerApi('/api/settlements/sync',{method:'POST',body:JSON.stringify({sinceDays:sinceDays})})
     .then(()=>pollSettlements())
     .catch(()=>{ if(b){b.disabled=false;b.textContent='⤓ Pull settlements from Amazon';} toast('Could not start',true); });
 }
