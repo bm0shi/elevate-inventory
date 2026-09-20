@@ -696,6 +696,40 @@ async function initDb() {
     console.log('[Inventory] Cost history ready.');
   } catch(e) { console.error('cost history migration skipped:', e.message); }
 
+  // ---- Per-shipment inbound costs (idempotent) ----
+  // Amazon shows freight and placement fees when you BUILD a shipment, then
+  // charges them again weeks later in the settlement. Both are the same money.
+  // One row per (shipment, fee kind) with a source ranking prevents a double
+  // count: 'actual' from the settlement always supersedes a manual 'estimate'.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_shipment_costs (
+        id SERIAL PRIMARY KEY,
+        shipment_id TEXT NOT NULL,
+        kind TEXT NOT NULL,                -- freight | placement | prep | other
+        amount NUMERIC NOT NULL,
+        source TEXT NOT NULL DEFAULT 'estimate',   -- estimate | actual
+        settlement_id TEXT,
+        note TEXT,
+        updated_at TIMESTAMPTZ DEFAULT now(),
+        UNIQUE (shipment_id, kind)
+      );
+      CREATE INDEX IF NOT EXISTS idx_shipcost_ship ON inv_shipment_costs(shipment_id);
+      -- Inbound fees found in settlements that we could not tie to a shipment yet
+      CREATE TABLE IF NOT EXISTS inv_unlinked_fees (
+        id SERIAL PRIMARY KEY,
+        settlement_id TEXT,
+        posted_date DATE,
+        description TEXT,
+        amount NUMERIC,
+        raw_shipment_id TEXT,
+        linked_shipment_id TEXT,
+        UNIQUE (settlement_id, description, amount, posted_date)
+      );
+    `);
+    console.log('[Inventory] Shipment cost tables ready.');
+  } catch(e) { console.error('shipment cost migration skipped:', e.message); }
+
   // ---- Settlement lines (idempotent) ----
   // One row per money movement Amazon reported: principal, each named fee,
   // refunds, refund commissions, adjustments. This is the real deposit, not an
@@ -2206,6 +2240,37 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
            VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
           [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
 
+        // ---- Inbound freight / placement fees ----
+        // These are charged per SHIPMENT, not per sale, so they carry no SKU.
+        // Auto-attach when Amazon names the shipment; otherwise park them for
+        // one-tap linking. Either way they are recorded ONCE, as 'actual',
+        // which supersedes whatever was typed in as an estimate.
+        try {
+          for (const r of rows) {
+            const desc = r.amount_description || '';
+            if (!INBOUND_FEE_PATTERNS.test(desc)) continue;
+            const shipRef = (r.order_id || '').trim();   // Amazon sometimes puts FBA… here
+            let linked = null;
+            if (shipRef) {
+              const m = await pool.query('SELECT shipment_id FROM inv_shipments WHERE shipment_id=$1', [shipRef]);
+              if (m.rows.length) linked = shipRef;
+            }
+            if (linked) {
+              const kind = /placement/i.test(desc) ? 'placement' : 'freight';
+              await pool.query(
+                `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, settlement_id, note, updated_at)
+                 VALUES($1,$2,$3,'actual',$4,$5,now())
+                 ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='actual', settlement_id=$4, note=$5, updated_at=now()`,
+                [linked, kind, Math.abs(Number(r.amount)), header.settlement_id, desc]);
+            } else {
+              await pool.query(
+                `INSERT INTO inv_unlinked_fees(settlement_id, posted_date, description, amount, raw_shipment_id)
+                 VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
+                [header.settlement_id, r.posted_date, desc, r.amount, shipRef || null]);
+            }
+          }
+        } catch (e) { console.error('[Settlement] inbound fee capture failed:', e.message); }
+
         await pool.query(
           `INSERT INTO inv_settlement_reports(report_id, settlement_id, status) VALUES($1,$2,'imported')
            ON CONFLICT (report_id) DO UPDATE SET settlement_id=$2, status='imported', seen_at=now()`,
@@ -2268,6 +2333,10 @@ app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
     } else if (r.amount_type === 'ItemFees' && isRefund(r.transaction_type)) {
       a.refundFees += amt; grand.refundFees += amt;
       a.feeBreakdown[desc] = (a.feeBreakdown[desc] || 0) + amt;
+    } else if (INBOUND_FEE_PATTERNS.test(desc)) {
+      // Recorded against the SHIPMENT and allocated per unit there. Counting it
+      // here as well would charge the same freight twice.
+      grand.inbound = (grand.inbound || 0) + amt;
     } else {
       a.other += amt; grand.other += amt;
     }
@@ -2537,6 +2606,76 @@ app.get('/api/timesheets/coverage', ownerAuth, async (req, res) => {
      FROM inv_employees e LEFT JOIN inv_timecards t ON t.employee_id=e.id
      WHERE e.active GROUP BY e.display_name ORDER BY e.display_name`);
   res.json(rows);
+});
+
+// ---- Inbound shipment costs ----
+// Fee kinds Amazon uses for inbound charges, so settlement rows can be spotted.
+const INBOUND_FEE_PATTERNS = /inbound|placement|transportation|partnered.?carrier|convenience/i;
+
+// Enter (or correct) what a shipment cost. Manual entries are ESTIMATES and are
+// replaced automatically once the settlement reports the real figure.
+app.post('/api/shipment-costs/set', ownerAuth, async (req, res) => {
+  const { shipment_id, kind, amount, note } = req.body || {};
+  if (!shipment_id || !kind) return res.status(400).json({ error: 'shipment_id + kind required' });
+  if (amount === '' || amount == null) {
+    await pool.query("DELETE FROM inv_shipment_costs WHERE shipment_id=$1 AND kind=$2 AND source='estimate'", [shipment_id, kind]);
+    return res.json({ ok: true, cleared: true });
+  }
+  const amt = Math.abs(parseFloat(amount));
+  if (isNaN(amt)) return res.status(400).json({ error: 'amount must be a number' });
+  // never let a manual figure overwrite one Amazon has already confirmed
+  const cur = await pool.query('SELECT source FROM inv_shipment_costs WHERE shipment_id=$1 AND kind=$2', [shipment_id, kind]);
+  if (cur.rows.length && cur.rows[0].source === 'actual') {
+    return res.json({ ok: false, lockedByActual: true, message: 'Amazon has already billed this one — the settled amount stands.' });
+  }
+  await pool.query(
+    `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, note, updated_at)
+     VALUES($1,$2,$3,'estimate',$4,now())
+     ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='estimate', note=$4, updated_at=now()`,
+    [shipment_id, kind, amt, note || null]);
+  res.json({ ok: true });
+});
+
+// Costs per shipment, with per-unit allocation.
+app.get('/api/shipment-costs', ownerAuth, async (req, res) => {
+  const ships = await pool.query(`
+    SELECT s.shipment_id, s.shipment_name, s.status, s.created_at,
+           COALESCE((SELECT SUM(qty) FROM inv_shipment_items i WHERE i.shipment_id=s.shipment_id),0)::int AS units
+    FROM inv_shipments s ORDER BY s.created_at DESC LIMIT 100`);
+  const costs = await pool.query('SELECT * FROM inv_shipment_costs');
+  const byShip = {};
+  for (const c of costs.rows) (byShip[c.shipment_id] = byShip[c.shipment_id] || []).push(c);
+
+  const rows = ships.rows.map(s => {
+    const list = byShip[s.shipment_id] || [];
+    const total = list.reduce((n, c) => n + Number(c.amount), 0);
+    const anyEstimate = list.some(c => c.source === 'estimate');
+    return {
+      ...s, costs: list, totalCost: total,
+      perUnit: s.units ? total / s.units : null,
+      confidence: !list.length ? 'none' : (anyEstimate ? 'estimate' : 'actual')
+    };
+  });
+  const unlinked = await pool.query(
+    'SELECT * FROM inv_unlinked_fees WHERE linked_shipment_id IS NULL ORDER BY posted_date DESC LIMIT 50');
+  res.json({ rows, unlinked: unlinked.rows });
+});
+
+// Attach a settlement fee Amazon did not label with a shipment id.
+app.post('/api/shipment-costs/link', ownerAuth, async (req, res) => {
+  const { fee_id, shipment_id, kind } = req.body || {};
+  if (!fee_id || !shipment_id) return res.status(400).json({ error: 'fee_id + shipment_id required' });
+  const f = await pool.query('SELECT * FROM inv_unlinked_fees WHERE id=$1', [fee_id]);
+  if (!f.rows.length) return res.status(404).json({ error: 'fee not found' });
+  const fee = f.rows[0];
+  const k = kind || (/placement/i.test(fee.description || '') ? 'placement' : 'freight');
+  await pool.query(
+    `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, settlement_id, note, updated_at)
+     VALUES($1,$2,$3,'actual',$4,$5,now())
+     ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='actual', settlement_id=$4, note=$5, updated_at=now()`,
+    [shipment_id, k, Math.abs(Number(fee.amount)), fee.settlement_id, fee.description]);
+  await pool.query('UPDATE inv_unlinked_fees SET linked_shipment_id=$1 WHERE id=$2', [shipment_id, fee_id]);
+  res.json({ ok: true, kind: k });
 });
 
 // Owner override — always wins over Amazon's declaration.
