@@ -478,6 +478,10 @@ function suggestProducts(desc, catalog) {
   return [{ asin: top.asin, name: top.name, sku: top.sku, image: top.image, location: top.location, strong: true }];
 }
 
+// Stamped at build time so the running code can be identified from the log
+// and from the UI — 'is my deploy actually live' should never be a guess.
+const BUILD_ID = 'settlement-instrumented-0920-0758';
+
 // ---- Postgres ----
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -2087,8 +2091,13 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
 function parseSettlementFlatFile(text) {
   const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
   if (!lines.length) return { header: null, rows: [] };
-  const cols = lines[0].split('\t').map(c => c.trim().toLowerCase());
-  const at = (name) => cols.indexOf(name);
+  // Header names differ between the V2 and plain flat-file variants, and across
+  // marketplaces: 'amount-type', 'Amount Type', 'amount_type'. Normalise both
+  // sides to letters+digits only so any of them match. A missed column meant
+  // every row was skipped while the file still looked imported.
+  const rawCols = lines[0].split('\t').map(c => c.trim());
+  const cols = rawCols.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
+  const at = (name) => cols.indexOf(String(name).toLowerCase().replace(/[^a-z0-9]/g, ''));
 
   const iSet = at('settlement-id'), iStart = at('settlement-start-date'), iEnd = at('settlement-end-date');
   const iDep = at('deposit-date'), iTotal = at('total-amount');
@@ -2109,6 +2118,13 @@ function parseSettlementFlatFile(text) {
     const d = new Date(t);
     return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
   };
+
+  // Report what we found, so a mismatch is obvious instead of silent.
+  const wanted = { 'settlement-id':iSet, 'amount-type':iType, 'amount-description':iDesc,
+                   'amount':iAmt, 'transaction-type':iTxn, 'sku':iSku, 'posted-date':iPosted };
+  const missing = Object.keys(wanted).filter(k => wanted[k] < 0);
+  console.log('[Settlement] columns:', JSON.stringify(rawCols));
+  if (missing.length) console.error('[Settlement] MISSING COLUMNS:', missing.join(', '));
 
   let header = null;
   const rows = [];
@@ -2153,6 +2169,9 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
   // Amazon throttles getReportDocument to roughly one call per minute and the
   // bucket stays drained after a burst. Fetch a few per run; re-run to continue.
   const maxReports = Math.max(1, Math.min(20, Number(req.body && req.body.maxReports) || 3));
+  // force: re-download and re-parse settlements already marked imported. Needed
+  // when a parser fix means the stored lines were wrong (or absent).
+  const force = !!(req.body && req.body.force);
   settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0, attempts:[], skipped:0 };
   console.log(`[Settlement] SYNC STARTED — window ${sinceDays} days, max ${maxReports} report(s) this run.`);
   res.json({ ok:true });
@@ -2199,7 +2218,8 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         } catch (e2) { console.error('[Settlement] create failed:', e2.message); }
       }
 
-      const pending = reports.filter(r => !knownReports.has(r.reportId));
+      const pending = force ? reports.slice() : reports.filter(r => !knownReports.has(r.reportId));
+      if (force) console.log('[Settlement] FORCE re-import — ignoring previously imported markers.');
       const todo = pending.slice(0, maxReports);
       settleJob.skipped = reports.length - pending.length;
       settleJob.remaining = Math.max(0, pending.length - todo.length);
@@ -2234,7 +2254,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
           console.error('[Settlement] no settlement id in that file — skipping.');
           continue;
         }
-        if (known.has(header.settlement_id)) {
+        if (!force && known.has(header.settlement_id)) {
           await pool.query(
             `INSERT INTO inv_settlement_reports(report_id, settlement_id, status) VALUES($1,$2,'imported')
              ON CONFLICT (report_id) DO UPDATE SET settlement_id=$2, status='imported'`,
@@ -2316,7 +2336,8 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         await pool.query('UPDATE inv_settlements SET report_id=$1 WHERE settlement_id=$2', [rep.reportId, header.settlement_id]);
 
         settleJob.imported++; settleJob.lines += inserted;
-        console.log(`[Settlement] ${header.settlement_id}: ${inserted} lines.`);
+        if (!inserted) console.error(`[Settlement] ${header.settlement_id}: parsed ${rows.length} row(s) but stored 0 — check the column list above.`);
+        console.log(`[Settlement] ${header.settlement_id}: ${inserted} line(s) stored from ${rows.length} parsed.`);
         // stay under the ~1/min document limit on the next loop
         if (n < todo.length) await new Promise(r => setTimeout(r, 62000));
       }
@@ -2332,7 +2353,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
   })();
 });
 
-app.get('/api/settlements/status', ownerAuth, (req, res) => res.json(settleJob));
+app.get('/api/settlements/status', ownerAuth, (req, res) => res.json({ ...settleJob, build: BUILD_ID }));
 
 // Real, per-ASIN economics over a date range, straight from the settlements.
 app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
@@ -4904,7 +4925,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const PORT = process.env.PORT || 3000;
 initDb().then(() => {
-  app.listen(PORT, () => console.log(`[Inventory] Live on port ${PORT}`));
+  app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
   // Start anyway so you can see errors
