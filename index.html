@@ -3267,9 +3267,20 @@ function pollSettlements(){
     if(j.running){ o.innerHTML='<div class="hint" style="padding:10px">'+(j.progress||'working…')+'</div>'; setTimeout(pollSettlements,4000); return; }
     if(b){ b.disabled=false; b.textContent='⤓ Pull settlements from Amazon'; }
     if(j.error){ o.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+j.error+'</div>'; return; }
-    o.innerHTML='<div class="hint" style="padding:10px;color:#1e8449"><b>'+(j.progress||'Done')+'</b>'
-      +(j.reports?' · '+j.reports+' report(s) seen':'')+'</div>';
-    loadSettlementSummary();
+    const ok=(j.reports>0);
+    let head='<div class="box" style="margin-top:10px;border:2px solid '+(ok?'#1e8449':'#b7791f')+';background:'+(ok?'#f4fbf7':'#fffdf7')+'">'
+      +'<div style="font-weight:800;color:'+(ok?'#1e8449':'#b7791f')+'">'+(ok?'✅ ':'⚠️ ')+(j.progress||'Done')+'</div>';
+    if(j.reports) head+='<div class="hint">'+j.reports+' report(s) found · '+(j.imported||0)+' imported · '+(j.skipped||0)+' already on file · '+(j.lines||0)+' lines</div>';
+    if(j.attempts && j.attempts.length){
+      head+='<div class="hint" style="margin-top:8px"><b>What Amazon returned:</b></div>'
+        +'<table style="margin-top:4px"><thead><tr><th>Report type</th><th>Query</th><th>Seen</th><th>Result</th></tr></thead><tbody>'
+        +j.attempts.map(a=>'<tr><td style="font-family:monospace;font-size:11px">'+a.reportType+'</td><td style="font-size:12px">'+a.variant+'</td><td>'+a.seen+'</td>'
+          +'<td style="font-size:11px;color:'+(a.error?'#c0392b':'#5a6472')+'">'+(a.error||'ok')+'</td></tr>').join('')
+        +'</tbody></table>';
+    }
+    head+='</div>';
+    o.innerHTML=head;
+    if(ok) loadSettlementSummary();
   }).catch(()=>setTimeout(pollSettlements,5000));
 }
 
