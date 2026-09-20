@@ -527,6 +527,7 @@
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
         <button class="action" onclick="syncSettlements()" id="setSyncBtn" style="flex:1;min-width:190px;background:#1e8449">⤓ Pull settlements from Amazon</button>
         <button class="action" onclick="syncSettlements(true)" style="flex:1;min-width:170px;background:#b7791f">↻ Re-import all</button>
+        <button class="action" onclick="relinkSettlements()" style="flex:1;min-width:190px;background:#2563a8">🔗 Match SKUs to ASINs</button>
         <button class="action" onclick="loadSettlementSummary()" style="flex:1;min-width:170px;background:#5a6472">↻ Show real economics</button>
       </div>
       <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
@@ -3358,6 +3359,36 @@ function loadCoverage(){
   }).catch(()=>{ b.innerHTML='<div class="hint" style="color:#c0392b">Could not load.</div>'; });
 }
 
+function relinkSettlements(){
+  const box=document.getElementById('setSyncResult');
+  if(box) box.innerHTML='<div class="hint">Matching…</div>';
+  ownerApi('/api/settlements/relink',{method:'POST',body:'{}'}).then(d=>{
+    if(!d||d.error){ if(box) box.innerHTML='<div class="hint" style="color:#c0392b">'+((d&&d.error)||'Failed')+'</div>'; return; }
+    let h='<div class="box" style="border:2px solid #1e8449;background:#f6fbf8"><b style="color:#1e8449">'+d.linked+' line(s) gained an ASIN</b>'
+      +'<div class="hint">'+d.after.matched+' matched · '+d.after.unmatched+' still unmatched</div></div>';
+    if(d.orphans && d.orphans.length){
+      h+='<div class="box"><b style="font-size:15px">Seller SKUs with no ASIN ('+d.orphans.length+')</b>'
+        +'<div class="hint">These sold but cannot be costed. Paste an ASIN to attach one.</div>'
+        +'<table style="margin-top:8px"><thead><tr><th>SKU</th><th>Units</th><th>Amount</th><th>ASIN</th></tr></thead><tbody>'
+        +d.orphans.map(o=>'<tr><td style="font-family:monospace;font-size:12px">'+o.sku+'</td>'
+          +'<td>'+(o.units||0)+'</td><td>$'+Number(o.amount||0).toFixed(2)+'</td>'
+          +'<td><input id="skumap_'+btoa(o.sku).replace(/=/g,'')+'" placeholder="B0..." style="width:110px;padding:4px;border:1px solid #cfd8e3;border-radius:4px;font-family:monospace;font-size:12px">'
+          +' <button class="mini" onclick="mapSku('+JSON.stringify(o.sku).replace(/"/g,'&quot;')+')">Attach</button></td></tr>').join('')
+        +'</tbody></table></div>';
+    }
+    if(box) box.innerHTML=h;
+  }).catch(()=>{ if(box) box.innerHTML='<div class="hint" style="color:#c0392b">Failed.</div>'; });
+}
+function mapSku(sku){
+  const el=document.getElementById('skumap_'+btoa(sku).replace(/=/g,''));
+  const asin=(el&&el.value||'').trim().toUpperCase();
+  if(!/^B[A-Z0-9]{9}$/.test(asin)) return alert('Enter a valid ASIN (B followed by 9 characters).');
+  ownerApi('/api/sku-map',{method:'POST',body:JSON.stringify({sku:sku,asin:asin})}).then(d=>{
+    if(d&&d.ok){ alert(sku+' attached to '+asin+' — '+d.linked+' line(s) updated.'); relinkSettlements(); }
+    else alert((d&&d.error)||'Failed');
+  });
+}
+
 // ==================== MONTHLY P&L ====================
 function loadPnl(){
   const b=document.getElementById('pnlBody'); if(!b)return;
@@ -3394,7 +3425,10 @@ function loadPnl(){
     if(d.inboundFeesFromSettlement) h+=line('Inbound fees (settled)', d.inboundFeesFromSettlement, {neg:true, src:REAL});
     h+=line('Deposited', d.deposited||0, {top:true});
     h+=line('Product cost (COGS)', d.cogs==null?null:-d.cogs, {neg:true, src:CALC,
-      note:'units sold × blended cost'+(d.cogsMissingCount?' · '+d.cogsMissingCount+' ASIN(s) have no cost lot yet':'')});
+      note:'units sold × blended cost'
+        +(d.cogsMissingCount?' · '+d.cogsMissingCount+' ASIN(s) have no cost lot yet':'')
+        +(d.unmatchedSkuLines?' · '+d.unmatchedSkuLines+' line(s) have a SKU with no ASIN — press Match SKUs to ASINs':'')
+        +(d.pricedAsins!=null?' · '+d.pricedAsins+' product(s) have a cost on file':'')});
     if(d.inboundAllocated==null && d.inboundCaptured>0){
       // captured but nothing has sold yet to carry it
       h+='<tr><td style="padding:7px 0">Inbound freight + placement'
