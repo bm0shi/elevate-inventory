@@ -498,15 +498,35 @@ async function listSettlementReports(sinceDays = 180) {
   return { reports: found, attempts };
 }
 
-async function downloadReportDocument(documentId) {
-  const token = await getAccessToken();
+// getReportDocument is one of the most throttled calls in SP-API — roughly one
+// request per MINUTE after a small burst. Hammering it just returns 429 after
+// 429, so back off properly and honour the rate-limit header when present.
+async function downloadReportDocument(documentId, onProgress) {
   const zlib = require('zlib');
-  const doc = await axios.get(`${SP_API_BASE}/reports/2021-06-30/documents/${documentId}`,
-    { headers: { 'x-amz-access-token': token } });
-  const dl = await axios.get(doc.data.url, { responseType: 'arraybuffer' });
-  return doc.data.compressionAlgorithm === 'GZIP'
-    ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8')
-    : Buffer.from(dl.data).toString('utf-8');
+  const waits = [20000, 45000, 90000, 120000, 150000];   // ~7 minutes of patience
+
+  for (let attempt = 0; attempt <= waits.length; attempt++) {
+    const token = await getAccessToken();
+    try {
+      const doc = await axios.get(`${SP_API_BASE}/reports/2021-06-30/documents/${documentId}`,
+        { headers: { 'x-amz-access-token': token } });
+      const dl = await axios.get(doc.data.url, { responseType: 'arraybuffer' });
+      return doc.data.compressionAlgorithm === 'GZIP'
+        ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8')
+        : Buffer.from(dl.data).toString('utf-8');
+    } catch (e) {
+      const st = e.response?.status;
+      if (st !== 429 || attempt === waits.length) throw e;
+      // Amazon sometimes tells us the permitted rate; prefer it when it does.
+      const hdr = parseFloat(e.response?.headers?.['x-amzn-ratelimit-limit'] || '');
+      const wait = (hdr > 0 && hdr < 1) ? Math.ceil(1000 / hdr) + 2000 : waits[attempt];
+      const secs = Math.round(wait / 1000);
+      console.log(`[Settlement] rate limited, waiting ${secs}s (attempt ${attempt + 1})`);
+      if (onProgress) onProgress(`Amazon rate limit — waiting ${secs}s…`);
+      await sleep(wait);
+    }
+  }
+  throw new Error('rate limited');
 }
 
 module.exports = { listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
