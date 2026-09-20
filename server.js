@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
+const { listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -695,6 +695,38 @@ async function initDb() {
     `);
     console.log('[Inventory] Cost history ready.');
   } catch(e) { console.error('cost history migration skipped:', e.message); }
+
+  // ---- Settlement lines (idempotent) ----
+  // One row per money movement Amazon reported: principal, each named fee,
+  // refunds, refund commissions, adjustments. This is the real deposit, not an
+  // estimate, and it is what true net profit has to be built on.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_settlement_lines (
+        id SERIAL PRIMARY KEY,
+        settlement_id TEXT,
+        posted_date DATE,
+        transaction_type TEXT,
+        order_id TEXT,
+        sku TEXT,
+        asin TEXT,
+        amount_type TEXT,
+        amount_description TEXT,
+        amount NUMERIC,
+        quantity INTEGER,
+        deposit_date DATE,
+        UNIQUE (settlement_id, order_id, sku, amount_type, amount_description, amount, posted_date)
+      );
+      CREATE INDEX IF NOT EXISTS idx_settle_sku  ON inv_settlement_lines(sku);
+      CREATE INDEX IF NOT EXISTS idx_settle_date ON inv_settlement_lines(posted_date);
+      CREATE TABLE IF NOT EXISTS inv_settlements (
+        settlement_id TEXT PRIMARY KEY,
+        start_date DATE, end_date DATE, deposit_date DATE,
+        total_amount NUMERIC, lines INTEGER, imported_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
+    console.log('[Inventory] Settlement tables ready.');
+  } catch(e) { console.error('settlement migration skipped:', e.message); }
 
   // ---- Preppers on a job (idempotent) ----
   // One row per person per job, each with their own join/leave time. That is
@@ -1994,6 +2026,229 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
       velDays
     }
   });
+});
+
+// ============================================================
+// SETTLEMENT REPORTS — real fees, real refunds
+// Amazon's flat-file settlement is tab separated. Every row is one money
+// movement, classified by amount-type / amount-description:
+//   ItemPrice  + Principal                  -> gross revenue
+//   ItemFees   + Commission                 -> referral fee
+//   ItemFees   + FBAPerUnitFulfillmentFee   -> FBA pick & pack
+//   ItemPrice  + Principal (Refund)         -> money returned to the customer
+//   ItemFees   + RefundCommission           -> the bit Amazon keeps on a refund
+// Fees are reported as NEGATIVE numbers; they are stored exactly as reported.
+// ============================================================
+function parseSettlementFlatFile(text) {
+  const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
+  if (!lines.length) return { header: null, rows: [] };
+  const cols = lines[0].split('\t').map(c => c.trim().toLowerCase());
+  const at = (name) => cols.indexOf(name);
+
+  const iSet = at('settlement-id'), iStart = at('settlement-start-date'), iEnd = at('settlement-end-date');
+  const iDep = at('deposit-date'), iTotal = at('total-amount');
+  const iTxn = at('transaction-type'), iOrder = at('order-id'), iSku = at('sku');
+  const iType = at('amount-type'), iDesc = at('amount-description'), iAmt = at('amount');
+  const iQty = at('quantity-purchased'), iPosted = at('posted-date');
+
+  const num = (v) => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
+  const date = (v) => {
+    const t = String(v || '').trim();
+    if (!t) return null;
+    const m = t.match(/^(\d{1,2})[-\/.]([A-Za-z]{3}|\d{1,2})[-\/.](\d{4})/);
+    if (m) {
+      const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const mo = isNaN(+m[2]) ? MON[m[2].toLowerCase()] : (+m[2] - 1);
+      if (mo != null) return `${m[3]}-${String(mo+1).padStart(2,'0')}-${String(+m[1]).padStart(2,'0')}`;
+    }
+    const d = new Date(t);
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
+
+  let header = null;
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const f = lines[i].split('\t');
+    const settlementId = (f[iSet] || '').trim();
+    if (!settlementId) continue;
+
+    // The summary row carries totals and no transaction detail.
+    if (!header && f[iTotal]) {
+      header = {
+        settlement_id: settlementId,
+        start_date: date(f[iStart]), end_date: date(f[iEnd]),
+        deposit_date: date(f[iDep]), total_amount: num(f[iTotal])
+      };
+    }
+    const amt = num(f[iAmt]);
+    if (amt == null) continue;
+
+    rows.push({
+      settlement_id: settlementId,
+      posted_date: date(f[iPosted]) || (header && header.end_date) || null,
+      transaction_type: (f[iTxn] || '').trim() || null,
+      order_id: (f[iOrder] || '').trim() || null,
+      sku: (f[iSku] || '').trim() || null,
+      amount_type: (f[iType] || '').trim() || null,
+      amount_description: (f[iDesc] || '').trim() || null,
+      amount: amt,
+      quantity: iQty >= 0 ? (parseInt(f[iQty], 10) || 0) : 0,
+      deposit_date: header ? header.deposit_date : null
+    });
+  }
+  if (!header) header = { settlement_id: rows.length ? rows[0].settlement_id : null, start_date:null, end_date:null, deposit_date:null, total_amount:null };
+  return { header, rows };
+}
+
+let settleJob = { running:false, done:false, error:null, progress:'', reports:0, imported:0, lines:0 };
+
+app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
+  if (settleJob.running) return res.json({ ok:true, already:true });
+  const sinceDays = Number(req.body && req.body.sinceDays) || 180;
+  settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0 };
+  res.json({ ok:true });
+
+  (async () => {
+    try {
+      const reports = await listSettlementReports(sinceDays);
+      settleJob.reports = reports.length;
+      if (!reports.length) {
+        settleJob.progress = 'Amazon returned no settlement reports for that window.';
+        settleJob.running = false; settleJob.done = true; return;
+      }
+      // Skip settlements already stored.
+      const have = await pool.query('SELECT settlement_id FROM inv_settlements');
+      const known = new Set(have.rows.map(r => r.settlement_id));
+
+      let n = 0;
+      for (const rep of reports) {
+        n++;
+        settleJob.progress = `report ${n} of ${reports.length}…`;
+        let text;
+        try { text = await downloadReportDocument(rep.documentId); }
+        catch (e) { console.error('[Settlement] download failed:', e.message); continue; }
+
+        const { header, rows } = parseSettlementFlatFile(text);
+        if (!header || !header.settlement_id) continue;
+        if (known.has(header.settlement_id)) { settleJob.progress = `settlement ${header.settlement_id} already imported`; continue; }
+
+        // resolve SKU -> ASIN once per settlement
+        const skuMap = {};
+        try {
+          const pr = await pool.query('SELECT sku, asin FROM inv_products WHERE sku IS NOT NULL');
+          for (const r of pr.rows) skuMap[String(r.sku).toLowerCase()] = r.asin;
+        } catch (e) {}
+
+        let inserted = 0;
+        for (const r of rows) {
+          const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
+          try {
+            await pool.query(
+              `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
+                 amount_type, amount_description, amount, quantity, deposit_date)
+               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+               ON CONFLICT DO NOTHING`,
+              [r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
+               r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date]);
+            inserted++;
+          } catch (e) { /* duplicate row */ }
+        }
+        await pool.query(
+          `INSERT INTO inv_settlements(settlement_id, start_date, end_date, deposit_date, total_amount, lines)
+           VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
+          [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
+
+        settleJob.imported++; settleJob.lines += inserted;
+        console.log(`[Settlement] ${header.settlement_id}: ${inserted} lines.`);
+      }
+      settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines.`;
+      settleJob.running = false; settleJob.done = true;
+    } catch (e) {
+      settleJob.running = false; settleJob.error = e.message;
+      console.error('[Settlement] sync failed:', e.message);
+    }
+  })();
+});
+
+app.get('/api/settlements/status', ownerAuth, (req, res) => res.json(settleJob));
+
+// Real, per-ASIN economics over a date range, straight from the settlements.
+app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
+  const from = req.query.from || null, to = req.query.to || null;
+  const where = [], params = [];
+  if (from) { params.push(from); where.push(`posted_date >= $${params.length}`); }
+  if (to)   { params.push(to);   where.push(`posted_date <= $${params.length}`); }
+  const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+  const { rows } = await pool.query(
+    `SELECT asin, sku, amount_type, amount_description, transaction_type,
+            SUM(amount)::numeric AS total, SUM(quantity)::int AS units
+     FROM inv_settlement_lines ${clause}
+     GROUP BY asin, sku, amount_type, amount_description, transaction_type`, params);
+
+  const isRefund = (t) => /refund/i.test(t || '');
+  const byAsin = {};
+  let grand = { revenue:0, fees:0, refunds:0, refundFees:0, other:0, units:0 };
+
+  for (const r of rows) {
+    const key = r.asin || ('sku:' + (r.sku || 'unknown'));
+    const a = byAsin[key] = byAsin[key] || {
+      asin: r.asin, sku: r.sku, revenue:0, fees:0, refunds:0, refundFees:0,
+      other:0, units:0, unitsRefunded:0, feeBreakdown:{}
+    };
+    const amt = Number(r.total) || 0;
+    const desc = r.amount_description || 'Other';
+
+    if (r.amount_type === 'ItemPrice' && !isRefund(r.transaction_type)) {
+      a.revenue += amt; a.units += (r.units || 0); grand.revenue += amt; grand.units += (r.units || 0);
+    } else if (r.amount_type === 'ItemPrice' && isRefund(r.transaction_type)) {
+      a.refunds += amt; a.unitsRefunded += Math.abs(r.units || 0); grand.refunds += amt;
+    } else if (r.amount_type === 'ItemFees' && !isRefund(r.transaction_type)) {
+      a.fees += amt; grand.fees += amt;
+      a.feeBreakdown[desc] = (a.feeBreakdown[desc] || 0) + amt;
+    } else if (r.amount_type === 'ItemFees' && isRefund(r.transaction_type)) {
+      a.refundFees += amt; grand.refundFees += amt;
+      a.feeBreakdown[desc] = (a.feeBreakdown[desc] || 0) + amt;
+    } else {
+      a.other += amt; grand.other += amt;
+    }
+  }
+
+  // blend in what the stock cost and what it cost to prep
+  const costs = {};
+  try {
+    const c = await pool.query('SELECT asin, avg_cost FROM inv_products WHERE avg_cost IS NOT NULL');
+    for (const r of c.rows) costs[r.asin] = Number(r.avg_cost);
+  } catch (e) {}
+  const names = {};
+  try {
+    const n = await pool.query('SELECT asin, name FROM inv_products');
+    for (const r of n.rows) names[r.asin] = r.name;
+  } catch (e) {}
+
+  const items = Object.values(byAsin).map(a => {
+    const netSales = a.revenue + a.refunds;                 // refunds are negative
+    const allFees  = a.fees + a.refundFees + a.other;       // fees are negative
+    const deposited = netSales + allFees;
+    const netUnits = Math.max(0, a.units - a.unitsRefunded);
+    const cogs = costs[a.asin] != null ? costs[a.asin] * netUnits : null;
+    const profit = cogs != null ? deposited - cogs : null;
+    return {
+      ...a,
+      name: names[a.asin] || a.sku || a.asin,
+      netSales, allFees, deposited, netUnits,
+      avgCost: costs[a.asin] != null ? costs[a.asin] : null,
+      cogs, profit,
+      marginPct: (profit != null && netSales) ? (profit / netSales) * 100 : null,
+      feePctOfSales: netSales ? (Math.abs(allFees) / netSales) * 100 : null,
+      refundRate: a.units ? (a.unitsRefunded / a.units) * 100 : 0
+    };
+  }).sort((x, y) => (y.profit || -1e12) - (x.profit || -1e12));
+
+  const cover = await pool.query(
+    'SELECT MIN(posted_date) AS first_day, MAX(posted_date) AS last_day, COUNT(DISTINCT settlement_id)::int AS settlements FROM inv_settlement_lines');
+
+  res.json({ items, grand, coverage: cover.rows[0] });
 });
 
 // ============================================================
