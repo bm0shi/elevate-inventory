@@ -712,8 +712,12 @@ async function initDb() {
         settlement_id TEXT,
         note TEXT,
         updated_at TIMESTAMPTZ DEFAULT now(),
+        entered_amount NUMERIC,        -- what the owner typed, kept for comparison
+        variance NUMERIC,              -- settled minus entered, when they disagree
         UNIQUE (shipment_id, kind)
       );
+      ALTER TABLE inv_shipment_costs ADD COLUMN IF NOT EXISTS entered_amount NUMERIC;
+      ALTER TABLE inv_shipment_costs ADD COLUMN IF NOT EXISTS variance NUMERIC;
       CREATE INDEX IF NOT EXISTS idx_shipcost_ship ON inv_shipment_costs(shipment_id);
       -- Inbound fees found in settlements that we could not tie to a shipment yet
       CREATE TABLE IF NOT EXISTS inv_unlinked_fees (
@@ -2257,10 +2261,17 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
             }
             if (linked) {
               const kind = /placement/i.test(desc) ? 'placement' : 'freight';
+              // Keep what was typed and record the gap. A figure pulled from a
+              // completed Amazon shipment is usually right; a real difference
+              // means a reweigh or recalculation and is worth seeing, not hiding.
               await pool.query(
                 `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, settlement_id, note, updated_at)
                  VALUES($1,$2,$3,'actual',$4,$5,now())
-                 ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='actual', settlement_id=$4, note=$5, updated_at=now()`,
+                 ON CONFLICT (shipment_id, kind) DO UPDATE SET
+                   amount=$3, source='actual', settlement_id=$4, note=$5, updated_at=now(),
+                   variance = CASE WHEN inv_shipment_costs.entered_amount IS NOT NULL
+                                   AND ABS(inv_shipment_costs.entered_amount - $3) > 0.01
+                              THEN $3 - inv_shipment_costs.entered_amount ELSE NULL END`,
                 [linked, kind, Math.abs(Number(r.amount)), header.settlement_id, desc]);
             } else {
               await pool.query(
@@ -2629,9 +2640,9 @@ app.post('/api/shipment-costs/set', ownerAuth, async (req, res) => {
     return res.json({ ok: false, lockedByActual: true, message: 'Amazon has already billed this one — the settled amount stands.' });
   }
   await pool.query(
-    `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, note, updated_at)
-     VALUES($1,$2,$3,'estimate',$4,now())
-     ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='estimate', note=$4, updated_at=now()`,
+    `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, entered_amount, source, note, updated_at)
+     VALUES($1,$2,$3,$3,'entered',$4,now())
+     ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, entered_amount=$3, source='entered', note=$4, variance=NULL, updated_at=now()`,
     [shipment_id, kind, amt, note || null]);
   res.json({ ok: true });
 });
