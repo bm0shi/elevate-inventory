@@ -3554,16 +3554,45 @@ function backfillCosts(){
   if(!confirm('Build cost history from invoices already in the system?\n\nReads unit costs off existing invoice lines. Does NOT touch stock quantities.'))return;
   ownerApi('/api/costs/backfill',{method:'POST',body:JSON.stringify({includePending:false})}).then(d=>{
     if(d&&d.error){ toast(d.error,true); return; }
-    if(!d.lots){
-      if(confirm('No completed invoices had usable costs.\n\nTry again including PENDING invoices and using expected quantities?\n\n(Still does not touch stock.)')){
-        ownerApi('/api/costs/backfill',{method:'POST',body:JSON.stringify({includePending:true})}).then(d2=>{
-          toast('Backfilled '+(d2.lots||0)+' lots across '+(d2.products||0)+' products'); loadCosts();
-        });
-      }
-      return;
-    }
-    toast('Backfilled '+d.lots+' lots across '+(d.products||0)+' products');
-    loadCosts();
+    if(d.lots){ toast('Backfilled '+d.lots+' lots across '+(d.products||0)+' products'); loadCosts(); return; }
+    showBackfillDiag(d,false);
+  }).catch(()=>toast('Backfill failed',true));
+}
+// "No usable costs" has four possible causes. Name the one that applies.
+function showBackfillDiag(d,triedPending){
+  const g=d.diag||{}, st=d.byStatus||[];
+  let why='';
+  if(!g.total_lines) why='There are no invoice lines in the system at all.';
+  else if(g.no_unit_cost>=g.total_lines) why='None of the '+g.total_lines+' invoice lines has a unit cost. The invoices were imported before prices were being captured, or the parser did not find a price column.';
+  else if(g.no_asin>=g.total_lines) why='None of the invoice lines is linked to an ASIN. Fix the Cosmo# mappings first (Mapping Health).';
+  else if(!triedPending && g.not_received>0) why=g.not_received+' line(s) sit on invoices that are not marked received, so they were skipped.';
+  else if(g.no_qty_received>0) why=g.no_qty_received+' line(s) have a cost and an ASIN but no received quantity.';
+  else why='Lines exist but none met all three conditions: linked ASIN, unit cost, and a received quantity.';
+
+  let h='<div class="box" style="border:2px solid #b7791f;background:#fffdf7">'
+    +'<b style="color:#b7791f">No cost lots could be built</b>'
+    +'<div class="hint" style="margin-top:4px">'+why+'</div>'
+    +'<table style="margin-top:10px"><tbody>'
+    +'<tr><td>Invoice lines total</td><td style="text-align:right;font-weight:800">'+(g.total_lines||0)+'</td></tr>'
+    +'<tr><td>…with no ASIN</td><td style="text-align:right">'+(g.no_asin||0)+'</td></tr>'
+    +'<tr><td>…with no unit cost</td><td style="text-align:right">'+(g.no_unit_cost||0)+'</td></tr>'
+    +'<tr><td>…priced + linked but nothing received</td><td style="text-align:right">'+(g.no_qty_received||0)+'</td></tr>'
+    +'<tr><td>…on invoices not marked received</td><td style="text-align:right">'+(g.not_received||0)+'</td></tr>'
+    +'</tbody></table>';
+  if(st.length){
+    h+='<div class="hint" style="margin-top:8px">Invoice statuses: '+st.map(x=>(x.status||'(none)')+' × '+x.n).join(' · ')+'</div>';
+  }
+  if(!triedPending){
+    h+='<button class="action" style="margin-top:10px;background:#b7791f" onclick="backfillPending()">Try again including PENDING invoices and expected quantities</button>';
+  }
+  h+='</div>';
+  const box=document.getElementById('costsBody');
+  if(box) box.innerHTML=h+box.innerHTML; else alert(why);
+}
+function backfillPending(){
+  ownerApi('/api/costs/backfill',{method:'POST',body:JSON.stringify({includePending:true})}).then(d2=>{
+    if(d2&&d2.lots){ toast('Backfilled '+d2.lots+' lots across '+(d2.products||0)+' products'); loadCosts(); }
+    else showBackfillDiag(d2||{},true);
   }).catch(()=>toast('Backfill failed',true));
 }
 
