@@ -2154,6 +2154,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
   // bucket stays drained after a burst. Fetch a few per run; re-run to continue.
   const maxReports = Math.max(1, Math.min(20, Number(req.body && req.body.maxReports) || 3));
   settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0, attempts:[], skipped:0 };
+  console.log(`[Settlement] SYNC STARTED — window ${sinceDays} days, max ${maxReports} report(s) this run.`);
   res.json({ ok:true });
 
   (async () => {
@@ -2165,6 +2166,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       if (!reports.length) {
         const errs = settleJob.attempts.filter(a => a.error);
         const denied = errs.find(a => /403|Access to requested resource is denied|Unauthorized/i.test(a.error || ''));
+        console.error('[Settlement] NO REPORTS RETURNED. Attempts: ' + JSON.stringify(settleJob.attempts));
         settleJob.progress = denied
           ? 'Amazon refused access to settlement reports. Your SP-API app needs the Finance and Accounting role — add it in Seller Central under Apps & Services → Develop Apps, then re-authorise.'
           : (errs.length
@@ -2300,7 +2302,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       settleJob.running = false; settleJob.done = true;
     } catch (e) {
       settleJob.running = false; settleJob.error = e.message;
-      console.error('[Settlement] sync failed:', e.message);
+      console.error('[Settlement] SYNC FAILED:', e.message, e.stack ? e.stack.split('\n')[1] : '');
     }
   })();
 });
