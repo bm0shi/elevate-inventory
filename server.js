@@ -2177,21 +2177,39 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       // Skip settlements already stored — by REPORT ID, before downloading.
       // getReportDocument is limited to about one call per minute, so spending
       // it on a report we already have is the most expensive mistake possible.
-      const have = await pool.query('SELECT settlement_id FROM inv_settlements');
-      const known = new Set(have.rows.map(r => r.settlement_id));
-      const doneReports = await pool.query("SELECT report_id FROM inv_settlement_reports WHERE status='imported'");
-      const knownReports = new Set(doneReports.rows.map(r => r.report_id));
+      let known = new Set(), knownReports = new Set();
+      try {
+        const have = await pool.query('SELECT settlement_id FROM inv_settlements');
+        known = new Set(have.rows.map(r => r.settlement_id));
+        console.log(`[Settlement] ${known.size} settlement(s) already stored.`);
+      } catch (e) {
+        console.error('[Settlement] could not read inv_settlements:', e.message);
+      }
+      try {
+        const doneReports = await pool.query("SELECT report_id FROM inv_settlement_reports WHERE status='imported'");
+        knownReports = new Set(doneReports.rows.map(r => r.report_id));
+        console.log(`[Settlement] ${knownReports.size} report(s) previously imported.`);
+      } catch (e) {
+        // Missing table would otherwise abort the whole run silently.
+        console.error('[Settlement] could not read inv_settlement_reports:', e.message);
+        try {
+          await pool.query(`CREATE TABLE IF NOT EXISTS inv_settlement_reports (
+            report_id TEXT PRIMARY KEY, settlement_id TEXT, status TEXT, seen_at TIMESTAMPTZ DEFAULT now())`);
+          console.log('[Settlement] created inv_settlement_reports on the fly.');
+        } catch (e2) { console.error('[Settlement] create failed:', e2.message); }
+      }
 
       const pending = reports.filter(r => !knownReports.has(r.reportId));
       const todo = pending.slice(0, maxReports);
       settleJob.skipped = reports.length - pending.length;
       settleJob.remaining = Math.max(0, pending.length - todo.length);
       if (!todo.length) {
+        console.log(`[Settlement] nothing to do — all ${reports.length} report(s) already imported.`);
         settleJob.progress = `All ${reports.length} report(s) already imported.`;
         settleJob.running = false; settleJob.done = true; return;
       }
 
-      console.log(`[Settlement] ${pending.length} report(s) not yet imported; downloading ${todo.length} this run (about 1 per minute).`);
+      console.log(`[Settlement] ${reports.length} listed, ${pending.length} not yet imported, downloading ${todo.length} this run (about 1 per minute).`);
       let n = 0;
       for (const rep of todo) {
         n++;
@@ -2209,8 +2227,13 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
           `INSERT INTO inv_settlement_reports(report_id, status) VALUES($1,'downloaded')
            ON CONFLICT (report_id) DO UPDATE SET status='downloaded', seen_at=now()`, [rep.reportId]);
 
+        console.log(`[Settlement] downloaded ${text.length} chars; parsing…`);
         const { header, rows } = parseSettlementFlatFile(text);
-        if (!header || !header.settlement_id) continue;
+        console.log(`[Settlement] parsed settlement ${header && header.settlement_id} with ${rows.length} row(s).`);
+        if (!header || !header.settlement_id) {
+          console.error('[Settlement] no settlement id in that file — skipping.');
+          continue;
+        }
         if (known.has(header.settlement_id)) {
           await pool.query(
             `INSERT INTO inv_settlement_reports(report_id, settlement_id, status) VALUES($1,$2,'imported')
