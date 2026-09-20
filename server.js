@@ -2191,9 +2191,11 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         settleJob.running = false; settleJob.done = true; return;
       }
 
+      console.log(`[Settlement] ${pending.length} report(s) not yet imported; downloading ${todo.length} this run (about 1 per minute).`);
       let n = 0;
       for (const rep of todo) {
         n++;
+        console.log(`[Settlement] downloading ${n}/${todo.length} — report ${rep.reportId} (${rep.start || '?'} to ${rep.end || '?'})`);
         const mins = Math.max(0, Math.round((todo.length - n) * 1.1));
         settleJob.progress = `report ${n} of ${todo.length}` + (mins ? ` · about ${mins} min left (Amazon limits this to ~1 per minute)` : '');
         let text;
