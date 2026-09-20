@@ -4144,9 +4144,16 @@ function renderOnhand(){
     }
     return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${mktRow}</div>`;
   }).join('')+'</div>';
-  // full breakdown totals (across ALL products, not just the filtered view)
+  // Full breakdown totals across ALL products, not just the filtered view.
+  //
+  // A prepped DUO appears twice in this list: once on the bundle's own row and
+  // again exploded onto each component. That is correct per card — the
+  // component really does have those bottles committed — but summing both
+  // double-counts the same physical stock. Bundle rows are therefore excluded
+  // from the totals, exactly as the dashboard query does.
   let sumOnhand=0, sumPending=0, sumPrepped=0, sumTransit=0;
   for(const x of products){
+    if(x.is_bundle) continue;          // components carry the duo's units already
     sumOnhand += (x.onhand||0);
     sumPending += (x.pending_prep||0);
     sumPrepped += (x.prepped||0);
