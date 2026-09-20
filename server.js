@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'costdiag-0920-0827';
+const BUILD_ID = 'cogsdiag-0920-0829';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3023,6 +3023,26 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     inboundUnits = u.rows[0].units || 0;
   } catch (e) {}
 
+  // Why COGS is blank, answered concretely: the overlap between what sold and
+  // what has a cost. Null COGS means that overlap is empty, and the only useful
+  // thing to show is which specific sellers are missing a price.
+  const soldList = Object.keys(unitsByAsin)
+    .filter(a => unitsByAsin[a] > 0)
+    .map(a => ({ asin: a, units: unitsByAsin[a],
+                 name: (landed[a] && landed[a].name) || null,
+                 cost: (landed[a] && landed[a].productCost != null) ? Number(landed[a].productCost) : null,
+                 known: !!landed[a] }))
+    .sort((x, y) => y.units - x.units);
+  const cogsDiag = {
+    soldAsins: soldList.length,
+    soldWithCost: soldList.filter(x => x.cost != null).length,
+    soldNotInCatalog: soldList.filter(x => !x.known).length,
+    totalPricedProducts: Object.keys(landed).filter(a => landed[a].productCost != null).length,
+    totalProducts: Object.keys(landed).length,
+    topUnpriced: soldList.filter(x => x.cost == null).slice(0, 15),
+    topPriced: soldList.filter(x => x.cost != null).slice(0, 5)
+  };
+
   const coverage = await pool.query(
     'SELECT MIN(posted_date) AS first_day, MAX(posted_date) AS last_day, COUNT(DISTINCT settlement_id)::int AS settlements FROM inv_settlement_lines');
 
@@ -3044,7 +3064,8 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     hasSettlements: lines.rows.length > 0,
     unmatchedSkuLines: (await pool.query(
       `SELECT COUNT(*)::int AS n FROM inv_settlement_lines WHERE asin IS NULL AND sku IS NOT NULL`)).rows[0].n,
-    pricedAsins: Object.keys(landed).filter(a => landed[a].productCost != null).length,
+    pricedAsins: cogsDiag.totalPricedProducts,
+    cogsDiag,
     coverage: coverage.rows[0]
   });
 });
