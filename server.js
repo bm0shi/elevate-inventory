@@ -2112,6 +2112,9 @@ let settleJob = { running:false, done:false, error:null, progress:'', reports:0,
 app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
   if (settleJob.running) return res.json({ ok:true, already:true });
   const sinceDays = Number(req.body && req.body.sinceDays) || 180;
+  // Amazon throttles getReportDocument to roughly one call per minute and the
+  // bucket stays drained after a burst. Fetch a few per run; re-run to continue.
+  const maxReports = Math.max(1, Math.min(20, Number(req.body && req.body.maxReports) || 3));
   settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0, attempts:[], skipped:0 };
   res.json({ ok:true });
 
@@ -2139,8 +2142,10 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       const doneReports = await pool.query("SELECT report_id FROM inv_settlement_reports WHERE status='imported'");
       const knownReports = new Set(doneReports.rows.map(r => r.report_id));
 
-      const todo = reports.filter(r => !knownReports.has(r.reportId));
-      settleJob.skipped = reports.length - todo.length;
+      const pending = reports.filter(r => !knownReports.has(r.reportId));
+      const todo = pending.slice(0, maxReports);
+      settleJob.skipped = reports.length - pending.length;
+      settleJob.remaining = Math.max(0, pending.length - todo.length);
       if (!todo.length) {
         settleJob.progress = `All ${reports.length} report(s) already imported.`;
         settleJob.running = false; settleJob.done = true; return;
@@ -2214,7 +2219,8 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       }
       settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines`
         + (settleJob.skipped ? `, ${settleJob.skipped} already on file` : '')
-        + (settleJob.failed ? `, ${settleJob.failed} still rate-limited — run again later` : '') + '.';
+        + (settleJob.failed ? `, ${settleJob.failed} still rate-limited` : '')
+        + (settleJob.remaining ? `. ${settleJob.remaining} report(s) left — run it again to continue` : '.');
       settleJob.running = false; settleJob.done = true;
     } catch (e) {
       settleJob.running = false; settleJob.error = e.message;
