@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'batched-insert-0920-0811';
+const BUILD_ID = 'rowidx-key-0920-0817';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -774,6 +774,28 @@ async function initDb() {
         seen_at TIMESTAMPTZ DEFAULT now()
       );
     `);
+    // The original unique key was (settlement_id, order_id, sku, amount_type,
+    // amount_description, amount, posted_date). In the wide flat file dozens of
+    // separate sales share all of those — same SKU, same price, same day — so
+    // ON CONFLICT DO NOTHING discarded them as duplicates. The row's position in
+    // the source file is the only honest identity, and it is stable across
+    // re-imports because the same file always parses in the same order.
+    await pool.query('ALTER TABLE inv_settlement_lines ADD COLUMN IF NOT EXISTS row_idx INT');
+    await pool.query(`DO $$
+      DECLARE c RECORD;
+      BEGIN
+        FOR c IN SELECT conname FROM pg_constraint
+                 WHERE conrelid = 'inv_settlement_lines'::regclass AND contype = 'u'
+                   AND conname <> 'inv_settlement_lines_settlement_row'
+        LOOP EXECUTE 'ALTER TABLE inv_settlement_lines DROP CONSTRAINT ' || quote_ident(c.conname); END LOOP;
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'inv_settlement_lines_settlement_row') THEN
+          BEGIN
+            ALTER TABLE inv_settlement_lines
+              ADD CONSTRAINT inv_settlement_lines_settlement_row UNIQUE (settlement_id, row_idx);
+          EXCEPTION WHEN others THEN NULL;
+          END;
+        END IF;
+      END $$;`);
     console.log('[Inventory] Settlement tables ready.');
   } catch(e) { console.error('settlement migration skipped:', e.message); }
 
@@ -2174,7 +2196,7 @@ function parseSettlementFlatFile(text) {
     if (isTall) {
       const amt = num(f[iAmt]);
       if (amt == null) continue;
-      rows.push({ ...base,
+      rows.push({ ...base, row_idx: rows.length,
         amount_type: (f[iType] || '').trim() || null,
         amount_description: (f[iDesc] || '').trim() || null,
         amount: amt });
@@ -2188,28 +2210,28 @@ function parseSettlementFlatFile(text) {
       const amt = num(f[pr.amt]);
       if (amt == null || amt === 0) continue;
       const desc = (pr.type >= 0 ? (f[pr.type] || '').trim() : '') || pr.kind;
-      rows.push({ ...base, amount_type: pr.kind, amount_description: desc, amount: amt });
+      rows.push({ ...base, row_idx: rows.length, amount_type: pr.kind, amount_description: desc, amount: amt });
       emitted++;
       // quantity belongs to the sale line only, never to a fee
       if (pr.kind !== 'ItemPrice') rows[rows.length - 1].quantity = 0;
     }
     if (iMisc >= 0) {
       const a = num(f[iMisc]);
-      if (a != null && a !== 0) { rows.push({ ...base, quantity: 0, amount_type: 'ItemFees', amount_description: 'MiscFee', amount: a }); emitted++; }
+      if (a != null && a !== 0) { rows.push({ ...base, row_idx: rows.length, quantity: 0, amount_type: 'ItemFees', amount_description: 'MiscFee', amount: a }); emitted++; }
     }
     if (iOtherFee >= 0) {
       const a = num(f[iOtherFee]);
       if (a != null && a !== 0) {
         const reason = (iOtherReason >= 0 ? (f[iOtherReason] || '').trim() : '') || 'OtherFee';
         // Inbound transport / placement fees arrive here.
-        rows.push({ ...base, quantity: 0, amount_type: 'other-transaction', amount_description: reason, amount: a });
+        rows.push({ ...base, row_idx: rows.length, quantity: 0, amount_type: 'other-transaction', amount_description: reason, amount: a });
         emitted++;
       }
     }
     if (iOtherAmt >= 0) {
       const a = num(f[iOtherAmt]);
       if (a != null && a !== 0) {
-        rows.push({ ...base, quantity: 0, amount_type: 'other-transaction',
+        rows.push({ ...base, row_idx: rows.length, quantity: 0, amount_type: 'other-transaction',
                     amount_description: base.transaction_type || 'Other', amount: a });
         emitted++;
       }
@@ -2337,6 +2359,10 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         // settlement and ~50,000 across the set — slow enough that a run never
         // finished. 500 rows per statement is ~5,500 parameters, well inside
         // Postgres's 65,535 limit.
+        if (force) {
+          const del = await pool.query('DELETE FROM inv_settlement_lines WHERE settlement_id=$1', [header.settlement_id]);
+          if (del.rowCount) console.log(`[Settlement] cleared ${del.rowCount} old line(s) for ${header.settlement_id}.`);
+        }
         let inserted = 0;
         const CHUNK = 500;
         for (let off = 0; off < rows.length; off += CHUNK) {
@@ -2345,16 +2371,21 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
           let n = 0;
           for (const r of slice) {
             const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
-            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11})`);
+            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12})`);
             params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
-                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date);
-            n += 11;
+                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx);
+            n += 12;
           }
           try {
             const res2 = await pool.query(
               `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
-                 amount_type, amount_description, amount, quantity, deposit_date)
-               VALUES ${vals.join(',')} ON CONFLICT DO NOTHING`, params);
+                 amount_type, amount_description, amount, quantity, deposit_date, row_idx)
+               VALUES ${vals.join(',')}
+               ON CONFLICT (settlement_id, row_idx) DO UPDATE SET
+                 posted_date=EXCLUDED.posted_date, transaction_type=EXCLUDED.transaction_type,
+                 order_id=EXCLUDED.order_id, sku=EXCLUDED.sku, asin=EXCLUDED.asin,
+                 amount_type=EXCLUDED.amount_type, amount_description=EXCLUDED.amount_description,
+                 amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date`, params);
             inserted += res2.rowCount || 0;
           } catch (e) {
             console.error(`[Settlement] batch insert failed at row ${off}: ${e.message}`);
