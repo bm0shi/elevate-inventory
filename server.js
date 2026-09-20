@@ -3146,6 +3146,66 @@ app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res
 // ============================================================
 
 // Dashboard summary — everything at a glance (uses data we already have)
+// ============================================================
+// STOCK AUDIT
+// inv_stock.onhand is a running balance. If it looks wrong, the answer is in
+// the movements that produced it — most often the same invoice received twice.
+// ============================================================
+app.get('/api/stock-audit', ownerAuth, async (req, res) => {
+  // every ASIN holding stock, with what the activity log says should be there
+  const { rows } = await pool.query(`
+    SELECT s.asin, p.name, COALESCE(s.onhand,0)::int AS onhand, COALESCE(s.transit,0)::int AS transit,
+      COALESCE((SELECT SUM(CASE WHEN a.direction='in' THEN a.qty ELSE -a.qty END)
+                FROM inv_activity a WHERE a.asin = s.asin),0)::int AS net_movement,
+      COALESCE((SELECT SUM(a.qty) FROM inv_activity a WHERE a.asin=s.asin AND a.direction='in'),0)::int AS total_in,
+      COALESCE((SELECT SUM(a.qty) FROM inv_activity a WHERE a.asin=s.asin AND a.direction='out'),0)::int AS total_out
+    FROM inv_stock s LEFT JOIN inv_products p ON p.asin = s.asin
+    WHERE COALESCE(s.onhand,0) <> 0 OR COALESCE(s.transit,0) <> 0
+    ORDER BY COALESCE(s.onhand,0) DESC`);
+
+  // the same invoice booked into stock more than once
+  const dupes = await pool.query(`
+    SELECT note, asin, COUNT(*)::int AS times, SUM(qty)::int AS units,
+           MIN(ts) AS first_ts, MAX(ts) AS last_ts
+    FROM inv_activity
+    WHERE direction='in' AND note LIKE 'Received invoice %'
+    GROUP BY note, asin HAVING COUNT(*) > 1
+    ORDER BY SUM(qty) DESC`);
+
+  // every receipt, newest first, so a repeat is easy to spot by eye
+  const receipts = await pool.query(`
+    SELECT note, COUNT(DISTINCT asin)::int AS skus, SUM(qty)::int AS units,
+           MIN(ts) AS ts
+    FROM inv_activity WHERE direction='in' AND note LIKE 'Received invoice %'
+    GROUP BY note ORDER BY MIN(ts) DESC LIMIT 40`);
+
+  // stock rows with no matching product record
+  const orphans = await pool.query(`
+    SELECT s.asin, COALESCE(s.onhand,0)::int AS onhand FROM inv_stock s
+    LEFT JOIN inv_products p ON p.asin=s.asin
+    WHERE p.asin IS NULL AND COALESCE(s.onhand,0) <> 0`);
+
+  // stock sitting on a BUNDLE asin — duos are meant to live as components only
+  const bundleStock = await pool.query(`
+    SELECT s.asin, p.name, COALESCE(s.onhand,0)::int AS onhand FROM inv_stock s
+    LEFT JOIN inv_products p ON p.asin=s.asin
+    WHERE COALESCE(s.onhand,0) > 0
+      AND s.asin IN (SELECT DISTINCT bundle_asin FROM inv_bundles)`);
+
+  const totals = rows.reduce((a, r) => {
+    a.onhand += r.onhand; a.transit += r.transit; a.net += r.net_movement; return a;
+  }, { onhand:0, transit:0, net:0 });
+
+  res.json({
+    rows: rows.map(r => ({ ...r, drift: r.onhand - r.net_movement })),
+    totals,
+    duplicates: dupes.rows,
+    receipts: receipts.rows,
+    orphans: orphans.rows,
+    bundleStock: bundleStock.rows
+  });
+});
+
 app.get('/api/dashboard', auth, async (req, res) => {
   const stock = await pool.query('SELECT COALESCE(SUM(onhand),0)::int AS onhand, COALESCE(SUM(transit),0)::int AS transit FROM inv_stock');
   // committed totals so the dashboard matches the On Hand page's "Available"
