@@ -3212,6 +3212,28 @@ function loadStockAudit(){
         +d.orphans.map(x=>'<div style="font-size:12.5px;padding:3px 0"><span style="font-family:monospace">'+x.asin+'</span> — <b>'+x.onhand+'</b></div>').join('')+'</div>';
     }
 
+    if(d.sources && d.sources.length){
+      const tot=d.sources.reduce((n,x)=>n+x.units,0);
+      h+='<div class="box" style="border:2px solid #2563a8"><b style="font-size:15px">Where every unit came from</b>'
+        +'<div class="hint">All '+tot.toLocaleString()+' units ever added to stock, by source. Invoice check-ins are only one route — manual receiving and hand edits count too.</div>'
+        +'<table style="margin-top:6px"><thead><tr><th>Source</th><th>Movements</th><th>Units</th><th>Share</th><th>First</th><th>Last</th></tr></thead><tbody>'
+        +d.sources.map(x=>'<tr><td><b>'+x.source+'</b></td><td>'+x.movements+'</td><td><b>'+x.units.toLocaleString()+'</b></td>'
+          +'<td>'+(tot?Math.round(x.units/tot*100):0)+'%</td>'
+          +'<td style="font-size:11px">'+new Date(x.first_ts).toLocaleDateString()+'</td>'
+          +'<td style="font-size:11px">'+new Date(x.last_ts).toLocaleDateString()+'</td></tr>').join('')
+        +'</tbody></table>'
+        +(d.movementTotals?'<div class="hint" style="margin-top:6px">Total in <b>'+d.movementTotals.in.toLocaleString()+'</b> · total out <b>'+d.movementTotals.out.toLocaleString()+'</b> · net <b>'+(d.movementTotals.in-d.movementTotals.out).toLocaleString()+'</b></div>':'')
+        +'</div>';
+    }
+    if(d.recentIn && d.recentIn.length){
+      h+='<div class="box"><b style="font-size:15px">Last 60 stock additions</b>'
+        +'<table style="margin-top:6px"><thead><tr><th>When</th><th>Product</th><th>Qty</th><th>Note</th></tr></thead><tbody>'
+        +d.recentIn.map(r=>'<tr><td style="font-size:11px;white-space:nowrap">'+new Date(r.ts).toLocaleString()+'</td>'
+          +'<td style="max-width:260px;font-size:12px">'+(r.name||r.asin||'—')+'</td>'
+          +'<td><b>+'+r.qty+'</b></td><td style="font-size:11.5px;color:#5a6472">'+(r.note||'<i>none</i>')+'</td></tr>').join('')
+        +'</tbody></table></div>';
+    }
+
     h+='<div class="box"><b style="font-size:15px">Receipts booked into stock</b>'
       +'<div class="hint">Newest first. The same invoice appearing twice here is the usual cause of an inflated On Hand.</div>'
       +'<table style="margin-top:6px"><thead><tr><th>Invoice</th><th>SKUs</th><th>Units</th><th>When</th></tr></thead><tbody>'
