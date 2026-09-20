@@ -2619,6 +2619,170 @@ app.get('/api/timesheets/coverage', ownerAuth, async (req, res) => {
   res.json(rows);
 });
 
+// ============================================================
+// LANDED COST PER UNIT
+// One calculation, four inputs. Any that are not yet tracked return null and
+// are reported as MISSING rather than silently treated as zero — a blank line
+// you can see beats a confident number that is quietly incomplete.
+// ============================================================
+async function buildLandedCosts() {
+  // 1. product cost — blended across purchase lots
+  const prods = await pool.query('SELECT asin, name, image, avg_cost, regular_cost FROM inv_products');
+  const out = {};
+  for (const p of prods.rows) {
+    out[p.asin] = {
+      asin: p.asin, name: p.name, image: p.image,
+      productCost: p.avg_cost != null ? Number(p.avg_cost) : null,
+      regularCost: p.regular_cost != null ? Number(p.regular_cost) : null,
+      labor: null, supplies: null, inbound: null
+    };
+  }
+
+  // 2. inbound — freight + placement, spread across the units in each shipment
+  //    then averaged per ASIN weighted by how many units it shipped.
+  try {
+    const ships = await pool.query(`
+      SELECT s.shipment_id,
+             COALESCE((SELECT SUM(qty) FROM inv_shipment_items i WHERE i.shipment_id=s.shipment_id),0)::int AS units,
+             COALESCE((SELECT SUM(amount) FROM inv_shipment_costs c WHERE c.shipment_id=s.shipment_id),0)::numeric AS cost
+      FROM inv_shipments s`);
+    const perShipUnit = {};
+    for (const r of ships.rows) {
+      if (r.units > 0 && Number(r.cost) > 0) perShipUnit[r.shipment_id] = Number(r.cost) / r.units;
+    }
+    const items = await pool.query('SELECT shipment_id, asin, qty FROM inv_shipment_items WHERE asin IS NOT NULL');
+    const acc = {};
+    for (const it of items.rows) {
+      const per = perShipUnit[it.shipment_id];
+      if (per == null || !it.qty) continue;
+      const a = acc[it.asin] = acc[it.asin] || { units: 0, cost: 0 };
+      a.units += it.qty; a.cost += per * it.qty;
+    }
+    for (const asin of Object.keys(acc)) {
+      if (!out[asin]) continue;
+      out[asin].inbound = acc[asin].units ? acc[asin].cost / acc[asin].units : null;
+      out[asin].inboundUnits = acc[asin].units;
+    }
+  } catch (e) { console.error('[Landed] inbound allocation failed:', e.message); }
+
+  // 3. labor — per unit from finished prep jobs, once crew time is attributed.
+  //    Not wired yet: needs timecard clamping, so it stays null on purpose.
+
+  // 4. supplies — per-unit recipe by size. Not collected yet.
+
+  for (const k of Object.keys(out)) {
+    const o = out[k];
+    const parts = [o.productCost, o.labor, o.supplies, o.inbound];
+    o.landed = parts.reduce((n, x) => n + (x || 0), 0);
+    o.missing = [];
+    if (o.productCost == null) o.missing.push('product cost');
+    if (o.labor == null) o.missing.push('labor');
+    if (o.supplies == null) o.missing.push('supplies');
+    if (o.inbound == null) o.missing.push('inbound');
+    o.complete = o.missing.length === 0;
+  }
+  return out;
+}
+
+app.get('/api/landed-costs', ownerAuth, async (req, res) => {
+  try { res.json({ items: Object.values(await buildLandedCosts()) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ============================================================
+// MONTHLY P&L
+// Revenue and Amazon fees come from settlements (real money). COGS is matched:
+// units SOLD in the month times blended cost, so a twice-yearly buy does not
+// wreck one month. Lines with no data yet are returned as null and shown blank.
+// ============================================================
+app.get('/api/pnl', ownerAuth, async (req, res) => {
+  const month = String(req.query.month || '').match(/^\d{4}-\d{2}$/) ? req.query.month : null;
+  const from = month ? `${month}-01` : (req.query.from || null);
+  const to = month
+    ? new Date(new Date(`${month}-01T00:00:00Z`).getTime() + 32 * 86400000).toISOString().slice(0, 8) + '01'
+    : (req.query.to || null);
+
+  const params = [], where = [];
+  if (from) { params.push(from); where.push(`posted_date >= $${params.length}`); }
+  if (to)   { params.push(to);   where.push(`posted_date < $${params.length}`); }
+  const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
+
+  const lines = await pool.query(
+    `SELECT asin, sku, amount_type, amount_description, transaction_type,
+            SUM(amount)::numeric AS total, SUM(quantity)::int AS units
+     FROM inv_settlement_lines ${clause}
+     GROUP BY asin, sku, amount_type, amount_description, transaction_type`, params);
+
+  const isRefund = t => /refund/i.test(t || '');
+  let revenue = 0, refunds = 0, fees = 0, refundFees = 0, inboundFees = 0, otherFees = 0;
+  const unitsByAsin = {};
+  const feeDetail = {};
+
+  for (const r of lines.rows) {
+    const amt = Number(r.total) || 0;
+    const desc = r.amount_description || 'Other';
+    if (r.amount_type === 'ItemPrice' && !isRefund(r.transaction_type)) {
+      revenue += amt;
+      if (r.asin) unitsByAsin[r.asin] = (unitsByAsin[r.asin] || 0) + (r.units || 0);
+    } else if (r.amount_type === 'ItemPrice') {
+      refunds += amt;
+      if (r.asin) unitsByAsin[r.asin] = (unitsByAsin[r.asin] || 0) + (r.units || 0);  // negative
+    } else if (r.amount_type === 'ItemFees' && !isRefund(r.transaction_type)) {
+      fees += amt; feeDetail[desc] = (feeDetail[desc] || 0) + amt;
+    } else if (r.amount_type === 'ItemFees') {
+      refundFees += amt; feeDetail[desc] = (feeDetail[desc] || 0) + amt;
+    } else if (INBOUND_FEE_PATTERNS.test(desc)) {
+      inboundFees += amt; feeDetail[desc] = (feeDetail[desc] || 0) + amt;
+    } else {
+      otherFees += amt; feeDetail[desc] = (feeDetail[desc] || 0) + amt;
+    }
+  }
+
+  // matched COGS — cost of what actually SOLD this month
+  const landed = await buildLandedCosts();
+  let cogs = 0, inboundAllocated = 0, cogsMissing = [];
+  let unitsSold = 0;
+  for (const asin of Object.keys(unitsByAsin)) {
+    const u = unitsByAsin[asin];
+    if (u <= 0) continue;
+    unitsSold += u;
+    const l = landed[asin];
+    if (!l || l.productCost == null) { cogsMissing.push(asin); continue; }
+    cogs += l.productCost * u;
+    if (l.inbound != null) inboundAllocated += l.inbound * u;
+  }
+
+  const netSales = revenue + refunds;
+  const amazonFees = fees + refundFees + otherFees;      // negative
+  const deposited = netSales + amazonFees + inboundFees;
+
+  // labor and supplies: deliberately null until their data exists
+  const labor = null, supplies = null, overhead = null;
+
+  const netProfit = deposited - cogs - inboundAllocated
+                    - (labor || 0) - (supplies || 0) - (overhead || 0);
+
+  const coverage = await pool.query(
+    'SELECT MIN(posted_date) AS first_day, MAX(posted_date) AS last_day, COUNT(DISTINCT settlement_id)::int AS settlements FROM inv_settlement_lines');
+
+  res.json({
+    month, from, to,
+    revenue, refunds, netSales,
+    amazonFees, feeDetail,
+    inboundFeesFromSettlement: inboundFees,
+    deposited,
+    unitsSold,
+    cogs: cogsMissing.length === Object.keys(unitsByAsin).length ? null : cogs,
+    cogsMissingCount: cogsMissing.length,
+    inboundAllocated: inboundAllocated || null,
+    labor, supplies, overhead,
+    netProfit,
+    marginPct: netSales ? (netProfit / netSales) * 100 : null,
+    hasSettlements: lines.rows.length > 0,
+    coverage: coverage.rows[0]
+  });
+});
+
 // ---- Inbound shipment costs ----
 // Fee kinds Amazon uses for inbound charges, so settlement rows can be spotted.
 const INBOUND_FEE_PATTERNS = /inbound|placement|transportation|partnered.?carrier|convenience/i;
