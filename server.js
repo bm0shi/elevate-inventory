@@ -3179,6 +3179,31 @@ app.get('/api/stock-audit', ownerAuth, async (req, res) => {
     FROM inv_activity WHERE direction='in' AND note LIKE 'Received invoice %'
     GROUP BY note ORDER BY MIN(ts) DESC LIMIT 40`);
 
+  // EVERY inbound movement, grouped by where it came from. Invoice check-ins are
+  // only one source — manual receiving scans and hand edits also move stock, and
+  // those are usually what an unexplained total turns out to be.
+  const sources = await pool.query(`
+    SELECT
+      CASE
+        WHEN note LIKE 'Received invoice %' THEN 'Invoice check-in'
+        WHEN note IS NULL OR note = ''      THEN 'No note recorded'
+        ELSE split_part(note, ' ', 1) || ' ' || COALESCE(split_part(note, ' ', 2), '')
+      END AS source,
+      COUNT(*)::int AS movements,
+      SUM(qty)::int AS units,
+      MIN(ts) AS first_ts, MAX(ts) AS last_ts
+    FROM inv_activity WHERE direction='in'
+    GROUP BY 1 ORDER BY SUM(qty) DESC`);
+
+  // the raw inbound tail, so anything odd is visible directly
+  const recentIn = await pool.query(`
+    SELECT a.direction, a.asin, a.name, a.qty, a.note, a.ts
+    FROM inv_activity a WHERE a.direction='in'
+    ORDER BY a.ts DESC LIMIT 60`);
+
+  const totalIn = await pool.query("SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_activity WHERE direction='in'");
+  const totalOut = await pool.query("SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_activity WHERE direction='out'");
+
   // stock rows with no matching product record
   const orphans = await pool.query(`
     SELECT s.asin, COALESCE(s.onhand,0)::int AS onhand FROM inv_stock s
@@ -3199,6 +3224,9 @@ app.get('/api/stock-audit', ownerAuth, async (req, res) => {
   res.json({
     rows: rows.map(r => ({ ...r, drift: r.onhand - r.net_movement })),
     totals,
+    sources: sources.rows,
+    recentIn: recentIn.rows,
+    movementTotals: { in: totalIn.rows[0].n, out: totalOut.rows[0].n },
     duplicates: dupes.rows,
     receipts: receipts.rows,
     orphans: orphans.rows,
