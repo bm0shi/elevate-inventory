@@ -500,6 +500,20 @@
     </div>
   </div>
 <div id="sub-costs" class="subpanel">
+    <div class="box" style="border:2px solid #1e8449">
+      <b style="font-size:15px">💰 Real Amazon settlements</b>
+      <div class="hint">Pulls what Amazon <b>actually deposited</b> — every fee by name, every refund, every adjustment. This replaces Keepa's fee estimate with the real numbers.</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="action" onclick="syncSettlements()" id="setSyncBtn" style="flex:1;min-width:190px;background:#1e8449">⤓ Pull settlements from Amazon</button>
+        <button class="action" onclick="loadSettlementSummary()" style="flex:1;min-width:170px;background:#5a6472">↻ Show real economics</button>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+        <label style="font-size:13px;font-weight:700;color:#5a6472">From <input type="date" id="setFrom" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px"></label>
+        <label style="font-size:13px;font-weight:700;color:#5a6472">To <input type="date" id="setTo" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px"></label>
+        <span class="hint" style="margin:0">Blank = everything on file.</span>
+      </div>
+      <div id="setOut"></div>
+    </div>
     <div class="box">
       <h3 style="margin-bottom:4px">True Cost &amp; Profit</h3>
       <div class="hint">Built from what you actually paid on each invoice. Cosmoprof's twice-yearly sales are kept as separate purchase lots, so your <b>regular cost</b> never gets overwritten by a sale — and your <b>blended cost</b> reflects what the stock on your floor really cost.</div>
@@ -3237,6 +3251,67 @@ function loadCoverage(){
         +'<td>'+(Number(r.hours)||0).toFixed(1)+'h</td>'
         +'<td>$'+(Number(r.cost)||0).toFixed(2)+'</td></tr>').join('')+'</tbody></table>';
   }).catch(()=>{ b.innerHTML='<div class="hint" style="color:#c0392b">Could not load.</div>'; });
+}
+
+// ==================== REAL SETTLEMENTS ====================
+function syncSettlements(){
+  const b=document.getElementById('setSyncBtn'); if(b){ b.disabled=true; b.textContent='Asking Amazon…'; }
+  document.getElementById('setOut').innerHTML='<div class="hint" style="padding:10px">Starting…</div>';
+  ownerApi('/api/settlements/sync',{method:'POST',body:JSON.stringify({sinceDays:180})})
+    .then(()=>pollSettlements())
+    .catch(()=>{ if(b){b.disabled=false;b.textContent='⤓ Pull settlements from Amazon';} toast('Could not start',true); });
+}
+function pollSettlements(){
+  ownerApi('/api/settlements/status').then(j=>{
+    const b=document.getElementById('setSyncBtn'), o=document.getElementById('setOut');
+    if(j.running){ o.innerHTML='<div class="hint" style="padding:10px">'+(j.progress||'working…')+'</div>'; setTimeout(pollSettlements,4000); return; }
+    if(b){ b.disabled=false; b.textContent='⤓ Pull settlements from Amazon'; }
+    if(j.error){ o.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+j.error+'</div>'; return; }
+    o.innerHTML='<div class="hint" style="padding:10px;color:#1e8449"><b>'+(j.progress||'Done')+'</b>'
+      +(j.reports?' · '+j.reports+' report(s) seen':'')+'</div>';
+    loadSettlementSummary();
+  }).catch(()=>setTimeout(pollSettlements,5000));
+}
+
+function loadSettlementSummary(){
+  const f=(document.getElementById('setFrom')||{}).value||'';
+  const t=(document.getElementById('setTo')||{}).value||'';
+  const qs=[]; if(f) qs.push('from='+f); if(t) qs.push('to='+t);
+  const o=document.getElementById('setOut');
+  o.innerHTML='<div class="hint" style="padding:10px">Loading…</div>';
+  ownerApi('/api/settlements/summary'+(qs.length?'?'+qs.join('&'):'')).then(d=>{
+    if(!d||!d.items){ o.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Could not load — deploy the latest server.js.</div>'; return; }
+    if(!d.items.length){ o.innerHTML='<div class="hint" style="padding:10px">No settlement data yet. Hit <b>Pull settlements from Amazon</b> first.</div>'; return; }
+    const g=d.grand, c=d.coverage||{};
+    const net=g.revenue+g.refunds, fees=g.fees+g.refundFees+g.other, dep=net+fees;
+    let h='<div class="cards" style="margin-top:10px">'
+      +'<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+Math.round(net).toLocaleString()+'</div><div class="l">Net Sales</div></div>'
+      +'<div class="card" style="border-top:3px solid #c0392b"><div class="n">$'+Math.round(Math.abs(fees)).toLocaleString()+'</div><div class="l">Amazon Fees</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">'+(net?(Math.abs(fees)/net*100).toFixed(1):'0')+'% of sales</div></div>'
+      +'<div class="card" style="border-top:3px solid #b7791f"><div class="n">$'+Math.round(Math.abs(g.refunds)).toLocaleString()+'</div><div class="l">Refunds</div></div>'
+      +'<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(dep).toLocaleString()+'</div><div class="l">Actually Deposited</div></div>'
+      +'</div>';
+    h+='<div class="hint">'+(c.settlements||0)+' settlement(s) on file'
+      +(c.first_day?' · '+String(c.first_day).slice(0,10)+' → '+String(c.last_day).slice(0,10):'')
+      +'. Fees are exactly as Amazon reported them — no estimates.</div>';
+    h+='<table><thead><tr><th>Product</th><th>Units</th><th>Net Sales</th><th>Fees</th><th>Fee %</th><th>Refund %</th><th>Deposited</th><th>COGS</th><th>Profit</th><th>Margin</th></tr></thead><tbody>';
+    for(const x of d.items){
+      const mCol=x.marginPct==null?'':(x.marginPct<10?'color:#c0392b;font-weight:700':(x.marginPct>=25?'color:#1e8449;font-weight:700':''));
+      h+='<tr><td style="max-width:280px">'+(x.asin?'<a href="https://www.amazon.com/dp/'+x.asin+'" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">'+x.name+'</a>':x.name)
+        +'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+(x.asin||x.sku||'')+'</div></td>'
+        +'<td>'+x.netUnits+(x.unitsRefunded?'<div style="font-size:10px;color:#c0392b">'+x.unitsRefunded+' returned</div>':'')+'</td>'
+        +'<td>$'+x.netSales.toFixed(2)+'</td>'
+        +'<td style="color:#c0392b">$'+Math.abs(x.allFees).toFixed(2)+'</td>'
+        +'<td>'+(x.feePctOfSales==null?'—':x.feePctOfSales.toFixed(1)+'%')+'</td>'
+        +'<td>'+(x.refundRate?x.refundRate.toFixed(1)+'%':'—')+'</td>'
+        +'<td><b>$'+x.deposited.toFixed(2)+'</b></td>'
+        +'<td>'+(x.cogs==null?'<i style="color:#b7791f">no cost</i>':'$'+x.cogs.toFixed(2))+'</td>'
+        +'<td><b>'+(x.profit==null?'—':'$'+x.profit.toFixed(2))+'</b></td>'
+        +'<td style="'+mCol+'">'+(x.marginPct==null?'—':x.marginPct.toFixed(1)+'%')+'</td></tr>';
+    }
+    h+='</tbody></table>';
+    h+='<div class="hint"><b>Deposited</b> is net sales minus every fee Amazon charged — the real money. <b>Profit</b> subtracts your blended product cost. Labor and supplies are not in this figure yet; they come next.</div>';
+    o.innerHTML=h;
+  }).catch(()=>{ o.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Could not load settlements.</div>'; });
 }
 
 // ==================== COSTS & PROFIT ====================
