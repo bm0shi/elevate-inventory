@@ -440,42 +440,62 @@ const SETTLEMENT_TYPES = [
   'GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE'
 ];
 
+// Returns { reports, attempts } — attempts records what each variation actually
+// did, so an empty result can be diagnosed instead of guessed at.
 async function listSettlementReports(sinceDays = 180) {
   const token = await getAccessToken();
   const after = new Date(Date.now() - sinceDays * 24 * 3600 * 1000).toISOString();
   const found = [];
+  const attempts = [];
+
+  const serialize = p => Object.entries(p)
+    .map(([k, v]) => Array.isArray(v) ? v.map(x => `${k}=${encodeURIComponent(x)}`).join('&')
+                                      : `${k}=${encodeURIComponent(v)}`).join('&');
+
   for (const rt of SETTLEMENT_TYPES) {
-    let nextToken = null;
-    do {
-      const params = nextToken
-        ? { nextToken }
-        : { reportTypes: rt, processingStatuses: 'DONE', dataStartTime: after, pageSize: 100 };
-      let resp;
-      try {
-        resp = await axios.get(`${SP_API_BASE}/reports/2021-06-30/reports`, {
-          headers: { 'x-amz-access-token': token },
-          params,
-          paramsSerializer: p => Object.entries(p)
-            .map(([k, v]) => Array.isArray(v) ? v.map(x => `${k}=${encodeURIComponent(x)}`).join('&')
-                                              : `${k}=${encodeURIComponent(v)}`).join('&')
-        });
-      } catch (e) {
-        console.error('[Settlement] list failed for', rt, e.response?.status, JSON.stringify(e.response?.data || e.message).slice(0, 180));
-        break;
-      }
-      for (const r of (resp.data.reports || [])) {
-        if (r.reportDocumentId) found.push({
-          reportId: r.reportId, reportType: r.reportType,
-          documentId: r.reportDocumentId,
-          start: r.dataStartTime, end: r.dataEndTime
-        });
-      }
-      nextToken = resp.data.nextToken || null;
-      await sleep(1200);
-    } while (nextToken);
-    if (found.length) break;   // V2 is preferred; only fall back if it gave nothing
+    // Settlement reports are SCHEDULED, created by Amazon on its own cadence.
+    // Filtering them by dataStartTime frequently returns nothing, so try the
+    // plain listing first and only then the date-filtered variant.
+    const variants = [
+      { label: 'no date filter',   params: { reportTypes: rt, pageSize: 100 } },
+      { label: 'DONE only',        params: { reportTypes: rt, processingStatuses: 'DONE', pageSize: 100 } },
+      { label: 'date filtered',    params: { reportTypes: rt, processingStatuses: 'DONE', dataStartTime: after, pageSize: 100 } }
+    ];
+
+    for (const v of variants) {
+      let nextToken = null, pages = 0, seen = 0, err = null;
+      do {
+        let resp;
+        try {
+          resp = await axios.get(`${SP_API_BASE}/reports/2021-06-30/reports`, {
+            headers: { 'x-amz-access-token': token },
+            params: nextToken ? { nextToken } : v.params,
+            paramsSerializer: serialize
+          });
+        } catch (e) {
+          const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 220) : String(e.message);
+          err = `HTTP ${e.response?.status || '?'} ${body}`;
+          break;
+        }
+        const list = resp.data.reports || [];
+        seen += list.length;
+        for (const r of list) {
+          if (r.reportDocumentId && !found.some(f => f.reportId === r.reportId)) {
+            found.push({ reportId: r.reportId, reportType: r.reportType,
+                         documentId: r.reportDocumentId, start: r.dataStartTime, end: r.dataEndTime });
+          }
+        }
+        nextToken = resp.data.nextToken || null;
+        pages++;
+        await sleep(1200);
+      } while (nextToken && pages < 10);
+
+      attempts.push({ reportType: rt, variant: v.label, seen, withDocs: found.length, error: err });
+      if (found.length) break;
+    }
+    if (found.length) break;
   }
-  return found;
+  return { reports: found, attempts };
 }
 
 async function downloadReportDocument(documentId) {
