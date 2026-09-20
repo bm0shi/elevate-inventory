@@ -503,7 +503,9 @@ async function listSettlementReports(sinceDays = 180) {
 // 429, so back off properly and honour the rate-limit header when present.
 async function downloadReportDocument(documentId, onProgress) {
   const zlib = require('zlib');
-  const waits = [20000, 45000, 90000, 120000, 150000];   // ~7 minutes of patience
+  // Repeated 429s after two-minute waits mean the token bucket is drained, not
+  // merely paced — and every retry keeps it empty. Back off hard and long.
+  const waits = [60000, 150000, 300000, 600000];   // 1m, 2.5m, 5m, 10m
 
   for (let attempt = 0; attempt <= waits.length; attempt++) {
     const token = await getAccessToken();
@@ -516,17 +518,27 @@ async function downloadReportDocument(documentId, onProgress) {
         : Buffer.from(dl.data).toString('utf-8');
     } catch (e) {
       const st = e.response?.status;
+      const h = e.response?.headers || {};
+      if (st === 429) {
+        // Log exactly what Amazon said, so this is diagnosable rather than guessed at.
+        console.log('[Settlement] 429 detail:',
+          'rateLimit=' + (h['x-amzn-ratelimit-limit'] || 'none'),
+          'retryAfter=' + (h['retry-after'] || 'none'),
+          'requestId=' + (h['x-amzn-requestid'] || h['x-amzn-request-id'] || 'none'));
+      }
       if (st !== 429 || attempt === waits.length) throw e;
-      // Amazon sometimes tells us the permitted rate; prefer it when it does.
-      const hdr = parseFloat(e.response?.headers?.['x-amzn-ratelimit-limit'] || '');
-      const wait = (hdr > 0 && hdr < 1) ? Math.ceil(1000 / hdr) + 2000 : waits[attempt];
+      const retryAfter = parseFloat(h['retry-after'] || '');
+      const hdrRate = parseFloat(h['x-amzn-ratelimit-limit'] || '');
+      let wait = waits[attempt];
+      if (retryAfter > 0) wait = Math.max(wait, Math.ceil(retryAfter * 1000) + 3000);
+      else if (hdrRate > 0 && hdrRate < 1) wait = Math.max(wait, Math.ceil(1000 / hdrRate) + 5000);
       const secs = Math.round(wait / 1000);
-      console.log(`[Settlement] rate limited, waiting ${secs}s (attempt ${attempt + 1})`);
-      if (onProgress) onProgress(`Amazon rate limit — waiting ${secs}s…`);
+      console.log(`[Settlement] rate limited, waiting ${secs}s (attempt ${attempt + 1} of ${waits.length})`);
+      if (onProgress) onProgress(`Amazon rate limit — waiting ${secs}s (attempt ${attempt + 1})`);
       await sleep(wait);
     }
   }
-  throw new Error('rate limited');
+  throw new Error('rate limited after extended backoff');
 }
 
 module.exports = { listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
