@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'skumap-0920-0820';
+const BUILD_ID = 'costdiag-0920-0827';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2005,6 +2005,20 @@ app.post('/api/costs/backfill', ownerAuth, async (req, res) => {
       WHERE ii.asin IS NOT NULL AND ii.unit_cost IS NOT NULL
         AND ($1 OR i.status = 'received')`, [includePending]);
 
+    // "No usable costs" can mean four different things. Report which, so the
+    // fix is obvious instead of a guess.
+    const diag = (await pool.query(`
+      SELECT COUNT(*)::int                                                        AS total_lines,
+             COUNT(*) FILTER (WHERE ii.asin IS NULL)::int                         AS no_asin,
+             COUNT(*) FILTER (WHERE ii.unit_cost IS NULL)::int                    AS no_unit_cost,
+             COUNT(*) FILTER (WHERE ii.asin IS NOT NULL AND ii.unit_cost IS NOT NULL
+                              AND COALESCE(ii.qty_received,0) <= 0)::int          AS no_qty_received,
+             COUNT(*) FILTER (WHERE i.status <> 'received')::int                  AS not_received
+      FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number = ii.order_number`)).rows[0];
+    const byStatus = (await pool.query(
+      `SELECT status, COUNT(*)::int AS n FROM inv_invoices GROUP BY status ORDER BY n DESC`)).rows;
+    console.log('[Costs] backfill diagnostics:', JSON.stringify(diag), 'statuses:', JSON.stringify(byStatus));
+
     let inserted = 0, skippedNoQty = 0;
     for (const r of rows) {
       const qty = parseInt(r.qty, 10) || 0;
@@ -2018,7 +2032,7 @@ app.post('/api/costs/backfill', ownerAuth, async (req, res) => {
     }
     const products = await recomputeCosts();
     console.log(`[Costs] Backfilled ${inserted} lots (${skippedNoQty} had no quantity).`);
-    res.json({ ok: true, lots: inserted, skippedNoQty, products, candidates: rows.length });
+    res.json({ ok: true, lots: inserted, skippedNoQty, products, candidates: rows.length, diag, byStatus });
   } catch (e) {
     console.error('[Costs] backfill failed:', e.message);
     res.status(500).json({ error: e.message });
