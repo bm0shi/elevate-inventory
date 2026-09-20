@@ -724,6 +724,13 @@ async function initDb() {
         start_date DATE, end_date DATE, deposit_date DATE,
         total_amount NUMERIC, lines INTEGER, imported_at TIMESTAMPTZ DEFAULT now()
       );
+      ALTER TABLE inv_settlements ADD COLUMN IF NOT EXISTS report_id TEXT;
+      CREATE TABLE IF NOT EXISTS inv_settlement_reports (
+        report_id TEXT PRIMARY KEY,
+        settlement_id TEXT,
+        status TEXT,
+        seen_at TIMESTAMPTZ DEFAULT now()
+      );
     `);
     console.log('[Inventory] Settlement tables ready.');
   } catch(e) { console.error('settlement migration skipped:', e.message); }
@@ -2124,21 +2131,49 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
               : 'Amazon listed no settlement reports at all. If this account has had a disbursement, the app may lack the Finance and Accounting role.');
         settleJob.running = false; settleJob.done = true; return;
       }
-      // Skip settlements already stored.
+      // Skip settlements already stored — by REPORT ID, before downloading.
+      // getReportDocument is limited to about one call per minute, so spending
+      // it on a report we already have is the most expensive mistake possible.
       const have = await pool.query('SELECT settlement_id FROM inv_settlements');
       const known = new Set(have.rows.map(r => r.settlement_id));
+      const doneReports = await pool.query("SELECT report_id FROM inv_settlement_reports WHERE status='imported'");
+      const knownReports = new Set(doneReports.rows.map(r => r.report_id));
+
+      const todo = reports.filter(r => !knownReports.has(r.reportId));
+      settleJob.skipped = reports.length - todo.length;
+      if (!todo.length) {
+        settleJob.progress = `All ${reports.length} report(s) already imported.`;
+        settleJob.running = false; settleJob.done = true; return;
+      }
 
       let n = 0;
-      for (const rep of reports) {
+      for (const rep of todo) {
         n++;
-        settleJob.progress = `report ${n} of ${reports.length}…`;
+        const mins = Math.max(0, Math.round((todo.length - n) * 1.1));
+        settleJob.progress = `report ${n} of ${todo.length}` + (mins ? ` · about ${mins} min left (Amazon limits this to ~1 per minute)` : '');
         let text;
-        try { text = await downloadReportDocument(rep.documentId); }
-        catch (e) { console.error('[Settlement] download failed:', e.message); continue; }
+        try { text = await downloadReportDocument(rep.documentId, m => { settleJob.progress = `report ${n} of ${todo.length} — ${m}`; }); }
+        catch (e) {
+          console.error('[Settlement] download failed:', e.message);
+          settleJob.failed = (settleJob.failed || 0) + 1;
+          continue;
+        }
+        await pool.query(
+          `INSERT INTO inv_settlement_reports(report_id, status) VALUES($1,'downloaded')
+           ON CONFLICT (report_id) DO UPDATE SET status='downloaded', seen_at=now()`, [rep.reportId]);
 
         const { header, rows } = parseSettlementFlatFile(text);
         if (!header || !header.settlement_id) continue;
-        if (known.has(header.settlement_id)) { settleJob.skipped++; settleJob.progress = `settlement ${header.settlement_id} already imported`; continue; }
+        if (known.has(header.settlement_id)) {
+          await pool.query(
+            `INSERT INTO inv_settlement_reports(report_id, settlement_id, status) VALUES($1,$2,'imported')
+             ON CONFLICT (report_id) DO UPDATE SET settlement_id=$2, status='imported'`,
+            [rep.reportId, header.settlement_id]);
+          settleJob.skipped++;
+          settleJob.progress = `settlement ${header.settlement_id} already on file`;
+          if (n < todo.length) await new Promise(r => setTimeout(r, 62000));
+          continue;
+        }
 
         // resolve SKU -> ASIN once per settlement
         const skuMap = {};
@@ -2166,10 +2201,20 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
            VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
           [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
 
+        await pool.query(
+          `INSERT INTO inv_settlement_reports(report_id, settlement_id, status) VALUES($1,$2,'imported')
+           ON CONFLICT (report_id) DO UPDATE SET settlement_id=$2, status='imported', seen_at=now()`,
+          [rep.reportId, header.settlement_id]);
+        await pool.query('UPDATE inv_settlements SET report_id=$1 WHERE settlement_id=$2', [rep.reportId, header.settlement_id]);
+
         settleJob.imported++; settleJob.lines += inserted;
         console.log(`[Settlement] ${header.settlement_id}: ${inserted} lines.`);
+        // stay under the ~1/min document limit on the next loop
+        if (n < todo.length) await new Promise(r => setTimeout(r, 62000));
       }
-      settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines.`;
+      settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines`
+        + (settleJob.skipped ? `, ${settleJob.skipped} already on file` : '')
+        + (settleJob.failed ? `, ${settleJob.failed} still rate-limited — run again later` : '') + '.';
       settleJob.running = false; settleJob.done = true;
     } catch (e) {
       settleJob.running = false; settleJob.error = e.message;
