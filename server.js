@@ -485,7 +485,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fs-link-0921-0803';
+const BUILD_ID = 'manual-cost-0921-0808';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1986,7 +1986,10 @@ async function recomputeCosts() {
   for (const r of rows) (byAsin[r.asin] = byAsin[r.asin] || []).push(r);
   let n = 0;
   for (const asin of Object.keys(byAsin)) {
-    const b = blendCosts(byAsin[asin]);
+    // A hand-entered cost (order_number 'MANUAL') stands in only until a real
+    // invoice lot exists for that product — then the invoice alone decides.
+    const real = byAsin[asin].filter(l => l.order_number !== 'MANUAL');
+    const b = blendCosts(real.length ? real : byAsin[asin]);
     if (!b) continue;
     await pool.query('UPDATE inv_products SET avg_cost=$1, regular_cost=$2, unit_cost=$3 WHERE asin=$4',
       [b.avg, b.regular, b.avg, asin]);
@@ -5425,7 +5428,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 const PORT = process.env.PORT || 3000;
 initDb().then(() => {
   // Finance screens (P&L, product profit, cash & draws, data sources)
-  require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax });
+  require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts });
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
