@@ -54,8 +54,13 @@ function parseInvoiceText(text) {
   for (let i = 1; i < parts.length; i += 2) {
     const orderNumber = parts[i].trim();
     const body = parts[i + 1] || '';
+    // The invoice date is printed in the page header immediately BEFORE this
+    // order's "FOR ORDER NUMBER" line ("8/25/26  Beauty Systems Group ...").
+    // Searching wider picked up neighbouring invoices' dates in multi-invoice PDFs.
+    const hdr = [...String(parts[i - 1] || '').matchAll(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+Beauty Systems/gi)];
     const dateM = (parts[i - 1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
-    const date = dateM ? dateM[dateM.length - 1] : findInvoiceDate(parts[i - 1] + body);
+    const date = hdr.length ? hdr[hdr.length - 1][1]
+               : (dateM ? dateM[dateM.length - 1] : findInvoiceDate(parts[i - 1] + body));
 
     if (!orders.has(orderNumber)) orders.set(orderNumber, { date, items: [], pages: 0, rejected: [] });
     const o = orders.get(orderNumber);
@@ -63,14 +68,26 @@ function parseInvoiceText(text) {
     if (!o.date && date) o.date = date;
     // "SHP# 139766144 FS D07163227" — FS is the store (OMS) order this invoice
     // bills. It links a store order receipt to its final invoice.
-    const fs = (parts[i - 1] + body).match(/\bFS\s+(D\d{7,})\b/i);
+    // Only this order's own header block — the line right after the order
+    // number. Looking back into the previous text borrowed the prior invoice's FS.
+    const fs = body.slice(0, 300).match(/\bFS\s+(D\d{7,})\b/i);
     if (fs && !o.oms) o.oms = fs[1].toUpperCase();
+    const due = body.match(/TOTAL AMOUNT DUE\.*\s*\$\s*([\d,]+\.\d{2})/i);
+    if (due) o.totalDue = parseFloat(due[1].replace(/,/g, ''));
+    // Printed invoices have ORDERED and SHIPPED columns. A line with only
+    // ordered qty and price did not ship (backordered / cut).
+    const printed = /EXTENDED/i.test(body);
 
     for (const line of body.split(/\r?\n/)) {
       let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
       if (m) { o.items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]), unit_cost: parseFloat(m[4]) }); continue; }
       let m2 = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s*$/);
-      if (m2) { o.items.push({ cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), incomplete: true }); continue; }
+      if (m2) {
+        o.items.push(printed
+          ? { cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: 0, qty_ordered: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), not_shipped: true }
+          : { cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), incomplete: true });
+        continue;
+      }
       // Looked like an item row but did not parse — surface it, never drop it.
       if (/^\s*\d{6}\s+\S/.test(line)) o.rejected.push(line.trim().slice(0, 90));
     }
@@ -505,7 +522,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'duo-dates-0921-0817';
+const BUILD_ID = 'inv-fix-0921-0830';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2206,10 +2223,12 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
       };
       for (const [orderNumber, o] of orders) {
         const its = o.items || [];
-        const subtotal = Math.round(its.reduce((n, it) => n + (it.amount != null ? Number(it.amount)
+        const computed = Math.round(its.reduce((n, it) => n + (it.amount != null ? Number(it.amount)
                           : (Number(it.unit_cost) || 0) * (parseInt(it.qty_shipped, 10) || 0)), 0) * 100) / 100;
         const chk = checks.find(c => c.orderNumber === orderNumber);
         const tax = chk && chk.tax ? chk.tax : 0;
+        // Prefer the amount actually charged, printed on the invoice.
+        const subtotal = o.totalDue != null ? o.totalDue : computed;
         try {
           const oms = o.source === 'xstore' ? orderNumber : (o.oms || null);
           await pool.query(
