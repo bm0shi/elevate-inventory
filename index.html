@@ -3456,7 +3456,7 @@ const fin$ = (v, dp) => v == null ? null
   : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: dp == null ? 0 : dp, maximumFractionDigits: dp == null ? 0 : dp });
 const finDot = st => '<span title="' + ({ ok: 'Complete', partial: 'Partial — some products missing data', missing: 'Not tracked yet' }[st] || '') + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:'
   + ({ ok: '#1e8449', partial: '#d69e2e', missing: '#c0392b' }[st] || '#cfd8e3') + '"></span>';
-const finMonthLabel = m => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1, 1)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }) + ' ' + String(y).slice(2); };
+const finMonthLabel = m => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1, 1)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }) + ' ' + y; };
 
 // ---------- P&L ----------
 function loadFinPnl() {
@@ -3486,12 +3486,22 @@ function renderFinPnl() {
   const incomplete = months.filter(m => m.hasData && !m.complete).length;
 
   let h = '<div class="cards" style="flex-wrap:wrap">'
-    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + fin$(last.netSales) + '</div><div class="l">Net sales · ' + finMonthLabel(last.month) + '</div></div>'
+    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + fin$(last.deposited) + '</div><div class="l">Amazon deposited · ' + finMonthLabel(last.month) + (last.coverage && last.coverage.partial ? ' (partial)' : '') + '</div></div>'
     + '<div class="card" style="border-top:3px solid ' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '"><div class="n" style="color:' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '">' + fin$(last.net) + '</div><div class="l">Net profit · ' + finMonthLabel(last.month) + '</div></div>'
-    + '<div class="card" style="border-top:3px solid #127a7a"><div class="n">' + (last.marginPct == null ? '—' : last.marginPct.toFixed(1) + '%') + '</div><div class="l">Net margin</div></div>'
+    + '<div class="card" style="border-top:3px solid #127a7a"><div class="n">' + (last.marginPct == null ? (last.marginWithheld ? '<span style="font-size:14px;color:#b7791f">needs costs</span>' : '—') : last.marginPct.toFixed(1) + '%') + '</div><div class="l">Net margin</div></div>'
     + '<div class="card" style="border-top:3px solid #7d3c98"><div class="n">' + (avgNet == null ? '—' : fin$(avgNet)) + '</div><div class="l">Avg net profit · last ' + avg3.length + ' mo</div></div>'
     + '</div>';
 
+  const partials = months.filter(m => m.coverage && m.coverage.partial && !m.coverage.isCurrent);
+  if (partials.length) {
+    h += '<div class="box" style="border:2px solid #2563a8;background:#f7fafd;padding:10px 14px"><b style="color:#2563a8">'
+      + partials.map(m => finMonthLabel(m.month)).join(', ') + (partials.length > 1 ? ' are' : ' is') + ' only partly covered</b>'
+      + ' <span class="hint">— Amazon only provides about 90 days of settlements, so the oldest month starts mid-way. Compare full months only.</span></div>';
+  }
+  if (months.some(m => m.marginWithheld)) {
+    h += '<div class="box" style="border:2px solid #c0392b;background:#fdf5f4;padding:10px 14px"><b style="color:#c0392b">Profit is badly overstated until more products have a cost</b>'
+      + ' <span class="hint">— sales without a cost are counted as if the goods were free. Margin is hidden until at least 90% of sales are costed. <a href="#" onclick="showSubTab(\'fsrc\');return false">Import invoice costs →</a></span></div>';
+  }
   if (incomplete) {
     h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><b style="color:#b7791f">' + incomplete + ' month(s) are missing cost lines</b>'
       + ' <span class="hint">— so their profit is <b>higher than the truth</b>. Red and amber dots show which lines. <a href="#" onclick="showSubTab(\'fsrc\');return false">Fix in Data Sources →</a></span></div>';
@@ -3517,13 +3527,15 @@ function renderFinPnl() {
 
   // the statement
   const rows = [
-    ['Net sales', 'netSales', 'sales', { bold: true, note: 'after refunds & promotions · tax excluded' }],
-    ['Amazon fees', 'amazonFees', 'fees', { note: 'referral, FBA, storage — as billed' }],
-    ['Reimbursements', 'reimbursements', 'fees', { hideZero: true }],
-    ['Product cost (COGS)', 'cogs', 'cogs', { neg: true }],
+    ['Sales', 'netSales', 'sales', { bold: true, note: 'what customers paid, less refunds · tax excluded' }],
+    ['Amazon fees', 'amazonFees', 'fees', { note: 'referral, FBA, storage — as Amazon billed' }],
+    ['Reimbursements', 'reimbursements', 'fees', { hideZero: true, note: 'lost / damaged inventory paid back' }],
+    ['AMAZON DEPOSITED', 'deposited', null, { total: true, note: 'what landed in your account' }],
+    ['Product cost (COGS)', 'cogs', 'cogs', { neg: true, note: 'cost of units sold' }],
+    ['Royalty', 'royalty', 'royalty', { neg: true }],
     ['Supplies', 'supplies', 'supplies', { neg: true }],
     ['Labor', 'labor', 'labor', { neg: true }],
-    ['Inbound freight', 'freight', 'freight', { neg: true }],
+    ['Inbound freight + placement', 'freight', 'freight', { neg: true, note: 'per unit, charged as units sell' }],
     ['CONTRIBUTION', 'contribution', null, { total: true }],
     ['Rent & overhead', 'overhead', 'overhead', { neg: true }],
     ['NET PROFIT', 'net', null, { total: true, big: true }],
@@ -3531,7 +3543,13 @@ function renderFinPnl() {
   ];
   let t = '<div class="box" style="overflow-x:auto;padding:0"><table style="min-width:' + (220 + months.length * 96) + 'px;border-collapse:collapse">'
     + '<thead><tr><th style="text-align:left;position:sticky;left:0;background:#1a2a3a;min-width:200px">&nbsp;</th>'
-    + months.map(m => '<th style="text-align:right;cursor:pointer" onclick="finDrillMonth(\'' + m.month + '\')" title="See products for ' + finMonthLabel(m.month) + '">' + finMonthLabel(m.month) + (m.complete || !m.hasData ? '' : ' <span style="color:#f6c667">●</span>') + '</th>').join('')
+    + months.map(m => {
+        const c = m.coverage;
+        const sub = c && c.partial ? '<div style="font-size:9px;font-weight:600;color:#f6c667;text-transform:none">'
+          + (c.isCurrent ? 'to date · ' : 'partial · ') + c.from.slice(5).replace('-', '/') + '–' + c.to.slice(5).replace('-', '/') + '</div>' : '';
+        return '<th style="text-align:right;cursor:pointer;vertical-align:bottom" onclick="finDrillMonth(\'' + m.month + '\')" title="See products for ' + finMonthLabel(m.month) + '">'
+          + finMonthLabel(m.month) + sub + '</th>';
+      }).join('')
     + '</tr></thead><tbody>';
   for (const [label, key, stKey, o] of rows) {
     if (o.hideZero && !months.some(m => m[key])) continue;
@@ -3541,7 +3559,7 @@ function renderFinPnl() {
     for (const m of months) {
       let v = m[key], cell;
       if (!m.hasData) cell = '<span style="color:#cfd8e3">—</span>';
-      else if (o.pct) cell = v == null ? '—' : '<b style="color:' + (v >= 0 ? '#1e8449' : '#c0392b') + '">' + v.toFixed(1) + '%</b>';
+      else if (o.pct) cell = v == null ? (m.marginWithheld ? '<span style="font-size:11px;color:#b7791f" title="Less than 90% of sales have a product cost">needs costs</span>' : '—') : '<b style="color:' + (v >= 0 ? '#1e8449' : '#c0392b') + '">' + v.toFixed(1) + '%</b>';
       else if (v == null) cell = (stKey ? finDot('missing') : '') + '<span style="color:#c0392b;font-size:11px">not tracked</span>';
       else {
         const shown = o.neg ? -v : v;
@@ -3627,6 +3645,7 @@ function finBreakdown(x) {
     + line('Average sale price', sp == null ? '—' : fin$(sp, 2))
     + line('Amazon fees', fp == null ? '—' : fin$(fp, 2), { c: '#c0392b' })
     + line('Product cost', x.unitCost == null ? '<span style="color:#c0392b">no cost</span>' : '-' + fin$(x.unitCost, 2), { c: '#c0392b' })
+    + line('Royalty', x.royaltyPerUnit == null ? per(null) : '-' + fin$(x.royaltyPerUnit, 2), { c: '#c0392b' })
     + line('Supplies', x.suppliesPerUnit == null ? per(null) : '-' + fin$(x.suppliesPerUnit, 2), { c: '#c0392b' })
     + line('Labor', x.laborPerUnit == null ? per(null) : '-' + fin$(x.laborPerUnit, 2), { c: '#c0392b' })
     + line('Inbound freight', x.freightPerUnit == null ? per(null) : '-' + fin$(x.freightPerUnit, 2), { c: '#c0392b' })
@@ -3639,6 +3658,7 @@ function finBreakdown(x) {
     + (x.promotions ? line('Promotions', fin$(x.promotions), { c: '#c0392b' }) : '')
     + line('Amazon fees', fin$(x.fees), { c: '#c0392b' })
     + line('COGS', x.cogs == null ? '—' : '-' + fin$(x.cogs), { c: '#c0392b' })
+    + (x.royalty != null ? line('Royalty', '-' + fin$(x.royalty), { c: '#c0392b' }) : '')
     + (x.supplies != null ? line('Supplies', '-' + fin$(x.supplies), { c: '#c0392b' }) : '')
     + (x.labor != null ? line('Labor', '-' + fin$(x.labor), { c: '#c0392b' }) : '')
     + (x.freight != null ? line('Freight', '-' + fin$(x.freight), { c: '#c0392b' }) : '')
@@ -3733,6 +3753,7 @@ const FIN_SRC_ACTIONS = {
   settlements: ['Import & reconcile', "showSubTab('costs')"],
   costs:       ['Import invoice costs', "showSubTab('costs')"],
   labor:       ['Import timesheets', "showSubTab('labor')"],
+  royalty:     ['Set royalty %', "finOpenEditor('royalty')"],
   supplies:    ['Enter supply costs', "finOpenEditor('supplies')"],
   freight:     ['Enter on shipments', "showSubTab('shipments')"],
   overhead:    ['Enter rent & overhead', "finOpenEditor('overhead')"],
@@ -3769,6 +3790,18 @@ function finOpenEditor(which) {
   if (!document.getElementById('finEditor')) { showSubTab('fsrc'); return; }
   const box = document.getElementById('finEditor');
   const inp = 'padding:7px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px';
+  if (which === 'royalty') {
+    ownerApi('/api/finance/settings').then(st => {
+      box.innerHTML = '<div class="box" style="border:2px solid #b7791f"><b style="font-size:15px">Royalty</b>'
+        + '<div class="hint">A percentage taken off net sales (after refunds, before Amazon fees). It\'s charged on every product and every month.</div>'
+        + '<div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px">'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">% of net sales<br><input type="number" step="0.1" min="0" max="100" id="royPct" value="' + (st.royaltyPct == null ? '' : st.royaltyPct) + '" placeholder="e.g. 15" style="' + inp + ';width:110px"></label>'
+        + '<button class="action" onclick="finSaveRoyalty()" style="background:#b7791f;min-width:110px">Save</button>'
+        + '<button class="mini" onclick="finCloseEditor()">Close</button></div>'
+        + '<div class="hint" style="margin-top:6px">Leave blank and save to remove it.</div></div>';
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
   if (which === 'supplies') {
     ownerApi('/api/finance/supplies').then(d => {
       box.innerHTML = '<div class="box" style="border:2px solid #127a7a"><b style="font-size:15px">Supplies per unit, by size</b>'
@@ -3808,6 +3841,11 @@ function finOpenEditor(which) {
       box.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
   }
+}
+function finSaveRoyalty() {
+  const v = (document.getElementById('royPct') || {}).value;
+  ownerApi('/api/finance/settings', { method: 'POST', body: JSON.stringify({ royaltyPct: v === '' ? null : v }) })
+    .then(d => { if (d && d.ok) { toast('Royalty saved'); loadFinSources(); } else alert((d && d.error) || 'Failed'); });
 }
 function finCloseEditor() { window._finEditorOpen = null; const b = document.getElementById('finEditor'); if (b) b.innerHTML = ''; }
 function finSaveSupplies() {
