@@ -4011,8 +4011,8 @@ function finRenderCostList() {
     + '<input placeholder="Search name, ASIN or Cosmo #" value="' + (window._finCostQ || '').replace(/"/g, '&quot;') + '" oninput="window._finCostQ=this.value;finRenderCostList();this.focus()" id="finCostQ" style="flex:1;min-width:200px;padding:8px;border:2px solid #e2e8f0;border-radius:6px">'
     + '<label style="font-size:12px;font-weight:700;color:#5a6472"><input type="checkbox"' + (window._finCostAll ? ' checked' : '') + ' onchange="window._finCostAll=this.checked;finLoadCostList()"> include products that already have a cost</label>'
     + '<button class="mini" onclick="showSubTab(\'costs\')">Import invoice PDFs instead</button></div>';
-  h += '<div style="overflow-x:auto;margin-top:10px"><table style="min-width:680px"><thead><tr><th>Product</th><th style="text-align:right">Sold · 90 days</th><th>Cost per unit</th><th>Status</th></tr></thead><tbody>';
-  if (!items.length) h += '<tr><td colspan="4" class="hint" style="padding:14px">' + (q ? 'Nothing matches.' : 'Every product has a cost. 🎉') + '</td></tr>';
+  h += '<div style="overflow-x:auto;margin-top:10px"><table style="min-width:800px"><thead><tr><th>Product</th><th>Cosmo #</th><th style="text-align:right">Sold · 90 days</th><th>Cost per unit</th><th>Status</th></tr></thead><tbody>';
+  if (!items.length) h += '<tr><td colspan="5" class="hint" style="padding:14px">' + (q ? 'Nothing matches.' : 'Every product has a cost. 🎉') + '</td></tr>';
   items.forEach(x => {
     const id = 'mc_' + x.asin;
     const badge = x.state === 'invoice' ? '<span style="font-size:11px;font-weight:700;color:#1e8449">from invoices · $' + x.cost.toFixed(2) + '</span>'
@@ -4021,7 +4021,8 @@ function finRenderCostList() {
     h += '<tr id="row_' + id + '"><td style="max-width:360px"><div style="display:flex;gap:8px;align-items:center">'
       + (x.image ? '<img src="' + x.image + '" style="width:34px;height:34px;object-fit:contain;flex:none">' : '')
       + '<div><div style="font-size:13px;font-weight:600">' + (x.name || x.asin) + '</div>'
-      + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + x.asin + (x.cosmo ? ' · Cosmo# ' + x.cosmo : '') + '</div></div></div></td>'
+      + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + x.asin + '</div></div></div></td>'
+      + '<td id="cz_' + id + '">' + finCosmoCell(x) + '</td>'
       + '<td style="text-align:right">' + (x.units90 ? x.units90.toLocaleString() + ' units<div style="font-size:11px;color:#5a6472">' + fin$(x.sales90) + '</div>'
           + ((x.viaDuo || []).length ? '<div style="font-size:10px;color:#7d3c98;margin-top:2px">' + (x.soloUnits ? x.soloUnits.toLocaleString() + ' alone · ' : '')
             + x.viaDuo.map(v => v.units.toLocaleString() + ' in ' + String(v.name).replace(/Paul Mitchell\s*/i, '').slice(0, 42)).join(' · ') + '</div>' : '')
@@ -4037,6 +4038,36 @@ function finRenderCostList() {
   box.innerHTML = h;
   const qEl = document.getElementById('finCostQ');
   if (qEl && window._finCostQ) { qEl.focus(); qEl.setSelectionRange(qEl.value.length, qEl.value.length); }
+}
+function finCosmoCell(x) {
+  const nums = String(x.cosmo || '').split(',').map(t => t.trim()).filter(Boolean);
+  if (nums.length) return nums.map(n => '<div style="display:flex;gap:6px;align-items:center;white-space:nowrap;margin:2px 0">'
+      + '<span style="font-family:monospace;font-size:14px;font-weight:800;letter-spacing:.5px;user-select:all">' + n + '</span>'
+      + '<button class="mini" style="padding:2px 7px" title="Copy ' + n + '" onclick="finCopyCosmo(\'' + n + '\',this)">copy</button></div>').join('');
+  return '<div style="display:flex;gap:4px;align-items:center">'
+    + '<input id="cn_' + x.asin + '" placeholder="add #" inputmode="numeric" maxlength="7" style="width:82px;padding:5px;border:1px dashed #cfd8e3;border-radius:5px;font-family:monospace"'
+    + ' onkeydown="if(event.key===\'Enter\')finAddCosmo(\'' + x.asin + '\')">'
+    + '<button class="mini" style="padding:2px 7px" onclick="finAddCosmo(\'' + x.asin + '\')">add</button></div>';
+}
+function finCopyCosmo(n, btn) {
+  const done = () => { if (btn) { const t = btn.textContent; btn.textContent = '✓ copied'; setTimeout(() => btn.textContent = t, 1200); } };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(n).then(done).catch(() => prompt('Copy this Cosmo #:', n));
+  else prompt('Copy this Cosmo #:', n);
+}
+function finAddCosmo(asin, force) {
+  const el = document.getElementById('cn_' + asin); const v = el ? el.value.trim() : '';
+  if (!v) return;
+  ownerApi('/api/finance/add-cosmo', { method: 'POST', body: JSON.stringify({ asin, cosmo_num: v, force: !!force }) }).then(d => {
+    if (d && d.conflict) {
+      if (confirm('Cosmo # ' + d.cosmo_num + ' already belongs to:\n' + (d.otherName || d.otherAsin) + '\n\nMove it to this product instead? Future invoice lines with this number will then go here.')) finAddCosmo(asin, true);
+      return;
+    }
+    if (!d || !d.ok) return alert((d && d.error) || 'Could not save');
+    const it = (window._finCost.items || []).find(x => x.asin === asin);
+    if (it) it.cosmo = d.cosmo_num;
+    const cell = document.getElementById('cz_mc_' + asin); if (cell && it) cell.innerHTML = finCosmoCell(it);
+    toast('Cosmo # ' + d.cosmo_num + ' saved — scan a bottle at check-in to verify it');
+  });
 }
 function finSaveManualCost(asin) {
   const el = document.getElementById('mc_' + asin); if (!el) return;
