@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'costimport-0920-0832';
+const BUILD_ID = 'costimport-fix-0921-0515';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2009,7 +2009,11 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
     let text = '';
     if (req.files && req.files.length) {
       for (const f of req.files) {
-        const t = await extractPdfText(f.buffer);
+        // extractPdfText returns { text, via } — not a string. Appending the
+        // object itself fed the parser "[object Object]" and found nothing.
+        const ex = await extractPdfText(f.buffer);
+        const t = ex && typeof ex === 'object' ? ex.text : ex;
+        console.log(`[Costs] ${f.originalname}: ${t ? t.length : 0} chars via ${ex && ex.via}`);
         if (t) text += '\n' + t;
       }
     }
@@ -2018,7 +2022,7 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
 
     const orders = parseInvoiceText(text);
     if (!orders || !orders.size) {
-      return res.json({ ok:true, commit, orders:0, lots:[], unmapped:[],
+      return res.json({ ok:true, commit, orders:0, lots:[], lotCount:0, distinctAsins:0, unmapped:[], noPrice:[],
         note:'No invoice orders were recognised in that file.' });
     }
 
