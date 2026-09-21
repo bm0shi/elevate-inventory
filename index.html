@@ -3697,7 +3697,7 @@ function renderFinProducts() {
       + '<td style="text-align:right">' + x.netUnits + (x.unitsRefunded ? '<div style="font-size:10px;color:#c0392b">' + x.unitsRefunded + ' returned</div>' : '') + '</td>'
       + '<td style="text-align:right">' + fin$(x.netSales) + '</td>'
       + '<td style="text-align:right;color:#c0392b">' + fin$(-x.fees) + '</td>'
-      + '<td style="text-align:right">' + (x.landedPerUnit == null ? '<i style="color:#b7791f">no cost</i>' : fin$(x.landedPerUnit, 2)) + '</td>'
+      + '<td style="text-align:right">' + (x.landedPerUnit == null ? (x.asin ? '<a href="#" onclick="event.stopPropagation();window._finCostQ=\'' + x.asin + '\';showSubTab(\'fsrc\');setTimeout(()=>finOpenEditor(\'costs\'),300);return false" style="color:#b7791f;font-style:italic">no cost — add</a>' : '<i style="color:#b7791f">no cost</i>') : fin$(x.landedPerUnit, 2)) + '</td>'
       + '<td style="text-align:right;font-weight:700;color:' + mc + '">' + (x.profitPerUnit == null ? '—' : fin$(x.profitPerUnit, 2)) + '</td>'
       + '<td style="text-align:right;font-weight:800;color:' + mc + '">' + (x.profit == null ? '—' : fin$(x.profit)) + '</td>'
       + '<td style="text-align:right;font-weight:700;color:' + mc + '">' + (x.marginPct == null ? '—' : x.marginPct.toFixed(1) + '%') + '</td></tr>'
@@ -3822,7 +3822,7 @@ function finSaveSettings() {
 // ---------- Data Sources ----------
 const FIN_SRC_ACTIONS = {
   settlements: ['Import & reconcile', "showSubTab('costs')"],
-  costs:       ['Import invoice costs', "showSubTab('costs')"],
+  costs:       ['Enter missing costs', "finOpenEditor('costs')"],
   labor:       ['Import timesheets', "showSubTab('labor')"],
   royalty:     ['Set royalty %', "finOpenEditor('royalty')"],
   supplies:    ['Enter supply costs', "finOpenEditor('supplies')"],
@@ -3861,6 +3861,7 @@ function finOpenEditor(which) {
   if (!document.getElementById('finEditor')) { showSubTab('fsrc'); return; }
   const box = document.getElementById('finEditor');
   const inp = 'padding:7px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px';
+  if (which === 'costs') { finLoadCostList(); return; }
   if (which === 'royalty') {
     ownerApi('/api/finance/settings').then(st => {
       box.innerHTML = '<div class="box" style="border:2px solid #b7791f"><b style="font-size:15px">Royalty</b>'
@@ -3919,6 +3920,79 @@ function finSaveRoyalty() {
   const carry = !!(document.getElementById('royCarry') || {}).checked;
   ownerApi('/api/finance/settings', { method: 'POST', body: JSON.stringify({ royaltyPct: v === '' ? null : v, royaltyCarry: carry }) })
     .then(d => { if (d && d.ok) { toast('Royalty saved'); loadFinSources(); } else alert((d && d.error) || 'Failed'); });
+}
+// ---------- Missing-cost worklist ----------
+function finLoadCostList() {
+  const box = document.getElementById('finEditor'); if (!box) return;
+  const all = window._finCostAll ? '1' : '0';
+  box.innerHTML = '<div class="box hint">Loading products…</div>';
+  ownerApi('/api/finance/missing-costs?all=' + all).then(d => {
+    if (!d || !d.items) { box.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    window._finCost = d; finRenderCostList();
+    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+}
+function finRenderCostList() {
+  const d = window._finCost, box = document.getElementById('finEditor'); if (!d || !box) return;
+  const q = (window._finCostQ || '').toLowerCase();
+  const items = d.items.filter(x => !q || (x.name || '').toLowerCase().includes(q) || (x.asin || '').toLowerCase().includes(q) || (x.cosmo || '').includes(q));
+  const pct = d.coverage == null ? null : Math.round(d.coverage * 100);
+  const todo = d.items.filter(x => x.state === 'none').length;
+  const withSales = d.items.filter(x => x.state === 'none' && x.sales90 > 0).length;
+  let h = '<div class="box" style="border:2px solid #1e8449">'
+    + '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:flex-start">'
+    + '<div><b style="font-size:15px">Enter missing costs</b>'
+    + '<div class="hint">Type what you pay Cosmoprof per unit. Your price is used <b>only until an invoice for that product is imported</b> — then the invoice takes over on its own. Biggest sellers are first, so each one you do fixes the most.</div></div>'
+    + '<button class="mini" onclick="finCloseEditor()">Close</button></div>';
+  if (pct != null) h += '<div style="margin-top:10px"><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:#5a6472">'
+    + '<span>Last 90 days of sales with a cost</span><span style="color:' + (pct >= 90 ? '#1e8449' : '#b7791f') + '">' + pct + '%' + (pct >= 90 ? ' ✓ margin now shows on P&amp;L' : ' — margin shows at 90%') + '</span></div>'
+    + '<div style="height:10px;background:#eef2f6;border-radius:5px;overflow:hidden;margin-top:4px"><div style="height:100%;width:' + pct + '%;background:' + (pct >= 90 ? '#1e8449' : '#d69e2e') + '"></div></div>'
+    + '<div class="hint" style="margin-top:4px">' + todo + ' product(s) without a cost · ' + withSales + ' of them sold in the last 90 days</div></div>';
+  h += '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
+    + '<input placeholder="Search name, ASIN or Cosmo #" value="' + (window._finCostQ || '').replace(/"/g, '&quot;') + '" oninput="window._finCostQ=this.value;finRenderCostList();this.focus()" id="finCostQ" style="flex:1;min-width:200px;padding:8px;border:2px solid #e2e8f0;border-radius:6px">'
+    + '<label style="font-size:12px;font-weight:700;color:#5a6472"><input type="checkbox"' + (window._finCostAll ? ' checked' : '') + ' onchange="window._finCostAll=this.checked;finLoadCostList()"> include products that already have a cost</label>'
+    + '<button class="mini" onclick="showSubTab(\'costs\')">Import invoice PDFs instead</button></div>';
+  h += '<div style="overflow-x:auto;margin-top:10px"><table style="min-width:680px"><thead><tr><th>Product</th><th style="text-align:right">Sold · 90 days</th><th>Cost per unit</th><th>Status</th></tr></thead><tbody>';
+  if (!items.length) h += '<tr><td colspan="4" class="hint" style="padding:14px">' + (q ? 'Nothing matches.' : 'Every product has a cost. 🎉') + '</td></tr>';
+  items.forEach(x => {
+    const id = 'mc_' + x.asin;
+    const badge = x.state === 'invoice' ? '<span style="font-size:11px;font-weight:700;color:#1e8449">from invoices · $' + x.cost.toFixed(2) + '</span>'
+                : x.state === 'manual' ? '<span style="font-size:11px;font-weight:700;color:#7d3c98">your price · until an invoice arrives</span>'
+                : '<span style="font-size:11px;font-weight:700;color:#c0392b">no cost</span>';
+    h += '<tr id="row_' + id + '"><td style="max-width:360px"><div style="display:flex;gap:8px;align-items:center">'
+      + (x.image ? '<img src="' + x.image + '" style="width:34px;height:34px;object-fit:contain;flex:none">' : '')
+      + '<div><div style="font-size:13px;font-weight:600">' + (x.name || x.asin) + '</div>'
+      + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + x.asin + (x.cosmo ? ' · Cosmo# ' + x.cosmo : '') + '</div></div></div></td>'
+      + '<td style="text-align:right">' + (x.units90 ? x.units90.toLocaleString() + ' units<div style="font-size:11px;color:#5a6472">' + fin$(x.sales90) + '</div>' : '<span style="color:#cfd8e3">—</span>') + '</td>'
+      + '<td>' + (x.state === 'invoice'
+          ? '<span style="color:#9db0c9;font-size:12px">set by invoices</span>'
+          : '<div style="display:flex;gap:4px;align-items:center"><span style="font-weight:700">$</span><input id="' + id + '" type="number" step="0.01" min="0" value="' + (x.manualCost != null ? x.manualCost : '') + '" placeholder="0.00"'
+            + ' onkeydown="if(event.key===\'Enter\')finSaveManualCost(\'' + x.asin + '\')" style="width:90px;padding:6px;border:2px solid #e2e8f0;border-radius:6px;text-align:right">'
+            + '<button class="mini" onclick="finSaveManualCost(\'' + x.asin + '\')">Save</button></div>') + '</td>'
+      + '<td id="st_' + id + '">' + badge + '</td></tr>';
+  });
+  h += '</tbody></table></div><div class="hint" style="margin-top:6px">Press <b>Enter</b> to save and move to the next one. Clear the box and save to remove a price you typed.</div></div>';
+  box.innerHTML = h;
+  const qEl = document.getElementById('finCostQ');
+  if (qEl && window._finCostQ) { qEl.focus(); qEl.setSelectionRange(qEl.value.length, qEl.value.length); }
+}
+function finSaveManualCost(asin) {
+  const el = document.getElementById('mc_' + asin); if (!el) return;
+  const v = el.value.trim();
+  const st = document.getElementById('st_mc_' + asin);
+  if (st) st.innerHTML = '<span class="hint">saving…</span>';
+  ownerApi('/api/finance/manual-cost', { method: 'POST', body: JSON.stringify({ asin, unit_cost: v === '' ? null : v }) }).then(d => {
+    if (!d || !d.ok) { if (st) st.innerHTML = '<span style="color:#c0392b;font-size:11px">' + ((d && d.error) || 'Failed') + '</span>'; return; }
+    const it = (window._finCost.items || []).find(x => x.asin === asin);
+    if (it) { it.manualCost = v === '' ? null : Number(v); it.state = v === '' ? 'none' : 'manual'; it.cost = d.cost; }
+    if (st) st.innerHTML = v === '' ? '<span style="font-size:11px;font-weight:700;color:#c0392b">no cost</span>'
+                                    : '<span style="font-size:11px;font-weight:700;color:#1e8449">✓ saved · $' + Number(v).toFixed(2) + '</span>';
+    // jump to the next empty box
+    const inputs = [...document.querySelectorAll('#finEditor input[id^="mc_"]')];
+    const i = inputs.indexOf(el);
+    const next = inputs.slice(i + 1).find(n => !n.value);
+    if (next && v !== '') { next.focus(); next.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+  }).catch(() => { if (st) st.innerHTML = '<span style="color:#c0392b;font-size:11px">Failed</span>'; });
 }
 function finCloseEditor() { window._finEditorOpen = null; const b = document.getElementById('finEditor'); if (b) b.innerHTML = ''; }
 function finSaveSupplies() {
