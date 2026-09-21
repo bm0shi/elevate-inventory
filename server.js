@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'cogsdiag-0920-0829';
+const BUILD_ID = 'costimport-0920-0832';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1994,6 +1994,82 @@ async function recomputeCosts() {
 // Lots are only captured when a check-in COMPLETES, so every invoice received
 // before that feature existed has its costs sitting unused in inv_invoice_items.
 // This backfills them. It never touches stock.
+// ============================================================
+// COSTS-ONLY INVOICE IMPORT
+// Reads prices out of invoice PDFs and writes NOTHING but cost history.
+// It never touches inv_stock, inv_invoices, inv_invoice_items, pending_prep,
+// shipments or locations — so old invoices can be mined for cost data without
+// disturbing quantities that are already correct.
+// The only tables it writes are inv_cost_history and (via recomputeCosts)
+// the blended cost fields on inv_products.
+// ============================================================
+app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async (req, res) => {
+  const commit = String(req.body && req.body.commit) === 'true';
+  try {
+    let text = '';
+    if (req.files && req.files.length) {
+      for (const f of req.files) {
+        const t = await extractPdfText(f.buffer);
+        if (t) text += '\n' + t;
+      }
+    }
+    if (req.body && req.body.text) text += '\n' + req.body.text;
+    if (!text.trim()) return res.status(400).json({ error: 'No readable text found in the upload.' });
+
+    const orders = parseInvoiceText(text);
+    if (!orders || !orders.size) {
+      return res.json({ ok:true, commit, orders:0, lots:[], unmapped:[],
+        note:'No invoice orders were recognised in that file.' });
+    }
+
+    // cosmo# -> asin, using the existing verified mapping only
+    const mapRows = (await pool.query('SELECT cosmo_num, asin FROM inv_cosmo_map WHERE asin IS NOT NULL')).rows;
+    const cosmoMap = {};
+    for (const r of mapRows) cosmoMap[String(r.cosmo_num).trim()] = r.asin;
+    const nameRows = (await pool.query('SELECT asin, name FROM inv_products')).rows;
+    const nameByAsin = {}; for (const r of nameRows) nameByAsin[r.asin] = r.name;
+
+    const lots = [], unmapped = [], noPrice = [];
+    for (const [orderNumber, o] of orders) {
+      for (const it of (o.items || [])) {
+        const asin = cosmoMap[String(it.cosmo_num).trim()] || null;
+        const cost = Number(it.unit_cost);
+        const qty = parseInt(it.qty_shipped, 10) || 0;
+        if (!asin) { unmapped.push({ cosmo_num: it.cosmo_num, description: it.description, order: orderNumber }); continue; }
+        if (!cost || !isFinite(cost) || cost <= 0) { noPrice.push({ cosmo_num: it.cosmo_num, description: it.description, order: orderNumber }); continue; }
+        lots.push({ asin, name: nameByAsin[asin] || it.description, order_number: orderNumber,
+                    invoice_date: o.date || null, unit_cost: cost, qty });
+      }
+    }
+
+    let written = 0;
+    if (commit) {
+      for (const l of lots) {
+        try {
+          await pool.query(
+            `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
+             VALUES($1,$2,$3,$4,$5)
+             ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
+            [l.asin, l.order_number, l.invoice_date, l.unit_cost, l.qty]);
+          written++;
+        } catch (e) { console.error(`[Costs] lot write failed ${l.asin}: ${e.message}`); }
+      }
+      const products = await recomputeCosts();
+      console.log(`[Costs] Cost-only import: ${written} lot(s) from ${orders.size} order(s); ${products} product(s) reblended. No stock touched.`);
+      return res.json({ ok:true, commit:true, orders:orders.size, written, products,
+                        lots: lots.slice(0, 200), unmapped, noPrice,
+                        distinctAsins: [...new Set(lots.map(l => l.asin))].length });
+    }
+
+    res.json({ ok:true, commit:false, orders:orders.size, lots: lots.slice(0, 200),
+               lotCount: lots.length, unmapped, noPrice,
+               distinctAsins: [...new Set(lots.map(l => l.asin))].length });
+  } catch (e) {
+    console.error('[Costs] cost-only import failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/api/costs/backfill', ownerAuth, async (req, res) => {
   try {
     const includePending = !!(req.body && req.body.includePending);
