@@ -3569,6 +3569,9 @@ function renderFinPnl() {
         const shown = o.neg ? -v : v;
         cell = (stKey && m.lineStatus[stKey] !== 'ok' ? finDot(m.lineStatus[stKey]) : '')
           + '<span style="' + (shown < 0 ? 'color:#c0392b;' : '') + (o.total ? 'color:' + (shown >= 0 ? '#1e8449' : '#c0392b') + ';' : '') + (o.big ? 'font-size:15px;' : '') + '">' + fin$(shown) + '</span>';
+        if (key === 'royalty' && m.royaltyCalc && m.royaltyCalc.agreed && m.royaltyCalc.calculated != null && Math.abs(m.royaltyCalc.agreed.difference || 0) >= 0.01)
+          cell = '<div style="font-size:11px;color:#9db0c9;text-decoration:line-through">' + fin$(-m.royaltyCalc.calculated) + '</div>' + cell
+            + '<div style="font-size:10px;color:#1e8449">agreed</div>';
         if (key === 'cogs' && m.costCoverage != null && m.costCoverage < 0.98)
           cell += '<div style="font-size:10px;color:#b7791f">' + Math.round(m.costCoverage * 100) + '% of sales costed</div>';
       }
@@ -3592,6 +3595,7 @@ function loadRoyaltyWorksheet(showMonths) {
     if (!d || !d.months) return;
     const st = d.settings || {};
     const rows = d.months.filter(r => !showMonths || showMonths.includes(r.month));
+    window._royRows = d.months;
     if (!rows.length) return;
     const inp = 'padding:4px 6px;border:1px solid #cfd8e3;border-radius:4px;width:110px;text-align:right;font-size:12px';
     let h = '<div class="box" style="border:2px solid #b7791f;overflow-x:auto"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">'
@@ -3621,7 +3625,7 @@ function loadRoyaltyWorksheet(showMonths) {
         + '</td>'
         + '<td style="text-align:right;font-weight:700;color:' + (r.base >= 0 ? '#1a2a3a' : '#c0392b') + '">' + fin$(r.base, 2) + '</td>'
         + (st.royaltyCarry ? '<td style="text-align:right;color:#c0392b">' + (r.carryIn ? fin$(r.carryIn, 2) : '—') + '</td>' : '')
-        + '<td style="text-align:right;font-weight:800;color:#b7791f">' + (r.royalty == null ? '—' : fin$(r.royalty, 2)) + '</td></tr>';
+        + '<td style="text-align:right;min-width:170px">' + finRoyaltyCell(r) + '</td></tr>';
       if ((r.orderList || []).length) {
         h += '<tr id="finInv_' + r.month + '" style="display:none"><td colspan="' + colN + '" style="background:#f7f9fb;padding:8px 14px">'
           + '<div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">COSMOPROF INVOICES — ' + finMonthLabel(r.month).toUpperCase() + '</div>'
@@ -3655,6 +3659,41 @@ function setInvoiceDate(order){
     if(d&&d.ok){ toast('#'+order+' dated '+d.date); renderInvoiceManager(); }
     else alert((d&&d.error)||'Could not set the date');
   });
+}
+// Royalty cell: the agreed amount, with the formula figure struck through.
+function finRoyaltyCell(r) {
+  const edit = '<a href="#" style="font-size:10px;color:#127a7a" onclick="finEditRoyalty(\'' + r.month + '\');return false">' + (r.agreed ? 'change' : 'edit amount paid') + '</a>';
+  let h;
+  if (r.agreed) {
+    const d = r.agreed.difference;
+    h = (r.calculated != null ? '<div style="font-size:12px;color:#9db0c9;text-decoration:line-through">' + fin$(r.calculated, 2) + '</div>' : '')
+      + '<div style="font-weight:800;color:#b7791f">' + fin$(r.agreed.paid, 2) + '</div>'
+      + (d != null && Math.abs(d) >= 0.01 ? '<div style="font-size:10px;font-weight:700;color:' + (d < 0 ? '#1e8449' : '#c0392b') + '">'
+          + (d < 0 ? 'deduction accepted ' + fin$(-d, 2) : 'paid ' + fin$(d, 2) + ' more') + '</div>' : '')
+      + (r.agreed.note ? '<div style="font-size:10px;color:#5a6472;font-style:italic;max-width:200px;margin-left:auto">' + String(r.agreed.note).replace(/</g, '&lt;') + '</div>' : '');
+  } else {
+    h = '<div style="font-weight:800;color:#b7791f">' + (r.royalty == null ? '—' : fin$(r.royalty, 2)) + '</div>';
+  }
+  return h + '<div>' + edit + '</div><div id="royEd_' + r.month + '"></div>';
+}
+function finEditRoyalty(m) {
+  const box = document.getElementById('royEd_' + m); if (!box) return;
+  const r = ((window._royRows || []).find(x => x.month === m)) || {};
+  const inp = 'padding:5px;border:1px solid #cfd8e3;border-radius:4px;font-size:12px';
+  box.innerHTML = '<div style="background:#fffdf7;border:1px solid #f0d9a8;border-radius:6px;padding:8px;margin-top:6px;text-align:left">'
+    + '<div style="font-size:11px;color:#5a6472">Formula says <b>' + (r.calculated == null ? '—' : fin$(r.calculated, 2)) + '</b>. What was actually paid?</div>'
+    + '<input type="number" step="0.01" min="0" id="royAmt_' + m + '" value="' + (r.agreed ? r.agreed.paid : '') + '" placeholder="0.00" style="' + inp + ';width:110px;margin-top:4px">'
+    + '<input id="royNote_' + m + '" value="' + (r.agreed && r.agreed.note ? String(r.agreed.note).replace(/"/g, '&quot;') : '') + '" placeholder="Reason (e.g. agreed deduction for …)" style="' + inp + ';width:100%;margin-top:4px">'
+    + '<div style="display:flex;gap:6px;margin-top:6px">'
+    + '<button class="mini" style="background:#b7791f;color:#fff;border-color:#b7791f" onclick="finSaveRoyaltyAdj(\'' + m + '\')">Save</button>'
+    + (r.agreed ? '<button class="mini" onclick="document.getElementById(\'royAmt_' + m + '\').value=\'\';finSaveRoyaltyAdj(\'' + m + '\')">Use formula again</button>' : '')
+    + '<button class="mini" onclick="this.closest(\'div[id^=royEd_]\').innerHTML=\'\'">Cancel</button></div></div>';
+}
+function finSaveRoyaltyAdj(m) {
+  const v = (document.getElementById('royAmt_' + m) || {}).value;
+  const note = (document.getElementById('royNote_' + m) || {}).value;
+  ownerApi('/api/finance/royalty-adjust', { method: 'POST', body: JSON.stringify({ month: m, amount: v === '' ? null : v, note }) })
+    .then(d => { if (d && d.ok) { toast(d.cleared ? 'Back to the formula for ' + m : 'Royalty paid saved for ' + m); loadFinPnl(); } else alert((d && d.error) || 'Failed'); });
 }
 function finToggleInv(m) { const r = document.getElementById('finInv_' + m); if (r) r.style.display = r.style.display === 'none' ? '' : 'none'; }
 function finForceOrder(order, force) {
