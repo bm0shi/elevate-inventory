@@ -42,6 +42,10 @@ function parseInvoiceText(text) {
     const o = orders.get(orderNumber);
     o.pages++;
     if (!o.date && date) o.date = date;
+    // "SHP# 139766144 FS D07163227" — FS is the store (OMS) order this invoice
+    // bills. It links a store order receipt to its final invoice.
+    const fs = (parts[i - 1] + body).match(/\bFS\s+(D\d{7,})\b/i);
+    if (fs && !o.oms) o.oms = fs[1].toUpperCase();
 
     for (const line of body.split(/\r?\n/)) {
       let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
@@ -82,6 +86,7 @@ async function processInvoiceText(text) {
     }
 
     await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending') ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [orderNumber, date]);
+    if (o.oms) { try { await pool.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, o.oms]); } catch (e) {} }
     await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
     let mapped = 0, unmapped = 0;
     for (const it of items) {
@@ -480,7 +485,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'royalty-0921-0751';
+const BUILD_ID = 'fs-link-0921-0803';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -550,6 +555,7 @@ async function initDb() {
       updated_at TIMESTAMPTZ DEFAULT now()
     );
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
+    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
@@ -2140,11 +2146,12 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
         const chk = checks.find(c => c.orderNumber === orderNumber);
         const tax = chk && chk.tax ? chk.tax : 0;
         try {
+          const oms = o.source === 'xstore' ? orderNumber : (o.oms || null);
           await pool.query(
-            `INSERT INTO fin_purchase_orders(order_number, order_date, subtotal, tax, total, lines, source)
-             VALUES($1,$2,$3,$4,$5,$6,$7)
-             ON CONFLICT (order_number) DO UPDATE SET order_date=$2, subtotal=$3, tax=$4, total=$5, lines=$6, source=$7`,
-            [orderNumber, toIso(o.date), subtotal, tax, subtotal + tax, its.length, o.source || 'invoice']);
+            `INSERT INTO fin_purchase_orders(order_number, order_date, subtotal, tax, total, lines, source, oms_id)
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+             ON CONFLICT (order_number) DO UPDATE SET order_date=$2, subtotal=$3, tax=$4, total=$5, lines=$6, source=$7, oms_id=$8`,
+            [orderNumber, toIso(o.date), subtotal, tax, subtotal + tax, its.length, o.source || 'invoice', oms]);
         } catch (e) { console.error(`[Costs] order total not recorded for ${orderNumber}: ${e.message}`); }
       }
       return res.json({ ok:true, commit:true, orders:orders.size, written, products, checks,
