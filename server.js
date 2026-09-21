@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'costimport-fix-0921-0515';
+const BUILD_ID = 'reconcile-0921-0520';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2632,6 +2632,51 @@ app.post('/api/sku-map', ownerAuth, async (req, res) => {
 app.get('/api/settlements/status', ownerAuth, (req, res) => res.json({ ...settleJob, build: BUILD_ID }));
 
 // Real, per-ASIN economics over a date range, straight from the settlements.
+// Sales tax Amazon collects as marketplace facilitator passes THROUGH the
+// settlement: in as a price-type of Tax/ShippingTax, out as a
+// MarketplaceFacilitatorTax fee. It is not revenue and not an Amazon fee —
+// counting it on both sides inflates Net Sales and Fees equally.
+function isPassThroughTax(amountType, desc) {
+  const d = String(desc || '');
+  if (amountType === 'ItemPrice') return /tax/i.test(d);
+  if (amountType === 'ItemFees' || amountType === 'other-transaction') return /MarketplaceFacilitator|TaxWithheld|Tax-?Withholding/i.test(d);
+  return false;
+}
+
+// Reconcile each settlement against the deposit Amazon itself reported.
+app.get('/api/settlements/reconcile', ownerAuth, async (req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT s.settlement_id, s.start_date, s.end_date, s.deposit_date,
+             s.total_amount::numeric AS amazon_total,
+             COALESCE(SUM(l.amount),0)::numeric AS our_total,
+             COUNT(l.*)::int AS lines,
+             COUNT(*) FILTER (WHERE l.row_idx IS NULL)::int AS legacy_lines,
+             MIN(l.posted_date) AS first_posted, MAX(l.posted_date) AS last_posted
+      FROM inv_settlements s LEFT JOIN inv_settlement_lines l ON l.settlement_id = s.settlement_id
+      GROUP BY s.settlement_id, s.start_date, s.end_date, s.deposit_date, s.total_amount
+      ORDER BY s.end_date DESC NULLS LAST`);
+    const rows = r.rows.map(x => ({ ...x,
+      amazon_total: x.amazon_total == null ? null : Number(x.amazon_total),
+      our_total: Number(x.our_total),
+      diff: x.amazon_total == null ? null : Number(x.our_total) - Number(x.amazon_total) }));
+    const dup = await pool.query(`
+      SELECT COUNT(*)::int AS n FROM (
+        SELECT settlement_id, row_idx FROM inv_settlement_lines WHERE row_idx IS NOT NULL
+        GROUP BY settlement_id, row_idx HAVING COUNT(*) > 1) z`);
+    const tax = await pool.query(`
+      SELECT amount_type, amount_description, ROUND(SUM(amount)::numeric,2) AS total
+      FROM inv_settlement_lines
+      WHERE (amount_type='ItemPrice' AND amount_description ILIKE '%tax%')
+         OR amount_description ILIKE '%MarketplaceFacilitator%'
+      GROUP BY amount_type, amount_description ORDER BY 3`);
+    res.json({ settlements: rows,
+      amazonTotal: rows.reduce((n, x) => n + (x.amazon_total || 0), 0),
+      ourTotal: rows.reduce((n, x) => n + x.our_total, 0),
+      duplicateKeys: dup.rows[0].n, taxLines: tax.rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
   const from = req.query.from || null, to = req.query.to || null;
   const where = [], params = [];
@@ -2658,8 +2703,13 @@ app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
     const amt = Number(r.total) || 0;
     const desc = r.amount_description || 'Other';
 
+    if (isPassThroughTax(r.amount_type, desc)) {
+      grand.taxPassThrough = (grand.taxPassThrough || 0) + amt;
+      continue;
+    }
     if (r.amount_type === 'ItemPrice' && !isRefund(r.transaction_type)) {
-      a.revenue += amt; a.units += (r.units || 0); grand.revenue += amt; grand.units += (r.units || 0);
+      const u = /principal/i.test(desc) ? (r.units || 0) : 0;
+      a.revenue += amt; a.units += u; grand.revenue += amt; grand.units += u;
     } else if (r.amount_type === 'ItemPrice' && isRefund(r.transaction_type)) {
       a.refunds += amt; a.unitsRefunded += Math.abs(r.units || 0); grand.refunds += amt;
     } else if (r.amount_type === 'ItemFees' && !isRefund(r.transaction_type)) {
@@ -3042,15 +3092,20 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
   const unitsByAsin = {};
   const feeDetail = {};
 
+  let taxPassThrough = 0;
+  // quantity-purchased can repeat on the Principal, Shipping and Tax rows of
+  // one item; only the Principal row represents a unit.
+  const isPrincipal = d => /principal/i.test(d || '');
   for (const r of lines.rows) {
     const amt = Number(r.total) || 0;
     const desc = r.amount_description || 'Other';
+    if (isPassThroughTax(r.amount_type, desc)) { taxPassThrough += amt; continue; }
     if (r.amount_type === 'ItemPrice' && !isRefund(r.transaction_type)) {
       revenue += amt;
-      if (r.asin) unitsByAsin[r.asin] = (unitsByAsin[r.asin] || 0) + (r.units || 0);
+      if (r.asin && isPrincipal(desc)) unitsByAsin[r.asin] = (unitsByAsin[r.asin] || 0) + (r.units || 0);
     } else if (r.amount_type === 'ItemPrice') {
       refunds += amt;
-      if (r.asin) unitsByAsin[r.asin] = (unitsByAsin[r.asin] || 0) + (r.units || 0);  // negative
+      if (r.asin && isPrincipal(desc)) unitsByAsin[r.asin] = (unitsByAsin[r.asin] || 0) + (r.units || 0);  // negative
     } else if (r.amount_type === 'ItemFees' && !isRefund(r.transaction_type)) {
       fees += amt; feeDetail[desc] = (feeDetail[desc] || 0) + amt;
     } else if (r.amount_type === 'ItemFees') {
@@ -3128,7 +3183,7 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
 
   res.json({
     month, from, to,
-    revenue, refunds, netSales,
+    revenue, refunds, netSales, taxPassThrough,
     amazonFees, feeDetail,
     inboundFeesFromSettlement: inboundFees,
     deposited,
