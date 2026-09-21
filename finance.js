@@ -62,6 +62,12 @@ module.exports = function registerFinance(app, deps) {
         note TEXT,
         updated_at TIMESTAMPTZ DEFAULT now()
       );
+      -- Orders to leave out of Cosmoprof spend (e.g. a store order whose
+      -- final invoice was also imported — same purchase, two documents).
+      CREATE TABLE IF NOT EXISTS fin_spend_exclude (
+        order_number TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
       CREATE TABLE IF NOT EXISTS fin_settings (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -284,6 +290,55 @@ module.exports = function registerFinance(app, deps) {
              costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0 };
   }
 
+  // Every Cosmoprof purchase the app knows about, one row per order, from three
+  // places — so monthly spend never depends on which screen an invoice came in
+  // through. Where the same order number appears in more than one, the most
+  // complete source wins:
+  //   1. fin_purchase_orders  full totals captured at cost import (incl. tax)
+  //   2. inv_invoices         Order Check-In: every line, qty × unit cost
+  //   3. inv_cost_history     older cost lots — mapped lines only, may be short
+  function isoDate(d) {
+    const t = String(d || '').trim();
+    let m = t.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+    if (m) return `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+    const x = new Date(t); return isNaN(x) ? null : x.toISOString().slice(0, 10);
+  }
+  async function purchaseOrders() {
+    const byNum = {};
+    const put = (o) => { if (!o.order_number || byNum[o.order_number]) return; byNum[o.order_number] = o; };
+    try {
+      for (const r of (await pool.query('SELECT * FROM fin_purchase_orders')).rows)
+        put({ order_number: r.order_number, date: isoDate(r.order_date), lines: r.lines, total: Number(r.total) || 0,
+              tax: Number(r.tax) || 0, source: r.source === 'xstore' ? 'store order' : 'invoice import', complete: true });
+    } catch (e) {}
+    try {
+      const inv = await pool.query(`
+        SELECT i.order_number, i.invoice_date, i.status,
+               COUNT(ii.*)::int AS lines,
+               COUNT(*) FILTER (WHERE ii.unit_cost IS NULL)::int AS unpriced,
+               COALESCE(SUM(ii.unit_cost * COALESCE(ii.qty_expected,0)),0)::numeric AS total
+        FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
+        GROUP BY i.order_number, i.invoice_date, i.status`);
+      for (const r of inv.rows)
+        put({ order_number: r.order_number, date: isoDate(r.invoice_date), lines: r.lines, total: Number(r.total) || 0, tax: 0,
+              source: 'check-in', status: r.status, unpriced: r.unpriced, complete: !r.unpriced });
+    } catch (e) {}
+    try {
+      const ch = await pool.query(`
+        SELECT order_number, MIN(invoice_date) AS d, COUNT(*)::int AS lines,
+               SUM(unit_cost * COALESCE(qty,0))::numeric AS total
+        FROM inv_cost_history GROUP BY order_number`);
+      for (const r of ch.rows)
+        put({ order_number: r.order_number, date: isoDate(r.d), lines: r.lines, total: Number(r.total) || 0, tax: 0,
+              source: 'cost lots', complete: false, note: 'mapped lines only — may be short' });
+    } catch (e) {}
+    let excluded = new Set();
+    try { excluded = new Set((await pool.query('SELECT order_number FROM fin_spend_exclude')).rows.map(r => r.order_number)); } catch (e) {}
+    return Object.values(byNum).map(o => ({ ...o, month: o.date ? o.date.slice(0, 7) : null, excluded: excluded.has(o.order_number) }))
+      .sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  }
+
   // Royalty worksheet, month by month, from the first month with a deposit.
   //   base    = Amazon deposits received that month − Cosmoprof spend that month
   //   royalty = pct × base, never below zero; with carry-forward on, a negative
@@ -293,11 +348,18 @@ module.exports = function registerFinance(app, deps) {
     const dep = (await pool.query(`
       SELECT to_char(deposit_date,'YYYY-MM') AS m, SUM(total_amount)::numeric AS amt, COUNT(*)::int AS n
       FROM inv_settlements WHERE deposit_date IS NOT NULL GROUP BY 1 ORDER BY 1`)).rows;
-    const po = (await pool.query(`
-      SELECT to_char(order_date,'YYYY-MM') AS m, SUM(total)::numeric AS amt, COUNT(*)::int AS n
-      FROM fin_purchase_orders WHERE order_date IS NOT NULL GROUP BY 1`)).rows;
+    const allOrders = await purchaseOrders();
+    const po = [];
+    const agg = {};
+    for (const o of allOrders) {
+      if (!o.month || o.excluded) continue;
+      const a = agg[o.month] = agg[o.month] || { m: o.month, amt: 0, n: 0, incomplete: 0 };
+      a.amt += o.total; a.n++; if (!o.complete) a.incomplete++;
+    }
+    for (const k of Object.keys(agg)) po.push(agg[k]);
     const man = (await pool.query('SELECT month, amount, note FROM fin_purchases_manual')).rows;
-    const poBy = {}; for (const r of po) poBy[r.m] = { amt: Number(r.amt), n: r.n };
+    const poBy = {}; for (const r of po) poBy[r.m] = { amt: Number(r.amt), n: r.n, incomplete: r.incomplete };
+    const ordersBy = {}; for (const o of allOrders) if (o.month) (ordersBy[o.month] = ordersBy[o.month] || []).push(o);
     const manBy = {}; for (const r of man) manBy[r.month] = { amt: num(r.amount), note: r.note };
     const depBy = {}; for (const r of dep) depBy[r.m] = { amt: Number(r.amt), n: r.n };
 
@@ -308,16 +370,17 @@ module.exports = function registerFinance(app, deps) {
     let carry = 0;
     while (m <= end) {
       const deposits = depBy[m] ? depBy[m].amt : 0;
-      let purchases = 0, purchasesSource = 'none', orders = 0, note = null;
+      let purchases = 0, purchasesSource = 'none', orders = 0, note = null, incomplete = 0;
+      const fromOrders = poBy[m] ? poBy[m].amt : 0;
       if (manBy[m] && manBy[m].amt != null) { purchases = manBy[m].amt; purchasesSource = 'manual'; note = manBy[m].note; }
-      else if (poBy[m]) { purchases = poBy[m].amt; purchasesSource = 'orders'; orders = poBy[m].n; }
+      else if (poBy[m]) { purchases = poBy[m].amt; purchasesSource = 'orders'; orders = poBy[m].n; incomplete = poBy[m].incomplete; }
       const base = deposits - purchases;
       const carryIn = settings.royaltyCarry ? carry : 0;
       const adjusted = base + carryIn;
       const royalty = pct == null ? null : Math.max(0, adjusted) * pct / 100;
       carry = settings.royaltyCarry && adjusted < 0 ? adjusted : 0;
       out[m] = { month: m, deposits, depositCount: depBy[m] ? depBy[m].n : 0, purchases, purchasesSource,
-                 orders, note, base, carryIn, adjusted, royalty, carryOut: carry, pct };
+                 orders, incomplete, fromOrders, orderList: ordersBy[m] || [], note, base, carryIn, adjusted, royalty, carryOut: carry, pct };
       m = nextMonth(m);
     }
     return out;
@@ -503,6 +566,15 @@ module.exports = function registerFinance(app, deps) {
       const series = await royaltySeries(settings);
       const orders = (await pool.query('SELECT * FROM fin_purchase_orders ORDER BY order_date DESC NULLS LAST LIMIT 100')).rows;
       res.json({ settings, months: Object.values(series), orders });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.post('/api/finance/spend-exclude', ownerAuth, async (req, res) => {
+    try {
+      const { order_number, exclude } = req.body || {};
+      if (!order_number) return res.status(400).json({ error: 'order_number required' });
+      if (exclude) await pool.query('INSERT INTO fin_spend_exclude(order_number) VALUES($1) ON CONFLICT DO NOTHING', [order_number]);
+      else await pool.query('DELETE FROM fin_spend_exclude WHERE order_number=$1', [order_number]);
+      res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post('/api/finance/purchases', ownerAuth, async (req, res) => {
