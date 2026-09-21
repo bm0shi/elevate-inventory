@@ -3532,12 +3532,12 @@ function renderFinPnl() {
     ['Reimbursements', 'reimbursements', 'fees', { hideZero: true, note: 'lost / damaged inventory paid back' }],
     ['AMAZON DEPOSITED', 'deposited', null, { total: true, note: 'what landed in your account' }],
     ['Product cost (COGS)', 'cogs', 'cogs', { neg: true, note: 'cost of units sold' }],
-    ['Royalty', 'royalty', 'royalty', { neg: true }],
     ['Supplies', 'supplies', 'supplies', { neg: true }],
     ['Labor', 'labor', 'labor', { neg: true }],
     ['Inbound freight + placement', 'freight', 'freight', { neg: true, note: 'per unit, charged as units sell' }],
     ['CONTRIBUTION', 'contribution', null, { total: true }],
     ['Rent & overhead', 'overhead', 'overhead', { neg: true }],
+    ['Royalty', 'royalty', 'royalty', { neg: true, note: '% of (deposits − Cosmoprof spend) · see worksheet below' }],
     ['NET PROFIT', 'net', null, { total: true, big: true }],
     ['Net margin', 'marginPct', null, { pct: true }]
   ];
@@ -3574,9 +3574,47 @@ function renderFinPnl() {
   }
   t += '</tbody></table></div>';
   h += t;
+  h += '<div id="finRoyaltyWs"></div>';
   h += '<div class="hint" style="padding:4px 4px 12px">' + finDot('ok') + 'complete ' + finDot('partial') + 'partial ' + finDot('missing') + 'not tracked yet · Sales tax Amazon collects for you and reserve holds are excluded — neither is your money or your expense.'
     + (d.laborInfo && d.laborInfo.rate != null ? ' · Labor per unit is <b>$' + d.laborInfo.rate.toFixed(2) + '</b> (last ' + d.laborInfo.days + ' days of timesheets ÷ units shipped).' : '') + '</div>';
   b.innerHTML = h;
+  loadRoyaltyWorksheet(months.map(m => m.month));
+}
+
+// Royalty worksheet — every number behind the royalty line, month by month.
+function loadRoyaltyWorksheet(showMonths) {
+  const box = document.getElementById('finRoyaltyWs'); if (!box) return;
+  ownerApi('/api/finance/royalty').then(d => {
+    if (!d || !d.months) return;
+    const st = d.settings || {};
+    const rows = d.months.filter(r => !showMonths || showMonths.includes(r.month));
+    if (!rows.length) return;
+    const inp = 'padding:4px 6px;border:1px solid #cfd8e3;border-radius:4px;width:110px;text-align:right;font-size:12px';
+    let h = '<div class="box" style="border:2px solid #b7791f;overflow-x:auto"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+      + '<div><b style="font-size:15px">Royalty worksheet</b><div class="hint">'
+      + (st.royaltyPct == null ? '<b style="color:#c0392b">Royalty % not set</b> — <a href="#" onclick="finOpenEditor(\'royalty\');showSubTab(\'fsrc\');return false">set it</a>. '
+                              : '<b>' + st.royaltyPct + '%</b> of (Amazon deposits received − Cosmoprof spend) in the same month' + (st.royaltyCarry ? ', negative months carried forward' : ', negative months pay no royalty') + '. ')
+      + 'Deposits are counted by the day Amazon paid. Type a month\'s Cosmoprof total to override the imported orders.</div></div></div>'
+      + '<table style="margin-top:8px;min-width:640px"><thead><tr><th>Month</th><th style="text-align:right">Amazon deposits</th><th style="text-align:right">Cosmoprof spend</th>'
+      + '<th style="text-align:right">Base</th>' + (st.royaltyCarry ? '<th style="text-align:right">Carried in</th>' : '') + '<th style="text-align:right">Royalty</th></tr></thead><tbody>';
+    for (const r of rows) {
+      const src = r.purchasesSource === 'manual' ? '<span style="font-size:10px;color:#7d3c98">entered</span>'
+                : r.purchasesSource === 'orders' ? '<span style="font-size:10px;color:#1e8449">' + r.orders + ' order(s)</span>'
+                : '<span style="font-size:10px;color:#c0392b">none recorded</span>';
+      h += '<tr><td style="font-weight:700">' + finMonthLabel(r.month) + '</td>'
+        + '<td style="text-align:right">' + fin$(r.deposits, 2) + '<div style="font-size:10px;color:#9db0c9">' + r.depositCount + ' deposit(s)</div></td>'
+        + '<td style="text-align:right"><input type="number" step="0.01" style="' + inp + '" value="' + (r.purchasesSource === 'manual' ? r.purchases : '') + '" placeholder="' + (r.purchasesSource === 'orders' ? r.purchases.toFixed(2) : '0.00') + '" onchange="finSetPurchases(\'' + r.month + '\',this.value)"><div>' + src + '</div></td>'
+        + '<td style="text-align:right;font-weight:700;color:' + (r.base >= 0 ? '#1a2a3a' : '#c0392b') + '">' + fin$(r.base, 2) + '</td>'
+        + (st.royaltyCarry ? '<td style="text-align:right;color:#c0392b">' + (r.carryIn ? fin$(r.carryIn, 2) : '—') + '</td>' : '')
+        + '<td style="text-align:right;font-weight:800;color:#b7791f">' + (r.royalty == null ? '—' : fin$(r.royalty, 2)) + '</td></tr>';
+    }
+    h += '</tbody></table><div class="hint" style="margin-top:6px">A month with no Cosmoprof spend recorded is treated as $0 spent — which makes that month\'s royalty look higher than it should. Import the order or type the total.</div></div>';
+    box.innerHTML = h;
+  }).catch(() => {});
+}
+function finSetPurchases(month, val) {
+  ownerApi('/api/finance/purchases', { method: 'POST', body: JSON.stringify({ month, amount: val === '' ? null : val }) })
+    .then(d => { if (d && d.ok) { toast(val === '' ? 'Using imported orders for ' + month : 'Spend saved for ' + month); loadFinPnl(); } else alert((d && d.error) || 'Failed'); });
 }
 function finDrillMonth(m) { showSubTab('fprod'); const el = document.getElementById('fprodMonth'); if (el) { el.value = m; loadFinProducts(); } }
 
@@ -3645,7 +3683,6 @@ function finBreakdown(x) {
     + line('Average sale price', sp == null ? '—' : fin$(sp, 2))
     + line('Amazon fees', fp == null ? '—' : fin$(fp, 2), { c: '#c0392b' })
     + line('Product cost', x.unitCost == null ? '<span style="color:#c0392b">no cost</span>' : '-' + fin$(x.unitCost, 2), { c: '#c0392b' })
-    + line('Royalty', x.royaltyPerUnit == null ? per(null) : '-' + fin$(x.royaltyPerUnit, 2), { c: '#c0392b' })
     + line('Supplies', x.suppliesPerUnit == null ? per(null) : '-' + fin$(x.suppliesPerUnit, 2), { c: '#c0392b' })
     + line('Labor', x.laborPerUnit == null ? per(null) : '-' + fin$(x.laborPerUnit, 2), { c: '#c0392b' })
     + line('Inbound freight', x.freightPerUnit == null ? per(null) : '-' + fin$(x.freightPerUnit, 2), { c: '#c0392b' })
@@ -3658,7 +3695,6 @@ function finBreakdown(x) {
     + (x.promotions ? line('Promotions', fin$(x.promotions), { c: '#c0392b' }) : '')
     + line('Amazon fees', fin$(x.fees), { c: '#c0392b' })
     + line('COGS', x.cogs == null ? '—' : '-' + fin$(x.cogs), { c: '#c0392b' })
-    + (x.royalty != null ? line('Royalty', '-' + fin$(x.royalty), { c: '#c0392b' }) : '')
     + (x.supplies != null ? line('Supplies', '-' + fin$(x.supplies), { c: '#c0392b' }) : '')
     + (x.labor != null ? line('Labor', '-' + fin$(x.labor), { c: '#c0392b' }) : '')
     + (x.freight != null ? line('Freight', '-' + fin$(x.freight), { c: '#c0392b' }) : '')
@@ -3793,9 +3829,10 @@ function finOpenEditor(which) {
   if (which === 'royalty') {
     ownerApi('/api/finance/settings').then(st => {
       box.innerHTML = '<div class="box" style="border:2px solid #b7791f"><b style="font-size:15px">Royalty</b>'
-        + '<div class="hint">A percentage taken off net sales (after refunds, before Amazon fees). It\'s charged on every product and every month.</div>'
-        + '<div style="display:flex;gap:10px;align-items:flex-end;margin-top:10px">'
-        + '<label style="font-size:11px;font-weight:700;color:#5a6472">% of net sales<br><input type="number" step="0.1" min="0" max="100" id="royPct" value="' + (st.royaltyPct == null ? '' : st.royaltyPct) + '" placeholder="e.g. 15" style="' + inp + ';width:110px"></label>'
+        + '<div class="hint">Each month: <b>(Amazon deposits received − Cosmoprof spend) × %</b>. Worked out month by month on the P&amp;L worksheet.</div>'
+        + '<div style="display:flex;gap:14px;align-items:flex-end;margin-top:10px;flex-wrap:wrap">'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">Royalty %<br><input type="number" step="0.1" min="0" max="100" id="royPct" value="' + (st.royaltyPct == null ? '' : st.royaltyPct) + '" placeholder="e.g. 15" style="' + inp + ';width:110px"></label>'
+        + '<label style="font-size:12px;font-weight:700;color:#5a6472;display:flex;gap:6px;align-items:center;padding-bottom:8px"><input type="checkbox" id="royCarry"' + (st.royaltyCarry ? ' checked' : '') + '> Carry a negative month into the next</label>'
         + '<button class="action" onclick="finSaveRoyalty()" style="background:#b7791f;min-width:110px">Save</button>'
         + '<button class="mini" onclick="finCloseEditor()">Close</button></div>'
         + '<div class="hint" style="margin-top:6px">Leave blank and save to remove it.</div></div>';
@@ -3844,7 +3881,8 @@ function finOpenEditor(which) {
 }
 function finSaveRoyalty() {
   const v = (document.getElementById('royPct') || {}).value;
-  ownerApi('/api/finance/settings', { method: 'POST', body: JSON.stringify({ royaltyPct: v === '' ? null : v }) })
+  const carry = !!(document.getElementById('royCarry') || {}).checked;
+  ownerApi('/api/finance/settings', { method: 'POST', body: JSON.stringify({ royaltyPct: v === '' ? null : v, royaltyCarry: carry }) })
     .then(d => { if (d && d.ok) { toast('Royalty saved'); loadFinSources(); } else alert((d && d.error) || 'Failed'); });
 }
 function finCloseEditor() { window._finEditorOpen = null; const b = document.getElementById('finEditor'); if (b) b.innerHTML = ''; }
