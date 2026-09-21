@@ -55,6 +55,7 @@ module.exports = function registerFinance(app, deps) {
         source TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
+      ALTER TABLE fin_purchase_orders ADD COLUMN IF NOT EXISTS oms_id TEXT;
       -- A month's Cosmoprof spend typed in by hand. Wins over imported orders.
       CREATE TABLE IF NOT EXISTS fin_purchases_manual (
         month TEXT PRIMARY KEY,
@@ -310,19 +311,20 @@ module.exports = function registerFinance(app, deps) {
     try {
       for (const r of (await pool.query('SELECT * FROM fin_purchase_orders')).rows)
         put({ order_number: r.order_number, date: isoDate(r.order_date), lines: r.lines, total: Number(r.total) || 0,
-              tax: Number(r.tax) || 0, source: r.source === 'xstore' ? 'store order' : 'invoice import', complete: true });
+              tax: Number(r.tax) || 0, source: r.source === 'xstore' ? 'store order' : 'invoice import', complete: true,
+              oms: r.oms_id || null, isStoreOrder: r.source === 'xstore' });
     } catch (e) {}
     try {
       const inv = await pool.query(`
-        SELECT i.order_number, i.invoice_date, i.status,
+        SELECT i.order_number, i.invoice_date, i.status, i.oms_id,
                COUNT(ii.*)::int AS lines,
                COUNT(*) FILTER (WHERE ii.unit_cost IS NULL)::int AS unpriced,
                COALESCE(SUM(ii.unit_cost * COALESCE(ii.qty_expected,0)),0)::numeric AS total
         FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
-        GROUP BY i.order_number, i.invoice_date, i.status`);
+        GROUP BY i.order_number, i.invoice_date, i.status, i.oms_id`);
       for (const r of inv.rows)
         put({ order_number: r.order_number, date: isoDate(r.invoice_date), lines: r.lines, total: Number(r.total) || 0, tax: 0,
-              source: 'check-in', status: r.status, unpriced: r.unpriced, complete: !r.unpriced });
+              source: 'check-in', status: r.status, unpriced: r.unpriced, complete: !r.unpriced, oms: r.oms_id || null });
     } catch (e) {}
     try {
       const ch = await pool.query(`
@@ -335,7 +337,19 @@ module.exports = function registerFinance(app, deps) {
     } catch (e) {}
     let excluded = new Set();
     try { excluded = new Set((await pool.query('SELECT order_number FROM fin_spend_exclude')).rows.map(r => r.order_number)); } catch (e) {}
-    return Object.values(byNum).map(o => ({ ...o, month: o.date ? o.date.slice(0, 7) : null, excluded: excluded.has(o.order_number) }))
+    // A store order is replaced by any invoice that names it in its FS field.
+    // The invoice is what actually shipped and was billed, so it wins.
+    const replacedBy = {};
+    for (const o of Object.values(byNum)) {
+      if (o.isStoreOrder || !o.oms) continue;
+      (replacedBy[o.oms] = replacedBy[o.oms] || []).push(o.order_number);
+    }
+    return Object.values(byNum).map(o => {
+      const rep = (o.isStoreOrder || /^D\d{7,}$/i.test(o.order_number)) ? replacedBy[String(o.order_number).toUpperCase()] : null;
+      return { ...o, month: o.date ? o.date.slice(0, 7) : null,
+               replacedBy: rep || null,
+               excluded: excluded.has(o.order_number) || !!rep };
+    })
       .sort((a, b) => String(b.date).localeCompare(String(a.date)));
   }
 
