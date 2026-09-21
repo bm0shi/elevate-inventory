@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'finance-0921-0534';
+const BUILD_ID = 'finance2-0921-0740';
 
 // ---- Postgres ----
 const pool = new Pool({
