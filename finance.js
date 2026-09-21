@@ -88,7 +88,8 @@ module.exports = function registerFinance(app, deps) {
     return {
       nextBuyTarget: num(s.next_buy_target),
       nextBuyMonth: s.next_buy_month || null,
-      bufferMonths: num(s.buffer_months) != null ? num(s.buffer_months) : 2
+      bufferMonths: num(s.buffer_months) != null ? num(s.buffer_months) : 2,
+      royaltyPct: num(s.royalty_pct)          // % of net sales; null = not set
     };
   }
 
@@ -236,7 +237,9 @@ module.exports = function registerFinance(app, deps) {
       if (pLabor != null) labor += pLabor;
 
       const netSales = p.sales + p.refunds + p.promotions;
-      const known = [pCogs, pSupp, pLabor, pFreight];
+      const rPct = ctx.settings ? ctx.settings.royaltyPct : null;
+      const pRoyalty = rPct != null ? netSales * rPct / 100 : null;
+      const known = [pCogs, pSupp, pLabor, pFreight, pRoyalty];
       const profit = netSales + p.fees - known.reduce((n, x) => n + (x || 0), 0);
       items.push({
         asin, sku: key.startsWith('sku:') ? key.slice(4) : null,
@@ -247,12 +250,13 @@ module.exports = function registerFinance(app, deps) {
         unitCost, regularCost: info.regularCost != null ? info.regularCost : null,
         suppliesPerUnit: sRate, laborPerUnit: laborRate, freightPerUnit: fRate,
         landedPerUnit: unitCost != null ? unitCost + (sRate || 0) + (laborRate || 0) + (fRate || 0) : null,
-        cogs: pCogs, supplies: pSupp, labor: pLabor, freight: pFreight,
+        cogs: pCogs, supplies: pSupp, labor: pLabor, freight: pFreight, royalty: pRoyalty,
+        royaltyPerUnit: pRoyalty != null && net ? pRoyalty / net : null,
         profit: pCogs != null ? profit : null,
         profitPerUnit: pCogs != null && net ? profit / net : null,
         feesPerUnit: net ? p.fees / net : null,
         marginPct: pCogs != null && netSales ? (profit / netSales) * 100 : null,
-        missing: [pCogs == null && 'product cost', pSupp == null && 'supplies',
+        missing: [pCogs == null && 'product cost', pRoyalty == null && 'royalty', pSupp == null && 'supplies',
                   pLabor == null && 'labor', pFreight == null && 'freight'].filter(Boolean)
       });
     }
@@ -265,7 +269,8 @@ module.exports = function registerFinance(app, deps) {
   async function context() {
     await ready;
     const [products, supplies, inbound, lab] = await Promise.all([productInfo(), supplyRates(), inboundPerUnit(), laborPerUnit(90)]);
-    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab };
+    const settings = await getSettings();
+    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings };
   }
 
   // One month of P&L.
@@ -279,12 +284,30 @@ module.exports = function registerFinance(app, deps) {
 
     const netSales = t.sales + t.refunds + t.promotions;
     const amazonFees = t.fees + t.otherFees;                  // negative
+    const deposited = netSales + amazonFees + t.reimbursements;
+
+    // Which days of this month the settlement data actually covers. Amazon's
+    // API returns roughly 90 days of settlements, so the oldest and newest
+    // months are usually partial and must not be read as full months.
+    const cov = (await pool.query(
+      `SELECT MIN(posted_date) AS a, MAX(posted_date) AS b FROM inv_settlement_lines
+       WHERE posted_date >= $1 AND posted_date < $2`, [from, to])).rows[0] || {};
+    const endOfMonth = new Date(new Date(to).getTime() - 86400000);
+    const firstDay = cov.a ? new Date(cov.a) : null, lastDay = cov.b ? new Date(cov.b) : null;
+    const isCurrent = m === monthKey(new Date());
+    const partial = !!firstDay && (firstDay.getUTCDate() > 3 ||
+                    (lastDay && (endOfMonth - lastDay) / 86400000 > 3 && !isCurrent) || isCurrent);
+    const coverage = firstDay ? { from: firstDay.toISOString().slice(0, 10), to: lastDay.toISOString().slice(0, 10),
+                                  days: Math.round((lastDay - firstDay) / 86400000) + 1, partial, isCurrent } : null;
+
+    const royaltyPct = ctx.settings ? ctx.settings.royaltyPct : null;
+    const royalty = royaltyPct != null ? netSales * royaltyPct / 100 : null;
     const cogs = (a.costedSales || !a.uncostedSales) ? a.cogs : null;
     const supplies = anySupplies ? a.supplies : null;
     const labor = laborActual;                                // null until timesheets cover the month
     const freight = a.freight || null;
-    const contribution = netSales + amazonFees + t.reimbursements
-                         - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
+    const contribution = deposited
+                         - (cogs || 0) - (royalty || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
     const net = contribution - (overhead || 0);
     const costCoverage = (a.costedSales + a.uncostedSales) ? a.costedSales / (a.costedSales + a.uncostedSales) : null;
@@ -293,6 +316,7 @@ module.exports = function registerFinance(app, deps) {
       sales: a.hasLines ? 'ok' : 'missing',
       fees: a.hasLines ? 'ok' : 'missing',
       cogs: cogs == null ? 'missing' : (costCoverage != null && costCoverage < 0.98 ? 'partial' : 'ok'),
+      royalty: royalty == null ? 'missing' : 'ok',
       supplies: supplies == null ? 'missing' : (a.suppMissing ? 'partial' : 'ok'),
       labor: labor == null ? 'missing' : 'ok',
       freight: freight == null ? 'missing' : (a.freightMissingUnits ? 'partial' : 'ok'),
@@ -303,9 +327,13 @@ module.exports = function registerFinance(app, deps) {
     return {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
-      amazonFees, reimbursements: t.reimbursements, feeDetail: t.feeDetail,
-      cogs, supplies, labor, freight, contribution, overhead, overheadItems: oh.items, net,
-      marginPct: netSales ? (net / netSales) * 100 : null,
+      amazonFees, reimbursements: t.reimbursements, deposited, feeDetail: t.feeDetail,
+      cogs, royalty, royaltyPct, supplies, labor, freight, contribution, overhead, overheadItems: oh.items, net,
+      // A margin with most of COGS missing is fiction. Withhold it until at
+      // least 90% of sales carry a real product cost.
+      marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
+      marginWithheld: !!netSales && (costCoverage == null || costCoverage < 0.9),
+      coverage,
       taxPassThrough: t.tax, reserveMovement: t.reserve,
       costCoverage, lineStatus, complete
     };
@@ -449,6 +477,7 @@ module.exports = function registerFinance(app, deps) {
       if ('nextBuyTarget' in b) await put('next_buy_target', num(b.nextBuyTarget));
       if ('nextBuyMonth' in b) await put('next_buy_month', b.nextBuyMonth || null);
       if ('bufferMonths' in b) await put('buffer_months', num(b.bufferMonths));
+      if ('royaltyPct' in b) await put('royalty_pct', num(b.royaltyPct));
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -498,6 +527,9 @@ module.exports = function registerFinance(app, deps) {
           status: !lab.n ? 'missing' : (daysOld(lab.through) > 21 ? 'warn' : 'ok'),
           detail: !lab.n ? 'No timesheets imported.' : `Timesheets through ${String(lab.through).slice(0, 10)}`,
           feeds: 'Labor line and labor per unit' },
+        { key: 'royalty', label: 'Royalty',
+          status: st.royaltyPct != null ? 'ok' : 'missing',
+          detail: st.royaltyPct != null ? `${st.royaltyPct}% of net sales` : 'Not set.', feeds: 'Royalty line' },
         { key: 'supplies', label: 'Supplies per unit',
           status: !sup.set ? 'missing' : (sup.set < sup.n ? 'warn' : 'ok'),
           detail: `${sup.set || 0} of ${sup.n || 0} sizes priced`, feeds: 'Supplies line' },
