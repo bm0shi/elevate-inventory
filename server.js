@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'xstore-0921-0747';
+const BUILD_ID = 'royalty-0921-0751';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2124,6 +2124,29 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
       }
       const products = await recomputeCosts();
       console.log(`[Costs] Cost-only import: ${written} lot(s) from ${orders.size} order(s); ${products} product(s) reblended. No stock touched.`);
+
+      // Record every order's FULL total for the royalty (spend at Cosmoprof),
+      // including lines that aren't mapped to a product.
+      const toIso = d => {
+        const m = String(d || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+        if (!m) return null;
+        const y = m[3].length === 2 ? '20' + m[3] : m[3];
+        return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      };
+      for (const [orderNumber, o] of orders) {
+        const its = o.items || [];
+        const subtotal = Math.round(its.reduce((n, it) => n + (it.amount != null ? Number(it.amount)
+                          : (Number(it.unit_cost) || 0) * (parseInt(it.qty_shipped, 10) || 0)), 0) * 100) / 100;
+        const chk = checks.find(c => c.orderNumber === orderNumber);
+        const tax = chk && chk.tax ? chk.tax : 0;
+        try {
+          await pool.query(
+            `INSERT INTO fin_purchase_orders(order_number, order_date, subtotal, tax, total, lines, source)
+             VALUES($1,$2,$3,$4,$5,$6,$7)
+             ON CONFLICT (order_number) DO UPDATE SET order_date=$2, subtotal=$3, tax=$4, total=$5, lines=$6, source=$7`,
+            [orderNumber, toIso(o.date), subtotal, tax, subtotal + tax, its.length, o.source || 'invoice']);
+        } catch (e) { console.error(`[Costs] order total not recorded for ${orderNumber}: ${e.message}`); }
+      }
       return res.json({ ok:true, commit:true, orders:orders.size, written, products, checks,
                         lots: lots.slice(0, 200), unmapped, noPrice,
                         distinctAsins: [...new Set(lots.map(l => l.asin))].length });
