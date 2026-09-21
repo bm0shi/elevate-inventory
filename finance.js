@@ -65,6 +65,12 @@ module.exports = function registerFinance(app, deps) {
       );
       -- Orders to leave out of Cosmoprof spend (e.g. a store order whose
       -- final invoice was also imported — same purchase, two documents).
+      -- Store orders to count even though an invoice names them (e.g. the
+      -- card really was charged twice).
+      CREATE TABLE IF NOT EXISTS fin_spend_force (
+        order_number TEXT PRIMARY KEY,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
       CREATE TABLE IF NOT EXISTS fin_spend_exclude (
         order_number TEXT PRIMARY KEY,
         created_at TIMESTAMPTZ DEFAULT now()
@@ -341,6 +347,8 @@ module.exports = function registerFinance(app, deps) {
     } catch (e) {}
     let excluded = new Set();
     try { excluded = new Set((await pool.query('SELECT order_number FROM fin_spend_exclude')).rows.map(r => r.order_number)); } catch (e) {}
+    let forced = new Set();
+    try { forced = new Set((await pool.query('SELECT order_number FROM fin_spend_force')).rows.map(r => r.order_number)); } catch (e) {}
     // A store order is replaced by any invoice that names it in its FS field.
     // The invoice is what actually shipped and was billed, so it wins.
     const replacedBy = {};
@@ -350,9 +358,10 @@ module.exports = function registerFinance(app, deps) {
     }
     return Object.values(byNum).map(o => {
       const rep = (o.isStoreOrder || /^D\d{7,}$/i.test(o.order_number)) ? replacedBy[String(o.order_number).toUpperCase()] : null;
+      const force = forced.has(o.order_number);
       return { ...o, month: o.date ? o.date.slice(0, 7) : null,
-               replacedBy: rep || null,
-               excluded: excluded.has(o.order_number) || !!rep };
+               replacedBy: rep || null, forced: force,
+               excluded: excluded.has(o.order_number) || (!!rep && !force) };
     })
       .sort((a, b) => String(b.date).localeCompare(String(a.date)));
   }
@@ -584,6 +593,15 @@ module.exports = function registerFinance(app, deps) {
       const series = await royaltySeries(settings);
       const orders = (await pool.query('SELECT * FROM fin_purchase_orders ORDER BY order_date DESC NULLS LAST LIMIT 100')).rows;
       res.json({ settings, months: Object.values(series), orders });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.post('/api/finance/spend-force', ownerAuth, async (req, res) => {
+    try {
+      const { order_number, force } = req.body || {};
+      if (!order_number) return res.status(400).json({ error: 'order_number required' });
+      if (force) await pool.query('INSERT INTO fin_spend_force(order_number) VALUES($1) ON CONFLICT DO NOTHING', [order_number]);
+      else await pool.query('DELETE FROM fin_spend_force WHERE order_number=$1', [order_number]);
+      res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post('/api/finance/spend-exclude', ownerAuth, async (req, res) => {
