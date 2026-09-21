@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'units-fix-0921-0523';
+const BUILD_ID = 'finance-0921-0534';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5330,6 +5330,8 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 const PORT = process.env.PORT || 3000;
 initDb().then(() => {
+  // Finance screens (P&L, product profit, cash & draws, data sources)
+  require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax });
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
