@@ -42,6 +42,26 @@ module.exports = function registerFinance(app, deps) {
         note TEXT,
         created_at TIMESTAMPTZ DEFAULT now()
       );
+      -- Full order totals from Cosmoprof, captured at cost import. Includes
+      -- lines that are not mapped to a product, because the royalty is taken
+      -- on everything spent, not just what can be costed.
+      CREATE TABLE IF NOT EXISTS fin_purchase_orders (
+        order_number TEXT PRIMARY KEY,
+        order_date DATE,
+        subtotal NUMERIC,
+        tax NUMERIC,
+        total NUMERIC,
+        lines INT,
+        source TEXT,
+        created_at TIMESTAMPTZ DEFAULT now()
+      );
+      -- A month's Cosmoprof spend typed in by hand. Wins over imported orders.
+      CREATE TABLE IF NOT EXISTS fin_purchases_manual (
+        month TEXT PRIMARY KEY,
+        amount NUMERIC,
+        note TEXT,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
       CREATE TABLE IF NOT EXISTS fin_settings (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -89,7 +109,8 @@ module.exports = function registerFinance(app, deps) {
       nextBuyTarget: num(s.next_buy_target),
       nextBuyMonth: s.next_buy_month || null,
       bufferMonths: num(s.buffer_months) != null ? num(s.buffer_months) : 2,
-      royaltyPct: num(s.royalty_pct)          // % of net sales; null = not set
+      royaltyPct: num(s.royalty_pct),         // % of (deposits − Cosmoprof spend); null = not set
+      royaltyCarry: s.royalty_carry === 'true' // carry a negative month into the next
     };
   }
 
@@ -237,9 +258,7 @@ module.exports = function registerFinance(app, deps) {
       if (pLabor != null) labor += pLabor;
 
       const netSales = p.sales + p.refunds + p.promotions;
-      const rPct = ctx.settings ? ctx.settings.royaltyPct : null;
-      const pRoyalty = rPct != null ? netSales * rPct / 100 : null;
-      const known = [pCogs, pSupp, pLabor, pFreight, pRoyalty];
+      const known = [pCogs, pSupp, pLabor, pFreight];
       const profit = netSales + p.fees - known.reduce((n, x) => n + (x || 0), 0);
       items.push({
         asin, sku: key.startsWith('sku:') ? key.slice(4) : null,
@@ -250,13 +269,12 @@ module.exports = function registerFinance(app, deps) {
         unitCost, regularCost: info.regularCost != null ? info.regularCost : null,
         suppliesPerUnit: sRate, laborPerUnit: laborRate, freightPerUnit: fRate,
         landedPerUnit: unitCost != null ? unitCost + (sRate || 0) + (laborRate || 0) + (fRate || 0) : null,
-        cogs: pCogs, supplies: pSupp, labor: pLabor, freight: pFreight, royalty: pRoyalty,
-        royaltyPerUnit: pRoyalty != null && net ? pRoyalty / net : null,
+        cogs: pCogs, supplies: pSupp, labor: pLabor, freight: pFreight,
         profit: pCogs != null ? profit : null,
         profitPerUnit: pCogs != null && net ? profit / net : null,
         feesPerUnit: net ? p.fees / net : null,
         marginPct: pCogs != null && netSales ? (profit / netSales) * 100 : null,
-        missing: [pCogs == null && 'product cost', pRoyalty == null && 'royalty', pSupp == null && 'supplies',
+        missing: [pCogs == null && 'product cost', pSupp == null && 'supplies',
                   pLabor == null && 'labor', pFreight == null && 'freight'].filter(Boolean)
       });
     }
@@ -266,11 +284,52 @@ module.exports = function registerFinance(app, deps) {
              costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0 };
   }
 
+  // Royalty worksheet, month by month, from the first month with a deposit.
+  //   base    = Amazon deposits received that month − Cosmoprof spend that month
+  //   royalty = pct × base, never below zero; with carry-forward on, a negative
+  //             base is carried into the next month instead of being forgiven.
+  async function royaltySeries(settings) {
+    const out = {};
+    const dep = (await pool.query(`
+      SELECT to_char(deposit_date,'YYYY-MM') AS m, SUM(total_amount)::numeric AS amt, COUNT(*)::int AS n
+      FROM inv_settlements WHERE deposit_date IS NOT NULL GROUP BY 1 ORDER BY 1`)).rows;
+    const po = (await pool.query(`
+      SELECT to_char(order_date,'YYYY-MM') AS m, SUM(total)::numeric AS amt, COUNT(*)::int AS n
+      FROM fin_purchase_orders WHERE order_date IS NOT NULL GROUP BY 1`)).rows;
+    const man = (await pool.query('SELECT month, amount, note FROM fin_purchases_manual')).rows;
+    const poBy = {}; for (const r of po) poBy[r.m] = { amt: Number(r.amt), n: r.n };
+    const manBy = {}; for (const r of man) manBy[r.month] = { amt: num(r.amount), note: r.note };
+    const depBy = {}; for (const r of dep) depBy[r.m] = { amt: Number(r.amt), n: r.n };
+
+    const all = [...new Set([...Object.keys(depBy), ...Object.keys(poBy), ...Object.keys(manBy)])].sort();
+    if (!all.length) return out;
+    let m = all[0]; const end = monthKey(new Date());
+    const pct = settings.royaltyPct;
+    let carry = 0;
+    while (m <= end) {
+      const deposits = depBy[m] ? depBy[m].amt : 0;
+      let purchases = 0, purchasesSource = 'none', orders = 0, note = null;
+      if (manBy[m] && manBy[m].amt != null) { purchases = manBy[m].amt; purchasesSource = 'manual'; note = manBy[m].note; }
+      else if (poBy[m]) { purchases = poBy[m].amt; purchasesSource = 'orders'; orders = poBy[m].n; }
+      const base = deposits - purchases;
+      const carryIn = settings.royaltyCarry ? carry : 0;
+      const adjusted = base + carryIn;
+      const royalty = pct == null ? null : Math.max(0, adjusted) * pct / 100;
+      carry = settings.royaltyCarry && adjusted < 0 ? adjusted : 0;
+      out[m] = { month: m, deposits, depositCount: depBy[m] ? depBy[m].n : 0, purchases, purchasesSource,
+                 orders, note, base, carryIn, adjusted, royalty, carryOut: carry, pct };
+      m = nextMonth(m);
+    }
+    return out;
+  }
+
   async function context() {
     await ready;
     const [products, supplies, inbound, lab] = await Promise.all([productInfo(), supplyRates(), inboundPerUnit(), laborPerUnit(90)]);
     const settings = await getSettings();
-    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings };
+    let royalty = {};
+    try { royalty = await royaltySeries(settings); } catch (e) { console.error('[Finance] royalty:', e.message); }
+    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty };
   }
 
   // One month of P&L.
@@ -300,23 +359,26 @@ module.exports = function registerFinance(app, deps) {
     const coverage = firstDay ? { from: firstDay.toISOString().slice(0, 10), to: lastDay.toISOString().slice(0, 10),
                                   days: Math.round((lastDay - firstDay) / 86400000) + 1, partial, isCurrent } : null;
 
+    // Royalty is 15% of (Amazon deposits − Cosmoprof spend) for the month —
+    // a cash formula, worked out separately in royaltySeries().
+    const roy = (ctx.royalty && ctx.royalty[m]) || null;
+    const royalty = roy ? roy.royalty : null;
     const royaltyPct = ctx.settings ? ctx.settings.royaltyPct : null;
-    const royalty = royaltyPct != null ? netSales * royaltyPct / 100 : null;
     const cogs = (a.costedSales || !a.uncostedSales) ? a.cogs : null;
     const supplies = anySupplies ? a.supplies : null;
     const labor = laborActual;                                // null until timesheets cover the month
     const freight = a.freight || null;
     const contribution = deposited
-                         - (cogs || 0) - (royalty || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
+                         - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
-    const net = contribution - (overhead || 0);
+    const net = contribution - (overhead || 0) - (royalty || 0);
     const costCoverage = (a.costedSales + a.uncostedSales) ? a.costedSales / (a.costedSales + a.uncostedSales) : null;
 
     const lineStatus = {
       sales: a.hasLines ? 'ok' : 'missing',
       fees: a.hasLines ? 'ok' : 'missing',
       cogs: cogs == null ? 'missing' : (costCoverage != null && costCoverage < 0.98 ? 'partial' : 'ok'),
-      royalty: royalty == null ? 'missing' : 'ok',
+      royalty: royalty == null ? 'missing' : (roy && roy.purchasesSource === 'none' ? 'partial' : 'ok'),
       supplies: supplies == null ? 'missing' : (a.suppMissing ? 'partial' : 'ok'),
       labor: labor == null ? 'missing' : 'ok',
       freight: freight == null ? 'missing' : (a.freightMissingUnits ? 'partial' : 'ok'),
@@ -328,7 +390,7 @@ module.exports = function registerFinance(app, deps) {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
       amazonFees, reimbursements: t.reimbursements, deposited, feeDetail: t.feeDetail,
-      cogs, royalty, royaltyPct, supplies, labor, freight, contribution, overhead, overheadItems: oh.items, net,
+      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, contribution, overhead, overheadItems: oh.items, net,
       // A margin with most of COGS missing is fiction. Withhold it until at
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
@@ -434,6 +496,26 @@ module.exports = function registerFinance(app, deps) {
     await pool.query('DELETE FROM fin_cash WHERE id=$1', [req.params.id]); res.json({ ok: true });
   });
 
+  app.get('/api/finance/royalty', ownerAuth, async (req, res) => {
+    try {
+      await ready;
+      const settings = await getSettings();
+      const series = await royaltySeries(settings);
+      const orders = (await pool.query('SELECT * FROM fin_purchase_orders ORDER BY order_date DESC NULLS LAST LIMIT 100')).rows;
+      res.json({ settings, months: Object.values(series), orders });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.post('/api/finance/purchases', ownerAuth, async (req, res) => {
+    try {
+      const { month, amount, note } = req.body || {};
+      if (!/^\d{4}-\d{2}$/.test(month || '')) return res.status(400).json({ error: 'month must be YYYY-MM' });
+      if (amount === '' || amount == null) await pool.query('DELETE FROM fin_purchases_manual WHERE month=$1', [month]);
+      else await pool.query(`INSERT INTO fin_purchases_manual(month, amount, note, updated_at) VALUES($1,$2,$3,now())
+                             ON CONFLICT (month) DO UPDATE SET amount=$2, note=$3, updated_at=now()`, [month, num(amount), note || null]);
+      res.json({ ok: true });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   // ---------- endpoints: inputs ----------
   app.get('/api/finance/overhead', ownerAuth, async (req, res) => {
     await ready;
@@ -478,6 +560,7 @@ module.exports = function registerFinance(app, deps) {
       if ('nextBuyMonth' in b) await put('next_buy_month', b.nextBuyMonth || null);
       if ('bufferMonths' in b) await put('buffer_months', num(b.bufferMonths));
       if ('royaltyPct' in b) await put('royalty_pct', num(b.royaltyPct));
+      if ('royaltyCarry' in b) await put('royalty_carry', b.royaltyCarry ? 'true' : 'false');
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
@@ -529,7 +612,8 @@ module.exports = function registerFinance(app, deps) {
           feeds: 'Labor line and labor per unit' },
         { key: 'royalty', label: 'Royalty',
           status: st.royaltyPct != null ? 'ok' : 'missing',
-          detail: st.royaltyPct != null ? `${st.royaltyPct}% of net sales` : 'Not set.', feeds: 'Royalty line' },
+          detail: st.royaltyPct != null ? `${st.royaltyPct}% of (Amazon deposits − Cosmoprof spend) each month` + (st.royaltyCarry ? ', losses carried forward' : '') : 'Not set.',
+          feeds: 'Royalty line' },
         { key: 'supplies', label: 'Supplies per unit',
           status: !sup.set ? 'missing' : (sup.set < sup.n ? 'warn' : 'ok'),
           detail: `${sup.set || 0} of ${sup.n || 0} sizes priced`, feeds: 'Supplies line' },
