@@ -4105,6 +4105,14 @@ function costImport(commit){
     } else {
       h='<div class="box" style="border:2px solid #2563a8;background:#f7fafd"><b style="color:#2563a8">Preview — nothing saved yet</b>'
         +'<div class="hint">'+d.orders+' order(s) · '+(d.lotCount||0)+' priced line(s) · '+d.distinctAsins+' distinct product(s)</div>';
+      (d.checks||[]).forEach(c=>{
+        h+='<div class="hint" style="font-weight:700;color:'+(c.matches?'#1e8449':'#c0392b')+'">'
+          +(c.matches?'✓ ':'⚠ ')+'Store order '+c.orderNumber+': '+c.lines+' lines total $'+Number(c.sum).toLocaleString(undefined,{minimumFractionDigits:2})
+          +(c.matches?' — matches the order subtotal exactly':' but the order subtotal says $'+Number(c.subtotal||0).toLocaleString(undefined,{minimumFractionDigits:2})+' — check before saving')+'</div>'
+          +'<div class="hint">Costs use the price <b>after</b> the line discount. Quantities are as ordered. '
+          +(c.tax?'The $'+Number(c.tax).toLocaleString(undefined,{minimumFractionDigits:2})+' sales tax on this order is not included. ':'')
+          +'If you also have the final Cosmoprof invoice for this same order, save only one of them — saving both counts the purchase twice.</div>';
+      });
       if(d.lots && d.lots.length){
         h+='<table style="margin-top:8px"><thead><tr><th>Product</th><th>Order</th><th style="text-align:right">Unit cost</th><th style="text-align:right">Qty</th></tr></thead><tbody>'
           +d.lots.slice(0,60).map(l=>'<tr><td style="font-size:12px">'+(l.name||l.asin)+'</td>'
