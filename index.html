@@ -65,6 +65,8 @@
   .hint { font-size: 12px; color: #5a6472; margin-top: 8px; line-height: 1.5; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1e8449; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 100; }
   .toast.show { opacity: 1; } .toast.err { background: #c0392b; }
+  .mini { background:#fff; border:1px solid #cfd8e3; color:#1a2a3a; border-radius:6px; padding:5px 10px; font-size:12px; font-weight:700; cursor:pointer; font-family:inherit; }
+  .mini:hover { background:#f1f5f9; border-color:#9db0c9; }
   .cards { display: flex; gap: 12px; margin-bottom: 16px; }
   .card { flex: 1; background: #fff; border-radius: 10px; padding: 14px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   .card .n { font-size: 22px; font-weight: 700; color: #0f1b2d; } .card .l { font-size: 11px; color: #5a6472; text-transform: uppercase; }
@@ -461,8 +463,10 @@
         <button class="subtab" onclick="showSubTab('fbainv',event)">🏬 FBA Inventory</button>
         <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
         <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
-        <button class="subtab" onclick="showSubTab('pnl',event)">📊 Monthly P&amp;L</button>
-        <button class="subtab" onclick="showSubTab('costs',event)">💵 Costs &amp; Profit</button>
+        <button class="subtab" onclick="showSubTab('fpnl',event)" style="font-weight:800">📊 P&amp;L</button>
+        <button class="subtab" onclick="showSubTab('fprod',event)" style="font-weight:800">🏷️ Product Profit</button>
+        <button class="subtab" onclick="showSubTab('fcash',event)" style="font-weight:800">💵 Cash &amp; Draws</button>
+        <button class="subtab" onclick="showSubTab('fsrc',event)">⚙️ Data Sources</button>
         <button class="subtab" onclick="showSubTab('labor',event)">👷 Labor</button>
         <button class="subtab" onclick="showSubTab('audit',event)">🔎 Stock Audit</button>
         <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
@@ -509,6 +513,45 @@
       <div id="covBody" style="margin-top:8px"></div>
     </div>
   </div>
+<div id="sub-fpnl" class="subpanel">
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div><h3 style="margin:0">Profit &amp; Loss</h3><div class="hint">Matched: costs are charged when stock <b>sells</b>, not when you buy it. Click a month to see its products.</div></div>
+        <select id="fpnlMonths" onchange="loadFinPnl()" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px;font-weight:700">
+          <option value="6">Last 6 months</option><option value="12" selected>Last 12 months</option><option value="24">Last 24 months</option></select>
+      </div>
+    </div>
+    <div id="fpnlBody"><div class="hint" style="padding:16px">Loading…</div></div>
+  </div>
+
+  <div id="sub-fprod" class="subpanel">
+    <div class="box">
+      <h3 style="margin:0 0 4px">Product Profit</h3>
+      <div class="hint">What each product cost you, what it sold, and what it actually made after Amazon's real fees. Click a row for the per-unit breakdown.</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
+        <input type="month" id="fprodMonth" onchange="loadFinProducts()" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px">
+        <button class="mini" onclick="document.getElementById('fprodMonth').value='';loadFinProducts()">Last 30 days</button>
+        <input id="fprodSearch" oninput="renderFinProducts()" placeholder="Search product or ASIN" style="flex:1;min-width:180px;padding:8px;border:2px solid #e2e8f0;border-radius:6px">
+        <select id="fprodSort" onchange="renderFinProducts()" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px">
+          <option value="profit">Sort: total profit</option><option value="ppu">Sort: profit per unit</option>
+          <option value="margin">Sort: margin %</option><option value="units">Sort: units sold</option><option value="worst">Sort: worst first</option></select>
+      </div>
+    </div>
+    <div id="fprodBody"><div class="hint" style="padding:16px">Loading…</div></div>
+  </div>
+
+  <div id="sub-fcash" class="subpanel">
+    <div id="fcashBody"><div class="hint" style="padding:16px">Loading…</div></div>
+  </div>
+
+  <div id="sub-fsrc" class="subpanel">
+    <div class="box">
+      <h3 style="margin:0 0 4px">Data Sources</h3>
+      <div class="hint">Everything that feeds the P&amp;L. <b style="color:#1e8449">Green</b> means that line is trustworthy; <b style="color:#b7791f">amber</b> means partial; <b style="color:#c0392b">red</b> means missing. You only need to come here when a light isn't green.</div>
+    </div>
+    <div id="fsrcBody"><div class="hint" style="padding:16px">Loading…</div></div>
+  </div>
+
 <div id="sub-pnl" class="subpanel">
     <div class="box">
       <h3 style="margin-bottom:4px">Monthly P&amp;L</h3>
@@ -2124,6 +2167,10 @@ function showSubTab(name, ev){
   if(name==='labor'){ loadEmployees(); loadCoverage(); }
   if(name==='audit') loadStockAudit();
   if(name==='pnl') loadPnl();
+  if(name==='fpnl') loadFinPnl();
+  if(name==='fprod') loadFinProducts();
+  if(name==='fcash') loadFinCash();
+  if(name==='fsrc') loadFinSources();
   if(name==='costs'){ if(window._costData) renderCosts(); else loadCosts(); }
   if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
@@ -3403,6 +3450,389 @@ function mapSku(sku){
     else alert((d&&d.error)||'Failed');
   });
 }
+
+// ==================== FINANCE SCREENS ====================
+const fin$ = (v, dp) => v == null ? null
+  : (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: dp == null ? 0 : dp, maximumFractionDigits: dp == null ? 0 : dp });
+const finDot = st => '<span title="' + ({ ok: 'Complete', partial: 'Partial — some products missing data', missing: 'Not tracked yet' }[st] || '') + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;background:'
+  + ({ ok: '#1e8449', partial: '#d69e2e', missing: '#c0392b' }[st] || '#cfd8e3') + '"></span>';
+const finMonthLabel = m => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1, 1)).toLocaleString('en-US', { month: 'short', timeZone: 'UTC' }) + ' ' + String(y).slice(2); };
+
+// ---------- P&L ----------
+function loadFinPnl() {
+  const b = document.getElementById('fpnlBody'); if (!b) return;
+  b.innerHTML = '<div class="hint" style="padding:16px">Building your P&amp;L…</div>';
+  const n = (document.getElementById('fpnlMonths') || {}).value || 12;
+  ownerApi('/api/finance/pnl?months=' + n).then(d => {
+    if (!d || d.error || !d.months) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load. Deploy finance.js and server.js.') + '</div>'; return; }
+    window._finPnl = d; renderFinPnl();
+  }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load the P&amp;L.</div>'; });
+}
+
+function renderFinPnl() {
+  const d = window._finPnl, b = document.getElementById('fpnlBody'); if (!d || !b) return;
+  const all = d.months;
+  const months = all.filter((m, i) => m.hasData || i === all.length - 1);   // hide empty months before your data starts
+  if (!months.some(m => m.hasData)) {
+    b.innerHTML = '<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">No sales data yet</b><div class="hint">Import Amazon settlements from <a href="#" onclick="showSubTab(\'fsrc\');return false">Data Sources</a>.</div></div>';
+    return;
+  }
+  const cur = months[months.length - 1];
+
+  // headline cards for the latest month with data
+  const last = [...months].reverse().find(m => m.hasData) || cur;
+  const avg3 = months.filter(m => m.hasData).slice(-3);
+  const avgNet = avg3.length ? avg3.reduce((n, m) => n + m.net, 0) / avg3.length : null;
+  const incomplete = months.filter(m => m.hasData && !m.complete).length;
+
+  let h = '<div class="cards" style="flex-wrap:wrap">'
+    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + fin$(last.netSales) + '</div><div class="l">Net sales · ' + finMonthLabel(last.month) + '</div></div>'
+    + '<div class="card" style="border-top:3px solid ' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '"><div class="n" style="color:' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '">' + fin$(last.net) + '</div><div class="l">Net profit · ' + finMonthLabel(last.month) + '</div></div>'
+    + '<div class="card" style="border-top:3px solid #127a7a"><div class="n">' + (last.marginPct == null ? '—' : last.marginPct.toFixed(1) + '%') + '</div><div class="l">Net margin</div></div>'
+    + '<div class="card" style="border-top:3px solid #7d3c98"><div class="n">' + (avgNet == null ? '—' : fin$(avgNet)) + '</div><div class="l">Avg net profit · last ' + avg3.length + ' mo</div></div>'
+    + '</div>';
+
+  if (incomplete) {
+    h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><b style="color:#b7791f">' + incomplete + ' month(s) are missing cost lines</b>'
+      + ' <span class="hint">— so their profit is <b>higher than the truth</b>. Red and amber dots show which lines. <a href="#" onclick="showSubTab(\'fsrc\');return false">Fix in Data Sources →</a></span></div>';
+  }
+
+  // trend chart
+  const maxAbs = Math.max(1, ...months.map(m => Math.max(Math.abs(m.net), Math.abs(m.contribution))));
+  const W = Math.max(360, months.length * 64), H = 170, zero = 110, scale = 90 / maxAbs;
+  let svg = '<svg viewBox="0 0 ' + W + ' ' + H + '" style="width:100%;max-height:190px">'
+    + '<line x1="0" y1="' + zero + '" x2="' + W + '" y2="' + zero + '" stroke="#cfd8e3"/>';
+  months.forEach((m, i) => {
+    const x = i * 64 + 14, hN = Math.abs(m.net) * scale, hC = Math.abs(m.contribution) * scale;
+    svg += '<rect x="' + x + '" y="' + (m.contribution >= 0 ? zero - hC : zero) + '" width="16" height="' + hC + '" fill="#cfe0f5" rx="2"><title>Contribution ' + fin$(m.contribution) + '</title></rect>'
+      + '<rect x="' + (x + 18) + '" y="' + (m.net >= 0 ? zero - hN : zero) + '" width="16" height="' + hN + '" fill="' + (m.net >= 0 ? '#1e8449' : '#c0392b') + '" rx="2"' + (m.complete ? '' : ' opacity="0.55"') + '><title>Net ' + fin$(m.net) + '</title></rect>'
+      + '<text x="' + (x + 17) + '" y="' + (H - 36) + '" text-anchor="middle" font-size="11" fill="#5a6472">' + finMonthLabel(m.month) + '</text>'
+      + '<text x="' + (x + 17) + '" y="' + (H - 20) + '" text-anchor="middle" font-size="10" font-weight="700" fill="' + (m.net >= 0 ? '#1e8449' : '#c0392b') + '">' + (m.hasData ? fin$(m.net / 1000, 1).replace('$', '$') + 'k' : '') + '</text>';
+  });
+  svg += '</svg>';
+  h += '<div class="box"><div style="display:flex;gap:14px;font-size:12px;color:#5a6472;margin-bottom:4px">'
+    + '<span><span style="display:inline-block;width:10px;height:10px;background:#cfe0f5;border-radius:2px"></span> Contribution (before overhead)</span>'
+    + '<span><span style="display:inline-block;width:10px;height:10px;background:#1e8449;border-radius:2px"></span> Net profit</span>'
+    + '<span style="color:#9db0c9">faded = incomplete month</span></div><div style="overflow-x:auto">' + svg + '</div></div>';
+
+  // the statement
+  const rows = [
+    ['Net sales', 'netSales', 'sales', { bold: true, note: 'after refunds & promotions · tax excluded' }],
+    ['Amazon fees', 'amazonFees', 'fees', { note: 'referral, FBA, storage — as billed' }],
+    ['Reimbursements', 'reimbursements', 'fees', { hideZero: true }],
+    ['Product cost (COGS)', 'cogs', 'cogs', { neg: true }],
+    ['Supplies', 'supplies', 'supplies', { neg: true }],
+    ['Labor', 'labor', 'labor', { neg: true }],
+    ['Inbound freight', 'freight', 'freight', { neg: true }],
+    ['CONTRIBUTION', 'contribution', null, { total: true }],
+    ['Rent & overhead', 'overhead', 'overhead', { neg: true }],
+    ['NET PROFIT', 'net', null, { total: true, big: true }],
+    ['Net margin', 'marginPct', null, { pct: true }]
+  ];
+  let t = '<div class="box" style="overflow-x:auto;padding:0"><table style="min-width:' + (220 + months.length * 96) + 'px;border-collapse:collapse">'
+    + '<thead><tr><th style="text-align:left;position:sticky;left:0;background:#1a2a3a;min-width:200px">&nbsp;</th>'
+    + months.map(m => '<th style="text-align:right;cursor:pointer" onclick="finDrillMonth(\'' + m.month + '\')" title="See products for ' + finMonthLabel(m.month) + '">' + finMonthLabel(m.month) + (m.complete || !m.hasData ? '' : ' <span style="color:#f6c667">●</span>') + '</th>').join('')
+    + '</tr></thead><tbody>';
+  for (const [label, key, stKey, o] of rows) {
+    if (o.hideZero && !months.some(m => m[key])) continue;
+    const style = o.total ? 'border-top:2px solid #1a2a3a;font-weight:800;background:#f7f9fb;' : '';
+    t += '<tr style="' + style + '"><td style="position:sticky;left:0;background:' + (o.total ? '#f7f9fb' : '#fff') + ';padding:9px 12px;' + (o.big ? 'font-size:15px;' : '') + '">'
+      + label + (o.note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + o.note + '</div>' : '') + '</td>';
+    for (const m of months) {
+      let v = m[key], cell;
+      if (!m.hasData) cell = '<span style="color:#cfd8e3">—</span>';
+      else if (o.pct) cell = v == null ? '—' : '<b style="color:' + (v >= 0 ? '#1e8449' : '#c0392b') + '">' + v.toFixed(1) + '%</b>';
+      else if (v == null) cell = (stKey ? finDot('missing') : '') + '<span style="color:#c0392b;font-size:11px">not tracked</span>';
+      else {
+        const shown = o.neg ? -v : v;
+        cell = (stKey && m.lineStatus[stKey] !== 'ok' ? finDot(m.lineStatus[stKey]) : '')
+          + '<span style="' + (shown < 0 ? 'color:#c0392b;' : '') + (o.total ? 'color:' + (shown >= 0 ? '#1e8449' : '#c0392b') + ';' : '') + (o.big ? 'font-size:15px;' : '') + '">' + fin$(shown) + '</span>';
+        if (key === 'cogs' && m.costCoverage != null && m.costCoverage < 0.98)
+          cell += '<div style="font-size:10px;color:#b7791f">' + Math.round(m.costCoverage * 100) + '% of sales costed</div>';
+      }
+      t += '<td style="text-align:right;padding:9px 12px;white-space:nowrap">' + cell + '</td>';
+    }
+    t += '</tr>';
+  }
+  t += '</tbody></table></div>';
+  h += t;
+  h += '<div class="hint" style="padding:4px 4px 12px">' + finDot('ok') + 'complete ' + finDot('partial') + 'partial ' + finDot('missing') + 'not tracked yet · Sales tax Amazon collects for you and reserve holds are excluded — neither is your money or your expense.'
+    + (d.laborInfo && d.laborInfo.rate != null ? ' · Labor per unit is <b>$' + d.laborInfo.rate.toFixed(2) + '</b> (last ' + d.laborInfo.days + ' days of timesheets ÷ units shipped).' : '') + '</div>';
+  b.innerHTML = h;
+}
+function finDrillMonth(m) { showSubTab('fprod'); const el = document.getElementById('fprodMonth'); if (el) { el.value = m; loadFinProducts(); } }
+
+// ---------- Product Profit ----------
+function loadFinProducts() {
+  const b = document.getElementById('fprodBody'); if (!b) return;
+  const m = (document.getElementById('fprodMonth') || {}).value || '';
+  b.innerHTML = '<div class="hint" style="padding:16px">Loading…</div>';
+  ownerApi('/api/finance/products' + (m ? '?month=' + m : '')).then(d => {
+    if (!d || d.error || !d.items) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    window._finProd = d; renderFinProducts();
+  }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load products.</div>'; });
+}
+
+function renderFinProducts() {
+  const d = window._finProd, b = document.getElementById('fprodBody'); if (!d || !b) return;
+  const q = ((document.getElementById('fprodSearch') || {}).value || '').toLowerCase();
+  const sort = (document.getElementById('fprodSort') || {}).value || 'profit';
+  let items = d.items.filter(x => x.netSales || x.units);
+  if (q) items = items.filter(x => (x.name || '').toLowerCase().includes(q) || (x.asin || '').toLowerCase().includes(q) || (x.sku || '').toLowerCase().includes(q));
+  const k = { profit: x => x.profit ?? -1e12, ppu: x => x.profitPerUnit ?? -1e12, margin: x => x.marginPct ?? -1e12, units: x => x.netUnits, worst: x => -(x.profit ?? 1e12) }[sort];
+  items.sort((a, c) => k(c) - k(a));
+
+  const tot = items.reduce((t, x) => { t.u += x.netUnits; t.s += x.netSales; t.f += x.fees; if (x.profit != null) { t.p += x.profit; t.ps += x.netSales; } else t.nc++; return t; }, { u: 0, s: 0, f: 0, p: 0, ps: 0, nc: 0 });
+  let h = '<div class="cards" style="flex-wrap:wrap">'
+    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + tot.u.toLocaleString() + '</div><div class="l">Units sold</div></div>'
+    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + fin$(tot.s) + '</div><div class="l">Net sales</div></div>'
+    + '<div class="card" style="border-top:3px solid #c0392b"><div class="n">' + fin$(-tot.f) + '</div><div class="l">Amazon fees · ' + (tot.s ? (Math.abs(tot.f) / tot.s * 100).toFixed(1) : '0') + '%</div></div>'
+    + '<div class="card" style="border-top:3px solid #1e8449"><div class="n" style="color:#1e8449">' + fin$(tot.p) + '</div><div class="l">Profit · ' + (tot.ps ? (tot.p / tot.ps * 100).toFixed(1) + '% margin' : '') + '</div></div></div>';
+  const miss = new Set(); items.forEach(x => x.missing.forEach(m => miss.add(m)));
+  if (tot.nc || miss.size) h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><span class="hint">'
+    + (tot.nc ? '<b>' + tot.nc + ' product(s) have no cost</b> and are left out of profit. ' : '')
+    + (miss.size ? 'Not yet in landed cost: <b>' + [...miss].filter(x => x !== 'product cost').join(', ') + '</b>. ' : '')
+    + '<a href="#" onclick="showSubTab(\'fsrc\');return false">Data Sources →</a></span></div>';
+
+  h += '<div class="box" style="padding:0;overflow-x:auto"><table style="min-width:900px"><thead><tr>'
+    + '<th style="text-align:left">Product</th><th style="text-align:right">Sold</th><th style="text-align:right">Net sales</th>'
+    + '<th style="text-align:right">Amazon fees</th><th style="text-align:right">Landed cost / unit</th><th style="text-align:right">Profit / unit</th>'
+    + '<th style="text-align:right">Profit</th><th style="text-align:right">Margin</th></tr></thead><tbody>';
+  items.forEach((x, i) => {
+    const mc = x.marginPct == null ? '#9db0c9' : (x.marginPct < 10 ? '#c0392b' : (x.marginPct >= 20 ? '#1e8449' : '#b7791f'));
+    h += '<tr style="cursor:pointer" onclick="finToggleRow(' + i + ')"><td style="max-width:340px">'
+      + '<div style="font-weight:600;color:#1a2a3a;font-size:13px">' + (x.name || x.sku || x.asin) + '</div>'
+      + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + (x.asin || ('SKU ' + x.sku)) + (x.missing.length ? ' · <span style="color:#b7791f;font-family:inherit">missing ' + x.missing.join(', ') + '</span>' : '') + '</div></td>'
+      + '<td style="text-align:right">' + x.netUnits + (x.unitsRefunded ? '<div style="font-size:10px;color:#c0392b">' + x.unitsRefunded + ' returned</div>' : '') + '</td>'
+      + '<td style="text-align:right">' + fin$(x.netSales) + '</td>'
+      + '<td style="text-align:right;color:#c0392b">' + fin$(-x.fees) + '</td>'
+      + '<td style="text-align:right">' + (x.landedPerUnit == null ? '<i style="color:#b7791f">no cost</i>' : fin$(x.landedPerUnit, 2)) + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:' + mc + '">' + (x.profitPerUnit == null ? '—' : fin$(x.profitPerUnit, 2)) + '</td>'
+      + '<td style="text-align:right;font-weight:800;color:' + mc + '">' + (x.profit == null ? '—' : fin$(x.profit)) + '</td>'
+      + '<td style="text-align:right;font-weight:700;color:' + mc + '">' + (x.marginPct == null ? '—' : x.marginPct.toFixed(1) + '%') + '</td></tr>'
+      + '<tr id="finRow' + i + '" style="display:none"><td colspan="8" style="background:#f7f9fb;padding:12px 16px">' + finBreakdown(x) + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  b.innerHTML = h;
+}
+function finToggleRow(i) { const r = document.getElementById('finRow' + i); if (r) r.style.display = r.style.display === 'none' ? '' : 'none'; }
+
+function finBreakdown(x) {
+  const u = x.netUnits || 0;
+  const per = v => v == null ? '<span style="color:#c0392b">not tracked</span>' : fin$(v, 2);
+  const sp = u ? x.netSales / u : null, fp = u ? x.fees / u : null;
+  const line = (l, v, o) => '<tr><td style="padding:3px 16px 3px 0' + (o && o.b ? ';font-weight:800' : '') + '">' + l + '</td><td style="text-align:right;padding:3px 0;' + (o && o.b ? 'font-weight:800;' : '') + (o && o.c ? 'color:' + o.c : '') + '">' + v + '</td></tr>';
+  let h = '<div style="display:flex;gap:28px;flex-wrap:wrap">';
+  h += '<div><div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">PER UNIT</div><table style="font-size:13px">'
+    + line('Average sale price', sp == null ? '—' : fin$(sp, 2))
+    + line('Amazon fees', fp == null ? '—' : fin$(fp, 2), { c: '#c0392b' })
+    + line('Product cost', x.unitCost == null ? '<span style="color:#c0392b">no cost</span>' : '-' + fin$(x.unitCost, 2), { c: '#c0392b' })
+    + line('Supplies', x.suppliesPerUnit == null ? per(null) : '-' + fin$(x.suppliesPerUnit, 2), { c: '#c0392b' })
+    + line('Labor', x.laborPerUnit == null ? per(null) : '-' + fin$(x.laborPerUnit, 2), { c: '#c0392b' })
+    + line('Inbound freight', x.freightPerUnit == null ? per(null) : '-' + fin$(x.freightPerUnit, 2), { c: '#c0392b' })
+    + line('Profit per unit', x.profitPerUnit == null ? '—' : fin$(x.profitPerUnit, 2), { b: 1, c: (x.profitPerUnit || 0) >= 0 ? '#1e8449' : '#c0392b' })
+    + '</table>' + (x.regularCost != null && x.unitCost != null && Math.abs(x.regularCost - x.unitCost) > 0.01 ? '<div class="hint" style="margin-top:4px">Regular Cosmoprof cost $' + x.regularCost.toFixed(2) + ' · you hold stock at $' + x.unitCost.toFixed(2) + ' blended</div>' : '') + '</div>';
+  h += '<div><div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">FOR THE PERIOD</div><table style="font-size:13px">'
+    + line('Units sold', x.units + (x.unitsRefunded ? ' − ' + x.unitsRefunded + ' returned' : ''))
+    + line('Gross sales', fin$(x.sales))
+    + (x.refunds ? line('Refunds', fin$(x.refunds), { c: '#c0392b' }) : '')
+    + (x.promotions ? line('Promotions', fin$(x.promotions), { c: '#c0392b' }) : '')
+    + line('Amazon fees', fin$(x.fees), { c: '#c0392b' })
+    + line('COGS', x.cogs == null ? '—' : '-' + fin$(x.cogs), { c: '#c0392b' })
+    + (x.supplies != null ? line('Supplies', '-' + fin$(x.supplies), { c: '#c0392b' }) : '')
+    + (x.labor != null ? line('Labor', '-' + fin$(x.labor), { c: '#c0392b' }) : '')
+    + (x.freight != null ? line('Freight', '-' + fin$(x.freight), { c: '#c0392b' }) : '')
+    + line('Profit', x.profit == null ? '—' : fin$(x.profit), { b: 1, c: (x.profit || 0) >= 0 ? '#1e8449' : '#c0392b' })
+    + '</table></div>';
+  const fd = Object.entries(x.feeDetail || {}).sort((a, c) => a[1] - c[1]);
+  if (fd.length) h += '<div><div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">AMAZON FEES BY NAME</div><table style="font-size:12px">'
+    + fd.map(([k, v]) => line(k, fin$(v, 2) + (u ? ' <span style="color:#9db0c9">(' + fin$(v / u, 2) + '/u)</span>' : ''), { c: '#c0392b' })).join('') + '</table></div>';
+  if (x.asin) h += '<div style="align-self:flex-end"><a href="https://www.amazon.com/dp/' + x.asin + '" target="_blank" style="color:#127a7a;font-size:12px">View on Amazon ↗</a></div>';
+  return h + '</div>';
+}
+
+// ---------- Cash & Draws ----------
+function loadFinCash() {
+  const b = document.getElementById('fcashBody'); if (!b) return;
+  b.innerHTML = '<div class="hint" style="padding:16px">Loading…</div>';
+  ownerApi('/api/finance/cash').then(d => {
+    if (!d || d.error) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    const inp = 'padding:9px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px;width:150px';
+    const today = new Date().toISOString().slice(0, 10);
+    const s = d.settings || {};
+    let h = '<div class="box"><h3 style="margin:0 0 4px">Cash &amp; Draws</h3>'
+      + '<div class="hint">Profit is not cash. When you buy stock, cash turns into inventory — still yours, but not something you can draw. This screen shows whether the business is growing, and how much you can take out without starving the next buy.</div></div>';
+
+    h += '<div class="cards" style="flex-wrap:wrap">'
+      + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + (d.liquid == null ? '—' : fin$(d.liquid)) + '</div><div class="l">Cash + Amazon balance</div></div>'
+      + '<div class="card" style="border-top:3px solid #7d3c98"><div class="n">' + fin$(d.inventory.total) + '</div><div class="l">Inventory at cost</div>'
+      + '<div style="font-size:10px;color:#9db0c9;margin-top:3px">warehouse ' + fin$(d.inventory.warehouse) + ' · at/to Amazon ' + fin$(d.inventory.fba) + '</div></div>'
+      + '<div class="card" style="border-top:3px solid #127a7a"><div class="n">' + (d.workingCapital == null ? '—' : fin$(d.workingCapital)) + '</div><div class="l">Working capital</div></div>'
+      + '<div class="card" style="border-top:3px solid #1e8449;background:#f6fbf8"><div class="n" style="color:#1e8449">' + (d.safeToDraw == null ? '—' : fin$(d.safeToDraw)) + '</div><div class="l"><b>Safe to draw</b></div></div>'
+      + '</div>';
+
+    // how safe-to-draw is worked out
+    h += '<div class="box"><b style="font-size:15px">How "safe to draw" is worked out</b><table style="margin-top:8px;font-size:14px"><tbody>'
+      + '<tr><td style="padding:4px 20px 4px 0">Cash + Amazon balance</td><td style="text-align:right">' + (d.liquid == null ? '—' : fin$(d.liquid)) + '</td></tr>'
+      + '<tr><td style="padding:4px 20px 4px 0">minus reserve for next buy' + (s.nextBuyMonth ? ' (' + s.nextBuyMonth + ')' : '') + '</td><td style="text-align:right;color:#c0392b">' + (s.nextBuyTarget ? '-' + fin$(s.nextBuyTarget) : '<span style="font-size:12px">not set</span>') + '</td></tr>'
+      + '<tr><td style="padding:4px 20px 4px 0">minus ' + s.bufferMonths + ' month(s) of overhead</td><td style="text-align:right;color:#c0392b">' + (d.monthlyOverhead ? '-' + fin$(d.monthlyOverhead * s.bufferMonths) : '<span style="font-size:12px">none entered</span>') + '</td></tr>'
+      + '<tr style="border-top:1px solid #e2e8f0"><td style="padding:4px 20px 4px 0">capped at profit earned, last 3 months</td><td style="text-align:right">' + fin$(d.trailingProfit) + (d.trailingComplete ? '' : ' <span style="color:#b7791f;font-size:11px">incomplete</span>') + '</td></tr>'
+      + '<tr style="border-top:2px solid #1a2a3a;font-weight:800"><td style="padding:6px 20px 4px 0">Safe to draw</td><td style="text-align:right;color:#1e8449">' + (d.safeToDraw == null ? '—' : fin$(d.safeToDraw)) + '</td></tr>'
+      + '</tbody></table>'
+      + '<div class="hint" style="margin-top:6px">The cap means you never draw more than the business has actually earned, even when cash is high from a quiet buying month.</div>'
+      + (d.why && d.why.length ? '<div style="margin-top:8px">' + d.why.map(w => '<div class="hint" style="color:#b7791f">⚠️ ' + w + '</div>').join('') + '</div>' : '')
+      + (d.inventory.uncostedUnits ? '<div class="hint" style="color:#b7791f">⚠️ ' + d.inventory.uncostedUnits.toLocaleString() + ' units in stock have no cost, so inventory value is understated.</div>' : '')
+      + '</div>';
+
+    // enter balances
+    h += '<div class="box" style="border:2px solid #2563a8;background:#f7fafd"><b style="font-size:15px">Record today\'s balances</b>'
+      + '<div class="hint">Once a month is enough. Inventory value is captured automatically at the same moment, so the history below shows the snowball.</div>'
+      + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472">Date<br><input type="date" id="fcDate" value="' + today + '" style="' + inp + '"></label>'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472">Bank cash $<br><input type="number" step="0.01" id="fcBank" placeholder="0.00" style="' + inp + '"></label>'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472">Amazon balance $<br><input type="number" step="0.01" id="fcAmz" placeholder="0.00" style="' + inp + '"></label>'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472;flex:1;min-width:160px">Note<br><input id="fcNote" placeholder="optional" style="' + inp + ';width:100%"></label>'
+      + '<button class="action" onclick="finSaveCash()" style="background:#2563a8;min-width:120px">Save</button></div></div>';
+
+    // settings
+    h += '<div class="box"><b style="font-size:15px">Your reserve settings</b>'
+      + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472">Next buy size $<br><input type="number" step="100" id="fsBuy" value="' + (s.nextBuyTarget || '') + '" placeholder="e.g. 165000" style="' + inp + '"></label>'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472">Next buy month<br><input type="month" id="fsBuyMonth" value="' + (s.nextBuyMonth || '') + '" style="' + inp + '"></label>'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472">Months of overhead to keep<br><input type="number" step="1" min="0" id="fsBuf" value="' + s.bufferMonths + '" style="' + inp + ';width:110px"></label>'
+      + '<button class="action" onclick="finSaveSettings()" style="background:#127a7a;min-width:120px">Save</button></div></div>';
+
+    // history
+    if (d.history && d.history.length) {
+      const hs = d.history, max = Math.max(1, ...hs.map(x => x.workingCapital));
+      h += '<div class="box"><b style="font-size:15px">The snowball — working capital over time</b>'
+        + '<div class="hint">If this line keeps climbing, the business is building. Draws come out of the growth, not the base.</div>'
+        + '<div style="display:flex;align-items:flex-end;gap:6px;height:120px;margin-top:10px;overflow-x:auto">'
+        + hs.map(x => '<div style="text-align:center;min-width:52px"><div style="font-size:10px;font-weight:700;color:#127a7a">' + fin$(x.workingCapital / 1000, 0) + 'k</div>'
+          + '<div title="Cash ' + fin$(x.liquid) + ' · inventory ' + fin$(x.inventory) + '" style="height:' + Math.max(4, x.workingCapital / max * 86) + 'px;background:linear-gradient(#127a7a,#5fb3b3);border-radius:3px 3px 0 0"></div>'
+          + '<div style="font-size:10px;color:#5a6472">' + String(x.as_of).slice(5, 10) + '</div></div>').join('')
+        + '</div></div>';
+    }
+    b.innerHTML = h;
+  }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load.</div>'; });
+}
+function finSaveCash() {
+  const v = id => (document.getElementById(id) || {}).value;
+  if (!v('fcBank') && !v('fcAmz')) return alert('Enter at least one balance.');
+  ownerApi('/api/finance/cash', { method: 'POST', body: JSON.stringify({ as_of: v('fcDate'), bank_cash: v('fcBank'), amazon_balance: v('fcAmz'), note: v('fcNote') }) })
+    .then(d => { if (d && d.ok) { toast('Saved — inventory valued at ' + fin$(d.inventory_value)); loadFinCash(); } else alert((d && d.error) || 'Failed'); });
+}
+function finSaveSettings() {
+  const v = id => (document.getElementById(id) || {}).value;
+  ownerApi('/api/finance/settings', { method: 'POST', body: JSON.stringify({ nextBuyTarget: v('fsBuy'), nextBuyMonth: v('fsBuyMonth'), bufferMonths: v('fsBuf') }) })
+    .then(d => { if (d && d.ok) { toast('Settings saved'); loadFinCash(); } else alert((d && d.error) || 'Failed'); });
+}
+
+// ---------- Data Sources ----------
+const FIN_SRC_ACTIONS = {
+  settlements: ['Import & reconcile', "showSubTab('costs')"],
+  costs:       ['Import invoice costs', "showSubTab('costs')"],
+  labor:       ['Import timesheets', "showSubTab('labor')"],
+  supplies:    ['Enter supply costs', "finOpenEditor('supplies')"],
+  freight:     ['Enter on shipments', "showSubTab('shipments')"],
+  overhead:    ['Enter rent & overhead', "finOpenEditor('overhead')"],
+  cash:        ['Enter balances', "showSubTab('fcash')"],
+  buy:         ['Set next buy', "showSubTab('fcash')"]
+};
+function loadFinSources() {
+  const b = document.getElementById('fsrcBody'); if (!b) return;
+  ownerApi('/api/finance/sources').then(d => {
+    if (!d || !d.sources) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    const col = { ok: '#1e8449', warn: '#d69e2e', missing: '#c0392b' };
+    let h = '<div class="box" style="padding:0">';
+    for (const s of d.sources) {
+      const a = FIN_SRC_ACTIONS[s.key] || [];
+      h += '<div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid #eef2f6;flex-wrap:wrap">'
+        + '<span style="width:14px;height:14px;border-radius:50%;background:' + col[s.status] + ';flex:none"></span>'
+        + '<div style="flex:1;min-width:220px"><div style="font-weight:800;font-size:14px">' + s.label + '</div>'
+        + '<div class="hint" style="margin:0">' + s.detail + '</div><div style="font-size:10px;color:#9db0c9">feeds: ' + s.feeds + '</div></div>'
+        + (a[0] ? '<button class="mini" onclick="' + a[1] + '" style="padding:8px 12px">' + a[0] + ' →</button>' : '') + '</div>';
+    }
+    h += '</div><div id="finEditor"></div>'
+      + '<div class="box"><b>Advanced tools</b><div class="hint">Raw settlement reconciliation, SKU matching, invoice cost import, backfill and reblend live here. You shouldn\'t need them day to day.</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'
+      + '<button class="mini" onclick="showSubTab(\'costs\')">Settlements &amp; cost tools</button>'
+      + '<button class="mini" onclick="showSubTab(\'maphealth\')">Mapping Health</button>'
+      + '<button class="mini" onclick="showSubTab(\'pnl\')">Old single-month P&amp;L</button></div></div>';
+    b.innerHTML = h;
+    if (window._finEditorOpen) finOpenEditor(window._finEditorOpen);
+  });
+}
+
+function finOpenEditor(which) {
+  window._finEditorOpen = which;
+  if (!document.getElementById('finEditor')) { showSubTab('fsrc'); return; }
+  const box = document.getElementById('finEditor');
+  const inp = 'padding:7px;border:2px solid #e2e8f0;border-radius:6px;font-size:13px';
+  if (which === 'supplies') {
+    ownerApi('/api/finance/supplies').then(d => {
+      box.innerHTML = '<div class="box" style="border:2px solid #127a7a"><b style="font-size:15px">Supplies per unit, by size</b>'
+        + '<div class="hint">Bags, labels, tape, box share, bubble — whatever each unit consumes. Products are sorted into sizes from their names.</div>'
+        + '<table style="margin-top:8px"><thead><tr><th>Size</th><th style="text-align:right">Products</th><th>$ per unit</th></tr></thead><tbody>'
+        + d.items.map(x => '<tr><td>' + x.label + '</td><td style="text-align:right">' + x.products + '</td>'
+          + '<td><input type="number" step="0.01" min="0" data-size="' + x.size_key + '" value="' + (x.per_unit == null ? '' : Number(x.per_unit)) + '" placeholder="not set" style="' + inp + ';width:110px"></td></tr>').join('')
+        + '</tbody></table><div style="display:flex;gap:8px;margin-top:10px"><button class="action" onclick="finSaveSupplies()" style="background:#127a7a;flex:1">Save supply costs</button>'
+        + '<button class="mini" onclick="finCloseEditor()">Close</button></div></div>';
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+  if (which === 'overhead') {
+    ownerApi('/api/finance/overhead').then(d => {
+      const cats = ['Rent', 'Utilities', 'Insurance', 'Software', 'Payroll (non-prep)', 'Vehicle', 'Professional fees', 'Other'];
+      let h = '<div class="box" style="border:2px solid #7d3c98"><b style="font-size:15px">Rent &amp; overhead</b>'
+        + '<div class="hint">Fixed monthly costs that don\'t depend on how much you sell. Set a start month so moving warehouses doesn\'t rewrite history — end the old rent, add the new one.</div>'
+        + '<table style="margin-top:8px"><thead><tr><th>Item</th><th>Category</th><th style="text-align:right">Per month</th><th>From</th><th>Until</th><th></th></tr></thead><tbody>';
+      h += d.items.map(x => '<tr style="' + (x.active ? '' : 'opacity:.5') + '"><td>' + x.name + '</td><td>' + (x.category || '') + '</td>'
+        + '<td style="text-align:right;font-weight:700">' + fin$(Number(x.monthly_amount), 2) + '</td>'
+        + '<td>' + (x.start_month || 'always') + '</td><td>' + (x.end_month || 'ongoing') + '</td>'
+        + '<td><button class="mini" onclick=\'finEditOverhead(' + JSON.stringify(x).replace(/'/g, '&#39;') + ')\'>Edit</button> '
+        + '<button class="mini" onclick="finDelOverhead(' + x.id + ')" style="color:#c0392b">✕</button></td></tr>').join('')
+        || '<tr><td colspan="6" class="hint">Nothing yet.</td></tr>';
+      h += '</tbody></table>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:flex-end;background:#f7f9fb;padding:10px;border-radius:6px">'
+        + '<input type="hidden" id="ohId">'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">Item<br><input id="ohName" placeholder="Warehouse rent" style="' + inp + ';width:170px"></label>'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">Category<br><select id="ohCat" style="' + inp + '">' + cats.map(c => '<option>' + c + '</option>').join('') + '</select></label>'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">$ / month<br><input type="number" step="0.01" id="ohAmt" style="' + inp + ';width:110px"></label>'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">From<br><input type="month" id="ohFrom" style="' + inp + '"></label>'
+        + '<label style="font-size:11px;font-weight:700;color:#5a6472">Until<br><input type="month" id="ohTo" style="' + inp + '"></label>'
+        + '<button class="action" onclick="finSaveOverhead()" style="background:#7d3c98;min-width:110px" id="ohBtn">Add</button>'
+        + '<button class="mini" onclick="finCloseEditor()">Close</button></div>'
+        + '<div class="hint" style="margin-top:6px">Leave <b>From</b> blank to apply it to every month. Leave <b>Until</b> blank if it\'s ongoing.</div></div>';
+      box.innerHTML = h;
+      box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+}
+function finCloseEditor() { window._finEditorOpen = null; const b = document.getElementById('finEditor'); if (b) b.innerHTML = ''; }
+function finSaveSupplies() {
+  const items = [...document.querySelectorAll('#finEditor input[data-size]')].map(i => ({ size_key: i.dataset.size, per_unit: i.value === '' ? null : i.value }));
+  ownerApi('/api/finance/supplies', { method: 'POST', body: JSON.stringify({ items }) })
+    .then(d => { if (d && d.ok) { toast('Supply costs saved'); loadFinSources(); } else alert((d && d.error) || 'Failed'); });
+}
+function finEditOverhead(x) {
+  document.getElementById('ohId').value = x.id; document.getElementById('ohName').value = x.name;
+  document.getElementById('ohCat').value = x.category || 'Other'; document.getElementById('ohAmt').value = Number(x.monthly_amount);
+  document.getElementById('ohFrom').value = x.start_month || ''; document.getElementById('ohTo').value = x.end_month || '';
+  document.getElementById('ohBtn').textContent = 'Update';
+}
+function finSaveOverhead() {
+  const v = id => (document.getElementById(id) || {}).value;
+  if (!v('ohName') || !v('ohAmt')) return alert('Enter an item and a monthly amount.');
+  ownerApi('/api/finance/overhead', { method: 'POST', body: JSON.stringify({ id: v('ohId') || null, name: v('ohName'), category: v('ohCat'),
+    monthly_amount: v('ohAmt'), start_month: v('ohFrom') || null, end_month: v('ohTo') || null }) })
+    .then(d => { if (d && d.ok) { toast('Saved'); loadFinSources(); } else alert((d && d.error) || 'Failed'); });
+}
+function finDelOverhead(id) {
+  if (!confirm('Delete this overhead item? It will be removed from every month.\n\nIf it just ended, use Edit and set an "Until" month instead.')) return;
+  ownerApi('/api/finance/overhead/' + id, { method: 'DELETE' }).then(() => loadFinSources());
+}
+
 
 // ==================== MONTHLY P&L ====================
 function loadPnl(){
