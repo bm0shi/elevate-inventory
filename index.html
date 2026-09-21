@@ -546,6 +546,16 @@
         <button class="action" onclick="recomputeCosts()" style="flex:1;min-width:170px;background:#5a6472">Reblend from history</button>
       </div>
     </div>
+    <div class="box" style="border:2px solid #2563a8;background:#f7fafd">
+      <h3 style="margin-bottom:4px">💰 Import costs from old invoices</h3>
+      <div class="hint">Reads <b>prices only</b>. Does not touch stock, quantities, shipments, pending prep or locations — the only thing it writes is cost history. Safe to run on invoices you already received.</div>
+      <input type="file" id="costPdf" accept="application/pdf" multiple style="margin-top:10px;font-size:13px">
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <button class="action" onclick="costImport(false)" style="flex:1;min-width:170px;background:#2563a8">🔍 Preview costs</button>
+        <button class="action" onclick="costImport(true)" id="costCommitBtn" style="flex:1;min-width:170px;background:#1e8449" disabled>✓ Save costs</button>
+      </div>
+      <div id="costImportOut"></div>
+    </div>
     <div id="costsBody"><div class="hint" style="padding:16px">Load to see cost and margin per product.</div></div>
   </div>
 <div id="sub-maphealth" class="subpanel">
@@ -986,7 +996,12 @@ function ownerUnlock(which){
 }
 function ownerApi(path, opts){
   opts = opts || {};
-  opts.headers = Object.assign({'Content-Type':'application/json','x-app-password':PW,'x-owner-password':OWNER_PW}, opts.headers||{});
+  // A FormData body must set its own multipart boundary — forcing
+  // application/json here silently breaks every file upload.
+  const isForm = (typeof FormData !== 'undefined') && (opts.body instanceof FormData);
+  const base = isForm ? {'x-app-password':PW,'x-owner-password':OWNER_PW}
+                      : {'Content-Type':'application/json','x-app-password':PW,'x-owner-password':OWNER_PW};
+  opts.headers = Object.assign(base, opts.headers||{});
   return fetch(path, opts).then(r=>r.json());
 }
 
@@ -3575,6 +3590,44 @@ function loadSettlementSummary(){
 
 // ==================== COSTS & PROFIT ====================
 // Pull costs out of invoices that were received before lot capture existed.
+function costImport(commit){
+  const inp=document.getElementById('costPdf');
+  const out=document.getElementById('costImportOut');
+  if(!inp || !inp.files || !inp.files.length){ alert('Choose one or more invoice PDFs first.'); return; }
+  if(commit && !confirm('Save these costs?\n\nThis writes cost history only. Stock, quantities and shipments are untouched.')) return;
+  const fd=new FormData();
+  for(const f of inp.files) fd.append('pdf', f);
+  fd.append('commit', commit?'true':'false');
+  out.innerHTML='<div class="hint" style="padding:10px">Reading '+inp.files.length+' file(s)…</div>';
+  ownerApi('/api/costs/import-invoice',{method:'POST',body:fd}).then(d=>{
+    if(!d||d.error){ out.innerHTML='<div class="hint" style="color:#c0392b;padding:10px">'+((d&&d.error)||'Failed')+'</div>'; return; }
+    let h='';
+    if(d.commit){
+      h='<div class="box" style="border:2px solid #1e8449;background:#f6fbf8"><b style="color:#1e8449">Saved '+d.written+' cost lot(s)</b>'
+        +'<div class="hint">'+d.distinctAsins+' product(s) priced · '+(d.products||0)+' reblended · stock untouched</div></div>';
+      document.getElementById('costCommitBtn').disabled=true;
+      setTimeout(loadCosts,400);
+    } else {
+      h='<div class="box" style="border:2px solid #2563a8;background:#f7fafd"><b style="color:#2563a8">Preview — nothing saved yet</b>'
+        +'<div class="hint">'+d.orders+' order(s) · '+(d.lotCount||0)+' priced line(s) · '+d.distinctAsins+' distinct product(s)</div>';
+      if(d.lots && d.lots.length){
+        h+='<table style="margin-top:8px"><thead><tr><th>Product</th><th>Order</th><th style="text-align:right">Unit cost</th><th style="text-align:right">Qty</th></tr></thead><tbody>'
+          +d.lots.slice(0,60).map(l=>'<tr><td style="font-size:12px">'+(l.name||l.asin)+'</td>'
+            +'<td style="font-family:monospace;font-size:11px">'+l.order_number+'</td>'
+            +'<td style="text-align:right;font-weight:700">$'+Number(l.unit_cost).toFixed(2)+'</td>'
+            +'<td style="text-align:right">'+l.qty+'</td></tr>').join('')
+          +'</tbody></table>';
+        if(d.lotCount>60) h+='<div class="hint">…and '+(d.lotCount-60)+' more</div>';
+      }
+      if(d.unmapped && d.unmapped.length) h+='<div class="hint" style="margin-top:8px;color:#b7791f"><b>'+d.unmapped.length+' line(s) skipped</b> — Cosmo# not mapped to a product yet.</div>';
+      if(d.noPrice && d.noPrice.length) h+='<div class="hint" style="color:#b7791f">'+d.noPrice.length+' line(s) had no price on the invoice.</div>';
+      h+='</div>';
+      document.getElementById('costCommitBtn').disabled=!(d.lotCount>0);
+    }
+    out.innerHTML=h;
+  }).catch(e=>{ out.innerHTML='<div class="hint" style="color:#c0392b;padding:10px">Upload failed.</div>'; });
+}
+
 function backfillCosts(){
   if(!confirm('Build cost history from invoices already in the system?\n\nReads unit costs off existing invoice lines. Does NOT touch stock quantities.'))return;
   ownerApi('/api/costs/backfill',{method:'POST',body:JSON.stringify({includePending:false})}).then(d=>{
