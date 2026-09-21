@@ -3628,9 +3628,14 @@ function loadRoyaltyWorksheet(showMonths) {
               + '<td style="font-family:monospace">' + o.order_number + '</td><td>' + (o.date || '—') + '</td>'
               + '<td style="text-align:right">' + (o.lines || 0) + '</td>'
               + '<td style="text-align:right;font-weight:700">' + fin$(o.total, 2) + (o.tax ? '<div style="font-size:10px;color:#9db0c9">incl. ' + fin$(o.tax, 2) + ' tax</div>' : '') + '</td>'
-              + '<td>' + o.source + (o.unpriced ? ' <span style="color:#b7791f">· ' + o.unpriced + ' unpriced line(s)</span>' : '') + (o.note ? ' <span style="color:#b7791f">· ' + o.note + '</span>' : '') + '</td>'
-              + '<td><label style="font-size:11px"><input type="checkbox"' + (o.excluded ? '' : ' checked') + ' onchange="finExcludeOrder(\'' + o.order_number + '\',!this.checked)"> counted</label></td></tr>').join('')
-          + '</tbody></table><div class="hint" style="margin-top:4px">Untick an order to leave it out — use this when a store order and its final invoice are both here for the same purchase.</div></td></tr>';
+              + '<td>' + o.source
+                + (o.oms && !o.isStoreOrder ? ' <span style="color:#5a6472">· bills store order ' + o.oms + '</span>' : '')
+                + (o.unpriced ? ' <span style="color:#b7791f">· ' + o.unpriced + ' unpriced line(s)</span>' : '') + (o.note ? ' <span style="color:#b7791f">· ' + o.note + '</span>' : '') + '</td>'
+              + '<td>' + (o.replacedBy
+                  ? '<span style="font-size:11px;color:#1e8449;font-weight:700;text-decoration:none;display:inline-block">✓ replaced by invoice ' + o.replacedBy.join(', ') + '</span>'
+                  : '<label style="font-size:11px"><input type="checkbox"' + (o.excluded ? '' : ' checked') + ' onchange="finExcludeOrder(\'' + o.order_number + '\',!this.checked)"> counted</label>')
+              + '</td></tr>').join('')
+          + '</tbody></table><div class="hint" style="margin-top:4px">Store orders are dropped automatically once their final invoice is here — the invoice\'s <b>FS D0…</b> number names the store order it bills. Untick anything else you don\'t want counted.</div></td></tr>';
       }
     }
     h += '</tbody></table><div class="hint" style="margin-top:6px">A month with no Cosmoprof spend recorded is treated as $0 spent — which makes that month\'s royalty look higher than it should. Import the order or type the total.</div></div>';
