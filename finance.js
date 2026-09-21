@@ -12,7 +12,7 @@
 // ============================================================
 
 module.exports = function registerFinance(app, deps) {
-  const { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax } = deps;
+  const { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts } = deps;
 
   // ---------- schema ----------
   const ready = (async () => {
@@ -330,7 +330,7 @@ module.exports = function registerFinance(app, deps) {
       const ch = await pool.query(`
         SELECT order_number, MIN(invoice_date) AS d, COUNT(*)::int AS lines,
                SUM(unit_cost * COALESCE(qty,0))::numeric AS total
-        FROM inv_cost_history GROUP BY order_number`);
+        FROM inv_cost_history WHERE order_number <> 'MANUAL' GROUP BY order_number`);
       for (const r of ch.rows)
         put({ order_number: r.order_number, date: isoDate(r.d), lines: r.lines, total: Number(r.total) || 0, tax: 0,
               source: 'cost lots', complete: false, note: 'mapped lines only — may be short' });
@@ -600,6 +600,77 @@ module.exports = function registerFinance(app, deps) {
                              ON CONFLICT (month) DO UPDATE SET amount=$2, note=$3, updated_at=now()`, [month, num(amount), note || null]);
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
+  // ---------- missing-cost worklist ----------
+  // Products ranked by how much uncosted sales they carry, so the first few you
+  // price fix the most of the P&L.
+  app.get('/api/finance/missing-costs', ownerAuth, async (req, res) => {
+    try {
+      await ready;
+      const showAll = req.query.all === '1';
+      const r = await pool.query(`
+        WITH sold AS (
+          SELECT asin, SUM(quantity)::int AS units, SUM(amount)::numeric AS sales
+          FROM inv_settlement_lines
+          WHERE asin IS NOT NULL AND amount_type='ItemPrice' AND amount_description ILIKE '%principal%'
+            AND transaction_type NOT ILIKE '%refund%' AND posted_date >= now() - interval '90 days'
+          GROUP BY asin),
+        man AS (SELECT asin, unit_cost, invoice_date FROM inv_cost_history WHERE order_number='MANUAL'),
+        lots AS (SELECT asin, COUNT(*)::int AS n FROM inv_cost_history WHERE order_number <> 'MANUAL' GROUP BY asin),
+        cm AS (SELECT asin, string_agg(DISTINCT cosmo_num, ', ') AS cosmo FROM inv_cosmo_map WHERE asin IS NOT NULL GROUP BY asin)
+        SELECT p.asin, p.name, p.image, p.avg_cost, p.regular_cost,
+               COALESCE(sold.units,0) AS units, COALESCE(sold.sales,0)::numeric AS sales,
+               man.unit_cost AS manual_cost, man.invoice_date AS manual_date,
+               COALESCE(lots.n,0) AS invoice_lots, cm.cosmo
+        FROM inv_products p
+        LEFT JOIN sold ON sold.asin = p.asin
+        LEFT JOIN man  ON man.asin  = p.asin
+        LEFT JOIN lots ON lots.asin = p.asin
+        LEFT JOIN cm   ON cm.asin   = p.asin
+        WHERE ${showAll ? 'TRUE' : '(p.avg_cost IS NULL OR (man.asin IS NOT NULL AND COALESCE(lots.n,0)=0))'}
+        ORDER BY COALESCE(sold.sales,0) DESC, p.name`);
+      const items = r.rows.map(x => ({
+        asin: x.asin, name: x.name, image: x.image, cosmo: x.cosmo,
+        units90: Number(x.units), sales90: Number(x.sales),
+        cost: x.avg_cost == null ? null : Number(x.avg_cost),
+        manualCost: x.manual_cost == null ? null : Number(x.manual_cost),
+        manualDate: x.manual_date, invoiceLots: Number(x.invoice_lots),
+        state: Number(x.invoice_lots) ? 'invoice' : (x.manual_cost != null ? 'manual' : 'none')
+      }));
+      const tot = await pool.query(`
+        SELECT COALESCE(SUM(amount),0)::numeric AS s,
+               COALESCE(SUM(amount) FILTER (WHERE p.avg_cost IS NOT NULL),0)::numeric AS c
+        FROM inv_settlement_lines l LEFT JOIN inv_products p ON p.asin = l.asin
+        WHERE l.amount_type='ItemPrice' AND l.amount_description ILIKE '%principal%'
+          AND l.transaction_type NOT ILIKE '%refund%' AND l.posted_date >= now() - interval '90 days'`);
+      const s90 = Number(tot.rows[0].s), c90 = Number(tot.rows[0].c);
+      res.json({ items, sales90: s90, costedSales90: c90, coverage: s90 ? c90 / s90 : null });
+    } catch (e) { console.error('[Finance] missing-costs:', e.message); res.status(500).json({ error: e.message }); }
+  });
+
+  app.post('/api/finance/manual-cost', ownerAuth, async (req, res) => {
+    try {
+      const { asin, unit_cost } = req.body || {};
+      if (!asin) return res.status(400).json({ error: 'asin required' });
+      const c = num(unit_cost);
+      if (c == null) {
+        await pool.query(`DELETE FROM inv_cost_history WHERE asin=$1 AND order_number='MANUAL'`, [asin]);
+      } else {
+        if (c <= 0 || c > 1000) return res.status(400).json({ error: 'Enter a unit cost between $0.01 and $1,000.' });
+        await pool.query(
+          `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
+           VALUES($1,'MANUAL',$2,$3,1)
+           ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$3, invoice_date=$2, qty=1`,
+          [asin, new Date().toISOString().slice(0, 10), c]);
+      }
+      if (recomputeCosts) await recomputeCosts();
+      // Nothing left for this product? Clear the stale blended cost.
+      const left = await pool.query('SELECT COUNT(*)::int AS n FROM inv_cost_history WHERE asin=$1 AND qty > 0', [asin]);
+      if (!left.rows[0].n) await pool.query('UPDATE inv_products SET avg_cost=NULL, regular_cost=NULL, unit_cost=NULL WHERE asin=$1', [asin]);
+      const p = await pool.query('SELECT avg_cost FROM inv_products WHERE asin=$1', [asin]);
+      res.json({ ok: true, cost: p.rows[0] && p.rows[0].avg_cost != null ? Number(p.rows[0].avg_cost) : null });
+    } catch (e) { console.error('[Finance] manual-cost:', e.message); res.status(500).json({ error: e.message }); }
   });
 
   // ---------- endpoints: inputs ----------
