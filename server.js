@@ -23,6 +23,25 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 
 // writing per-segment used to wipe the earlier pages — a 2-page invoice kept
 // only its last page, silently. We now merge every segment sharing an order
 // number BEFORE touching the database.
+// Invoice dates arrive in more than one shape. Screen captures of the order
+// confirmation use words ("Sep 18, 2026") rather than 9/18/26, which is why
+// those invoices were saved with no date. Always hand back M/D/YY.
+function findInvoiceDate(text) {
+  const t = String(text || '');
+  const mdy = t.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+  if (mdy) return `${+mdy[1]}/${+mdy[2]}/${mdy[3].slice(-2)}`;
+  const MON = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12 };
+  const w = t.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})\b/i);
+  if (w) return `${MON[w[1].toLowerCase()]}/${+w[2]}/${w[3].slice(-2)}`;
+  const w2 = t.match(/\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*\.?,?\s+(\d{4})\b/i);
+  if (w2) return `${MON[w2[2].toLowerCase()]}/${+w2[1]}/${w2[3].slice(-2)}`;
+  const iso = t.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
+  if (iso) return `${+iso[2]}/${+iso[3]}/${iso[1].slice(-2)}`;
+  const dash = t.match(/\b(\d{1,2})-(\d{1,2})-(20\d{2})\b/);
+  if (dash) return `${+dash[1]}/${+dash[2]}/${dash[3].slice(-2)}`;
+  return '';
+}
+
 function parseInvoiceText(text) {
   // Cosmoprof has sent at least three layouts. Accept every header style seen:
   //   "FOR ORDER NUMBER: 261642335"   (printed customer invoice)
@@ -36,7 +55,7 @@ function parseInvoiceText(text) {
     const orderNumber = parts[i].trim();
     const body = parts[i + 1] || '';
     const dateM = (parts[i - 1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
-    const date = dateM ? dateM[dateM.length - 1] : '';
+    const date = dateM ? dateM[dateM.length - 1] : findInvoiceDate(parts[i - 1] + body);
 
     if (!orders.has(orderNumber)) orders.set(orderNumber, { date, items: [], pages: 0, rejected: [] });
     const o = orders.get(orderNumber);
@@ -85,7 +104,8 @@ async function processInvoiceText(text) {
       errors.push(`Order ${orderNumber}: ${o.rejected.length} line(s) looked like items but did NOT parse — ${o.rejected.join(' | ')}`);
     }
 
-    await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending') ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [orderNumber, date]);
+    await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
+      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date]);
     if (o.oms) { try { await pool.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, o.oms]); } catch (e) {} }
     await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
     let mapped = 0, unmapped = 0;
@@ -485,7 +505,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'manual-cost-0921-0808';
+const BUILD_ID = 'duo-dates-0921-0817';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1564,8 +1584,9 @@ app.post('/api/invoices/add', auth, async (req, res) => {
   if (!parsed.items.length) return res.status(400).json({ error: 'No line items found' });
 
   await pool.query(
-    `INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,$2,'pending')
-     ON CONFLICT (order_number) DO UPDATE SET invoice_date=$2`, [parsed.orderNumber, parsed.date]);
+    `INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
+     ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`,
+    [parsed.orderNumber, parsed.date || findInvoiceDate(req.body.text || '')]);
   // clear old items for this invoice, re-add
   await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [parsed.orderNumber]);
   let mapped = 0, unmapped = [];
@@ -1585,14 +1606,24 @@ app.post('/api/invoices/add', auth, async (req, res) => {
 // List invoices (pending + recent)
 app.get('/api/invoices', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT i.order_number, i.invoice_date, i.status,
+    `SELECT i.order_number, i.invoice_date, i.status, i.created_at,
             COUNT(ii.id)::int AS lines,
             COALESCE(SUM(ii.qty_expected),0)::int AS expected,
             COALESCE(SUM(ii.qty_received),0)::int AS received
      FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
-     GROUP BY i.order_number, i.invoice_date, i.status
+     GROUP BY i.order_number, i.invoice_date, i.status, i.created_at
      ORDER BY i.created_at DESC LIMIT 100`);
   res.json(rows);
+});
+
+// Set an invoice's date by hand (for files that did not carry one).
+app.post('/api/invoices/:orderNumber/date', auth, async (req, res) => {
+  const d = String((req.body && req.body.date) || '').trim();
+  const iso = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const val = iso ? `${+iso[2]}/${+iso[3]}/${iso[1].slice(-2)}` : findInvoiceDate(d);
+  if (!val) return res.status(400).json({ error: 'Enter a date like 9/18/26.' });
+  await pool.query('UPDATE inv_invoices SET invoice_date=$2 WHERE order_number=$1', [req.params.orderNumber, val]);
+  res.json({ ok: true, date: val });
 });
 
 // Get one invoice's line items (with mapping + progress)
@@ -1995,7 +2026,38 @@ async function recomputeCosts() {
       [b.avg, b.regular, b.avg, asin]);
     n++;
   }
-  console.log(`[Costs] Reblended ${n} products from ${rows.length} purchase lots.`);
+  // Duos and bundles: cost = sum of component costs × qty, unless the bundle
+  // was bought as a set and has invoice lots of its own. A bundle with any
+  // uncosted component is left blank rather than half-costed.
+  let bundles = 0, blanked = 0;
+  try {
+    const bm = await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles');
+    const comps = {};
+    for (const r of bm.rows) (comps[r.bundle_asin] = comps[r.bundle_asin] || []).push(r);
+    const pc = await pool.query('SELECT asin, avg_cost, regular_cost FROM inv_products');
+    const cost = {}; for (const r of pc.rows) cost[r.asin] = r;
+    const ownLots = new Set(rows.filter(r => r.order_number !== 'MANUAL').map(r => r.asin));
+    for (const b of Object.keys(comps)) {
+      if (ownLots.has(b)) continue;
+      let avg = 0, reg = 0, ok = true;
+      for (const c of comps[b]) {
+        const k = cost[c.component_asin];
+        if (!k || k.avg_cost == null) { ok = false; break; }
+        const q = Number(c.qty) || 1;
+        avg += Number(k.avg_cost) * q;
+        reg += Number(k.regular_cost != null ? k.regular_cost : k.avg_cost) * q;
+      }
+      if (ok) {
+        await pool.query('UPDATE inv_products SET avg_cost=$1, regular_cost=$2, unit_cost=$1 WHERE asin=$3',
+          [Math.round(avg * 10000) / 10000, Math.round(reg * 10000) / 10000, b]);
+        bundles++;
+      } else if (!byAsin[b]) {
+        await pool.query('UPDATE inv_products SET avg_cost=NULL, regular_cost=NULL, unit_cost=NULL WHERE asin=$1', [b]);
+        blanked++;
+      }
+    }
+  } catch (e) { console.error('[Costs] bundle costing failed:', e.message); }
+  console.log(`[Costs] Reblended ${n} products from ${rows.length} purchase lots; ${bundles} bundle(s) costed from components${blanked ? ', ' + blanked + ' waiting on a component cost' : ''}.`);
   return n;
 }
 
