@@ -67,6 +67,14 @@ module.exports = function registerFinance(app, deps) {
       -- final invoice was also imported — same purchase, two documents).
       -- Store orders to count even though an invoice names them (e.g. the
       -- card really was charged twice).
+      -- A month where the royalty holder accepted a different amount than the
+      -- formula gives. The formula figure is kept and shown alongside.
+      CREATE TABLE IF NOT EXISTS fin_royalty_adjust (
+        month TEXT PRIMARY KEY,
+        amount_paid NUMERIC NOT NULL,
+        note TEXT,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
       CREATE TABLE IF NOT EXISTS fin_spend_force (
         order_number TEXT PRIMARY KEY,
         created_at TIMESTAMPTZ DEFAULT now()
@@ -385,6 +393,9 @@ module.exports = function registerFinance(app, deps) {
     }
     for (const k of Object.keys(agg)) po.push(agg[k]);
     const man = (await pool.query('SELECT month, amount, note FROM fin_purchases_manual')).rows;
+    let adj = {};
+    try { for (const r of (await pool.query('SELECT month, amount_paid, note FROM fin_royalty_adjust')).rows)
+            adj[r.month] = { paid: Number(r.amount_paid), note: r.note }; } catch (e) {}
     const poBy = {}; for (const r of po) poBy[r.m] = { amt: Number(r.amt), n: r.n, incomplete: r.incomplete };
     const ordersBy = {}; for (const o of allOrders) if (o.month) (ordersBy[o.month] = ordersBy[o.month] || []).push(o);
     const manBy = {}; for (const r of man) manBy[r.month] = { amt: num(r.amount), note: r.note };
@@ -404,10 +415,14 @@ module.exports = function registerFinance(app, deps) {
       const base = deposits - purchases;
       const carryIn = settings.royaltyCarry ? carry : 0;
       const adjusted = base + carryIn;
-      const royalty = pct == null ? null : Math.max(0, adjusted) * pct / 100;
+      const calculated = pct == null ? null : Math.round(Math.max(0, adjusted) * pct) / 100;
+      // An agreed amount replaces the formula figure for this month only.
+      const agreed = adj[m] || null;
+      const royalty = agreed ? agreed.paid : calculated;
       carry = settings.royaltyCarry && adjusted < 0 ? adjusted : 0;
       out[m] = { month: m, deposits, depositCount: depBy[m] ? depBy[m].n : 0, purchases, purchasesSource,
-                 orders, incomplete, fromOrders, orderList: ordersBy[m] || [], note, base, carryIn, adjusted, royalty, carryOut: carry, pct };
+                 orders, incomplete, fromOrders, orderList: ordersBy[m] || [], note, base, carryIn, adjusted, royalty, carryOut: carry, pct,
+                 calculated, agreed: agreed ? { paid: agreed.paid, note: agreed.note, difference: calculated != null ? agreed.paid - calculated : null } : null };
       m = nextMonth(m);
     }
     return out;
@@ -593,6 +608,21 @@ module.exports = function registerFinance(app, deps) {
       const series = await royaltySeries(settings);
       const orders = (await pool.query('SELECT * FROM fin_purchase_orders ORDER BY order_date DESC NULLS LAST LIMIT 100')).rows;
       res.json({ settings, months: Object.values(series), orders });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+  app.post('/api/finance/royalty-adjust', ownerAuth, async (req, res) => {
+    try {
+      const { month, amount, note } = req.body || {};
+      if (!/^\d{4}-\d{2}$/.test(month || '')) return res.status(400).json({ error: 'month must be YYYY-MM' });
+      if (amount === '' || amount == null) {
+        await pool.query('DELETE FROM fin_royalty_adjust WHERE month=$1', [month]);
+        return res.json({ ok: true, cleared: true });
+      }
+      const a = num(amount);
+      if (a == null || a < 0) return res.status(400).json({ error: 'Enter the amount actually paid (0 or more).' });
+      await pool.query(`INSERT INTO fin_royalty_adjust(month, amount_paid, note, updated_at) VALUES($1,$2,$3,now())
+                        ON CONFLICT (month) DO UPDATE SET amount_paid=$2, note=$3, updated_at=now()`, [month, a, note || null]);
+      res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post('/api/finance/spend-force', ownerAuth, async (req, res) => {
