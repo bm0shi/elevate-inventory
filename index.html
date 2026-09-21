@@ -3636,7 +3636,10 @@ function loadRoyaltyWorksheet(showMonths) {
                 + (o.oms && !o.isStoreOrder ? ' <span style="color:#5a6472">· bills store order ' + o.oms + '</span>' : '')
                 + (o.unpriced ? ' <span style="color:#b7791f">· ' + o.unpriced + ' unpriced line(s)</span>' : '') + (o.note ? ' <span style="color:#b7791f">· ' + o.note + '</span>' : '') + '</td>'
               + '<td>' + (o.replacedBy
-                  ? '<span style="font-size:11px;color:#1e8449;font-weight:700;text-decoration:none;display:inline-block">✓ replaced by invoice ' + o.replacedBy.join(', ') + '</span>'
+                  ? (o.forced
+                      ? '<span style="font-size:11px;color:#c0392b;font-weight:700">counted anyway</span> <a href="#" style="font-size:11px" onclick="finForceOrder(\'' + o.order_number + '\',false);return false">undo</a>'
+                      : '<span style="font-size:11px;color:#1e8449;font-weight:700;display:inline-block">✓ filled by invoice ' + o.replacedBy.join(', ') + ' — not counted twice</span>'
+                        + ' <a href="#" style="font-size:10px;color:#9db0c9" onclick="if(confirm(\'Only do this if your card statement shows BOTH this store order and the invoice charged, with no refund.\\n\\nCount this store order as a separate purchase?\'))finForceOrder(\'' + o.order_number + '\',true);return false">count anyway</a>')
                   : '<label style="font-size:11px"><input type="checkbox"' + (o.excluded ? '' : ' checked') + ' onchange="finExcludeOrder(\'' + o.order_number + '\',!this.checked)"> counted</label>')
               + '</td></tr>').join('')
           + '</tbody></table><div class="hint" style="margin-top:4px">Store orders are dropped automatically once their final invoice is here — the invoice\'s <b>FS D0…</b> number names the store order it bills. Untick anything else you don\'t want counted.</div></td></tr>';
@@ -3654,6 +3657,10 @@ function setInvoiceDate(order){
   });
 }
 function finToggleInv(m) { const r = document.getElementById('finInv_' + m); if (r) r.style.display = r.style.display === 'none' ? '' : 'none'; }
+function finForceOrder(order, force) {
+  ownerApi('/api/finance/spend-force', { method: 'POST', body: JSON.stringify({ order_number: order, force }) })
+    .then(d => { if (d && d.ok) { toast(force ? order + ' counted separately' : order + ' back to not counted'); loadFinPnl(); } else alert((d && d.error) || 'Failed'); });
+}
 function finExcludeOrder(order, exclude) {
   ownerApi('/api/finance/spend-exclude', { method: 'POST', body: JSON.stringify({ order_number: order, exclude }) })
     .then(d => { if (d && d.ok) { toast(exclude ? order + ' left out of spend' : order + ' counted again'); loadFinPnl(); } else alert((d && d.error) || 'Failed'); });
