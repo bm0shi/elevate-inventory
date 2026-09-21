@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'finance2-0921-0740';
+const BUILD_ID = 'xstore-0921-0747';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2003,6 +2003,65 @@ async function recomputeCosts() {
 // The only tables it writes are inv_cost_history and (via recomputeCosts)
 // the blended cost fields on inv_products.
 // ============================================================
+// ------------------------------------------------------------
+// Cosmoprof Xstore ORDER receipts (store orders, "Customer Copy").
+// Different from invoices in three ways that matter for cost:
+//  - item numbers carry a leading 1 (1570941 = Cosmo# 570941)
+//  - the Price column is LIST; the Amount column is already net of the
+//    line discount, so true unit cost = Amount / Qty
+//  - quantities are ordered, not shipped
+// Returns the same Map shape as parseInvoiceText, plus a subtotal check.
+// ------------------------------------------------------------
+function parseXstoreOrder(text) {
+  const orders = new Map();
+  const raw = String(text || '');
+  const flat = raw.replace(/[ \t]+/g, ' ');
+  const squashed = raw.replace(/\s+/g, '');
+  const oms = (squashed.match(/OMSOrderID:([A-Z]?\d{6,})/i) || [])[1];
+  const xst = (squashed.match(/XstoreOrderID:(\d{8,})/i) || [])[1];
+  if (!oms && !xst) return { orders, check: null };
+  const orderNumber = oms || ('XS' + xst);
+  const date = (flat.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/) || [])[1] || null;
+
+  const lines = raw.split(/\r?\n/);
+  const items = [];
+  const re = /(?:^|\s)1(\d{6})\s+(\d+)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/;
+  let prevText = '';
+  for (const ln of lines) {
+    const m = ln.match(re);
+    if (m) {
+      const before = ln.slice(0, m.index).trim();
+      const qty = parseInt(m[2], 10);
+      const amount = parseFloat(m[4].replace(/,/g, ''));
+      items.push({
+        cosmo_num: m[1],
+        description: before || prevText,
+        qty_shipped: qty,
+        list_price: parseFloat(m[3].replace(/,/g, '')),
+        amount,
+        unit_cost: qty ? Math.round((amount / qty) * 10000) / 10000 : null
+      });
+      prevText = '';
+      continue;
+    }
+    const t = ln.trim();
+    if (!t) continue;
+    if (/^(DISC_|FP_)/.test(t)) {
+      // a page break can glue the next product's name onto a discount line
+      const tail = t.replace(/^.*?\(\$[\d,]+\.\d{2}\)/, '').trim();
+      if (tail) prevText = tail;
+      continue;
+    }
+    if (!/^Item Ordered$|^\(\$/.test(t)) prevText = t;
+  }
+  if (!items.length) return { orders, check: null };
+  orders.set(orderNumber, { date, items, source: 'xstore' });
+  const subtotal = parseFloat(((flat.match(/Subtotal:\s*\$([\d,]+\.\d{2})/) || [])[1] || '').replace(/,/g, '')) || null;
+  const tax = parseFloat(((flat.match(/Tax:\s*\$([\d,]+\.\d{2})/) || [])[1] || '').replace(/,/g, '')) || null;
+  const sum = Math.round(items.reduce((n, x) => n + x.amount, 0) * 100) / 100;
+  return { orders, check: { orderNumber, subtotal, sum, matches: subtotal != null && Math.abs(sum - subtotal) < 0.05, tax, lines: items.length } };
+}
+
 app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async (req, res) => {
   const commit = String(req.body && req.body.commit) === 'true';
   try {
@@ -2020,7 +2079,12 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
     if (req.body && req.body.text) text += '\n' + req.body.text;
     if (!text.trim()) return res.status(400).json({ error: 'No readable text found in the upload.' });
 
-    const orders = parseInvoiceText(text);
+    const orders = parseInvoiceText(text) || new Map();
+    // Also try the Xstore order-receipt layout; merge anything it finds.
+    const xs = parseXstoreOrder(text);
+    for (const [k, v] of xs.orders) if (!orders.has(k)) orders.set(k, v);
+    const checks = xs.check ? [xs.check] : [];
+    if (xs.check) console.log('[Costs] Xstore order ' + xs.check.orderNumber + ': ' + xs.check.lines + ' lines, sum $' + xs.check.sum + ' vs subtotal $' + xs.check.subtotal + (xs.check.matches ? ' ✓' : ' ✗ MISMATCH'));
     if (!orders || !orders.size) {
       return res.json({ ok:true, commit, orders:0, lots:[], lotCount:0, distinctAsins:0, unmapped:[], noPrice:[],
         note:'No invoice orders were recognised in that file.' });
@@ -2060,12 +2124,12 @@ app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async 
       }
       const products = await recomputeCosts();
       console.log(`[Costs] Cost-only import: ${written} lot(s) from ${orders.size} order(s); ${products} product(s) reblended. No stock touched.`);
-      return res.json({ ok:true, commit:true, orders:orders.size, written, products,
+      return res.json({ ok:true, commit:true, orders:orders.size, written, products, checks,
                         lots: lots.slice(0, 200), unmapped, noPrice,
                         distinctAsins: [...new Set(lots.map(l => l.asin))].length });
     }
 
-    res.json({ ok:true, commit:false, orders:orders.size, lots: lots.slice(0, 200),
+    res.json({ ok:true, commit:false, orders:orders.size, checks, lots: lots.slice(0, 200),
                lotCount: lots.length, unmapped, noPrice,
                distinctAsins: [...new Set(lots.map(l => l.asin))].length });
   } catch (e) {
