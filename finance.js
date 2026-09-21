@@ -743,6 +743,29 @@ module.exports = function registerFinance(app, deps) {
     } catch (e) { console.error('[Finance] missing-costs:', e.message); res.status(500).json({ error: e.message }); }
   });
 
+  // Attach a Cosmoprof item number to a product from the costs worklist.
+  // Accepts the 7-digit store form (1570131) and stores the 6-digit invoice
+  // form (570131). Refuses to silently move a number that already belongs to a
+  // different product — that would misroute every future invoice line.
+  app.post('/api/finance/add-cosmo', ownerAuth, async (req, res) => {
+    try {
+      let { asin, cosmo_num, force } = req.body || {};
+      cosmo_num = String(cosmo_num || '').replace(/\D/g, '');
+      if (cosmo_num.length === 7 && cosmo_num[0] === '1') cosmo_num = cosmo_num.slice(1);
+      if (!asin || !/^\d{6}$/.test(cosmo_num)) return res.status(400).json({ error: 'Enter a 6-digit Cosmoprof item number (or the 7-digit one starting with 1).' });
+      const cur = await pool.query(
+        `SELECT m.asin, p.name FROM inv_cosmo_map m LEFT JOIN inv_products p ON p.asin = m.asin WHERE m.cosmo_num=$1`, [cosmo_num]);
+      if (cur.rows.length && cur.rows[0].asin && cur.rows[0].asin !== asin && !force)
+        return res.json({ conflict: true, cosmo_num, otherAsin: cur.rows[0].asin, otherName: cur.rows[0].name });
+      await pool.query(
+        `INSERT INTO inv_cosmo_map(cosmo_num, asin, verified, source) VALUES($1,$2,false,'picked')
+         ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2, verified=false, verified_at=NULL, verified_upc=NULL, source='picked'`,
+        [cosmo_num, asin]);
+      await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2 AND asin IS NULL', [asin, cosmo_num]);
+      res.json({ ok: true, cosmo_num });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+  });
+
   app.post('/api/finance/manual-cost', ownerAuth, async (req, res) => {
     try {
       const { asin, unit_cost } = req.body || {};
