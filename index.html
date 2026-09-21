@@ -3580,7 +3580,7 @@ function loadSettlementSummary(){
         +'<td>'+(x.feePctOfSales==null?'—':x.feePctOfSales.toFixed(1)+'%')+'</td>'
         +'<td>'+(x.refundRate?x.refundRate.toFixed(1)+'%':'—')+'</td>'
         +'<td><b>$'+x.deposited.toFixed(2)+'</b></td>'
-        +'<td>'+(x.cogs==null?'<i style="color:#b7791f">no cost</i>':'$'+x.cogs.toFixed(2))+'</td>'
+        +'<td>'+(x.cogs==null?(x.unitsMissing&&x.avgCost!=null?'<i style="color:#c0392b">no units</i>':'<i style="color:#b7791f">no cost</i>'):'$'+x.cogs.toFixed(2))+'</td>'
         +'<td><b>'+(x.profit==null?'—':'$'+x.profit.toFixed(2))+'</b></td>'
         +'<td style="'+mCol+'">'+(x.marginPct==null?'—':x.marginPct.toFixed(1)+'%')+'</td></tr>';
     }
