@@ -316,15 +316,19 @@ module.exports = function registerFinance(app, deps) {
     } catch (e) {}
     try {
       const inv = await pool.query(`
-        SELECT i.order_number, i.invoice_date, i.status, i.oms_id,
+        SELECT i.order_number, i.invoice_date, i.status, i.oms_id, i.created_at,
                COUNT(ii.*)::int AS lines,
                COUNT(*) FILTER (WHERE ii.unit_cost IS NULL)::int AS unpriced,
                COALESCE(SUM(ii.unit_cost * COALESCE(ii.qty_expected,0)),0)::numeric AS total
         FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
-        GROUP BY i.order_number, i.invoice_date, i.status, i.oms_id`);
-      for (const r of inv.rows)
-        put({ order_number: r.order_number, date: isoDate(r.invoice_date), lines: r.lines, total: Number(r.total) || 0, tax: 0,
+        GROUP BY i.order_number, i.invoice_date, i.status, i.oms_id, i.created_at`);
+      for (const r of inv.rows) {
+        // No date on the invoice? Use the day it was uploaded, and say so —
+        // dropping it would leave that spend out of the month entirely.
+        const d = isoDate(r.invoice_date);
+        put({ order_number: r.order_number, date: d || isoDate(r.created_at), dateGuessed: !d, lines: r.lines, total: Number(r.total) || 0, tax: 0,
               source: 'check-in', status: r.status, unpriced: r.unpriced, complete: !r.unpriced, oms: r.oms_id || null });
+      }
     } catch (e) {}
     try {
       const ch = await pool.query(`
@@ -630,14 +634,56 @@ module.exports = function registerFinance(app, deps) {
         LEFT JOIN cm   ON cm.asin   = p.asin
         WHERE ${showAll ? 'TRUE' : '(p.avg_cost IS NULL OR (man.asin IS NOT NULL AND COALESCE(lots.n,0)=0))'}
         ORDER BY COALESCE(sold.sales,0) DESC, p.name`);
+      // Duos are costed from their components, so they are never priced
+      // directly. Take them off the list and credit their sales to each
+      // component instead, so a bottle that mostly sells inside a duo still
+      // ranks where it belongs.
+      const bm = (await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles')).rows;
+      const bundleOf = {}; for (const b of bm) (bundleOf[b.bundle_asin] = bundleOf[b.bundle_asin] || []).push(b);
+      const byA = {}; for (const x of r.rows) byA[x.asin] = x;
+      const allSold = (await pool.query(`
+        SELECT l.asin, SUM(l.quantity)::int AS units, SUM(l.amount)::numeric AS sales, MAX(p.name) AS name
+        FROM inv_settlement_lines l LEFT JOIN inv_products p ON p.asin = l.asin
+        WHERE l.asin IS NOT NULL AND l.amount_type='ItemPrice' AND l.amount_description ILIKE '%principal%'
+          AND l.transaction_type NOT ILIKE '%refund%' AND l.posted_date >= now() - interval '90 days'
+        GROUP BY l.asin`)).rows;
+      const soldBy = {}; for (const x of allSold) soldBy[x.asin] = x;
+      const via = {};   // component -> [{ bundle, name, units, sales }]
+      for (const b of Object.keys(bundleOf)) {
+        const sb = soldBy[b]; if (!sb || !Number(sb.units)) continue;
+        const parts = bundleOf[b]; const nParts = parts.reduce((n, c) => n + (Number(c.qty) || 1), 0) || 1;
+        for (const c of parts) {
+          const q = Number(c.qty) || 1;
+          (via[c.component_asin] = via[c.component_asin] || []).push({
+            bundle: b, name: sb.name || b, units: Number(sb.units) * q, sales: Number(sb.sales) * q / nParts });
+        }
+      }
+      // components missing from the base list (priced ones are filtered out) — pull them in if uncosted
+      const need = Object.keys(via).filter(a => !byA[a]);
+      if (need.length) {
+        const extra = await pool.query(`
+          SELECT p.asin, p.name, p.image, p.avg_cost, p.regular_cost, 0 AS units, 0 AS sales,
+                 (SELECT unit_cost FROM inv_cost_history h WHERE h.asin=p.asin AND h.order_number='MANUAL') AS manual_cost,
+                 NULL AS manual_date,
+                 (SELECT COUNT(*) FROM inv_cost_history h WHERE h.asin=p.asin AND h.order_number<>'MANUAL')::int AS invoice_lots,
+                 (SELECT string_agg(DISTINCT cosmo_num, ', ') FROM inv_cosmo_map m WHERE m.asin=p.asin) AS cosmo
+          FROM inv_products p WHERE p.asin = ANY($1)`, [need]);
+        for (const x of extra.rows) if (showAll || x.avg_cost == null) { r.rows.push(x); byA[x.asin] = x; }
+      }
+      r.rows = r.rows.filter(x => !bundleOf[x.asin]);
       const items = r.rows.map(x => ({
         asin: x.asin, name: x.name, image: x.image, cosmo: x.cosmo,
         units90: Number(x.units), sales90: Number(x.sales),
         cost: x.avg_cost == null ? null : Number(x.avg_cost),
         manualCost: x.manual_cost == null ? null : Number(x.manual_cost),
         manualDate: x.manual_date, invoiceLots: Number(x.invoice_lots),
-        state: Number(x.invoice_lots) ? 'invoice' : (x.manual_cost != null ? 'manual' : 'none')
-      }));
+        state: Number(x.invoice_lots) ? 'invoice' : (x.manual_cost != null ? 'manual' : 'none'),
+        viaDuo: via[x.asin] || []
+      })).map(x => {
+        const dUnits = x.viaDuo.reduce((n, v) => n + v.units, 0), dSales = x.viaDuo.reduce((n, v) => n + v.sales, 0);
+        return { ...x, soloUnits: x.units90, soloSales: x.sales90, units90: x.units90 + dUnits, sales90: x.sales90 + dSales };
+      }).sort((a, b) => b.sales90 - a.sales90);
+      const bundleCount = Object.keys(bundleOf).length;
       const tot = await pool.query(`
         SELECT COALESCE(SUM(amount),0)::numeric AS s,
                COALESCE(SUM(amount) FILTER (WHERE p.avg_cost IS NOT NULL),0)::numeric AS c
@@ -645,7 +691,7 @@ module.exports = function registerFinance(app, deps) {
         WHERE l.amount_type='ItemPrice' AND l.amount_description ILIKE '%principal%'
           AND l.transaction_type NOT ILIKE '%refund%' AND l.posted_date >= now() - interval '90 days'`);
       const s90 = Number(tot.rows[0].s), c90 = Number(tot.rows[0].c);
-      res.json({ items, sales90: s90, costedSales90: c90, coverage: s90 ? c90 / s90 : null });
+      res.json({ items, sales90: s90, costedSales90: c90, coverage: s90 ? c90 / s90 : null, bundleCount });
     } catch (e) { console.error('[Finance] missing-costs:', e.message); res.status(500).json({ error: e.message }); }
   });
 
