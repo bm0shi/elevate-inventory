@@ -480,7 +480,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'reconcile-0921-0520';
+const BUILD_ID = 'units-fix-0921-0523';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2234,6 +2234,7 @@ function parseSettlementFlatFile(text) {
   const iTxn = at('transaction-type'), iOrder = at('order-id'), iSku = at('sku');
   const iShip = at('shipment-id');
   const iQty = at('quantity-purchased'), iPosted = at('posted-date');
+  const iItem = at('order-item-code');
 
   // TALL layout (V2): one amount per row.
   const iType = at('amount-type'), iDesc = at('amount-description'), iAmt = at('amount');
@@ -2298,6 +2299,7 @@ function parseSettlementFlatFile(text) {
       order_id: (f[iOrder] || '').trim() || null,
       shipment_id: iShip >= 0 ? ((f[iShip] || '').trim() || null) : null,
       sku: (f[iSku] || '').trim() || null,
+      item_code: iItem >= 0 ? ((f[iItem] || '').trim() || null) : null,
       quantity: iQty >= 0 ? (parseInt(f[iQty], 10) || 0) : 0,
       deposit_date: header ? header.deposit_date : null
     };
@@ -2345,6 +2347,34 @@ function parseSettlementFlatFile(text) {
         emitted++;
       }
     }
+  }
+
+  // Quantity does not always sit on the same row as the Principal amount — it
+  // can be on another row of the same order item, or on a row with no amount
+  // at all (which is never emitted). Collect it per order item from every
+  // source line, then put it on that item's Principal row and nowhere else.
+  if (isWide) {
+    const qtyByItem = {};
+    for (let i = 1; i < lines.length; i++) {
+      const f = lines[i].split('\t');
+      const q = iQty >= 0 ? (parseInt(f[iQty], 10) || 0) : 0;
+      if (!q) continue;
+      const key = ((f[iOrder] || '').trim()) + '|' + (iItem >= 0 ? (f[iItem] || '').trim() : ((f[iSku] || '').trim()));
+      if (Math.abs(q) > Math.abs(qtyByItem[key] || 0)) qtyByItem[key] = q;
+    }
+    let fromItem = 0, estimated = 0;
+    const seen = new Set();
+    for (const r of rows) {
+      const isPrin = r.amount_type === 'ItemPrice' && /principal/i.test(r.amount_description || '');
+      if (!isPrin) { r.quantity = 0; continue; }
+      const key = (r.order_id || '') + '|' + (r.item_code || r.sku || '');
+      if (seen.has(key)) { r.quantity = 0; continue; }   // one unit count per item
+      seen.add(key);
+      const q = qtyByItem[key];
+      if (q) { r.quantity = Math.abs(q) * Math.sign(r.amount || 1); fromItem++; }
+      else if (r.amount) { r.quantity = Math.sign(r.amount); estimated++; }
+    }
+    console.log(`[Settlement] units: ${fromItem} item(s) from quantity-purchased, ${estimated} assumed 1 (no quantity found).`);
   }
 
   if (!header) header = { settlement_id: rows.length ? rows[0].settlement_id : null,
@@ -2744,14 +2774,17 @@ app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
     const allFees  = a.fees + a.refundFees + a.other;       // fees are negative
     const deposited = netSales + allFees;
     const netUnits = Math.max(0, a.units - a.unitsRefunded);
-    const cogs = costs[a.asin] != null ? costs[a.asin] * netUnits : null;
+    // Sales with no units means the unit count is missing, not that the goods
+    // were free. A $0 COGS here produced fake 70%+ margins — show it as unknown.
+    const unitsMissing = netUnits <= 0 && netSales > 0;
+    const cogs = (costs[a.asin] != null && !unitsMissing) ? costs[a.asin] * netUnits : null;
     const profit = cogs != null ? deposited - cogs : null;
     return {
       ...a,
       name: names[a.asin] || a.sku || a.asin,
       netSales, allFees, deposited, netUnits,
       avgCost: costs[a.asin] != null ? costs[a.asin] : null,
-      cogs, profit,
+      cogs, profit, unitsMissing,
       marginPct: (profit != null && netSales) ? (profit / netSales) * 100 : null,
       feePctOfSales: netSales ? (Math.abs(allFees) / netSales) * 100 : null,
       refundRate: a.units ? (a.unitsRefunded / a.units) * 100 : 0
