@@ -2881,7 +2881,11 @@ function renderInvoiceManager(){
         +(done?'#eafaf1':'#fdf6e3')+';color:'+(done?'#1e8449':'#b7791f')+'">'+(done?'✓ COMPLETE':'PENDING')+'</span>';
       return '<div style="display:flex;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6;flex-wrap:wrap">'
         +'<div style="flex:1;min-width:150px">'
-        +'<div style="font-weight:700;font-size:13.5px">#'+i.order_number+' <span style="color:#8a97a6;font-weight:500">· '+(i.invoice_date||'no date')+'</span></div>'
+        +'<div style="font-weight:700;font-size:13.5px">#'+i.order_number+' <span style="color:#8a97a6;font-weight:500">· '
+          +(i.invoice_date ? i.invoice_date
+             : '<span style="color:#b7791f">no date on file'+(i.created_at?' · uploaded '+new Date(i.created_at).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'}):'')+'</span>'
+               +' <a href="#" onclick="event.stopPropagation();setInvoiceDate(\''+i.order_number+'\');return false" style="color:#127a7a;font-size:12px">set date</a>')
+          +'</span></div>'
         +'<div style="font-size:11.5px;color:#8a97a6;margin-top:2px">'+i.lines+' line'+(i.lines===1?'':'s')+' · '+i.received+' / '+i.expected+' units received</div>'
         +'</div>'+badge
         +'<button onclick="openInvoiceFromManager(\''+i.order_number+'\')" style="padding:6px 11px;font-size:11.5px;font-weight:700;background:#1a2b4a;color:#fff;border:none;border-radius:5px;cursor:pointer">Open</button>'
@@ -3625,7 +3629,7 @@ function loadRoyaltyWorksheet(showMonths) {
           + '<th style="background:#e8edf3;color:#1a2a3a;text-align:right">Lines</th><th style="background:#e8edf3;color:#1a2a3a;text-align:right">Total</th>'
           + '<th style="background:#e8edf3;color:#1a2a3a">From</th><th style="background:#e8edf3;color:#1a2a3a">Count it?</th></tr></thead><tbody>'
           + r.orderList.map(o => '<tr style="' + (o.excluded ? 'opacity:.45;text-decoration:line-through' : '') + '">'
-              + '<td style="font-family:monospace">' + o.order_number + '</td><td>' + (o.date || '—') + '</td>'
+              + '<td style="font-family:monospace">' + o.order_number + '</td><td>' + (o.date || '—') + (o.dateGuessed ? '<div style="font-size:10px;color:#b7791f">upload date — invoice had none</div>' : '') + '</td>'
               + '<td style="text-align:right">' + (o.lines || 0) + '</td>'
               + '<td style="text-align:right;font-weight:700">' + fin$(o.total, 2) + (o.tax ? '<div style="font-size:10px;color:#9db0c9">incl. ' + fin$(o.tax, 2) + ' tax</div>' : '') + '</td>'
               + '<td>' + o.source
@@ -3641,6 +3645,13 @@ function loadRoyaltyWorksheet(showMonths) {
     h += '</tbody></table><div class="hint" style="margin-top:6px">A month with no Cosmoprof spend recorded is treated as $0 spent — which makes that month\'s royalty look higher than it should. Import the order or type the total.</div></div>';
     box.innerHTML = h;
   }).catch(() => {});
+}
+function setInvoiceDate(order){
+  const v = prompt('Invoice date for #'+order+'  (e.g. 9/18/26)'); if(!v) return;
+  api('/api/invoices/'+encodeURIComponent(order)+'/date',{method:'POST',body:JSON.stringify({date:v})}).then(d=>{
+    if(d&&d.ok){ toast('#'+order+' dated '+d.date); renderInvoiceManager(); }
+    else alert((d&&d.error)||'Could not set the date');
+  });
 }
 function finToggleInv(m) { const r = document.getElementById('finInv_' + m); if (r) r.style.display = r.style.display === 'none' ? '' : 'none'; }
 function finExcludeOrder(order, exclude) {
@@ -3942,7 +3953,9 @@ function finRenderCostList() {
   let h = '<div class="box" style="border:2px solid #1e8449">'
     + '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:flex-start">'
     + '<div><b style="font-size:15px">Enter missing costs</b>'
-    + '<div class="hint">Type what you pay Cosmoprof per unit. Your price is used <b>only until an invoice for that product is imported</b> — then the invoice takes over on its own. Biggest sellers are first, so each one you do fixes the most.</div></div>'
+    + '<div class="hint">Type what you pay Cosmoprof per unit. Your price is used <b>only until an invoice for that product is imported</b> — then the invoice takes over on its own. Biggest sellers are first, so each one you do fixes the most.</div>'
+    + (d.bundleCount ? '<div class="hint" style="color:#7d3c98"><b>Duos aren\'t listed.</b> Each of your ' + d.bundleCount + ' duos is costed automatically as the sum of its bottles, so price the shampoo and the conditioner and the duo is done. Duo sales are counted under each bottle below.</div>' : '')
+    + '</div>'
     + '<button class="mini" onclick="finCloseEditor()">Close</button></div>';
   if (pct != null) h += '<div style="margin-top:10px"><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:#5a6472">'
     + '<span>Last 90 days of sales with a cost</span><span style="color:' + (pct >= 90 ? '#1e8449' : '#b7791f') + '">' + pct + '%' + (pct >= 90 ? ' ✓ margin now shows on P&amp;L' : ' — margin shows at 90%') + '</span></div>'
@@ -3963,7 +3976,10 @@ function finRenderCostList() {
       + (x.image ? '<img src="' + x.image + '" style="width:34px;height:34px;object-fit:contain;flex:none">' : '')
       + '<div><div style="font-size:13px;font-weight:600">' + (x.name || x.asin) + '</div>'
       + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + x.asin + (x.cosmo ? ' · Cosmo# ' + x.cosmo : '') + '</div></div></div></td>'
-      + '<td style="text-align:right">' + (x.units90 ? x.units90.toLocaleString() + ' units<div style="font-size:11px;color:#5a6472">' + fin$(x.sales90) + '</div>' : '<span style="color:#cfd8e3">—</span>') + '</td>'
+      + '<td style="text-align:right">' + (x.units90 ? x.units90.toLocaleString() + ' units<div style="font-size:11px;color:#5a6472">' + fin$(x.sales90) + '</div>'
+          + ((x.viaDuo || []).length ? '<div style="font-size:10px;color:#7d3c98;margin-top:2px">' + (x.soloUnits ? x.soloUnits.toLocaleString() + ' alone · ' : '')
+            + x.viaDuo.map(v => v.units.toLocaleString() + ' in ' + String(v.name).replace(/Paul Mitchell\s*/i, '').slice(0, 42)).join(' · ') + '</div>' : '')
+        : '<span style="color:#cfd8e3">—</span>') + '</td>'
       + '<td>' + (x.state === 'invoice'
           ? '<span style="color:#9db0c9;font-size:12px">set by invoices</span>'
           : '<div style="display:flex;gap:4px;align-items:center"><span style="font-weight:700">$</span><input id="' + id + '" type="number" step="0.01" min="0" value="' + (x.manualCost != null ? x.manualCost : '') + '" placeholder="0.00"'
