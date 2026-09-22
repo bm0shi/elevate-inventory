@@ -3616,41 +3616,68 @@ function loadRoyaltyWorksheet(showMonths) {
   ownerApi('/api/finance/royalty').then(d => {
     if (!d || !d.months) return;
     const st = d.settings || {};
-    const rows = d.months.filter(r => !showMonths || showMonths.includes(r.month));
+    const cols = d.months.filter(r => !showMonths || showMonths.includes(r.month));
     window._royRows = d.months;
-    if (!rows.length) return;
+    if (!cols.length) return;
     const inp = 'padding:4px 6px;border:1px solid #cfd8e3;border-radius:4px;width:110px;text-align:right;font-size:12px';
-    let h = '<div class="box" style="border:2px solid #b7791f;overflow-x:auto"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px">'
-      + '<div><b style="font-size:15px">Royalty worksheet</b><div class="hint">'
+    const cell = 'text-align:right;padding:9px 12px;vertical-align:top;white-space:nowrap';
+    const label = (t, note) => '<td style="position:sticky;left:0;background:#fff;padding:9px 12px;font-weight:700;vertical-align:top;min-width:170px">' + t
+      + (note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + note + '</div>' : '') + '</td>';
+
+    let h = '<div class="box" style="border:2px solid #b7791f;overflow-x:auto;padding:14px 0 10px">'
+      + '<div style="padding:0 16px"><b style="font-size:15px">Royalty worksheet</b><div class="hint">'
       + (st.royaltyPct == null ? '<b style="color:#c0392b">Royalty % not set</b> — <a href="#" onclick="finOpenEditor(\'royalty\');showSubTab(\'fsrc\');return false">set it</a>. '
                               : '<b>' + st.royaltyPct + '%</b> of (Amazon deposits received − Cosmoprof spend) in the same month' + (st.royaltyCarry ? ', negative months carried forward' : ', negative months pay no royalty') + '. ')
-      + 'Deposits are counted by the day Amazon paid. Type a month\'s Cosmoprof total to override the imported orders.</div></div></div>'
-      + '<table style="margin-top:8px;min-width:640px"><thead><tr><th>Month</th><th style="text-align:right">Amazon deposits</th><th style="text-align:right">Cosmoprof spend</th>'
-      + '<th style="text-align:right">Base</th>' + (st.royaltyCarry ? '<th style="text-align:right">Carried in</th>' : '') + '<th style="text-align:right">Royalty</th></tr></thead><tbody>';
-    const colN = st.royaltyCarry ? 6 : 5;
-    for (const r of rows) {
+      + 'Deposits are counted by the day Amazon paid.</div></div>'
+      + '<table style="margin-top:8px;min-width:' + (190 + cols.length * 150) + 'px;border-collapse:collapse"><thead><tr>'
+      + '<th style="position:sticky;left:0;background:#1a2a3a"></th>'
+      + cols.map(r => '<th style="text-align:right">' + finMonthLabel(r.month) + '</th>').join('') + '</tr></thead><tbody>';
+
+    // Amazon deposits
+    h += '<tr>' + label('Amazon deposits', 'paid into your bank') + cols.map(r =>
+      '<td style="' + cell + '">' + fin$(r.deposits, 2) + '<div style="font-size:10px;color:#9db0c9">' + r.depositCount + ' deposit' + (r.depositCount === 1 ? '' : 's') + '</div></td>').join('') + '</tr>';
+
+    // Cosmoprof spend
+    h += '<tr>' + label('Cosmoprof spend', 'every invoice that month') + cols.map(r => {
       const nInv = (r.orderList || []).filter(o => !o.excluded).length;
-      const link = nInv ? '<a href="#" onclick="finToggleInv(\'' + r.month + '\');return false" style="color:#1e8449;font-weight:700">'
+      const link = (r.orderList || []).length ? '<a href="#" onclick="finToggleInv(\'' + r.month + '\');return false" style="color:#1e8449;font-weight:700;font-size:11px">'
                    + nInv + ' invoice' + (nInv === 1 ? '' : 's') + ' ▾</a>' : '';
-      const src = r.purchasesSource === 'manual' ? '<span style="font-size:10px;color:#7d3c98">entered by you</span>' + (link ? ' · <span style="font-size:10px">' + link + ' = ' + fin$(r.fromOrders, 2) + '</span>' : '')
-                : r.purchasesSource === 'orders' ? '<span style="font-size:10px">' + link + '</span>' + (r.incomplete ? ' <span style="font-size:10px;color:#b7791f">· ' + r.incomplete + ' may be short</span>' : '')
-                : '<span style="font-size:10px;color:#c0392b">no invoices this month</span>';
-      h += '<tr><td style="font-weight:700">' + finMonthLabel(r.month) + '</td>'
-        + '<td style="text-align:right">' + fin$(r.deposits, 2) + '<div style="font-size:10px;color:#9db0c9">' + r.depositCount + ' deposit(s)</div></td>'
-        + '<td style="text-align:right">'
-        + (r.purchasesSource === 'orders'
-            ? '<div style="font-weight:700">' + fin$(r.purchases, 2) + '</div><div>' + src + '</div>'
-              + '<a href="#" style="font-size:10px;color:#9db0c9" onclick="this.nextElementSibling.style.display=\'\';this.style.display=\'none\';return false">override</a>'
-              + '<input type="number" step="0.01" style="' + inp + ';display:none" placeholder="' + r.purchases.toFixed(2) + '" onchange="finSetPurchases(\'' + r.month + '\',this.value)">'
-            : '<input type="number" step="0.01" style="' + inp + '" value="' + (r.purchasesSource === 'manual' ? r.purchases : '') + '" placeholder="0.00" onchange="finSetPurchases(\'' + r.month + '\',this.value)"><div>' + src + '</div>'
-              + (r.purchasesSource === 'manual' ? '<div style="font-size:10px;color:#9db0c9">clear the box to use invoices</div>' : ''))
-        + '</td>'
-        + '<td style="text-align:right;font-weight:700;color:' + (r.base >= 0 ? '#1a2a3a' : '#c0392b') + '">' + fin$(r.base, 2) + '</td>'
-        + (st.royaltyCarry ? '<td style="text-align:right;color:#c0392b">' + (r.carryIn ? fin$(r.carryIn, 2) : '—') + '</td>' : '')
-        + '<td style="text-align:right;min-width:170px">' + finRoyaltyCell(r) + '</td></tr>';
-      if ((r.orderList || []).length) {
-        h += '<tr id="finInv_' + r.month + '" style="display:none"><td colspan="' + colN + '" style="background:#f7f9fb;padding:8px 14px">'
-          + '<div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">COSMOPROF INVOICES — ' + finMonthLabel(r.month).toUpperCase() + '</div>'
+      let c;
+      if (r.purchasesSource === 'orders') {
+        c = '<div style="font-weight:700;color:#c0392b">-' + fin$(r.purchases, 2) + '</div><div>' + link + '</div>'
+          + (r.incomplete ? '<div style="font-size:10px;color:#b7791f">' + r.incomplete + ' may be short</div>' : '')
+          + '<a href="#" style="font-size:10px;color:#9db0c9" onclick="this.nextElementSibling.style.display=\'\';this.style.display=\'none\';return false">override</a>'
+          + '<input type="number" step="0.01" style="' + inp + ';display:none" placeholder="' + r.purchases.toFixed(2) + '" onchange="finSetPurchases(\'' + r.month + '\',this.value)">';
+      } else if (r.purchasesSource === 'manual') {
+        c = '<input type="number" step="0.01" style="' + inp + '" value="' + r.purchases + '" onchange="finSetPurchases(\'' + r.month + '\',this.value)">'
+          + '<div style="font-size:10px;color:#7d3c98">entered by you</div>'
+          + (link ? '<div>' + link + ' <span style="font-size:10px;color:#9db0c9">= ' + fin$(r.fromOrders, 2) + '</span></div>' : '')
+          + '<div style="font-size:10px;color:#9db0c9">clear to use invoices</div>';
+      } else {
+        c = '<input type="number" step="0.01" style="' + inp + '" placeholder="0.00" onchange="finSetPurchases(\'' + r.month + '\',this.value)">'
+          + '<div style="font-size:10px;color:#c0392b">no invoices this month</div>';
+      }
+      return '<td style="' + cell + '">' + c + '</td>';
+    }).join('') + '</tr>';
+
+    // Base
+    h += '<tr style="border-top:2px solid #1a2a3a;background:#f7f9fb">' + label('Base', 'deposits − spend').replace('background:#fff', 'background:#f7f9fb')
+      + cols.map(r => '<td style="' + cell + ';font-weight:800;color:' + (r.base >= 0 ? '#1a2a3a' : '#c0392b') + '">' + fin$(r.base, 2)
+        + (r.base < 0 && !st.royaltyCarry ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">below zero — no royalty</div>' : '') + '</td>').join('') + '</tr>';
+
+    if (st.royaltyCarry) h += '<tr>' + label('Carried in') + cols.map(r => '<td style="' + cell + ';color:#c0392b">' + (r.carryIn ? fin$(r.carryIn, 2) : '—') + '</td>').join('') + '</tr>';
+
+    // Royalty
+    h += '<tr style="border-top:2px solid #b7791f;background:#fffdf7">' + label('Royalty', st.royaltyPct != null ? st.royaltyPct + '% of base' : '').replace('background:#fff', 'background:#fffdf7')
+      + cols.map(r => '<td style="' + cell + ';white-space:normal;min-width:150px">' + finRoyaltyCell(r) + '</td>').join('') + '</tr>';
+
+    h += '</tbody></table>';
+
+    // invoice lists, one per month, opened from the "invoices ▾" links
+    for (const r of cols) {
+      if (!(r.orderList || []).length) continue;
+      h += '<div id="finInv_' + r.month + '" style="display:none;background:#f7f9fb;margin:10px 16px 0;padding:10px 14px;border-radius:6px">'
+        + '<div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">COSMOPROF INVOICES — ' + finMonthLabel(r.month).toUpperCase() + '</div>'
           + '<table style="font-size:12px;width:100%"><thead><tr style="background:none"><th style="background:#e8edf3;color:#1a2a3a">Order #</th><th style="background:#e8edf3;color:#1a2a3a">Date</th>'
           + '<th style="background:#e8edf3;color:#1a2a3a;text-align:right">Lines</th><th style="background:#e8edf3;color:#1a2a3a;text-align:right">Total</th>'
           + '<th style="background:#e8edf3;color:#1a2a3a">From</th><th style="background:#e8edf3;color:#1a2a3a">Count it?</th></tr></thead><tbody>'
@@ -3668,10 +3695,9 @@ function loadRoyaltyWorksheet(showMonths) {
                         + ' <a href="#" style="font-size:10px;color:#9db0c9" onclick="if(confirm(\'Only do this if your card statement shows BOTH this store order and the invoice charged, with no refund.\\n\\nCount this store order as a separate purchase?\'))finForceOrder(\'' + o.order_number + '\',true);return false">count anyway</a>')
                   : '<label style="font-size:11px"><input type="checkbox"' + (o.excluded ? '' : ' checked') + ' onchange="finExcludeOrder(\'' + o.order_number + '\',!this.checked)"> counted</label>')
               + '</td></tr>').join('')
-          + '</tbody></table><div class="hint" style="margin-top:4px">Store orders are dropped automatically once their final invoice is here — the invoice\'s <b>FS D0…</b> number names the store order it bills. Untick anything else you don\'t want counted.</div></td></tr>';
-      }
+          + '</tbody></table><div class="hint" style="margin-top:4px">Store orders are dropped automatically once their final invoice is here — the invoice\'s <b>FS D0…</b> number names the store order it bills. Untick anything else you don\'t want counted.</div>' + '</div>';
     }
-    h += '</tbody></table><div class="hint" style="margin-top:6px">A month with no Cosmoprof spend recorded is treated as $0 spent — which makes that month\'s royalty look higher than it should. Import the order or type the total.</div></div>';
+    h += '<div class="hint" style="margin:8px 16px 0">A month with no Cosmoprof spend recorded is treated as $0 spent — which makes that month\'s royalty look higher than it should. Import the invoices or type the total.</div></div>';
     box.innerHTML = h;
   }).catch(() => {});
 }
