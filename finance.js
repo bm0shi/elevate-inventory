@@ -99,6 +99,8 @@ module.exports = function registerFinance(app, deps) {
     for (const [k, l, s] of sizes) {
       await pool.query(`INSERT INTO fin_supplies(size_key,label,sort) VALUES($1,$2,$3) ON CONFLICT (size_key) DO NOTHING`, [k, l, s]);
     }
+    // P&L starts at August 2026 — earlier months stay stored, just not shown.
+    await pool.query(`INSERT INTO fin_settings(key,value) VALUES('pnl_start_month','2026-08') ON CONFLICT (key) DO NOTHING`);
     console.log('[Finance] tables ready.');
   })().catch(e => console.error('[Finance] schema failed:', e.message));
 
@@ -131,7 +133,8 @@ module.exports = function registerFinance(app, deps) {
       nextBuyMonth: s.next_buy_month || null,
       bufferMonths: num(s.buffer_months) != null ? num(s.buffer_months) : 2,
       royaltyPct: num(s.royalty_pct),         // % of (deposits − Cosmoprof spend); null = not set
-      royaltyCarry: s.royalty_carry === 'true' // carry a negative month into the next
+      royaltyCarry: s.royalty_carry === 'true', // carry a negative month into the next
+      pnlStartMonth: /^\d{4}-\d{2}$/.test(s.pnl_start_month || '') ? s.pnl_start_month : null
     };
   }
 
@@ -575,9 +578,14 @@ module.exports = function registerFinance(app, deps) {
     try {
       const n = Math.max(1, Math.min(24, Number(req.query.months) || 12));
       const ctx = await context();
+      const start = ctx.settings.pnlStartMonth;
+      const showAll = req.query.all === '1';
+      const window = lastNMonths(n);
+      const hidden = start && !showAll ? window.filter(m => m < start) : [];
       const months = [];
-      for (const m of lastNMonths(n)) months.push(await monthPnl(m, ctx));
-      res.json({ months, laborInfo: ctx.laborInfo, inboundWaiting: await inboundWaiting() });
+      for (const m of window) if (!hidden.includes(m)) months.push(await monthPnl(m, ctx));
+      res.json({ months, laborInfo: ctx.laborInfo, inboundWaiting: await inboundWaiting(),
+                 startMonth: start, hiddenMonths: hidden, showingAll: showAll });
     } catch (e) { console.error('[Finance] pnl:', e.message); res.status(500).json({ error: e.message }); }
   });
 
@@ -622,7 +630,7 @@ module.exports = function registerFinance(app, deps) {
       const latest = snaps[0] || null;
 
       // trailing three full-or-current months of net profit
-      const months = lastNMonths(3);
+      const months = lastNMonths(3).filter(m => !settings.pnlStartMonth || m >= settings.pnlStartMonth);
       let trailing = 0, trailingComplete = true;
       for (const m of months) { const p = await monthPnl(m, ctx); trailing += p.net; if (!p.complete) trailingComplete = false; }
       const oh = await overheadFor(monthKey(new Date()));
@@ -899,6 +907,7 @@ module.exports = function registerFinance(app, deps) {
       if ('bufferMonths' in b) await put('buffer_months', num(b.bufferMonths));
       if ('royaltyPct' in b) await put('royalty_pct', num(b.royaltyPct));
       if ('royaltyCarry' in b) await put('royalty_carry', b.royaltyCarry ? 'true' : 'false');
+      if ('pnlStartMonth' in b) await put('pnl_start_month', /^\d{4}-\d{2}$/.test(b.pnlStartMonth || '') ? b.pnlStartMonth : '');
       res.json({ ok: true });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
