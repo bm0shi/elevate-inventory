@@ -484,10 +484,11 @@ module.exports = function registerFinance(app, deps) {
     const settings = await getSettings();
     let royalty = {};
     try { royalty = await royaltySeries(settings); } catch (e) { console.error('[Finance] royalty:', e.message); }
+    const waiting = await inboundWaiting();
     let bundles = {};
     try { for (const b of (await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles')).rows)
             (bundles[b.bundle_asin] = bundles[b.bundle_asin] || []).push(b); } catch (e) {}
-    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles };
+    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles, waiting };
   }
 
   // One month of P&L.
@@ -538,8 +539,17 @@ module.exports = function registerFinance(app, deps) {
     const cogs = (a.costedSales || !a.uncostedSales) ? a.cogs : null;
     const supplies = anySupplies ? a.supplies : null;
     const labor = laborActual;                                // null until timesheets cover the month
-    const freight = a.freight || null;
-    const carrier = a.freight ? a.freightOnly : null, placement = a.freight ? a.placement : null;
+    // $0 is a real answer when the only shipments with fees entered haven't
+    // been received yet — nothing that sold went through them. Only call it
+    // 'not tracked' when no shipment has any fees entered at all.
+    const anyWaiting = !!(ctx.waiting && ctx.waiting.list && ctx.waiting.list.length);
+    const anyRates = Object.keys(ctx.inbound || {}).length > 0;
+    const known = a.freight || anyRates || anyWaiting;
+    const freight = known ? (a.freight || 0) : null;
+    const carrier = known ? (a.freight ? a.freightOnly : 0) : null;
+    const placement = known ? (a.freight ? a.placement : 0) : null;
+    const freightNote = !a.freight && anyWaiting && !anyRates ? 'waiting — fees are on shipments not yet received'
+                      : (a.freightMissingUnits ? a.freightMissingUnits + ' unit(s) sold from shipments with no fees entered' : null);
     const contribution = deposited
                          - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
@@ -553,7 +563,7 @@ module.exports = function registerFinance(app, deps) {
       royalty: royalty == null ? 'missing' : (roy && roy.purchasesSource === 'none' ? 'partial' : 'ok'),
       supplies: supplies == null ? 'missing' : (a.suppMissing ? 'partial' : 'ok'),
       labor: labor == null ? 'missing' : 'ok',
-      freight: freight == null ? 'missing' : (a.freightMissingUnits ? 'partial' : 'ok'),
+      freight: freight == null ? 'missing' : ((a.freightMissingUnits || (!a.freight && anyWaiting)) ? 'partial' : 'ok'),
       overhead: overhead == null ? 'missing' : 'ok'
     };
     const complete = Object.values(lineStatus).every(s => s === 'ok');
@@ -562,7 +572,7 @@ module.exports = function registerFinance(app, deps) {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
       amazonFees, reimbursements: t.reimbursements, deposited, paidToBank, payouts, feeDetail: t.feeDetail,
-      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, contribution, overhead, overheadItems: oh.items, net,
+      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, freightNote, contribution, overhead, overheadItems: oh.items, net,
       // A margin with most of COGS missing is fiction. Withhold it until at
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
@@ -584,7 +594,7 @@ module.exports = function registerFinance(app, deps) {
       const hidden = start && !showAll ? window.filter(m => m < start) : [];
       const months = [];
       for (const m of window) if (!hidden.includes(m)) months.push(await monthPnl(m, ctx));
-      res.json({ months, laborInfo: ctx.laborInfo, inboundWaiting: await inboundWaiting(),
+      res.json({ months, laborInfo: ctx.laborInfo, inboundWaiting: ctx.waiting,
                  startMonth: start, hiddenMonths: hidden, showingAll: showAll });
     } catch (e) { console.error('[Finance] pnl:', e.message); res.status(500).json({ error: e.message }); }
   });
