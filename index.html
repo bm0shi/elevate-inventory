@@ -517,8 +517,12 @@
     <div class="box">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div><h3 style="margin:0">Profit &amp; Loss</h3><div class="hint">Matched: costs are charged when stock <b>sells</b>, not when you buy it. Click a month to see its products.</div></div>
-        <select id="fpnlMonths" onchange="loadFinPnl()" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px;font-weight:700">
-          <option value="6">Last 6 months</option><option value="12" selected>Last 12 months</option><option value="24">Last 24 months</option></select>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="font-size:12px;font-weight:700;color:#5a6472">Start from
+            <input type="month" id="fpnlStart" onchange="finSetPnlStart(this.value)" style="padding:7px;border:2px solid #e2e8f0;border-radius:6px"></label>
+          <select id="fpnlMonths" onchange="loadFinPnl()" style="padding:8px;border:2px solid #e2e8f0;border-radius:6px;font-weight:700">
+            <option value="6">Last 6 months</option><option value="12" selected>Last 12 months</option><option value="24">Last 24 months</option></select>
+        </div>
       </div>
     </div>
     <div id="fpnlBody"><div class="hint" style="padding:16px">Loading…</div></div>
@@ -3467,7 +3471,8 @@ function loadFinPnl() {
   const b = document.getElementById('fpnlBody'); if (!b) return;
   b.innerHTML = '<div class="hint" style="padding:16px">Building your P&amp;L…</div>';
   const n = (document.getElementById('fpnlMonths') || {}).value || 12;
-  ownerApi('/api/finance/pnl?months=' + n).then(d => {
+  ownerApi('/api/finance/pnl?months=' + n + (window._finPnlAll ? '&all=1' : '')).then(d => {
+    const st = document.getElementById('fpnlStart'); if (st && d) st.value = d.startMonth || '';
     if (!d || d.error || !d.months) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load. Deploy finance.js and server.js.') + '</div>'; return; }
     window._finPnl = d; renderFinPnl();
   }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load the P&amp;L.</div>'; });
@@ -3477,6 +3482,11 @@ function renderFinPnl() {
   const d = window._finPnl, b = document.getElementById('fpnlBody'); if (!d || !b) return;
   const all = d.months;
   const months = all.filter((m, i) => m.hasData || i === all.length - 1);   // hide empty months before your data starts
+  const hiddenNote = (d.hiddenMonths && d.hiddenMonths.length)
+    ? '<div class="hint" style="padding:0 4px 8px">Showing from <b>' + finMonthLabel(d.startMonth) + '</b>. Earlier months are kept, just hidden — '
+      + '<a href="#" onclick="window._finPnlAll=true;loadFinPnl();return false">show them</a>.</div>'
+    : (d.showingAll && d.startMonth ? '<div class="hint" style="padding:0 4px 8px">Showing <b>all</b> months, including before ' + finMonthLabel(d.startMonth) + ' — '
+      + '<a href="#" onclick="window._finPnlAll=false;loadFinPnl();return false">hide them again</a>.</div>' : '');
   if (!months.some(m => m.hasData)) {
     b.innerHTML = '<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">No sales data yet</b><div class="hint">Import Amazon settlements from <a href="#" onclick="showSubTab(\'fsrc\');return false">Data Sources</a>.</div></div>';
     return;
@@ -3489,7 +3499,7 @@ function renderFinPnl() {
   const avgNet = avg3.length ? avg3.reduce((n, m) => n + m.net, 0) / avg3.length : null;
   const incomplete = months.filter(m => m.hasData && !m.complete).length;
 
-  let h = '<div class="cards" style="flex-wrap:wrap">'
+  let h = hiddenNote + '<div class="cards" style="flex-wrap:wrap">'
     + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + (last.paidToBank == null ? '—' : fin$(last.paidToBank)) + '</div><div class="l">Amazon paid you · ' + finMonthLabel(last.month) + '</div></div>'
     + '<div class="card" style="border-top:3px solid ' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '"><div class="n" style="color:' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '">' + fin$(last.net) + '</div><div class="l">Net profit · ' + finMonthLabel(last.month) + '</div></div>'
     + '<div class="card" style="border-top:3px solid #127a7a"><div class="n">' + (last.marginPct == null ? (last.marginWithheld ? '<span style="font-size:14px;color:#b7791f">needs costs</span>' : '—') : last.marginPct.toFixed(1) + '%') + '</div><div class="l">Net margin</div></div>'
@@ -3810,6 +3820,10 @@ function finLinkSku(sku, inputId, month) {
     if (d && d.ok) { toast(sku + ' linked to ' + asin + ' — ' + d.linked + ' sale line(s) updated'); loadFinPnl(); setTimeout(() => finShowUncosted(month), 1500); }
     else alert((d && d.error) || 'Failed');
   });
+}
+function finSetPnlStart(v) {
+  ownerApi('/api/finance/settings', { method: 'POST', body: JSON.stringify({ pnlStartMonth: v || '' }) })
+    .then(d => { if (d && d.ok) { window._finPnlAll = false; toast(v ? 'P&L now starts ' + finMonthLabel(v) : 'Showing every month'); loadFinPnl(); } });
 }
 function finDrillMonth(m) { showSubTab('fprod'); const el = document.getElementById('fprodMonth'); if (el) { el.value = m; loadFinProducts(); } }
 
