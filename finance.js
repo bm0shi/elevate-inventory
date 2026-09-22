@@ -148,27 +148,55 @@ module.exports = function registerFinance(app, deps) {
     return m;
   }
 
-  // Inbound freight + placement per unit, per ASIN, from shipment costs.
+  // Inbound cost per unit, per ASIN, from shipment costs — split into freight
+  // (carrier) and placement (Amazon's inbound placement service fee), so each
+  // shows on its own P&L line. Returns { asin: { freight, placement, total } }.
   async function inboundPerUnit() {
     const out = {};
     try {
       const ships = await pool.query(`
         SELECT s.shipment_id,
                COALESCE((SELECT SUM(qty) FROM inv_shipment_items i WHERE i.shipment_id=s.shipment_id),0)::int AS units,
-               COALESCE((SELECT SUM(amount) FROM inv_shipment_costs c WHERE c.shipment_id=s.shipment_id),0)::numeric AS cost
-        FROM inv_shipments s`);
+               COALESCE((SELECT SUM(amount) FROM inv_shipment_costs c WHERE c.shipment_id=s.shipment_id AND c.kind ILIKE '%placement%'),0)::numeric AS placement,
+               COALESCE((SELECT SUM(amount) FROM inv_shipment_costs c WHERE c.shipment_id=s.shipment_id AND c.kind NOT ILIKE '%placement%'),0)::numeric AS freight
+        FROM inv_shipments s
+        -- Only shipments Amazon has received can have units selling. A shipment
+        -- still in transit must not raise the rate on older stock selling now.
+        -- Anything 60+ days old is treated as received, in case its status is stale.
+        WHERE s.status = 'received' OR s.received_at IS NOT NULL OR s.created_at < now() - interval '60 days'`);
       const per = {};
-      for (const r of ships.rows) if (r.units > 0 && Number(r.cost) > 0) per[r.shipment_id] = Number(r.cost) / r.units;
+      for (const r of ships.rows) {
+        const f = Number(r.freight) || 0, pl = Number(r.placement) || 0;
+        if (r.units > 0 && (f || pl)) per[r.shipment_id] = { f: f / r.units, p: pl / r.units };
+      }
       const items = await pool.query('SELECT shipment_id, asin, qty FROM inv_shipment_items WHERE asin IS NOT NULL');
       const acc = {};
       for (const it of items.rows) {
-        const p = per[it.shipment_id]; if (p == null || !it.qty) continue;
-        const a = acc[it.asin] = acc[it.asin] || { u: 0, c: 0 };
-        a.u += it.qty; a.c += p * it.qty;
+        const p = per[it.shipment_id]; if (!p || !it.qty) continue;
+        const a = acc[it.asin] = acc[it.asin] || { u: 0, f: 0, p: 0 };
+        a.u += it.qty; a.f += p.f * it.qty; a.p += p.p * it.qty;
       }
-      for (const k of Object.keys(acc)) out[k] = acc[k].u ? acc[k].c / acc[k].u : null;
+      for (const k of Object.keys(acc)) if (acc[k].u)
+        out[k] = { freight: acc[k].f / acc[k].u, placement: acc[k].p / acc[k].u, total: (acc[k].f + acc[k].p) / acc[k].u };
     } catch (e) { console.error('[Finance] inbound per unit:', e.message); }
     return out;
+  }
+
+  // Shipment costs not yet charged to the P&L because none of those units can
+  // have sold — the shipment hasn't been received at Amazon.
+  async function inboundWaiting() {
+    try {
+      const r = await pool.query(`
+        SELECT s.shipment_id, s.created_at,
+               COALESCE(SUM(c.amount) FILTER (WHERE c.kind ILIKE '%placement%'),0)::numeric AS placement,
+               COALESCE(SUM(c.amount) FILTER (WHERE c.kind NOT ILIKE '%placement%'),0)::numeric AS freight
+        FROM inv_shipments s JOIN inv_shipment_costs c ON c.shipment_id = s.shipment_id
+        WHERE COALESCE(s.status,'in_transit') <> 'received' AND s.received_at IS NULL
+          AND s.created_at >= now() - interval '60 days'
+        GROUP BY s.shipment_id, s.created_at ORDER BY s.created_at DESC`);
+      const list = r.rows.map(x => ({ id: x.shipment_id, created: isoDate(x.created_at), freight: Number(x.freight), placement: Number(x.placement) }));
+      return { list, freight: list.reduce((n, x) => n + x.freight, 0), placement: list.reduce((n, x) => n + x.placement, 0) };
+    } catch (e) { return { list: [], freight: 0, placement: 0 }; }
   }
 
   // Labor dollars from timecards in a date window.
@@ -256,7 +284,7 @@ module.exports = function registerFinance(app, deps) {
     }
 
     // matched costs per product
-    let cogs = 0, supp = 0, freight = 0, labor = 0;
+    let cogs = 0, supp = 0, freight = 0, labor = 0, freightOnly = 0, placement = 0;
     const uncosted = [];
     let costedSales = 0, uncostedSales = 0, suppMissing = 0, freightMissingUnits = 0;
     const items = [];
@@ -267,11 +295,13 @@ module.exports = function registerFinance(app, deps) {
       const net = Math.max(0, p.units - p.unitsRefunded);
       const unitCost = info.avgCost != null ? info.avgCost : null;
       const sRate = supplies[info.size || 'other'];
-      const fRate = asin ? inbound[asin] : null;
+      const ib = asin ? inbound[asin] : null;
+      const fRate = ib ? ib.total : null;
 
       const pCogs = unitCost != null && net > 0 ? unitCost * net : (net === 0 ? 0 : null);
       const pSupp = sRate != null ? sRate * net : null;
       const pFreight = fRate != null ? fRate * net : null;
+      const pFreightOnly = ib ? ib.freight * net : null, pPlacement = ib ? ib.placement * net : null;
       const pLabor = laborRate != null ? laborRate * net : null;
 
       if (pCogs != null) { cogs += pCogs; costedSales += p.sales; }
@@ -290,7 +320,7 @@ module.exports = function registerFinance(app, deps) {
                         units: net, sales: p.sales, reason, fix, missingParts });
       }
       if (pSupp != null) supp += pSupp; else if (net) suppMissing += net;
-      if (pFreight != null) freight += pFreight; else if (net) freightMissingUnits += net;
+      if (pFreight != null) { freight += pFreight; freightOnly += pFreightOnly; placement += pPlacement; } else if (net) freightMissingUnits += net;
       if (pLabor != null) labor += pLabor;
 
       const netSales = p.sales + p.refunds + p.promotions;
@@ -304,6 +334,7 @@ module.exports = function registerFinance(app, deps) {
         fees: p.fees, feeDetail: p.feeDetail,
         unitCost, regularCost: info.regularCost != null ? info.regularCost : null,
         suppliesPerUnit: sRate, laborPerUnit: laborRate, freightPerUnit: fRate,
+        carrierPerUnit: ib ? ib.freight : null, placementPerUnit: ib ? ib.placement : null,
         landedPerUnit: unitCost != null ? unitCost + (sRate || 0) + (laborRate || 0) + (fRate || 0) : null,
         cogs: pCogs, supplies: pSupp, labor: pLabor, freight: pFreight,
         profit: pCogs != null ? profit : null,
@@ -316,7 +347,7 @@ module.exports = function registerFinance(app, deps) {
     }
     items.sort((a, b) => (b.profit ?? -1e12) - (a.profit ?? -1e12));
 
-    return { totals: t, cogs, supplies: supp, freight, laborAllocated: labor, items,
+    return { totals: t, cogs, supplies: supp, freight, freightOnly, placement, laborAllocated: labor, items,
              costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0,
              uncosted: uncosted.sort((a, b) => b.sales - a.sales) };
   }
@@ -505,6 +536,7 @@ module.exports = function registerFinance(app, deps) {
     const supplies = anySupplies ? a.supplies : null;
     const labor = laborActual;                                // null until timesheets cover the month
     const freight = a.freight || null;
+    const carrier = a.freight ? a.freightOnly : null, placement = a.freight ? a.placement : null;
     const contribution = deposited
                          - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
@@ -527,7 +559,7 @@ module.exports = function registerFinance(app, deps) {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
       amazonFees, reimbursements: t.reimbursements, deposited, paidToBank, payouts, feeDetail: t.feeDetail,
-      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, contribution, overhead, overheadItems: oh.items, net,
+      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, contribution, overhead, overheadItems: oh.items, net,
       // A margin with most of COGS missing is fiction. Withhold it until at
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
@@ -545,7 +577,7 @@ module.exports = function registerFinance(app, deps) {
       const ctx = await context();
       const months = [];
       for (const m of lastNMonths(n)) months.push(await monthPnl(m, ctx));
-      res.json({ months, laborInfo: ctx.laborInfo });
+      res.json({ months, laborInfo: ctx.laborInfo, inboundWaiting: await inboundWaiting() });
     } catch (e) { console.error('[Finance] pnl:', e.message); res.status(500).json({ error: e.message }); }
   });
 
