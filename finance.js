@@ -154,7 +154,36 @@ module.exports = function registerFinance(app, deps) {
   // Inbound cost per unit, per ASIN, from shipment costs — split into freight
   // (carrier) and placement (Amazon's inbound placement service fee), so each
   // shows on its own P&L line. Returns { asin: { freight, placement, total } }.
-  async function inboundPerUnit() {
+  // Inbound charges Amazon actually billed, straight from settlement lines,
+  // summed per shipment and kind. A shipment billed in several pieces sums
+  // correctly, and re-importing a settlement can't double it.
+  async function settledInbound() {
+    const pat = INBOUND_FEE_PATTERNS.source;
+    const r = await pool.query(`
+      SELECT l.shipment_id, (l.amount_description ~* 'placement') AS is_placement,
+             to_char(l.posted_date,'YYYY-MM') AS m, l.amount_description AS descr,
+             SUM(l.amount)::numeric AS amt,
+             BOOL_OR(s.shipment_id IS NOT NULL) AS in_app
+      FROM inv_settlement_lines l LEFT JOIN inv_shipments s ON s.shipment_id = l.shipment_id
+      WHERE l.amount_description ~* $1 OR l.transaction_type ~* $1
+      GROUP BY l.shipment_id, is_placement, m, descr`, [pat]);
+    const byShip = {}, unmatchedByMonth = {}, lines = [];
+    for (const x of r.rows) {
+      const cost = -Number(x.amt) || 0;              // charges are negative in settlements
+      const kind = x.is_placement ? 'placement' : 'freight';
+      lines.push({ shipmentId: x.shipment_id, kind, month: x.m, description: x.descr, amount: cost, inApp: !!x.in_app });
+      if (x.shipment_id && x.in_app) {
+        const b = byShip[x.shipment_id] = byShip[x.shipment_id] || { freight: 0, placement: 0 };
+        b[kind] += cost;
+      } else {
+        const u = unmatchedByMonth[x.m] = unmatchedByMonth[x.m] || { freight: 0, placement: 0 };
+        u[kind] += cost;
+      }
+    }
+    return { byShip, unmatchedByMonth, lines };
+  }
+
+  async function inboundPerUnit(settled) {
     const out = {};
     try {
       const ships = await pool.query(`
@@ -169,7 +198,10 @@ module.exports = function registerFinance(app, deps) {
         WHERE s.status = 'received' OR s.received_at IS NOT NULL OR s.created_at < now() - interval '60 days'`);
       const per = {};
       for (const r of ships.rows) {
-        const f = Number(r.freight) || 0, pl = Number(r.placement) || 0;
+        // What Amazon billed beats what was entered or quoted.
+        const st = settled && settled.byShip[r.shipment_id];
+        const f = st && st.freight ? st.freight : (Number(r.freight) || 0);
+        const pl = st && st.placement ? st.placement : (Number(r.placement) || 0);
         if (r.units > 0 && (f || pl)) per[r.shipment_id] = { f: f / r.units, p: pl / r.units };
       }
       const items = await pool.query('SELECT shipment_id, asin, qty FROM inv_shipment_items WHERE asin IS NOT NULL');
@@ -480,7 +512,9 @@ module.exports = function registerFinance(app, deps) {
 
   async function context() {
     await ready;
-    const [products, supplies, inbound, lab] = await Promise.all([productInfo(), supplyRates(), inboundPerUnit(), laborPerUnit(90)]);
+    let settled = { byShip: {}, unmatchedByMonth: {}, lines: [] };
+    try { settled = await settledInbound(); } catch (e) { console.error('[Finance] settled inbound:', e.message); }
+    const [products, supplies, inbound, lab] = await Promise.all([productInfo(), supplyRates(), inboundPerUnit(settled), laborPerUnit(90)]);
     const settings = await getSettings();
     let royalty = {};
     try { royalty = await royaltySeries(settings); } catch (e) { console.error('[Finance] royalty:', e.message); }
@@ -488,7 +522,7 @@ module.exports = function registerFinance(app, deps) {
     let bundles = {};
     try { for (const b of (await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles')).rows)
             (bundles[b.bundle_asin] = bundles[b.bundle_asin] || []).push(b); } catch (e) {}
-    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles, waiting };
+    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles, waiting, settled };
   }
 
   // One month of P&L.
@@ -544,12 +578,20 @@ module.exports = function registerFinance(app, deps) {
     // 'not tracked' when no shipment has any fees entered at all.
     const anyWaiting = !!(ctx.waiting && ctx.waiting.list && ctx.waiting.list.length);
     const anyRates = Object.keys(ctx.inbound || {}).length > 0;
-    const known = a.freight || anyRates || anyWaiting;
-    const freight = known ? (a.freight || 0) : null;
-    const carrier = known ? (a.freight ? a.freightOnly : 0) : null;
-    const placement = known ? (a.freight ? a.placement : 0) : null;
-    const freightNote = !a.freight && anyWaiting && !anyRates ? 'waiting — fees are on shipments not yet received'
-                      : (a.freightMissingUnits ? a.freightMissingUnits + ' unit(s) sold from shipments with no fees entered' : null);
+    // Charges Amazon billed this month for shipments not in the app (or with
+    // no shipment ID) can't be spread over units — charge them here instead
+    // of letting them disappear.
+    const um = (ctx.settled && ctx.settled.unmatchedByMonth[m]) || { freight: 0, placement: 0 };
+    const billedUnmatched = (um.freight || 0) + (um.placement || 0);
+    const known = a.freight || anyRates || anyWaiting || billedUnmatched;
+    const freight = known ? (a.freight || 0) + billedUnmatched : null;
+    const carrier = known ? (a.freight ? a.freightOnly : 0) + (um.freight || 0) : null;
+    const placement = known ? (a.freight ? a.placement : 0) + (um.placement || 0) : null;
+    const notes = [];
+    if (billedUnmatched) notes.push('incl. ' + '$' + billedUnmatched.toFixed(2) + ' billed for shipments not in the app');
+    if (!a.freight && anyWaiting && !anyRates && !billedUnmatched) notes.push('waiting — fees are on shipments not yet received');
+    if (a.freightMissingUnits) notes.push(a.freightMissingUnits + ' unit(s) sold from shipments with no fees on file');
+    const freightNote = notes.length ? notes.join(' · ') : null;
     const contribution = deposited
                          - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
@@ -681,6 +723,21 @@ module.exports = function registerFinance(app, deps) {
   });
   app.delete('/api/finance/cash/:id', ownerAuth, async (req, res) => {
     await pool.query('DELETE FROM fin_cash WHERE id=$1', [req.params.id]); res.json({ ok: true });
+  });
+
+  // Every inbound charge in the settlements, and where it went.
+  app.get('/api/finance/inbound-settled', ownerAuth, async (req, res) => {
+    try {
+      const st = await settledInbound();
+      const byMonth = {};
+      for (const l of st.lines) {
+        const b = byMonth[l.month] = byMonth[l.month] || { month: l.month, spread: 0, charged: 0, lines: [] };
+        if (l.shipmentId && l.inApp) b.spread += l.amount; else b.charged += l.amount;
+        b.lines.push(l);
+      }
+      res.json({ months: Object.values(byMonth).sort((a, b) => b.month.localeCompare(a.month)),
+                 anyShipmentIds: st.lines.some(l => l.shipmentId) });
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   app.get('/api/finance/royalty', ownerAuth, async (req, res) => {
