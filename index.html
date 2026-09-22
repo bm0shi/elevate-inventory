@@ -4013,7 +4013,7 @@ function loadFinSources() {
   ownerApi('/api/finance/sources').then(d => {
     if (!d || !d.sources) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
     const col = { ok: '#1e8449', warn: '#d69e2e', missing: '#c0392b' };
-    let h = '<div class="box" style="padding:0">';
+    let h = '<div id="finAuto"></div><div class="box" style="padding:0">';
     for (const s of d.sources) {
       const a = FIN_SRC_ACTIONS[s.key] || [];
       h += '<div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid #eef2f6;flex-wrap:wrap">'
@@ -4029,10 +4029,49 @@ function loadFinSources() {
       + '<button class="mini" onclick="showSubTab(\'maphealth\')">Mapping Health</button>'
       + '<button class="mini" onclick="showSubTab(\'pnl\')">Old single-month P&amp;L</button></div></div>';
     b.innerHTML = h;
+    finLoadAuto();
     if (window._finEditorOpen) finOpenEditor(window._finEditorOpen);
   });
 }
 
+// ---------- Weekly auto-refresh ----------
+function finLoadAuto() {
+  const box = document.getElementById('finAuto'); if (!box) return;
+  ownerApi('/api/auto/status').then(d => {
+    if (!d || d.error) { box.innerHTML = ''; return; }
+    const phx = iso => iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/Phoenix', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+    const last = (d.runs || [])[0];
+    const steps = d.running && d.current ? d.current.steps : (last ? (last.steps || []) : []);
+    const allOk = last && last.ok;
+    let h = '<div class="box" style="border:2px solid ' + (d.enabled ? '#127a7a' : '#cfd8e3') + '">'
+      + '<div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start">'
+      + '<div><b style="font-size:15px">⏱ Weekly auto-refresh</b>'
+      + '<div class="hint">' + (d.enabled ? 'Runs every <b>Sunday at 11:59 PM</b> Arizona time and pulls everything from Amazon for the P&amp;L. Next run: <b>' + phx(d.next) + '</b>.'
+                                       : '<b>Paused.</b> Nothing will run until you turn it back on.') + '</div></div>'
+      + '<div style="display:flex;gap:8px;align-items:center">'
+      + '<label style="font-size:12px;font-weight:700;color:#5a6472;display:flex;gap:5px;align-items:center"><input type="checkbox"' + (d.enabled ? ' checked' : '') + ' onchange="finAutoEnabled(this.checked)"> On</label>'
+      + '<button class="action" onclick="finAutoRun()" style="background:#127a7a;min-width:120px"' + (d.running ? ' disabled' : '') + '>' + (d.running ? 'Running…' : '▶ Run now') + '</button></div></div>';
+    if (steps.length) {
+      h += '<div style="margin-top:10px;font-size:12px;font-weight:800;color:#5a6472">' + (d.running ? 'RUNNING NOW' : 'LAST RUN · ' + phx(last.started_at) + (last.trigger === 'manual' ? ' (run by hand)' : '')
+        + (last.finished_at ? (allOk ? ' · <span style="color:#1e8449">all steps OK</span>' : ' · <span style="color:#c0392b">some steps failed</span>') : '')) + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;margin-top:6px">'
+        + steps.map(s => '<div style="background:#f7f9fb;border-radius:6px;padding:6px 9px;border-left:3px solid ' + (s.finished ? (s.ok ? '#1e8449' : '#c0392b') : '#d69e2e') + '">'
+            + '<div style="font-size:12px;font-weight:700">' + (s.finished ? (s.ok ? '✓ ' : '✗ ') : '… ') + s.name + '</div>'
+            + '<div style="font-size:11px;color:' + (s.ok || !s.finished ? '#5a6472' : '#c0392b') + '">' + String(s.detail || (s.finished ? '' : 'working…')).replace(/</g, '&lt;').slice(0, 160) + '</div></div>').join('')
+        + '</div>';
+    }
+    h += '<div class="hint" style="margin-top:10px"><b>Still yours to add</b> — these live outside Amazon: Cosmoprof invoices (Import costs), Homebase timesheets (Labor tab), bank balances (Cash &amp; Draws). The lights below show when one is overdue.</div></div>';
+    box.innerHTML = h;
+    if (d.running) setTimeout(finLoadAuto, 10000);
+  }).catch(() => {});
+}
+function finAutoRun() {
+  if (!confirm('Run the full refresh now?\n\nIt pulls settlements, shipment fees, inventory and costs from Amazon. Allow 5–15 minutes; you can keep using the app.')) return;
+  ownerApi('/api/auto/run', { method: 'POST', body: '{}' }).then(() => { toast('Refresh started'); setTimeout(finLoadAuto, 1500); });
+}
+function finAutoEnabled(on) {
+  ownerApi('/api/auto/enabled', { method: 'POST', body: JSON.stringify({ enabled: on }) }).then(() => { toast(on ? 'Weekly refresh on' : 'Weekly refresh paused'); finLoadAuto(); });
+}
 function finOpenEditor(which) {
   window._finEditorOpen = which;
   if (!document.getElementById('finEditor')) { showSubTab('fsrc'); return; }
