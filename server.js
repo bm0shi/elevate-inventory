@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
+const { getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -522,7 +522,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'inv-fix-0921-0830';
+const BUILD_ID = 'shipfees-0922-0718';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3445,6 +3445,87 @@ app.post('/api/shipment-costs/set', ownerAuth, async (req, res) => {
 });
 
 // Costs per shipment, with per-unit allocation.
+// ============================================================
+// Pull freight + placement fees from Amazon's inbound API, preview them
+// against the app, then fill in only what's missing. Never overwrites a
+// figure you entered or one a settlement confirmed.
+// ============================================================
+let shipFeeJob = { running: false, done: false, progress: '', error: null, plans: [], at: null };
+app.post('/api/shipment-fees/pull', ownerAuth, async (req, res) => {
+  if (shipFeeJob.running) return res.json({ ok: true, already: true });
+  const sinceDays = Math.max(14, Math.min(365, Number(req.body && req.body.sinceDays) || 180));
+  shipFeeJob = { running: true, done: false, progress: 'starting…', error: null, plans: [], at: new Date().toISOString() };
+  res.json({ ok: true });
+  (async () => {
+    try {
+      shipFeeJob.plans = await getInboundFees(sinceDays, m => { shipFeeJob.progress = m; });
+      shipFeeJob.progress = 'done'; shipFeeJob.done = true;
+    } catch (e) { shipFeeJob.error = e.message; console.error('[InboundFees] failed:', e.message); }
+    shipFeeJob.running = false;
+  })();
+});
+
+async function shipFeeComparison() {
+  const rows = [];
+  for (const plan of shipFeeJob.plans || []) {
+    for (const sh of plan.shipments || []) {
+      const id = sh.shipmentId;
+      let inApp = false, cur = {};
+      if (id) {
+        inApp = (await pool.query('SELECT 1 FROM inv_shipments WHERE shipment_id=$1', [id])).rows.length > 0;
+        for (const c of (await pool.query('SELECT kind, amount, source FROM inv_shipment_costs WHERE shipment_id=$1', [id])).rows)
+          cur[/placement/i.test(c.kind) ? 'placement' : 'freight'] = { amount: Number(c.amount), source: c.source };
+      }
+      const decide = (kind, amz) => {
+        const c = cur[kind];
+        if (amz == null || amz === 0) return { action: 'none', amazon: amz, current: c || null };
+        if (!c) return { action: 'fill', amazon: amz };
+        if (Math.abs(c.amount - amz) < 0.01) return { action: 'same', amazon: amz, current: c };
+        if (c.source === 'amazon') return { action: 'update', amazon: amz, current: c };
+        return { action: 'keep', amazon: amz, current: c };   // yours or settlement-confirmed wins
+      };
+      rows.push({ plan: plan.planName, planCreated: plan.createdAt, shipmentId: id, name: sh.name, status: sh.status,
+                  units: sh.units, carrier: sh.carrier, solution: sh.solution, inApp,
+                  freight: decide('freight', sh.freight), placement: decide('placement', sh.placement) });
+    }
+  }
+  return rows;
+}
+
+app.get('/api/shipment-fees/status', ownerAuth, async (req, res) => {
+  try {
+    const rows = shipFeeJob.done ? await shipFeeComparison() : [];
+    res.json({ running: shipFeeJob.running, done: shipFeeJob.done, progress: shipFeeJob.progress, error: shipFeeJob.error,
+               at: shipFeeJob.at, plans: (shipFeeJob.plans || []).length,
+               failedPlans: (shipFeeJob.plans || []).filter(p => p.error).map(p => ({ plan: p.planName, error: p.error })),
+               rows });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shipment-fees/apply', ownerAuth, async (req, res) => {
+  try {
+    if (!shipFeeJob.done) return res.status(400).json({ error: 'Pull from Amazon first.' });
+    const only = Array.isArray(req.body && req.body.shipmentIds) ? new Set(req.body.shipmentIds) : null;
+    let written = 0, skipped = 0;
+    for (const r of await shipFeeComparison()) {
+      if (!r.inApp || (only && !only.has(r.shipmentId))) { skipped++; continue; }
+      for (const kind of ['freight', 'placement']) {
+        const d = r[kind];
+        if (d.action !== 'fill' && d.action !== 'update') continue;
+        await pool.query(
+          `INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, note, updated_at)
+           VALUES($1,$2,$3,'amazon',$4,now())
+           ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='amazon', note=$4, updated_at=now()
+           WHERE inv_shipment_costs.source = 'amazon'`,
+          [r.shipmentId, kind, d.amazon, kind === 'freight' ? ('Amazon quote' + (r.carrier ? ' · ' + r.carrier : '')) : 'Amazon placement fee']);
+        written++;
+      }
+    }
+    console.log(`[InboundFees] applied ${written} fee(s); ${skipped} shipment(s) skipped.`);
+    res.json({ ok: true, written, skipped });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/shipment-costs', ownerAuth, async (req, res) => {
   const ships = await pool.query(`
     SELECT s.shipment_id, s.shipment_name, s.status, s.created_at,
