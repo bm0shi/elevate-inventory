@@ -3490,7 +3490,7 @@ function renderFinPnl() {
   const incomplete = months.filter(m => m.hasData && !m.complete).length;
 
   let h = '<div class="cards" style="flex-wrap:wrap">'
-    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + fin$(last.deposited) + '</div><div class="l">Amazon deposited · ' + finMonthLabel(last.month) + (last.coverage && last.coverage.partial ? ' (partial)' : '') + '</div></div>'
+    + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + (last.paidToBank == null ? '—' : fin$(last.paidToBank)) + '</div><div class="l">Amazon paid you · ' + finMonthLabel(last.month) + '</div></div>'
     + '<div class="card" style="border-top:3px solid ' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '"><div class="n" style="color:' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '">' + fin$(last.net) + '</div><div class="l">Net profit · ' + finMonthLabel(last.month) + '</div></div>'
     + '<div class="card" style="border-top:3px solid #127a7a"><div class="n">' + (last.marginPct == null ? (last.marginWithheld ? '<span style="font-size:14px;color:#b7791f">needs costs</span>' : '—') : last.marginPct.toFixed(1) + '%') + '</div><div class="l">Net margin</div></div>'
     + '<div class="card" style="border-top:3px solid #7d3c98"><div class="n">' + (avgNet == null ? '—' : fin$(avgNet)) + '</div><div class="l">Avg net profit · last ' + avg3.length + ' mo</div></div>'
@@ -3534,7 +3534,7 @@ function renderFinPnl() {
     ['Sales', 'netSales', 'sales', { bold: true, note: 'what customers paid, less refunds · tax excluded' }],
     ['Amazon fees', 'amazonFees', 'fees', { note: 'referral, FBA, storage — as Amazon billed' }],
     ['Reimbursements', 'reimbursements', 'fees', { hideZero: true, note: 'lost / damaged inventory paid back' }],
-    ['AMAZON DEPOSITED', 'deposited', null, { total: true, note: 'what landed in your account' }],
+    ['NET AFTER AMAZON FEES', 'deposited', null, { total: true, note: 'earned on this month\'s sales — Amazon pays it out on its own schedule' }],
     ['Product cost (COGS)', 'cogs', 'cogs', { neg: true, note: 'cost of units sold' }],
     ['Supplies', 'supplies', 'supplies', { neg: true }],
     ['Labor', 'labor', 'labor', { neg: true }],
@@ -3579,8 +3579,28 @@ function renderFinPnl() {
     }
     t += '</tr>';
   }
+  // Cash check: what Amazon actually paid into the bank each month.
+  t += '<tr style="border-top:3px double #cfd8e3;background:#f7fafd"><td style="position:sticky;left:0;background:#f7fafd;padding:9px 12px;font-weight:800">'
+    + '🏦 Amazon paid into your bank<div style="font-size:10px;color:#9db0c9;font-weight:400">by deposit date · should match your bank statement</div></td>'
+    + months.map(m => {
+        if (m.paidToBank == null) return '<td style="text-align:right;padding:9px 12px;color:#cfd8e3">—</td>';
+        const tip = (m.payouts || []).map(p => 'paid ' + p.paid + ': ' + fin$(p.amount, 2) + ' (sales ' + p.from + ' → ' + p.to + ')').join('\n');
+        return '<td style="text-align:right;padding:9px 12px;white-space:nowrap" title="' + tip + '"><b style="color:#2563a8">' + fin$(m.paidToBank, 2) + '</b>'
+          + '<div style="font-size:10px;color:#9db0c9">' + m.payouts.length + ' payout' + (m.payouts.length === 1 ? '' : 's') + '</div></td>';
+      }).join('') + '</tr>';
   t += '</tbody></table></div>';
   h += t;
+  // payout detail, so a missing settlement is obvious
+  const paidMonths = months.filter(m => (m.payouts || []).length);
+  if (paidMonths.length) {
+    h += '<div class="box" style="padding:10px 14px"><b style="font-size:14px">🏦 Amazon payouts by month</b>'
+      + '<div class="hint">Each settlement Amazon paid, with the sales period it covers. If a month here doesn\'t match your bank, a settlement is missing — pull settlements again.</div>'
+      + '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px">'
+      + paidMonths.map(m => '<div style="min-width:220px"><div style="font-weight:800;font-size:13px">' + finMonthLabel(m.month) + ' · ' + fin$(m.paidToBank, 2) + '</div>'
+          + m.payouts.map(p => '<div style="font-size:12px;color:#5a6472">' + p.paid.slice(5).replace('-', '/') + ' — <b>' + fin$(p.amount, 2) + '</b>'
+            + ' <span style="color:#9db0c9">for ' + p.from.slice(5).replace('-', '/') + '–' + p.to.slice(5).replace('-', '/') + '</span></div>').join('') + '</div>').join('')
+      + '</div></div>';
+  }
   h += '<div id="finRoyaltyWs"></div>';
   h += '<div class="hint" style="padding:4px 4px 12px">' + finDot('ok') + 'complete ' + finDot('partial') + 'partial ' + finDot('missing') + 'not tracked yet · Sales tax Amazon collects for you and reserve holds are excluded — neither is your money or your expense.'
     + (d.laborInfo && d.laborInfo.rate != null ? ' · Labor per unit is <b>$' + d.laborInfo.rate.toFixed(2) + '</b> (last ' + d.laborInfo.days + ' days of timesheets ÷ units shipped).' : '') + '</div>';
