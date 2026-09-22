@@ -3583,8 +3583,9 @@ function renderFinPnl() {
         if (key === 'royalty' && m.royaltyCalc && m.royaltyCalc.agreed && m.royaltyCalc.calculated != null && Math.abs(m.royaltyCalc.agreed.difference || 0) >= 0.01)
           cell = '<div style="font-size:11px;color:#9db0c9;text-decoration:line-through">' + fin$(-m.royaltyCalc.calculated) + '</div>' + cell
             + '<div style="font-size:10px;color:#1e8449">agreed</div>';
-        if ((key === 'carrier' || key === 'placement') && m.freightNote)
-          cell += '<div style="font-size:10px;color:#2563a8;white-space:normal;max-width:140px;margin-left:auto">' + m.freightNote + '</div>';
+        const lineNote = key === 'carrier' ? m.carrierNote : (key === 'placement' ? m.placementNote : null);
+        if (lineNote)
+          cell += '<div style="font-size:10px;color:#2563a8;white-space:normal;max-width:150px;margin-left:auto">' + lineNote + '</div>';
         if (key === 'cogs' && m.costCoverage != null && m.costCoverage < 0.98)
           cell += '<div style="font-size:10px"><a href="#" onclick="finShowUncosted(\'' + m.month + '\');return false" style="color:#b7791f;text-decoration:underline dotted">'
             + Math.round(m.costCoverage * 100) + '% of sales costed — what\'s missing?</a></div>';
