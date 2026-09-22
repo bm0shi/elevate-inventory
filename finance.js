@@ -257,6 +257,7 @@ module.exports = function registerFinance(app, deps) {
 
     // matched costs per product
     let cogs = 0, supp = 0, freight = 0, labor = 0;
+    const uncosted = [];
     let costedSales = 0, uncostedSales = 0, suppMissing = 0, freightMissingUnits = 0;
     const items = [];
     for (const key of Object.keys(by)) {
@@ -273,7 +274,21 @@ module.exports = function registerFinance(app, deps) {
       const pFreight = fRate != null ? fRate * net : null;
       const pLabor = laborRate != null ? laborRate * net : null;
 
-      if (pCogs != null) { cogs += pCogs; costedSales += p.sales; } else uncostedSales += p.sales;
+      if (pCogs != null) { cogs += pCogs; costedSales += p.sales; }
+      else {
+        uncostedSales += p.sales;
+        // Why this sale has no cost, so the fix is obvious.
+        let reason, fix, missingParts = null;
+        if (!asin) { reason = 'Seller SKU not linked to a product'; fix = 'link-sku'; }
+        else if (!products[asin]) { reason = 'Product not in your catalog'; fix = 'catalog'; }
+        else if (ctx.bundles && ctx.bundles[asin]) {
+          missingParts = ctx.bundles[asin].filter(c => !products[c.component_asin] || products[c.component_asin].avgCost == null)
+            .map(c => ({ asin: c.component_asin, name: products[c.component_asin] ? products[c.component_asin].name : c.component_asin }));
+          reason = missingParts.length ? 'Duo — a bottle inside has no cost' : 'Duo — cost not calculated yet'; fix = 'duo';
+        } else { reason = 'No cost entered'; fix = 'cost'; }
+        uncosted.push({ asin, sku: key.startsWith('sku:') ? key.slice(4) : null, name: info.name || (key.startsWith('sku:') ? key.slice(4) : asin),
+                        units: net, sales: p.sales, reason, fix, missingParts });
+      }
       if (pSupp != null) supp += pSupp; else if (net) suppMissing += net;
       if (pFreight != null) freight += pFreight; else if (net) freightMissingUnits += net;
       if (pLabor != null) labor += pLabor;
@@ -302,7 +317,8 @@ module.exports = function registerFinance(app, deps) {
     items.sort((a, b) => (b.profit ?? -1e12) - (a.profit ?? -1e12));
 
     return { totals: t, cogs, supplies: supp, freight, laborAllocated: labor, items,
-             costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0 };
+             costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0,
+             uncosted: uncosted.sort((a, b) => b.sales - a.sales) };
   }
 
   // Every Cosmoprof purchase the app knows about, one row per order, from three
@@ -434,7 +450,10 @@ module.exports = function registerFinance(app, deps) {
     const settings = await getSettings();
     let royalty = {};
     try { royalty = await royaltySeries(settings); } catch (e) { console.error('[Finance] royalty:', e.message); }
-    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty };
+    let bundles = {};
+    try { for (const b of (await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles')).rows)
+            (bundles[b.bundle_asin] = bundles[b.bundle_asin] || []).push(b); } catch (e) {}
+    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles };
   }
 
   // One month of P&L.
@@ -515,7 +534,7 @@ module.exports = function registerFinance(app, deps) {
       marginWithheld: !!netSales && (costCoverage == null || costCoverage < 0.9),
       coverage,
       taxPassThrough: t.tax, reserveMovement: t.reserve,
-      costCoverage, lineStatus, complete
+      costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length
     };
   }
 
