@@ -522,7 +522,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'settled-inbound-0922-0958';
+const BUILD_ID = 'autorun-0922-1007';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5597,6 +5597,8 @@ const PORT = process.env.PORT || 3000;
 initDb().then(() => {
   // Finance screens (P&L, product profit, cash & draws, data sources)
   require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts });
+  // Weekly automatic refresh of every Amazon input — Sundays 11:59 PM Arizona time
+  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT });
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
