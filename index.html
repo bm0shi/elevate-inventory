@@ -4219,9 +4219,32 @@ function finShipFeesPanel() {
     + '<label style="font-size:12px;font-weight:700;color:#5a6472">Look back <select id="sfDays" style="padding:6px;border:2px solid #e2e8f0;border-radius:6px">'
     + '<option value="120">4 months</option><option value="180" selected>6 months</option><option value="270">9 months</option></select></label>'
     + '<button class="action" onclick="finShipFeesStart()" style="background:#2563a8;min-width:170px">⤓ Pull from Amazon</button></div>'
-    + '<div id="sfOut" style="margin-top:10px"></div></div>';
+    + '<div id="sfOut" style="margin-top:10px"></div>'
+    + '<div id="sfSettled" style="margin-top:14px;border-top:1px solid #eef2f6;padding-top:10px"></div></div>';
   box.scrollIntoView({ behavior: 'smooth', block: 'start' });
   finShipFeesPoll(true);
+  finSettledInbound();
+}
+// What Amazon actually billed for inbound, from the imported settlements.
+function finSettledInbound() {
+  const box = document.getElementById('sfSettled'); if (!box) return;
+  ownerApi('/api/finance/inbound-settled').then(d => {
+    if (!d || !d.months) return;
+    let h = '<b style="font-size:14px">From your settlements — what Amazon actually billed</b>'
+      + '<div class="hint">These are real charges, not quotes, and they cover every shipment however it was created. '
+      + '<b>Spread</b> = matched to a shipment in the app, charged per unit as it sells. <b>Charged to month</b> = no matching shipment, so it\'s charged in the month billed.</div>';
+    if (!d.months.length) { box.innerHTML = h + '<div class="hint" style="color:#b7791f">No inbound charges found in your settlements.</div>'; return; }
+    if (!d.anyShipmentIds) h += '<div class="hint" style="color:#b7791f;font-weight:700">None of these carry a shipment ID yet — run <b>↻ Re-import all</b> on settlements once so each charge is matched to its shipment.</div>';
+    h += '<table style="margin-top:6px;font-size:12px"><thead><tr><th>Month billed</th><th style="text-align:right">Spread over units</th><th style="text-align:right">Charged to month</th><th>Charges</th></tr></thead><tbody>'
+      + d.months.map(m => '<tr><td style="font-weight:700">' + finMonthLabel(m.month) + '</td>'
+          + '<td style="text-align:right">' + fin$(m.spread, 2) + '</td><td style="text-align:right">' + fin$(m.charged, 2) + '</td>'
+          + '<td><details><summary style="cursor:pointer;color:#2563a8">' + m.lines.length + ' line(s)</summary>'
+          + m.lines.map(l => '<div>' + (l.shipmentId ? '<span style="font-family:monospace">' + l.shipmentId + '</span>' : '<i>no shipment ID</i>')
+              + ' · ' + l.description + ' · <b>' + fin$(l.amount, 2) + '</b>' + (l.shipmentId && !l.inApp ? ' <span style="color:#b7791f">(not in app)</span>' : '') + '</div>').join('')
+          + '</details></td></tr>').join('')
+      + '</tbody></table>';
+    box.innerHTML = h;
+  }).catch(() => {});
 }
 function finShipFeesStart() {
   const days = (document.getElementById('sfDays') || {}).value || 180;
@@ -4247,16 +4270,27 @@ function finShipFeesRender(d) {
       + '<div style="font-size:10px;font-weight:700;color:' + a[1] + '">' + a[0] + '</div>'
       + (x.action === 'keep' ? '<div style="font-size:10px;color:#5a6472">you have ' + fin$(x.current.amount, 2) + '</div>' : '');
   };
-  const toSave = rows.filter(r => r.inApp && (['fill', 'update'].includes(r.freight.action) || ['fill', 'update'].includes(r.placement.action))).length;
+  const toSave = rows.filter(r => r.shipmentId && (['fill', 'update'].includes(r.freight.action) || ['fill', 'update'].includes(r.placement.action))).length;
   const notInApp = rows.filter(r => !r.inApp).length;
   let h = '<div class="hint"><b>' + d.plans + '</b> plan(s) found · <b>' + rows.length + '</b> shipment(s) · <b>' + toSave + '</b> to fill in'
-    + (notInApp ? ' · ' + notInApp + ' not in the app' : '') + '</div>';
-  if ((d.failedPlans || []).length) h += '<div class="hint" style="color:#b7791f">' + d.failedPlans.length + ' plan(s) could not be read: ' + d.failedPlans.map(f => f.plan).join(', ') + '</div>';
+    + (notInApp ? ' · ' + notInApp + ' not shipped through the app yet' : '') + '</div>';
+  (d.failedPlans || []).forEach(f => {
+    h += '<div class="hint" style="color:#c0392b"><b>Could not read plan ' + (f.plan || '') + '</b> (' + String(f.created || '').slice(0, 10) + '): '
+      + String(f.error || '').replace(/</g, '&lt;') + '</div>';
+  });
+  if ((d.planList || []).length) {
+    h += '<details style="margin:6px 0"><summary style="cursor:pointer;font-size:12px;font-weight:700;color:#2563a8">Every plan Amazon returned (' + d.planList.length + ')</summary>'
+      + '<table style="font-size:12px;margin-top:4px"><thead><tr><th>Plan</th><th>Created</th><th>Status</th><th style="text-align:right">Shipments</th><th style="text-align:right">Placement</th><th>Note</th></tr></thead><tbody>'
+      + d.planList.map(p => '<tr><td>' + p.plan + '</td><td>' + String(p.created || '').slice(0, 10) + '</td><td>' + (p.status || '') + '</td>'
+          + '<td style="text-align:right">' + p.shipments + '</td><td style="text-align:right">' + (p.placement ? fin$(p.placement, 2) : '—') + '</td>'
+          + '<td style="color:#b7791f">' + (p.note || '') + '</td></tr>').join('')
+      + '</tbody></table></details>';
+  }
   h += '<div style="overflow-x:auto"><table style="margin-top:6px;min-width:720px"><thead><tr><th>Shipment</th><th>Plan created</th><th style="text-align:right">Units</th>'
     + '<th style="text-align:right">Freight</th><th style="text-align:right">Placement</th><th>Carrier</th></tr></thead><tbody>'
-    + (rows.length ? rows.map(r => '<tr style="' + (r.inApp ? '' : 'opacity:.5') + '"><td><div style="font-family:monospace;font-weight:700">' + (r.shipmentId || '(no ID yet)') + '</div>'
+    + (rows.length ? rows.map(r => '<tr><td><div style="font-family:monospace;font-weight:700">' + (r.shipmentId || '(no ID yet)') + '</div>'
         + '<div style="font-size:11px;color:#5a6472">' + (r.name || r.plan || '') + '</div>'
-        + (r.inApp ? '' : '<div style="font-size:10px;color:#b7791f">not in the app — skipped</div>') + '</td>'
+        + (r.inApp ? '' : '<div style="font-size:10px;color:#2563a8">not shipped through the app yet — fees will attach once it is</div>') + '</td>'
         + '<td>' + String(r.planCreated || '').slice(0, 10) + '</td><td style="text-align:right">' + (r.units || 0).toLocaleString() + '</td>'
         + '<td style="text-align:right">' + cellFor(r.freight) + '</td><td style="text-align:right">' + cellFor(r.placement) + '</td>'
         + '<td style="font-size:11px">' + (r.carrier || (r.solution === 'USE_YOUR_OWN_CARRIER' ? 'your own carrier — enter freight by hand' : '—')) + '</td></tr>').join('')
