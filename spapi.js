@@ -584,22 +584,28 @@ async function getInboundFees(sinceDays = 180, onProgress) {
   const cutoff = Date.now() - sinceDays * 86400000;
   const say = m => { if (onProgress) onProgress(m); console.log('[InboundFees] ' + m); };
 
-  // 1. plans, newest first, until older than the cutoff
-  const plans = [];
-  let next = null, pages = 0;
-  do {
-    const d = await inbGet('/inboundPlans', token,
-      { pageSize: 30, sortBy: 'CREATION_TIME', sortOrder: 'DESC', ...(next ? { paginationToken: next } : {}) });
-    const batch = d.inboundPlans || [];
-    let tooOld = false;
-    for (const p of batch) {
-      if (new Date(p.createdAt).getTime() < cutoff) { tooOld = true; break; }
-      if (p.status === 'VOIDED') continue;
-      plans.push(p);
-    }
-    next = tooOld ? null : (d.pagination && d.pagination.nextToken) || null;
-    pages++;
-  } while (next && pages < 20);
+  // 1. plans, newest first, until older than the cutoff. Amazon lists plans by
+  //    status, and without a status only in-progress (ACTIVE) plans come back —
+  //    finished ones are SHIPPED. Ask for both and merge.
+  const plans = [], seen = new Set();
+  for (const status of ['SHIPPED', 'ACTIVE']) {
+    let next = null, pages = 0, n = 0;
+    do {
+      const d = await inbGet('/inboundPlans', token,
+        { pageSize: 30, status, sortBy: 'CREATION_TIME', sortOrder: 'DESC', ...(next ? { paginationToken: next } : {}) });
+      const batch = d.inboundPlans || [];
+      let tooOld = false;
+      for (const p of batch) {
+        if (new Date(p.createdAt).getTime() < cutoff) { tooOld = true; break; }
+        if (seen.has(p.inboundPlanId)) continue;
+        seen.add(p.inboundPlanId); plans.push(p); n++;
+      }
+      next = tooOld ? null : (d.pagination && d.pagination.nextToken) || null;
+      pages++;
+    } while (next && pages < 20);
+    say(`${n} ${status.toLowerCase()} plan(s)`);
+  }
+  plans.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
   say(`${plans.length} inbound plan(s) in the last ${sinceDays} days`);
 
   const out = [];
@@ -648,11 +654,18 @@ async function getInboundFees(sinceDays = 180, onProgress) {
         x.placement = placementTotal ? (totalUnits ? placementTotal * x.units / totalUnits : placementTotal / ships.length) : 0;
         x.placement = Math.round(x.placement * 100) / 100;
       }
+      const note = !ships.length ? (plan.status === 'ACTIVE' ? 'draft — no shipments created yet' : 'no shipments returned') : null;
       out.push({ inboundPlanId: plan.inboundPlanId, planName: plan.name, createdAt: plan.createdAt, status: plan.status,
-                 placementTotal: Math.round(placementTotal * 100) / 100, placementLines, shipments: ships });
+                 placementTotal: Math.round(placementTotal * 100) / 100, placementLines, shipments: ships, note });
     } catch (e) {
+      // Amazon won't read AWD (Warehousing & Distribution) plans through this API.
+      if (/Warehousing and Distribution/i.test(e.message)) {
+        out.push({ inboundPlanId: plan.inboundPlanId, planName: plan.name, createdAt: plan.createdAt, status: plan.status,
+                   note: 'AWD plan — Amazon doesn\'t expose these here; its fees come through settlements', shipments: [] });
+        continue;
+      }
       say('  plan failed: ' + e.message);
-      out.push({ inboundPlanId: plan.inboundPlanId, planName: plan.name, createdAt: plan.createdAt, error: e.message, shipments: [] });
+      out.push({ inboundPlanId: plan.inboundPlanId, planName: plan.name, createdAt: plan.createdAt, status: plan.status, error: e.message, shipments: [] });
     }
   }
   return out;
