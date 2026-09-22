@@ -522,7 +522,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'shipfees-0922-0718';
+const BUILD_ID = 'settled-inbound-0922-0958';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -824,6 +824,8 @@ async function initDb() {
     // the source file is the only honest identity, and it is stable across
     // re-imports because the same file always parses in the same order.
     await pool.query('ALTER TABLE inv_settlement_lines ADD COLUMN IF NOT EXISTS row_idx INT');
+    // Shipment the line belongs to (inbound placement / carrier charges carry it).
+    await pool.query('ALTER TABLE inv_settlement_lines ADD COLUMN IF NOT EXISTS shipment_id TEXT');
     await pool.query(`DO $$
       DECLARE c RECORD;
       BEGIN
@@ -2691,21 +2693,21 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
           let n = 0;
           for (const r of slice) {
             const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
-            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12})`);
+            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12},$${n+13})`);
             params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
-                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx);
-            n += 12;
+                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx, r.shipment_id || null);
+            n += 13;
           }
           try {
             const res2 = await pool.query(
               `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
-                 amount_type, amount_description, amount, quantity, deposit_date, row_idx)
+                 amount_type, amount_description, amount, quantity, deposit_date, row_idx, shipment_id)
                VALUES ${vals.join(',')}
                ON CONFLICT (settlement_id, row_idx) DO UPDATE SET
                  posted_date=EXCLUDED.posted_date, transaction_type=EXCLUDED.transaction_type,
                  order_id=EXCLUDED.order_id, sku=EXCLUDED.sku, asin=EXCLUDED.asin,
                  amount_type=EXCLUDED.amount_type, amount_description=EXCLUDED.amount_description,
-                 amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date`, params);
+                 amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date, shipment_id=EXCLUDED.shipment_id`, params);
             inserted += res2.rowCount || 0;
           } catch (e) {
             console.error(`[Settlement] batch insert failed at row ${off}: ${e.message}`);
@@ -3497,7 +3499,9 @@ app.get('/api/shipment-fees/status', ownerAuth, async (req, res) => {
     const rows = shipFeeJob.done ? await shipFeeComparison() : [];
     res.json({ running: shipFeeJob.running, done: shipFeeJob.done, progress: shipFeeJob.progress, error: shipFeeJob.error,
                at: shipFeeJob.at, plans: (shipFeeJob.plans || []).length,
-               failedPlans: (shipFeeJob.plans || []).filter(p => p.error).map(p => ({ plan: p.planName, error: p.error })),
+               failedPlans: (shipFeeJob.plans || []).filter(p => p.error).map(p => ({ plan: p.planName || p.inboundPlanId, created: p.createdAt, error: p.error })),
+               planList: (shipFeeJob.plans || []).map(p => ({ plan: p.planName || p.inboundPlanId, created: p.createdAt, status: p.status,
+                                                               shipments: (p.shipments || []).length, placement: p.placementTotal, note: p.error ? 'could not read' : p.note })),
                rows });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -3508,7 +3512,9 @@ app.post('/api/shipment-fees/apply', ownerAuth, async (req, res) => {
     const only = Array.isArray(req.body && req.body.shipmentIds) ? new Set(req.body.shipmentIds) : null;
     let written = 0, skipped = 0;
     for (const r of await shipFeeComparison()) {
-      if (!r.inApp || (only && !only.has(r.shipmentId))) { skipped++; continue; }
+      // Shipments not in the app yet are saved too — the fees attach as soon
+      // as the shipment is recorded through Ship to FBA.
+      if (!r.shipmentId || (only && !only.has(r.shipmentId))) { skipped++; continue; }
       for (const kind of ['freight', 'placement']) {
         const d = r[kind];
         if (d.action !== 'fill' && d.action !== 'update') continue;
