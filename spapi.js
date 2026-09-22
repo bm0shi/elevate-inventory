@@ -554,4 +554,108 @@ async function downloadReportDocument(documentId, onProgress) {
   throw new Error('rate limited after extended backoff');
 }
 
-module.exports = { listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
+// ============================================================
+// Inbound fees — Fulfillment Inbound API v2024-03-20 ("Send to Amazon").
+// For each inbound plan: the ACCEPTED placement option's fees (placement
+// service fee, less any discount), and for each shipment the SELECTED
+// transportation option's quote (Amazon partnered carrier cost).
+// Plans created in the older workflow aren't visible here; those shipments
+// simply won't come back, and can still be entered by hand.
+// ============================================================
+const INB = `${SP_API_BASE}/inbound/fba/2024-03-20`;
+async function inbGet(path, token, params) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const r = await axios.get(INB + path, { headers: { 'x-amz-access-token': token }, params });
+      await sleep(600);
+      return r.data;
+    } catch (e) {
+      const st = e.response?.status;
+      if (st === 429 && attempt < 4) { await sleep(2000 * (attempt + 1)); continue; }
+      const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
+      throw new Error(`Inbound API ${st || ''} on ${path}: ${body}`);
+    }
+  }
+}
+const money = v => (v && v.amount != null ? Number(v.amount) : 0);
+
+async function getInboundFees(sinceDays = 180, onProgress) {
+  const token = await getAccessToken();
+  const cutoff = Date.now() - sinceDays * 86400000;
+  const say = m => { if (onProgress) onProgress(m); console.log('[InboundFees] ' + m); };
+
+  // 1. plans, newest first, until older than the cutoff
+  const plans = [];
+  let next = null, pages = 0;
+  do {
+    const d = await inbGet('/inboundPlans', token,
+      { pageSize: 30, sortBy: 'CREATION_TIME', sortOrder: 'DESC', ...(next ? { paginationToken: next } : {}) });
+    const batch = d.inboundPlans || [];
+    let tooOld = false;
+    for (const p of batch) {
+      if (new Date(p.createdAt).getTime() < cutoff) { tooOld = true; break; }
+      if (p.status === 'VOIDED') continue;
+      plans.push(p);
+    }
+    next = tooOld ? null : (d.pagination && d.pagination.nextToken) || null;
+    pages++;
+  } while (next && pages < 20);
+  say(`${plans.length} inbound plan(s) in the last ${sinceDays} days`);
+
+  const out = [];
+  let i = 0;
+  for (const plan of plans) {
+    i++;
+    say(`plan ${i}/${plans.length} — ${plan.name || plan.inboundPlanId}`);
+    try {
+      const detail = await inbGet(`/inboundPlans/${plan.inboundPlanId}`, token);
+      // accepted placement option and its fees
+      let placementTotal = 0, placementShipments = [], placementLines = [];
+      try {
+        const po = await inbGet(`/inboundPlans/${plan.inboundPlanId}/placementOptions`, token);
+        const acc = (po.placementOptions || []).find(o => o.status === 'ACCEPTED');
+        if (acc) {
+          for (const f of (acc.fees || [])) { placementTotal += money(f.value); placementLines.push({ label: f.target || f.description || 'fee', amount: money(f.value) }); }
+          for (const dsc of (acc.discounts || [])) { placementTotal -= money(dsc.value); placementLines.push({ label: 'discount: ' + (dsc.target || dsc.description || ''), amount: -money(dsc.value) }); }
+          placementShipments = acc.shipmentIds || [];
+        }
+      } catch (e) { say('  placement options unavailable: ' + e.message); }
+
+      const shipIds = placementShipments.length ? placementShipments : (detail.shipments || []).map(x => x.shipmentId);
+      const ships = [];
+      for (const sid of shipIds) {
+        let sh = {}, units = 0, freight = null, carrier = null, solution = null;
+        try { sh = await inbGet(`/inboundPlans/${plan.inboundPlanId}/shipments/${sid}`, token); } catch (e) { say('  shipment unavailable: ' + e.message); }
+        try {
+          const it = await inbGet(`/inboundPlans/${plan.inboundPlanId}/shipments/${sid}/items`, token);
+          units = (it.items || []).reduce((n, x) => n + (Number(x.quantity) || 0), 0);
+        } catch (e) {}
+        try {
+          const tr = await inbGet(`/inboundPlans/${plan.inboundPlanId}/transportationOptions`, token, { shipmentId: sid });
+          const chosen = (tr.transportationOptions || []).find(o => o.transportationOptionId === sh.selectedTransportationOptionId);
+          if (chosen) {
+            solution = chosen.shippingSolution || null;
+            carrier = (chosen.carrier && (chosen.carrier.name || chosen.carrier.alphaCode)) || null;
+            if (chosen.quote && chosen.quote.cost) freight = money(chosen.quote.cost);
+          }
+        } catch (e) {}
+        ships.push({ internalId: sid, shipmentId: sh.shipmentConfirmationId || null, name: sh.name || null,
+                     status: sh.status || null, units, freight, carrier, solution });
+      }
+      // one placement fee per plan: spread across its shipments by units
+      const totalUnits = ships.reduce((n, x) => n + x.units, 0);
+      for (const x of ships) {
+        x.placement = placementTotal ? (totalUnits ? placementTotal * x.units / totalUnits : placementTotal / ships.length) : 0;
+        x.placement = Math.round(x.placement * 100) / 100;
+      }
+      out.push({ inboundPlanId: plan.inboundPlanId, planName: plan.name, createdAt: plan.createdAt, status: plan.status,
+                 placementTotal: Math.round(placementTotal * 100) / 100, placementLines, shipments: ships });
+    } catch (e) {
+      say('  plan failed: ' + e.message);
+      out.push({ inboundPlanId: plan.inboundPlanId, planName: plan.name, createdAt: plan.createdAt, error: e.message, shipments: [] });
+    }
+  }
+  return out;
+}
+
+module.exports = { getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
