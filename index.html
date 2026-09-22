@@ -3538,7 +3538,8 @@ function renderFinPnl() {
     ['Product cost (COGS)', 'cogs', 'cogs', { neg: true, note: 'cost of units sold' }],
     ['Supplies', 'supplies', 'supplies', { neg: true }],
     ['Labor', 'labor', 'labor', { neg: true }],
-    ['Inbound freight + placement', 'freight', 'freight', { neg: true, note: 'per unit, charged as units sell' }],
+    ['Inbound freight', 'carrier', 'freight', { neg: true, note: 'carrier cost · per unit, charged as units sell' }],
+    ['Placement fees', 'placement', 'freight', { neg: true, note: 'Amazon inbound placement · per unit, charged as units sell' }],
     ['CONTRIBUTION', 'contribution', null, { total: true }],
     ['Rent & overhead', 'overhead', 'overhead', { neg: true }],
     ['Royalty', 'royalty', 'royalty', { neg: true, note: '% of (deposits − Cosmoprof spend) · see worksheet below' }],
@@ -3601,6 +3602,16 @@ function renderFinPnl() {
           + m.payouts.map(p => '<div style="font-size:12px;color:#5a6472">' + p.paid.slice(5).replace('-', '/') + ' — <b>' + fin$(p.amount, 2) + '</b>'
             + ' <span style="color:#9db0c9">for ' + p.from.slice(5).replace('-', '/') + '–' + p.to.slice(5).replace('-', '/') + '</span></div>').join('') + '</div>').join('')
       + '</div></div>';
+  }
+  const w = d.inboundWaiting;
+  if (w && w.list && w.list.length) {
+    h += '<div class="box" style="padding:10px 14px;border:2px solid #2563a8;background:#f7fafd"><b style="font-size:14px">🚚 Shipping costs not charged yet</b>'
+      + '<div class="hint">These shipments haven\'t been received at Amazon, so none of their units have sold — their freight and placement will come onto the P&amp;L as those units sell.</div>'
+      + '<table style="margin-top:6px;font-size:13px"><thead><tr><th>Shipment</th><th>Created</th><th style="text-align:right">Freight</th><th style="text-align:right">Placement</th><th style="text-align:right">Total</th></tr></thead><tbody>'
+      + w.list.map(x => '<tr><td style="font-family:monospace">' + x.id + '</td><td>' + (x.created || '') + '</td><td style="text-align:right">' + fin$(x.freight, 2) + '</td>'
+          + '<td style="text-align:right">' + fin$(x.placement, 2) + '</td><td style="text-align:right;font-weight:800">' + fin$(x.freight + x.placement, 2) + '</td></tr>').join('')
+      + (w.list.length > 1 ? '<tr style="border-top:2px solid #1a2a3a;font-weight:800"><td colspan="2">Waiting</td><td style="text-align:right">' + fin$(w.freight, 2) + '</td><td style="text-align:right">' + fin$(w.placement, 2) + '</td><td style="text-align:right">' + fin$(w.freight + w.placement, 2) + '</td></tr>' : '')
+      + '</tbody></table></div>';
   }
   h += '<div id="finUncosted"></div>';
   h += '<div id="finRoyaltyWs"></div>';
@@ -3869,7 +3880,8 @@ function finBreakdown(x) {
     + line('Product cost', x.unitCost == null ? '<span style="color:#c0392b">no cost</span>' : '-' + fin$(x.unitCost, 2), { c: '#c0392b' })
     + line('Supplies', x.suppliesPerUnit == null ? per(null) : '-' + fin$(x.suppliesPerUnit, 2), { c: '#c0392b' })
     + line('Labor', x.laborPerUnit == null ? per(null) : '-' + fin$(x.laborPerUnit, 2), { c: '#c0392b' })
-    + line('Inbound freight', x.freightPerUnit == null ? per(null) : '-' + fin$(x.freightPerUnit, 2), { c: '#c0392b' })
+    + line('Inbound freight', x.carrierPerUnit == null ? per(null) : '-' + fin$(x.carrierPerUnit, 2), { c: '#c0392b' })
+    + line('Placement fee', x.placementPerUnit == null ? per(null) : '-' + fin$(x.placementPerUnit, 2), { c: '#c0392b' })
     + line('Profit per unit', x.profitPerUnit == null ? '—' : fin$(x.profitPerUnit, 2), { b: 1, c: (x.profitPerUnit || 0) >= 0 ? '#1e8449' : '#c0392b' })
     + '</table>' + (x.regularCost != null && x.unitCost != null && Math.abs(x.regularCost - x.unitCost) > 0.01 ? '<div class="hint" style="margin-top:4px">Regular Cosmoprof cost $' + x.regularCost.toFixed(2) + ' · you hold stock at $' + x.unitCost.toFixed(2) + ' blended</div>' : '') + '</div>';
   h += '<div><div style="font-size:11px;font-weight:800;color:#5a6472;margin-bottom:4px">FOR THE PERIOD</div><table style="font-size:13px">'
