@@ -469,6 +469,19 @@ module.exports = function registerFinance(app, deps) {
     const roy = (ctx.royalty && ctx.royalty[m]) || null;
     const royalty = roy ? roy.royalty : null;
     const royaltyPct = ctx.settings ? ctx.settings.royaltyPct : null;
+
+    // What Amazon actually PAID into the bank this month, by deposit date —
+    // the exact total each settlement states. This is the figure that matches
+    // a bank or card statement; 'deposited' above is what was EARNED.
+    let payouts = [], paidToBank = null;
+    try {
+      payouts = (await pool.query(
+        `SELECT settlement_id, start_date, end_date, deposit_date, total_amount::numeric AS amt
+         FROM inv_settlements WHERE deposit_date >= $1 AND deposit_date < $2 ORDER BY deposit_date`, [from, to])).rows
+        .map(r => ({ id: r.settlement_id, from: isoDate(r.start_date), to: isoDate(r.end_date),
+                     paid: isoDate(r.deposit_date), amount: Number(r.amt) || 0 }));
+      if (payouts.length) paidToBank = payouts.reduce((n, x) => n + x.amount, 0);
+    } catch (e) {}
     const cogs = (a.costedSales || !a.uncostedSales) ? a.cogs : null;
     const supplies = anySupplies ? a.supplies : null;
     const labor = laborActual;                                // null until timesheets cover the month
@@ -494,7 +507,7 @@ module.exports = function registerFinance(app, deps) {
     return {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
-      amazonFees, reimbursements: t.reimbursements, deposited, feeDetail: t.feeDetail,
+      amazonFees, reimbursements: t.reimbursements, deposited, paidToBank, payouts, feeDetail: t.feeDetail,
       cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, contribution, overhead, overheadItems: oh.items, net,
       // A margin with most of COGS missing is fiction. Withhold it until at
       // least 90% of sales carry a real product cost.
