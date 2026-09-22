@@ -587,11 +587,20 @@ module.exports = function registerFinance(app, deps) {
     const freight = known ? (a.freight || 0) + billedUnmatched : null;
     const carrier = known ? (a.freight ? a.freightOnly : 0) + (um.freight || 0) : null;
     const placement = known ? (a.freight ? a.placement : 0) + (um.placement || 0) : null;
-    const notes = [];
-    if (billedUnmatched) notes.push('incl. ' + '$' + billedUnmatched.toFixed(2) + ' billed for shipments not in the app');
-    if (!a.freight && anyWaiting && !anyRates && !billedUnmatched) notes.push('waiting — fees are on shipments not yet received');
-    if (a.freightMissingUnits) notes.push(a.freightMissingUnits + ' unit(s) sold from shipments with no fees on file');
-    const freightNote = notes.length ? notes.join(' · ') : null;
+    // One note per line, each with its own amount.
+    const money = v => '$' + Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const noteFor = (billed, spread) => {
+      const n = [];
+      if (billed && spread) n.push(money(spread) + ' spread over units sold · ' + money(billed) + ' billed this month for shipments not in the app');
+      else if (billed) n.push('billed by Amazon this month — shipments not in the app');
+      if (!a.freight && anyWaiting && !anyRates && !billedUnmatched) n.push('waiting — fees are on shipments not yet received');
+      // Units with no rate are only a gap if nothing was billed to cover them.
+      if (a.freightMissingUnits && !billedUnmatched) n.push(a.freightMissingUnits + ' unit(s) sold with no fees on file');
+      return n.length ? n.join(' · ') : null;
+    };
+    const carrierNote = noteFor(um.freight || 0, a.freight ? a.freightOnly : 0);
+    const placementNote = noteFor(um.placement || 0, a.freight ? a.placement : 0);
+    const freightNote = carrierNote;
     const contribution = deposited
                          - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
@@ -614,7 +623,7 @@ module.exports = function registerFinance(app, deps) {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
       amazonFees, reimbursements: t.reimbursements, deposited, paidToBank, payouts, feeDetail: t.feeDetail,
-      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, freightNote, contribution, overhead, overheadItems: oh.items, net,
+      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, freightNote, carrierNote, placementNote, contribution, overhead, overheadItems: oh.items, net,
       // A margin with most of COGS missing is fiction. Withhold it until at
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
