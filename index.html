@@ -3573,7 +3573,8 @@ function renderFinPnl() {
           cell = '<div style="font-size:11px;color:#9db0c9;text-decoration:line-through">' + fin$(-m.royaltyCalc.calculated) + '</div>' + cell
             + '<div style="font-size:10px;color:#1e8449">agreed</div>';
         if (key === 'cogs' && m.costCoverage != null && m.costCoverage < 0.98)
-          cell += '<div style="font-size:10px;color:#b7791f">' + Math.round(m.costCoverage * 100) + '% of sales costed</div>';
+          cell += '<div style="font-size:10px"><a href="#" onclick="finShowUncosted(\'' + m.month + '\');return false" style="color:#b7791f;text-decoration:underline dotted">'
+            + Math.round(m.costCoverage * 100) + '% of sales costed — what\'s missing?</a></div>';
       }
       t += '<td style="text-align:right;padding:9px 12px;white-space:nowrap">' + cell + '</td>';
     }
@@ -3601,6 +3602,7 @@ function renderFinPnl() {
             + ' <span style="color:#9db0c9">for ' + p.from.slice(5).replace('-', '/') + '–' + p.to.slice(5).replace('-', '/') + '</span></div>').join('') + '</div>').join('')
       + '</div></div>';
   }
+  h += '<div id="finUncosted"></div>';
   h += '<div id="finRoyaltyWs"></div>';
   h += '<div class="hint" style="padding:4px 4px 12px">' + finDot('ok') + 'complete ' + finDot('partial') + 'partial ' + finDot('missing') + 'not tracked yet · Sales tax Amazon collects for you and reserve holds are excluded — neither is your money or your expense.'
     + (d.laborInfo && d.laborInfo.rate != null ? ' · Labor per unit is <b>$' + d.laborInfo.rate.toFixed(2) + '</b> (last ' + d.laborInfo.days + ' days of timesheets ÷ units shipped).' : '') + '</div>';
@@ -3727,6 +3729,50 @@ function finExcludeOrder(order, exclude) {
 function finSetPurchases(month, val) {
   ownerApi('/api/finance/purchases', { method: 'POST', body: JSON.stringify({ month, amount: val === '' ? null : val }) })
     .then(d => { if (d && d.ok) { toast(val === '' ? 'Using imported orders for ' + month : 'Spend saved for ' + month); loadFinPnl(); } else alert((d && d.error) || 'Failed'); });
+}
+// What's uncosted in a month, and the fix for each.
+function finShowUncosted(month) {
+  const d = window._finPnl; const box = document.getElementById('finUncosted'); if (!d || !box) return;
+  const m = d.months.find(x => x.month === month); if (!m) return;
+  const list = m.uncosted || [];
+  const total = list.reduce((n, x) => n + x.sales, 0);
+  const inp = 'padding:5px;border:1px solid #cfd8e3;border-radius:5px;font-family:monospace;font-size:12px;width:120px';
+  let h = '<div class="box" style="border:2px solid #b7791f;background:#fffdf7">'
+    + '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><div><b style="font-size:15px">Uncosted sales — ' + finMonthLabel(month) + '</b>'
+    + '<div class="hint">' + (m.uncostedCount || list.length) + ' item(s), ' + fin$(total) + ' of sales counted with no product cost. Fix these and COGS reaches 100%.</div></div>'
+    + '<button class="mini" onclick="document.getElementById(\'finUncosted\').innerHTML=\'\'">Close</button></div>'
+    + '<table style="margin-top:8px;min-width:640px"><thead><tr><th>Sold as</th><th style="text-align:right">Units</th><th style="text-align:right">Sales</th><th>Why no cost</th><th>Fix</th></tr></thead><tbody>';
+  for (const x of list) {
+    let fix = '';
+    if (x.fix === 'link-sku') {
+      const id = 'lk_' + btoa(x.sku).replace(/[^A-Za-z0-9]/g, '');
+      fix = '<input id="' + id + '" placeholder="ASIN it belongs to" style="' + inp + '"> <button class="mini" onclick="finLinkSku(' + JSON.stringify(x.sku).replace(/"/g, '&quot;') + ',\'' + id + '\',\'' + month + '\')">link</button>';
+    } else if (x.fix === 'cost') {
+      fix = '<a href="#" onclick="window._finCostQ=\'' + x.asin + '\';window._finCostAll=true;showSubTab(\'fsrc\');setTimeout(()=>finOpenEditor(\'costs\'),300);return false" style="color:#127a7a;font-weight:700">add cost →</a>';
+    } else if (x.fix === 'duo') {
+      fix = (x.missingParts || []).map(c => '<div><a href="#" onclick="window._finCostQ=\'' + c.asin + '\';window._finCostAll=true;showSubTab(\'fsrc\');setTimeout(()=>finOpenEditor(\'costs\'),300);return false" style="color:#127a7a;font-weight:700">cost ' + String(c.name || c.asin).slice(0, 40) + ' →</a></div>').join('')
+        || '<span class="hint">save any cost to recalculate</span>';
+    } else {
+      fix = '<span class="hint">add it under Products to Add, then give it a cost</span>';
+    }
+    h += '<tr><td style="max-width:320px"><div style="font-size:13px;font-weight:600">' + (x.name || x.sku || x.asin) + '</div>'
+      + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + (x.asin || ('SKU ' + x.sku)) + '</div></td>'
+      + '<td style="text-align:right">' + x.units + '</td><td style="text-align:right;font-weight:700">' + fin$(x.sales) + '</td>'
+      + '<td style="font-size:12px;color:#b7791f;font-weight:700">' + x.reason + '</td><td>' + fix + '</td></tr>';
+  }
+  if (!list.length) h += '<tr><td colspan="5" class="hint">Nothing uncosted in this month.</td></tr>';
+  h += '</tbody></table>'
+    + '<div class="hint" style="margin-top:6px">The costs list only shows sales from the last 90 days, and only products in your catalog. Seller SKUs with no linked product never appear there — link them here and their sales cost automatically.</div></div>';
+  box.innerHTML = h;
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+function finLinkSku(sku, inputId, month) {
+  const asin = ((document.getElementById(inputId) || {}).value || '').trim().toUpperCase();
+  if (!/^B[A-Z0-9]{9}$/.test(asin)) return alert('Enter the ASIN this SKU belongs to (B followed by 9 characters).');
+  ownerApi('/api/sku-map', { method: 'POST', body: JSON.stringify({ sku, asin }) }).then(d => {
+    if (d && d.ok) { toast(sku + ' linked to ' + asin + ' — ' + d.linked + ' sale line(s) updated'); loadFinPnl(); setTimeout(() => finShowUncosted(month), 1500); }
+    else alert((d && d.error) || 'Failed');
+  });
 }
 function finDrillMonth(m) { showSubTab('fprod'); const el = document.getElementById('fprodMonth'); if (el) { el.value = m; loadFinProducts(); } }
 
