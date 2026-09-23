@@ -837,6 +837,7 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div id="offlineBadge" onclick="flushOffline(true)" title="Tap to send now" style="display:none;position:fixed;top:10px;right:10px;z-index:10001;background:#b7791f;color:#fff;border-radius:18px;padding:7px 13px;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,0.25)"></div>
 <div id="undoBar" style="display:none;position:fixed;left:50%;bottom:78px;transform:translateX(-50%);z-index:10000;background:#1a2b4a;color:#fff;border-radius:10px;padding:10px 12px 10px 16px;box-shadow:0 6px 24px rgba(0,0,0,0.3);align-items:center;gap:14px;max-width:calc(100vw - 32px);font-size:14px">
   <span id="undoText" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
   <button onclick="doUndo()" style="background:#f6c343;color:#1a2b4a;border:none;border-radius:6px;padding:8px 14px;font-weight:800;cursor:pointer;flex-shrink:0">UNDO</button>
@@ -867,6 +868,67 @@ function api(path, opts={}) {
   // caller's .catch shows an error instead of a false "done".
   return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
 }
+// ---- OFFLINE QUEUE ----
+// When the warehouse Wi-Fi drops, a receive / ship / prep scan is kept on
+// this device and sent when the connection is back (every 15 s, and as soon
+// as the browser says it's online). Each carries its action id, so a scan
+// that did reach the server before the drop is not counted twice.
+const OFFLINE_KEY='offlineQueue';
+function offlineLoad(){ try{ return JSON.parse(localStorage_get(OFFLINE_KEY)||'[]'); }catch(e){ return []; } }
+function offlineSave(q){ localStorage_set(OFFLINE_KEY, JSON.stringify(q)); offlineBadge(); }
+function offlineBadge(){
+  const q=offlineLoad(), el=document.getElementById('offlineBadge'); if(!el) return;
+  const failed=JSON.parse(localStorage_get('offlineFailed')||'[]');
+  if(!q.length && !failed.length){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.style.background = q.length ? '#b7791f' : '#c0392b';
+  el.textContent = q.length ? '⏳ '+q.length+' scan'+(q.length===1?'':'s')+' waiting to sync' : '⚠ '+failed.length+' offline scan'+(failed.length===1?'':'s')+' refused — tap';
+}
+function isNetworkError(e){ return e && (e.name==='TypeError' || /Server error 5\d\d|Failed to fetch|NetworkError|Load failed/i.test(e.message||'')); }
+function offlineQueue(path, body, idem, label){
+  const q=offlineLoad(); q.push({path, body, idem, label, ts:Date.now()}); offlineSave(q);
+}
+let _flushing=false;
+async function flushOffline(manual){
+  const failedList=JSON.parse(localStorage_get('offlineFailed')||'[]');
+  if(manual && !offlineLoad().length && failedList.length){
+    alert('These offline scans were refused by the server and did NOT count:\n\n'+failedList.map(f=>'  • '+f.label+' — '+f.error).join('\n')+'\n\nRedo them by hand if needed.');
+    localStorage_set('offlineFailed','[]'); offlineBadge(); return;
+  }
+  if(_flushing) return; _flushing=true;
+  let sent=0;
+  try{
+    let q=offlineLoad();
+    while(q.length){
+      const it=q[0];
+      let d;
+      try{ d=await api(it.path,{method:'POST',idem:it.idem,body:JSON.stringify(it.body)}); }
+      catch(e){ if(isNetworkError(e)) break; d={ok:false,error:e.message}; }
+      if(d && d.error==='in_progress') break;          // first try still running — next round
+      if(!(d && d.ok)){
+        const f=JSON.parse(localStorage_get('offlineFailed')||'[]');
+        f.push({label:it.label, error:(d&&(d.message||d.error))||'refused'}); localStorage_set('offlineFailed', JSON.stringify(f));
+      } else sent++;
+      q=offlineLoad(); q.shift(); offlineSave(q);
+    }
+  } finally { _flushing=false; offlineBadge(); }
+  if(sent){ toast('Synced '+sent+' offline scan'+(sent===1?'':'s')); try{ loadProducts(); }catch(e){} }
+}
+setInterval(()=>{ if(offlineLoad().length) flushOffline(); }, 15000);
+window.addEventListener('online', ()=>flushOffline());
+window.addEventListener('load', ()=>{ offlineBadge(); if(offlineLoad().length) setTimeout(()=>flushOffline(),3000); });
+
+// Match a scanned code against the product list already loaded, for when the
+// server can't be reached. Covers ASIN, SKU, UPC and FNSKU (not extra UPCs).
+function localFind(code){
+  const c=String(code||'').trim().toUpperCase(), digits=c.replace(/^0+/,'');
+  const p=(products||[]).find(x=>[x.asin,x.sku,x.fnsku].some(v=>v&&String(v).toUpperCase()===c) || (x.upc && String(x.upc).replace(/^0+/,'')===digits));
+  return p ? {found:true, product:p, scanned:code, offline:true} : {found:false, offline:true};
+}
+function findCode(code){
+  return api('/api/find/'+encodeURIComponent(code)).catch(e=>{ if(isNetworkError(e)) return localFind(code); throw e; });
+}
+
 // Undo: shown for 10 seconds after a receive, ship or prep scan.
 let _undo=null, _undoTimer=null;
 function showUndo(id, text){
@@ -940,7 +1002,7 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
 document.getElementById('scanIn').addEventListener('keydown', e=>{
   if(e.key!=='Enter') return;
   const code = e.target.value.trim(); if(!code) return;
-  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+  findCode(code).then(d=>{
     const box=document.getElementById('matchIn');
     document.getElementById('pickerInWrap').style.display='none';
     if(d.found){
@@ -1025,13 +1087,21 @@ function doReceive(){
     resetScanner('In');
     loadProducts();
     if(!scanning['In']) document.getElementById('scanIn').focus();
-  }).catch(e=>{ window._receiving=false; toast('NOT received — connection problem. Tap Receive again to retry (it will not double-count).',true); });
+  }).catch(e=>{
+    window._receiving=false;
+    if(!isNetworkError(e)){ toast('NOT received: '+e.message,true); return; }
+    offlineQueue('/api/receive',{asin:item.asin,qty},item._idem,'Receive '+qty+' × '+nm);
+    item._idem=null;
+    toast('📶 Offline — saved on this device, will sync: +'+qty+' '+nm);
+    resetScanner('In');
+    if(!scanning['In']) document.getElementById('scanIn').focus();
+  });
 }
 
 // SHIP single
 document.getElementById('scanOut').addEventListener('keydown', e=>{
   if(e.key!=='Enter')return; const code=e.target.value.trim(); if(!code)return;
-  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+  findCode(code).then(d=>{
     const box=document.getElementById('matchOut');
     if(d.found){ currentOut=d.product; box.className='matched show ok';
       box.innerHTML=`<div class="pname">${esc(d.product.name)}</div><div class="pmeta">On hand ${d.product.onhand||0}</div>`;
@@ -1059,7 +1129,14 @@ function doShip(){
     showUndo(d.undoId,'Shipped '+qty+' × '+String(item.name||'').slice(0,26));
     resetScanner('Out');
     loadProducts();
-  }).catch(e=>{ window._shipping=false; toast('NOT shipped — connection problem. Tap again to retry (it will not double-count).',true); });
+  }).catch(e=>{
+    window._shipping=false;
+    if(!isNetworkError(e)){ toast('NOT shipped: '+e.message,true); return; }
+    offlineQueue('/api/ship',{asin:item.asin,qty},item._idem,'Ship '+qty+' × '+String(item.name||'').slice(0,26));
+    item._idem=null;
+    toast('📶 Offline — saved on this device, will sync: ship '+qty);
+    resetScanner('Out');
+  });
 }
 
 let _shipTsvFile=null; let _reconcileFile=null;
@@ -3030,7 +3107,16 @@ function loadFnStatus(){
 }
 function doPrepScan(code, qty){
   _scanInFlight=true;
-  api('/api/prep/scan',{method:'POST',idem:newIdem(),body:JSON.stringify({code,qty})}).finally(()=>{ _scanInFlight=false; }).then(d=>{
+  const idem=newIdem();
+  api('/api/prep/scan',{method:'POST',idem,body:JSON.stringify({code,qty})}).finally(()=>{ _scanInFlight=false; }).catch(e=>{
+    if(!isNetworkError(e)) throw e;
+    offlineQueue('/api/prep/scan',{code,qty},idem,'Prep '+qty+' × '+code);
+    toast('📶 Offline — prep scan saved on this device, will sync');
+    if(window._resetScan)window._resetScan('Prep');
+    document.getElementById('scanPrep').focus();
+    return null;
+  }).then(d=>{
+    if(d===null) return;
     _scanInFlight=false;
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
     if(typeof scanFeedback==='function') scanFeedback();
