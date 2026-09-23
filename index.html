@@ -254,7 +254,7 @@
         <option value="instock">In stock only</option>
         <option value="outstock">Out of stock only</option>
         <option value="duoonly">Duo items only</option>
-        <option value="duobuildable">Duos I can build now</option>
+        <option value="duobuildable">🧴 Duos I can build now (one-tap prep)</option>
       </select>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
       <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
@@ -991,7 +991,7 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
   if(t==='count'){ countInit(); }
   if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
@@ -5854,6 +5854,66 @@ function duosBuildable(p){
   }
   return best;
 }
+// ---- DUO BUILDER ----
+// One card per duo, with how many can be made from FREE stock (on hand minus
+// what's already on a work order or prepped). "Prep" adds a duo work order;
+// the bottles it needs stop counting as available right away, so they can't
+// be promised twice. On Hand itself drops when the duos ship — dropping it
+// here as well would take them off twice.
+let _bundles=null;
+function freeOf(asin){
+  const p=(products||[]).find(x=>x.asin===asin);
+  return p ? Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0)) : 0;
+}
+function duoBuildInfo(b){
+  const comps=b.components.map(c=>{
+    const p=(products||[]).find(x=>x.asin===c.asin)||{};
+    const per=Math.max(1,c.qty||1), free=freeOf(c.asin);
+    return { asin:c.asin, name:c.name, per, free, can:Math.floor(free/per), location:p.location||null };
+  });
+  return { comps, buildable: comps.length ? Math.min(...comps.map(c=>c.can)) : 0 };
+}
+function renderDuoBuilder(body, q){
+  if(!_bundles){
+    body.innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading duos…</div>';
+    api('/api/bundles').then(d=>{ _bundles=Array.isArray(d)?d:[]; renderOnhand(); }).catch(()=>{ body.innerHTML='<div class="hint">Could not load duos.</div>'; });
+    return;
+  }
+  const rows=_bundles.filter(b=>!q || String(b.bundle_name||'').toLowerCase().includes(q) || b.bundle_asin.toLowerCase().includes(q))
+    .map(b=>({ b, ...duoBuildInfo(b), prod:(products||[]).find(x=>x.asin===b.bundle_asin)||{} }));
+  const ready=rows.filter(r=>r.buildable>0).sort((a,b)=>b.buildable-a.buildable);
+  const notReady=rows.filter(r=>r.buildable<=0);
+  const card=(r,i)=>{
+    const img=r.prod.image?'<img src="'+esc(r.prod.image)+'" onerror="this.style.display=\'none\'" style="width:64px;height:64px;object-fit:contain;border-radius:8px;background:#f4f6f9">':'<div style="width:64px;height:64px;border-radius:8px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;font-size:26px">🧴</div>';
+    const comps=r.comps.map(c=>'<div style="font-size:12.5px;color:#5a6472;margin-top:3px">'+(c.can===r.buildable&&r.buildable>0?'<b style="color:#b7791f" title="this bottle limits how many you can build">▸</b> ':'• ')
+      +esc(String(c.name||c.asin).slice(0,60))+(c.per>1?' ×'+c.per:'')+' — <b>'+c.free+'</b> free'+(c.location?' · 📍'+esc(c.location):'')+'</div>').join('');
+    const act = r.buildable>0
+      ? '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:130px">'
+        +'<div style="text-align:right"><div style="font-size:28px;font-weight:800;color:#7a4fb5;line-height:1">'+r.buildable+'</div><div style="font-size:11px;color:#5a6472">can build</div></div>'
+        +'<div style="display:flex;gap:6px"><input type="number" id="duoQty_'+i+'" min="1" max="'+r.buildable+'" value="'+r.buildable+'" style="width:70px;padding:8px;text-align:right;border:2px solid #e2e8f0;border-radius:6px">'
+        +'<button onclick="prepDuo(\''+r.b.bundle_asin+'\','+i+','+r.buildable+')" style="padding:8px 14px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:6px;cursor:pointer">🔧 Prep</button></div></div>'
+      : '<div style="text-align:right;min-width:110px;color:#c0392b;font-size:12px;font-weight:700">short — '+esc(String((r.comps.find(c=>c.can===0)||{}).name||'a bottle').slice(0,30))+'</div>';
+    return '<div class="box" style="display:flex;gap:12px;align-items:center;margin-bottom:8px;'+(r.buildable>0?'':'opacity:0.6')+'">'+img
+      +'<div style="flex:1;min-width:0"><div style="font-weight:700">'+esc(r.b.bundle_name||r.b.bundle_asin)+' <span style="background:#fdeceb;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span></div>'+comps+'</div>'+act+'</div>';
+  };
+  window._duoRows=ready.concat(notReady);
+  body.innerHTML='<div class="hint" style="margin-bottom:10px"><b>'+ready.length+'</b> duo'+(ready.length===1?'':'s')+' can be built from free stock ('+ready.reduce((n,r)=>n+r.buildable,0)+' total). '
+    +'Tap <b>Prep</b> to add it to Pending Prep — its bottles stop counting as available right away. ▸ marks the bottle that runs out first.</div>'
+    + (ready.length ? ready.map((r,i)=>card(r,i)).join('') : '<div class="box hint" style="text-align:center">No duo can be built from free stock right now.</div>')
+    + (notReady.length ? '<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;color:#5a6472">Can\'t build yet ('+notReady.length+')</summary><div style="margin-top:8px">'+notReady.map((r,i)=>card(r,ready.length+i)).join('')+'</div></details>' : '');
+}
+function prepDuo(duoAsin, i, max){
+  const el=document.getElementById('duoQty_'+i);
+  const qty=parseInt(el&&el.value);
+  if(!qty||qty<1){ toast('Enter how many duos',true); return; }
+  if(qty>max && !confirm('Only '+max+' can be built from free stock. Add '+qty+' anyway?')) return;
+  const btn=el && el.nextSibling; if(btn){ btn.disabled=true; btn.textContent='Adding…'; }
+  api('/api/pending-prep/add',{method:'POST',idem:newIdem(),body:JSON.stringify({asin:duoAsin,qty,isDuo:true})}).then(d=>{
+    if(!d || d.ok===false || d.error){ toast('NOT added: '+((d&&(d.message||d.error))||'error'),true); if(btn){ btn.disabled=false; btn.textContent='🔧 Prep'; } return; }
+    toast('Added '+qty+' duo'+(qty===1?'':'s')+' to Pending Prep');
+    loadProducts();
+  }).catch(()=>{ toast('NOT added — connection problem, try again',true); if(btn){ btn.disabled=false; btn.textContent='🔧 Prep'; } });
+}
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
   const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'onhand_desc';
@@ -5863,6 +5923,7 @@ function renderOnhand(){
   products.forEach(p=>{ tU+=(p.onhand||0); tT+=(p.transit||0); sk++; });
   // stock filter
   const stockFilter=(document.getElementById('filterOnhand')||{}).value||'all';
+  if(stockFilter==='duobuildable'){ renderDuoBuilder(body, q); return; }
   // filter
   let list=products.filter(p=>{
     if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;
