@@ -993,6 +993,10 @@ function shipFromTsv(){
     // show PREVIEW and ask to confirm
     let msg='PREVIEW — Shipment '+d.shipmentId+(d.shipmentName?' ('+d.shipmentName+')':'')+'\n\nThis will deduct:\n\n'+d.previewLines.join('\n');
     if(d.notfound && d.notfound.length) msg+='\n\n⚠ NOT matched ('+d.notfound.length+'): '+d.notfound.join(', ');
+    if(d.alreadyRecorded>0){
+      alert('⚠ Shipment '+d.shipmentId+' was already deducted ('+d.alreadyRecorded+' units recorded).\n\nUploading it again would deduct it twice, so it will be refused. If lines are missing, use Reconcile instead.');
+      document.getElementById('shipTsvFile').value=''; _shipTsvFile=null; return;
+    }
     msg+='\n\nProceed with the deduction?';
     if(confirm(msg)){ commitShipTsv(); }
     else { document.getElementById('shipTsvFile').value=''; _shipTsvFile=null; toast('Cancelled — nothing deducted'); }
@@ -1005,24 +1009,32 @@ function commitShipTsv(){
   fetch('/api/ship-from-tsv',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
     btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false;
     document.getElementById('shipTsvFile').value=''; _shipTsvFile=null;
-    if(d.error){ toast(d.error,true); return; }
+    if(d.error){ const m=d.message||d.error; toast(m,true); alert(m); return; }
     toast('Shipped '+d.done+' items — on-hand updated');
     alert('✓ Done. '+d.done+' of '+d.totalLines+' items deducted → In Transit'+(d.expanded&&d.expanded.length?'\n'+d.expanded.length+' duos expanded to singles':'')+(d.notfound&&d.notfound.length?'\n\n⚠ Not matched: '+d.notfound.join(', '):''));
     loadProducts();
   }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false; toast('Failed',true); });
 }
-function doBulkShip(){
+function doBulkShip(allowAppend){
   const shipmentId=document.getElementById('shipmentId').value.trim();
   const shipmentName=document.getElementById('shipmentName').value.trim();
   if(!shipmentId){toast('Enter the Amazon Shipment ID first',true);return;}
   const lines=document.getElementById('packSlip').value.trim().split('\n');
   const items=[]; lines.forEach(l=>{ const parts=l.trim().split(/[\s,\t]+/); if(parts.length>=2){ items.push({code:parts[0], qty:parts[parts.length-1]}); } });
   if(!items.length){toast('Nothing to deduct',true);return;}
-  api('/api/bulk-ship',{method:'POST',body:JSON.stringify({items,shipmentId,shipmentName})}).then(d=>{
+  if(window._bulkShipping) return;   // a second tap used to post the slip twice
+  window._bulkShipping=true;
+  api('/api/bulk-ship',{method:'POST',body:JSON.stringify({items,shipmentId,shipmentName,allowAppend:!!allowAppend})}).then(d=>{
+    window._bulkShipping=false;
+    if(d.error==='shipment_exists'){
+      if(confirm(d.message+'\n\nOnly continue if this pack slip is ADDITIONAL units for the same shipment.\n\nOK = add these on top\nCancel = stop (nothing deducted)')) doBulkShip(true);
+      return;
+    }
+    if(d.ok===false || d.error){ const m=d.message||d.error; toast(m,true); alert(m); return; }
     toast('Shipment '+d.shipmentId+': '+d.done+' lines'+(d.expanded&&d.expanded.length?' ('+d.expanded.length+' duo→singles)':'')+(d.notfound.length?', '+d.notfound.length+' not found':''), d.notfound.length>0);
     if(d.notfound.length) alert('Not found (add these barcodes/ASINs first):\n'+d.notfound.join('\n'));
     document.getElementById('packSlip').value=''; document.getElementById('shipmentId').value=''; document.getElementById('shipmentName').value=''; loadProducts();
-  });
+  }).catch(e=>{ window._bulkShipping=false; toast('Ship failed — nothing deducted. '+(e&&e.message||''),true); });
 }
 
 // ==================== DATA TABS ====================
@@ -5339,6 +5351,7 @@ function renderTransit(){
 function markReceived(sid){
   if(!confirm('Mark shipment '+sid+' as received? This clears its units from In Transit.'))return;
   api('/api/receive-shipment',{method:'POST',body:JSON.stringify({shipmentId:sid})}).then(d=>{
+    if(d.ok===false){ toast(d.error,true); renderTransit(); return; }
     toast('Cleared '+d.cleared+' units'); renderTransit(); loadProducts();
   });
 }
