@@ -117,9 +117,14 @@
   .flowdiv { width:1px; background:rgba(255,255,255,0.18); margin:10px 10px; }
   .tabs .tab b { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:50%; background:rgba(255,255,255,0.18); font-size:11px; margin-right:7px; }
   .tabs .tab.active b { background:rgba(255,255,255,0.35); }
-  .subdiv { width:1px; background:#c9d4e0; margin:4px 8px; }
-  .subtabs { display:flex; flex-wrap:wrap; gap:6px; background:#eef2f6; padding:8px; border-radius:10px; margin-bottom:14px; }
-  .subtab { padding:10px 16px; font-size:13px; font-weight:700; background:#fff; color:#5a6472; border:none; border-radius:8px; cursor:pointer; }
+  /* Admin navigation: four labelled groups instead of one long row of 18 buttons. */
+  .subtabs { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:flex-start; background:#eef2f6; padding:10px 12px; border-radius:10px; margin-bottom:14px; }
+  .subgroup { display:flex; flex-direction:column; gap:5px; min-width:0; }
+  .subgroup-label { font-size:10.5px; font-weight:800; letter-spacing:0.6px; text-transform:uppercase; color:#8a97a6; padding-left:2px; }
+  .subgroup-btns { display:flex; flex-wrap:wrap; gap:5px; }
+  .subtab { padding:8px 13px; font-size:13px; font-weight:700; background:#fff; color:#5a6472; border:none; border-radius:8px; cursor:pointer; }
+  .sublock { margin-left:auto; align-self:center; background:#e2e8f0; }
+  @media (max-width:640px){ .subtabs{ flex-direction:column; } .subgroup{ width:100%; } .sublock{ margin-left:0; } }
   .subtab:hover { background:#dde6f0; }
   .subtab.active { background:#7a4fb5; color:#fff; }
   .subpanel { display:none; }
@@ -451,26 +456,33 @@
     </div>
     <div id="adminContent" style="display:none">
       <div class="subtabs">
-        <button class="subtab active" onclick="showSubTab('dashboard',event)">📊 Dashboard</button>
-        <button class="subtab" onclick="showSubTab('restock',event)">🎯 Restock Plan</button>
-        <button class="subtab" onclick="showSubTab('toadd',event)">🚀 Products to Add</button>
-        <button class="subtab" onclick="showSubTab('market',event)">📈 Market Data</button>
-        <button class="subtab" onclick="showSubTab('velocity',event)">📊 Velocity</button>
-        <button class="subtab" onclick="showSubTab('value',event)">💰 Value</button>
-        <span class="subdiv"></span>
-        <button class="subtab" onclick="showSubTab('transit',event)">🚚 In Transit</button>
-        <button class="subtab" onclick="showSubTab('shipments',event)">📦 Shipments</button>
-        <button class="subtab" onclick="showSubTab('fbainv',event)">🏬 FBA Inventory</button>
-        <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
-        <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
-        <button class="subtab" onclick="showSubTab('fpnl',event)" style="font-weight:800">📊 P&amp;L</button>
-        <button class="subtab" onclick="showSubTab('fprod',event)" style="font-weight:800">🏷️ Product Profit</button>
-        <button class="subtab" onclick="showSubTab('fcash',event)" style="font-weight:800">💵 Cash &amp; Draws</button>
-        <button class="subtab" onclick="showSubTab('fsrc',event)">⚙️ Data Sources</button>
-        <button class="subtab" onclick="showSubTab('labor',event)">👷 Labor</button>
-        <button class="subtab" onclick="showSubTab('audit',event)">🔎 Stock Audit</button>
-        <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
-        <button class="subtab" onclick="adminLock()" style="margin-left:auto;background:#e2e8f0;color:#5a6472">🔒 Lock</button>
+        <div class="subgroup"><div class="subgroup-label">Money</div><div class="subgroup-btns">
+          <button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button>
+          <button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button>
+          <button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button>
+          <button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button>
+          <button class="subtab" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button>
+        </div></div>
+        <div class="subgroup"><div class="subgroup-label">Plan &amp; buy</div><div class="subgroup-btns">
+          <button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button>
+          <button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button>
+          <button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button>
+          <button class="subtab" data-sub="market" onclick="showSubTab('market',event)">Market Data</button>
+          <button class="subtab" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button>
+          <button class="subtab" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button>
+        </div></div>
+        <div class="subgroup"><div class="subgroup-label">Shipments &amp; stock</div><div class="subgroup-btns">
+          <button class="subtab" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button>
+          <button class="subtab" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button>
+          <button class="subtab" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button>
+          <button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button>
+          <button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button>
+        </div></div>
+        <div class="subgroup"><div class="subgroup-label">Checks</div><div class="subgroup-btns">
+          <button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button>
+          <button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button>
+        </div></div>
+        <button class="subtab sublock" onclick="adminLock()">🔒 Lock</button>
       </div>
       <div id="freshnessBar" style="margin:8px 0 2px"></div>
 <div id="sub-audit" class="subpanel">
@@ -2230,8 +2242,9 @@ function showSubTab(name, ev){
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
-  if(ev && ev.target) ev.target.classList.add('active');
-  else { const btns=document.querySelectorAll('.subtab'); if(btns[0]) btns[0].classList.add('active'); }
+  // Highlight the button for this panel — also when opened from a link
+  // elsewhere, which used to highlight the first button instead.
+  const btn=document.querySelector('.subtab[data-sub="'+name+'"]'); if(btn) btn.classList.add('active');
   // load the data for that sub-tab
   if(name==='dashboard'){ loadDashboard(); }
   if(name==='restock'){ if(window._restockData) renderRestock(); else loadRestockCache(); }
