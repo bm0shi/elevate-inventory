@@ -1239,6 +1239,20 @@ function ownerUnlock(which){
       } else toast('Wrong owner password',true);
     });
 }
+// For a warehouse-screen action that needs the owner (wiping the prep log,
+// deleting a checked-in invoice): try it, and if the server asks for the
+// owner, prompt for the password for this one request (not remembered
+// unless Admin is already unlocked).
+function withOwner(path, opts){
+  opts=opts||{};
+  const send=pw=>api(path, Object.assign({}, opts, {headers:Object.assign({}, opts.headers||{}, {'x-owner-password':pw})}));
+  return send(OWNER_PW||'').then(d=>{
+    if(!(d && /owner access required/i.test(d.error||''))) return d;
+    const pw=prompt('This needs the owner password:');
+    if(!pw) return {ok:false, cancelled:true, error:'Cancelled — nothing changed.'};
+    return send(pw).then(d2=>{ if(d2 && /owner access required/i.test(d2.error||'')) return {ok:false, error:'Wrong owner password — nothing changed.'}; return d2; });
+  });
+}
 function ownerApi(path, opts){
   opts = opts || {};
   // A FormData body must set its own multipart boundary — forcing
@@ -2250,7 +2264,8 @@ function fmtDur(sec){
 }
 function deletePrepLog(id){
   if(!confirm('Delete this prep log entry?')) return;
-  api('/api/prep-log/delete',{method:'POST',body:JSON.stringify({id})}).then(d=>{
+  withOwner('/api/prep-log/delete',{method:'POST',body:JSON.stringify({id})}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     if(d.error){ toast(d.error,true); return; }
     toast('Entry deleted'); loadPrepPerformance();
   });
@@ -2258,7 +2273,8 @@ function deletePrepLog(id){
 function clearAllPrepLog(){
   if(!confirm('Delete ALL prep log entries?\n\nThis wipes every recorded prep job and its timing data. Use this to clear test data.\n\nThis cannot be undone.')) return;
   if(!confirm('Are you sure? This removes ALL prep performance history.')) return;
-  api('/api/prep-log/clear-all',{method:'POST'}).then(d=>{
+  withOwner('/api/prep-log/clear-all',{method:'POST'}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     if(d.error){ toast(d.error,true); return; }
     toast('Cleared '+(d.deleted||0)+' entries'); loadPrepPerformance();
   });
@@ -3361,7 +3377,8 @@ function deleteInvoiceByNumber(order, status, received){
   }
   msg+='\n\nThis cannot be undone.';
   if(!confirm(msg))return;
-  api('/api/invoices/'+order+'/delete',{method:'POST'}).then(()=>{
+  withOwner('/api/invoices/'+order+'/delete',{method:'POST'}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     toast('Invoice #'+order+' deleted');
     if(currentInvoice===order){
       currentInvoice=null;
@@ -5216,7 +5233,7 @@ function renderCosts(){
 function cycleHazmat(asin){
   const row=(window._toaddData||[]).find(x=>x.asin===asin); if(!row)return;
   const next = row.hazmat===true ? false : (row.hazmat===false ? null : true);
-  api('/api/hazmat/set',{method:'POST',body:JSON.stringify({asin:asin, hazmat:next})}).then(d=>{
+  ownerApi('/api/hazmat/set',{method:'POST',body:JSON.stringify({asin:asin, hazmat:next})}).then(d=>{
     if(d && d.error){ toast(d.error,true); return; }
     if(!d || typeof d.hazmat === 'undefined'){
       toast('Not saved — server did not accept the hazmat flag. Deploy the latest server.js.',true);
@@ -5230,7 +5247,7 @@ function cycleHazmat(asin){
 
 function startHazmatScan(){
   const b=document.getElementById('hazScanBtn'); if(b){ b.disabled=true; b.textContent='Checking Amazon…'; }
-  api('/api/hazmat/scan',{method:'POST'}).then(()=>pollHazmat()).catch(()=>{ if(b){b.disabled=false;b.textContent='⚠️ Check hazmat with Amazon';} });
+  ownerApi('/api/hazmat/scan',{method:'POST'}).then(()=>pollHazmat()).catch(()=>{ if(b){b.disabled=false;b.textContent='⚠️ Check hazmat with Amazon';} });
 }
 function pollHazmat(){
   api('/api/hazmat/status').then(j=>{
@@ -5539,7 +5556,8 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
 function deleteInvoice(){
   if(!currentInvoice)return;
   if(!confirm('Delete invoice '+currentInvoice+'? This removes it entirely (nothing added to on-hand). Use this to clear a bad/scrambled import.'))return;
-  api('/api/invoices/'+currentInvoice+'/delete',{method:'POST'}).then(()=>{
+  withOwner('/api/invoices/'+currentInvoice+'/delete',{method:'POST'}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     toast('Invoice deleted');
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
     document.getElementById('invoicePick').value='';

@@ -1454,7 +1454,14 @@ app.get('/api/shipments', auth, async (req, res) => {
 });
 
 // Delete an invoice (and its line items)
-app.post('/api/invoices/:orderNumber/delete', auth, async (req, res) => {
+// Deleting a checked-in invoice erases the record of stock already added, so
+// it needs the owner. Staff can still delete a pending (bad) import.
+async function ownerIfReceived(req, res, next) {
+  const r = await pool.query('SELECT status FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
+  if (r.rows[0] && r.rows[0].status === 'received') return ownerAuth(req, res, next);
+  next();
+}
+app.post('/api/invoices/:orderNumber/delete', auth, ownerIfReceived, async (req, res) => {
   await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [req.params.orderNumber]);
   await pool.query('DELETE FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
   res.json({ ok: true });
@@ -3913,7 +3920,7 @@ app.post('/api/shipment-costs/link', ownerAuth, async (req, res) => {
 });
 
 // Owner override — always wins over Amazon's declaration.
-app.post('/api/hazmat/set', auth, async (req, res) => {
+app.post('/api/hazmat/set', ownerAuth, async (req, res) => {
   const { asin, hazmat } = req.body || {};
   if (!asin) return res.status(400).json({ error: 'asin required' });
   const v = (hazmat === null || hazmat === undefined || hazmat === '') ? null : !!hazmat;
@@ -3934,7 +3941,7 @@ app.post('/api/hazmat/set', auth, async (req, res) => {
 
 // Background scan of Amazon's hazmat data. Never overwrites a manual call.
 let hazJob = { running:false, done:false, error:null, progress:'', found:0, checked:0 };
-app.post('/api/hazmat/scan', auth, async (req, res) => {
+app.post('/api/hazmat/scan', ownerAuth, async (req, res) => {
   if (hazJob.running) return res.json({ ok:true, already:true });
   hazJob = { running:true, done:false, error:null, progress:'starting…', found:0, checked:0 };
   res.json({ ok:true });
@@ -5717,7 +5724,7 @@ app.post('/api/pending-prep/release', auth, async (req, res) => {
 });
 
 // Delete a single prep log entry (for removing test data)
-app.post('/api/prep-log/delete', auth, async (req, res) => {
+app.post('/api/prep-log/delete', ownerAuth, async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: 'id required' });
   await pool.query('DELETE FROM inv_prep_log WHERE id=$1', [id]);
@@ -5725,7 +5732,7 @@ app.post('/api/prep-log/delete', auth, async (req, res) => {
 });
 
 // Clear ALL prep log entries (wipe test data)
-app.post('/api/prep-log/clear-all', auth, async (req, res) => {
+app.post('/api/prep-log/clear-all', ownerAuth, async (req, res) => {
   const r = await pool.query('DELETE FROM inv_prep_log');
   res.json({ ok: true, deleted: r.rowCount });
 });
@@ -6055,7 +6062,7 @@ app.post('/api/prep/set', auth, async (req, res) => {
 async function clearAllPrepped() {
   await pool.query('DELETE FROM inv_prepped');
 }
-app.post('/api/prep/clear', auth, async (req, res) => {
+app.post('/api/prep/clear', ownerAuth, async (req, res) => {
   await clearAllPrepped();
   res.json({ ok: true });
 });
