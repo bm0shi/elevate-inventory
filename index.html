@@ -3368,6 +3368,7 @@ function handleBindUnmapped(d, code, qty){
     if(r && r.error){ toast(r.error,true); return; }
     // linked — now count the scan that created it
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d2=>{
+      if(invoiceLocked(d2)) return;
       if(d2 && d2.ok){
         scanFeedback();
         toast('🔗 Linked + ✅ verified · +'+qty+' '+(d2.line.name||'').slice(0,18));
@@ -3477,6 +3478,7 @@ function doAssignNewUpc(asin, name, code, pc){
     // Now run the normal scan — it will count it, or offer to link the
     // Cosmo number if that invoice line is still unmapped.
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d=>{
+      if(invoiceLocked(d)) return;
       if(d.ok){ scanFeedback(); toast('+'+qty+' '+(d.line.name||'').slice(0,20)); renderReconLines(); }
       else if(d.reason==='bind_unmapped'){ handleBindUnmapped(d, code, qty); }
       else if(d.reason==='mapping_mismatch'){ handleMappingMismatch(d, code); }
@@ -4041,7 +4043,7 @@ function finEditRoyalty(m) {
   box.innerHTML = '<div style="background:#fffdf7;border:1px solid #f0d9a8;border-radius:6px;padding:8px;margin-top:6px;text-align:left">'
     + '<div style="font-size:11px;color:#5a6472">Formula says <b>' + (r.calculated == null ? '—' : fin$(r.calculated, 2)) + '</b>. What was actually paid?</div>'
     + '<input type="number" step="0.01" min="0" id="royAmt_' + m + '" value="' + (r.agreed ? r.agreed.paid : '') + '" placeholder="0.00" style="' + inp + ';width:110px;margin-top:4px">'
-    + '<input id="royNote_' + m + '" value="' + (esc(r.agreed && r.agreed.note ? String(r.agreed.note).replace(/"/g, '&quot;') : '')) + '" placeholder="Reason (e.g. agreed deduction for …)" style="' + inp + ';width:100%;margin-top:4px">'
+    + '<input id="royNote_' + m + '" value="' + (esc(r.agreed && r.agreed.note ? String(r.agreed.note) : '')) + '" placeholder="Reason (e.g. agreed deduction for …)" style="' + inp + ';width:100%;margin-top:4px">'
     + '<div style="display:flex;gap:6px;margin-top:6px">'
     + '<button class="mini" style="background:#b7791f;color:#fff;border-color:#b7791f" onclick="finSaveRoyaltyAdj(\'' + m + '\')">Save</button>'
     + (r.agreed ? '<button class="mini" onclick="document.getElementById(\'royAmt_' + m + '\').value=\'\';finSaveRoyaltyAdj(\'' + m + '\')">Use formula again</button>' : '')
@@ -4722,7 +4724,7 @@ function loadPnl(){
     h+=line('Prep labor', d.labor, {neg:true, src:TODO, note:'needs a timesheet upload'});
     h+=line('Supplies', d.supplies, {neg:true, src:TODO, note:'needs per-unit costs by size'});
     h+=line('Overhead', d.overhead, {neg:true, src:TODO, note:'rent, insurance, utilities'});
-    h+=line('NET PROFIT', d.netProfit||0, {top:true});
+    h+=line('NET PROFIT', d.netProfit, {top:true});  // null = costs missing → shown as not tracked, not $0
     h+='</tbody></table>';
     h+='<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid #eef2f6">'
       +'<div><div style="font-size:11px;color:#8a97a6;font-weight:700">MARGIN ON NET SALES</div><div style="font-size:22px;font-weight:800;color:'+((d.marginPct||0)>=20?'#1e8449':'#b7791f')+'">'+(d.marginPct==null?'—':d.marginPct.toFixed(1)+'%')+'</div></div>'
@@ -5233,6 +5235,7 @@ function receiveAllExpected(){
   if(!currentInvoice)return;
   if(!confirm('Set every linked line to its invoice quantity?\n\nUse this when the truck matched the paperwork — then scan or edit only the exceptions.'))return;
   api('/api/invoices/'+currentInvoice+'/receive-all',{method:'POST'}).then(d=>{
+    if(invoiceLocked(d)) return;
     toast('Set '+(d.lines||0)+' lines to expected');
     renderReconLines();
   });
@@ -5362,6 +5365,7 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
     if(!qty || qty<1){ toast('Enter a valid quantity',true); if(window._resetScan)window._resetScan('Recon'); return; }
     if(!qtyOk(qty)){ if(window._resetScan)window._resetScan('Recon'); return; }
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+      if(invoiceLocked(d)){ if(window._resetScan)window._resetScan('Recon'); return; }
       if(d.ok){
         scanFeedback();
         toast((d.justVerified?'✅ VERIFIED · ':'')+'+'+qty+' '+(d.line.name||'').slice(0,20)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')');
@@ -5404,6 +5408,13 @@ function completeInvoiceNoStock(){
   completeInvoice(true, true);
 }
 
+// A checked-in invoice refuses scans (its stock was added when it was
+// completed). Say so plainly instead of a misleading "not on this invoice".
+function invoiceLocked(d){
+  if(d && d.ok===false && d.error==='already_completed'){ alert(d.message); return true; }
+  if(d && d.ok===false && d.error && !d.reason){ toast(d.message||d.error,true); return true; }
+  return false;
+}
 function completeInvoice(force, skipStock){
   if(!currentInvoice)return;
   const c=collectLocations();

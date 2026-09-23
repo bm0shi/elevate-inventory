@@ -285,13 +285,20 @@ async function idempotency(req, res, next) {
   const key = req.get('x-idem-key');
   if (!key || req.method !== 'POST') return next();
   if (key.length > 100) return res.status(400).json({ ok: false, error: 'bad x-idem-key' });
-  const id = req.path + '|' + key;
+  // The id includes a hash of the credentials sent, so a stored reply is only
+  // replayed to a caller who could have made the original request (this runs
+  // before the auth checks).
+  const who = crypto.createHash('sha256').update(String(req.get('x-app-password') || '') + '|' + String(req.get('x-owner-password') || '')).digest('hex').slice(0, 16);
+  const id = req.path + '|' + key + '|' + who;
+  // A row with no reply after a minute was left by a request that died (a
+  // restart mid-request): its transaction rolled back, so let this retry run.
+  await pool.query("DELETE FROM inv_idempotency WHERE key=$1 AND body IS NULL AND created_at < now() - interval '60 seconds'", [id]);
   const ins = await pool.query('INSERT INTO inv_idempotency(key) VALUES($1) ON CONFLICT DO NOTHING RETURNING 1', [id]);
   if (!ins.rowCount) {
     const r = await pool.query('SELECT status, body FROM inv_idempotency WHERE key=$1', [id]);
     const row = r.rows[0];
     if (row && row.body) { res.set('x-idem-replay', '1'); return res.status(row.status).json(row.body); }
-    return res.status(409).json({ ok: false, error: 'in_progress', message: 'That action is already being processed.' });
+    return res.status(409).json({ ok: false, error: 'in_progress', message: 'Still working on the first try — wait a few seconds, then try again (it will not double-count).' });
   }
   const send = res.json.bind(res);
   res.json = (body) => {
@@ -1375,7 +1382,7 @@ app.post('/api/ship', auth, async (req, res) => {
   const name = await withTx(async (db) => {
     const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
     if (!p.rows.length) return null;
-    await db.query('INSERT INTO inv_stock(asin, onhand, transit) VALUES($1,-$2,$2) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand - $2, transit = inv_stock.transit + $2', [asin, q]);
+    await db.query('INSERT INTO inv_stock(asin, onhand, transit) VALUES($1, -($2::int), $2::int) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand - $2::int, transit = inv_stock.transit + $2::int', [asin, q]);
     await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['out', asin, p.rows[0].name || '', q]);
     const undoId = await recordUndo(db, 'ship', `Shipped ${q} × ${(p.rows[0].name || asin).slice(0, 40)}`, [{ t: 'stock', asin, onhand: q, transit: -q }]);
     return { name: p.rows[0].name || '', undoId };
@@ -1582,6 +1589,10 @@ async function reconcileInTransit() {
     for (const ai of amazonItems) { recvBySku[ai.sku] = (recvBySku[ai.sku]||0) + (ai.received||0); }
 
     const r = await withTx(async (db) => {
+      // Re-check inside the transaction: the Amazon call above is slow, and a
+      // manual "mark received" or an overlapping run may have finished it.
+      const cur = await db.query('SELECT status FROM inv_shipments WHERE shipment_id=$1 FOR UPDATE', [sid]);
+      if (!cur.rows.length || (firstTime && cur.rows[0].status !== 'in_transit')) return { clearedThis: 0, flag: false, skipped: true };
       let clearedThis = 0, anyDiscrepancy = false;
       for (const it of ourItems.rows) {
         // match Amazon's received by this product's SKU
@@ -1606,6 +1617,7 @@ async function reconcileInTransit() {
       if (closed) await db.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
       return { clearedThis: firstTime ? clearedThis : 0, flag };
     });
+    if (r.skipped) continue;
     clearedTotal += r.clearedThis;
     if (firstTime) shipmentsDone++;
     console.log(`[SP-API] Shipment ${sid}: ${firstTime ? 'cleared ' + r.clearedThis + ' units' : 'counts refreshed'}, ${closed ? 'closed' : 'still receiving'}, discrepancy=${r.flag}.`);
@@ -2969,6 +2981,9 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         try {
           inserted = await withTx(async (db) => {
             if (force) {
+              // Unlinked fees stored before row_idx existed never match on
+              // re-import (NULL ≠ NULL) and would be listed twice.
+              await db.query('DELETE FROM inv_unlinked_fees WHERE settlement_id=$1 AND row_idx IS NULL AND linked_shipment_id IS NULL', [header.settlement_id]);
               const del = await db.query('DELETE FROM inv_settlement_lines WHERE settlement_id=$1', [header.settlement_id]);
               if (del.rowCount) console.log(`[Settlement] cleared ${del.rowCount} old line(s) for ${header.settlement_id}.`);
             }

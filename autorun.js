@@ -159,8 +159,8 @@ module.exports = function registerAutorun(app, deps) {
     if (weekKey) {
       if (ok) await setSetting('auto_last_week', weekKey).catch(() => {});
       else {
-        const tries = (parseInt(await getSetting('auto_tries_' + weekKey).catch(() => '0'), 10) || 0) + 1;
-        await setSetting('auto_tries_' + weekKey, String(tries)).catch(() => {});
+        // tries was counted when this attempt was claimed (see tick)
+        const tries = parseInt(await getSetting('auto_tries_' + weekKey).catch(() => '0'), 10) || 0;
         await setSetting('auto_retry_after', String(Date.now() + RETRY_MS)).catch(() => {});
         if (tries >= MAX_TRIES) {
           console.error(`[Auto] ${weekKey}: still failing after ${tries} runs — giving up until next Sunday.`);
@@ -191,11 +191,15 @@ module.exports = function registerAutorun(app, deps) {
       // Claim this attempt atomically. With two copies of the server running
       // (a replica, or old and new overlapping during a deploy) both used to
       // see the week as due and run the whole job twice.
-      const attempt = `${l.key}#${(parseInt(await getSetting('auto_tries_' + l.key), 10) || 0)}`;
+      const tries = parseInt(await getSetting('auto_tries_' + l.key), 10) || 0;
+      const attempt = `${l.key}#${tries}`;
       const claim = await pool.query(
         `INSERT INTO fin_settings(key, value) VALUES('auto_claim', $1)
          ON CONFLICT (key) DO UPDATE SET value = $1 WHERE fin_settings.value IS DISTINCT FROM $1 RETURNING 1`, [attempt]);
       if (!claim.rowCount) return;
+      // Count the attempt now, not when it finishes: a run killed mid-way (a
+      // deploy on Sunday night) must not leave this claim blocking every retry.
+      await setSetting('auto_tries_' + l.key, String(tries + 1));
       runAll('scheduled', l.key).catch(e => { running = false; console.error('[Auto] run failed:', e.message); });
     } catch (e) { console.error('[Auto] tick:', e.message); }
   }
