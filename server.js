@@ -1475,51 +1475,76 @@ async function reconcileInTransit() {
   let clearedTotal = 0;
   let shipmentsDone = 0;
 
+  let failed = 0;
   for (const s of shipments) {
     const sid = s.ShipmentId;
     // ONLY process shipments the app itself created (matched by ID).
     // This ignores all legacy / externally-created shipments entirely.
-    const known = await pool.query("SELECT 1 FROM inv_shipments WHERE shipment_id=$1 AND status='in_transit'", [sid]);
+    const known = await pool.query('SELECT status FROM inv_shipments WHERE shipment_id=$1', [sid]);
     if (!known.rows.length) continue;
+    const firstTime = known.rows[0].status === 'in_transit';
 
-    // skip if already processed
+    // skip if already processed (finalised once Amazon CLOSED it)
     const seen = await pool.query('SELECT 1 FROM inv_processed_shipments WHERE shipment_id=$1', [sid]);
     if (seen.rows.length) continue;
+    if (!firstTime && known.rows[0].status !== 'received') continue;
 
-    // Pull Amazon's actual per-SKU received quantities
-    const amazonItems = await getShipmentReceivedItems(sid);
-    // Map SKU -> received qty from Amazon
-    const recvBySku = {};
-    for (const ai of amazonItems) { recvBySku[ai.sku] = (recvBySku[ai.sku]||0) + (ai.received||0); }
+    // RECEIVING means Amazon is still counting. The units have left our
+    // transit either way, but the received counts are partial: finalising
+    // then flagged shortages that weren't real and never looked again. Keep
+    // re-reading until CLOSED; only then judge discrepancies.
+    const closed = String(s.ShipmentStatus || '').toUpperCase() === 'CLOSED';
+
+    // Pull Amazon's actual per-SKU received quantities. A failed call is
+    // skipped for this run rather than read as "all received".
+    let amazonItems;
+    try { amazonItems = await getShipmentReceivedItems(sid); }
+    catch (e) { failed++; console.error(`[SP-API] Shipment ${sid}: items call failed, will retry next run —`, e.message); continue; }
 
     // Our recorded items for this shipment
     const ourItems = await pool.query(
       `SELECT si.asin, si.qty, p.sku, p.name FROM inv_shipment_items si
        JOIN inv_products p ON p.asin = si.asin WHERE si.shipment_id=$1`, [sid]);
-
-    let clearedThis = 0;
-    let anyDiscrepancy = false;
-    for (const it of ourItems.rows) {
-      // match Amazon's received by this product's SKU
-      const received = recvBySku[it.sku] != null ? recvBySku[it.sku] : it.qty; // fallback: assume all received
-      // clear what we sent from transit (transit reflects what left our warehouse)
-      await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
-      // record what Amazon received on the line
-      await pool.query('UPDATE inv_shipment_items SET qty_received=$1 WHERE shipment_id=$2 AND asin=$3', [received, sid, it.asin]);
-      if (received < it.qty) anyDiscrepancy = true;
-      clearedThis += it.qty;
+    if (!amazonItems.length && ourItems.rows.length) {
+      console.log(`[SP-API] Shipment ${sid}: Amazon returned no items yet — will retry next run.`);
+      continue;
     }
+    // Map SKU -> received qty from Amazon
+    const recvBySku = {};
+    for (const ai of amazonItems) { recvBySku[ai.sku] = (recvBySku[ai.sku]||0) + (ai.received||0); }
 
-    await pool.query("UPDATE inv_shipments SET status='received', received_at=now(), has_discrepancy=$2 WHERE shipment_id=$1", [sid, anyDiscrepancy]);
-    await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-      ['checkin', '', 'Shipment ' + sid, clearedThis, anyDiscrepancy ? 'Checked in — DISCREPANCY' : 'Checked in — all received']);
-    await pool.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
-    clearedTotal += clearedThis;
-    shipmentsDone++;
-    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units, discrepancy=${anyDiscrepancy}.`);
+    const r = await withTx(async (db) => {
+      let clearedThis = 0, anyDiscrepancy = false;
+      for (const it of ourItems.rows) {
+        // match Amazon's received by this product's SKU
+        const received = recvBySku[it.sku] != null ? recvBySku[it.sku] : it.qty; // SKU not on Amazon's list: assume all received
+        // clear what we sent from transit (transit reflects what left our warehouse) — once
+        if (firstTime) await db.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+        // record what Amazon received on the line
+        await db.query('UPDATE inv_shipment_items SET qty_received=$1 WHERE shipment_id=$2 AND asin=$3', [received, sid, it.asin]);
+        if (received < it.qty) anyDiscrepancy = true;
+        clearedThis += it.qty;
+      }
+      const flag = closed && anyDiscrepancy;
+      if (firstTime) {
+        await db.query("UPDATE inv_shipments SET status='received', received_at=now(), has_discrepancy=$2 WHERE shipment_id=$1", [sid, flag]);
+        await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['checkin', '', 'Shipment ' + sid, clearedThis, !closed ? 'Checked in — Amazon still receiving' : flag ? 'Checked in — DISCREPANCY' : 'Checked in — all received']);
+      } else {
+        await db.query('UPDATE inv_shipments SET has_discrepancy=$2 WHERE shipment_id=$1', [sid, flag]);
+        if (closed) await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['checkin', '', 'Shipment ' + sid, 0, flag ? 'Amazon closed — DISCREPANCY' : 'Amazon closed — all received']);
+      }
+      if (closed) await db.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
+      return { clearedThis: firstTime ? clearedThis : 0, flag };
+    });
+    clearedTotal += r.clearedThis;
+    if (firstTime) shipmentsDone++;
+    console.log(`[SP-API] Shipment ${sid}: ${firstTime ? 'cleared ' + r.clearedThis + ' units' : 'counts refreshed'}, ${closed ? 'closed' : 'still receiving'}, discrepancy=${r.flag}.`);
   }
 
   console.log(`[SP-API] Reconcile done. ${shipmentsDone} new shipments, ${clearedTotal} units cleared.`);
+  if (failed) return { ok: false, error: `${failed} shipment(s) could not be read from Amazon — will retry next run`, shipments: shipmentsDone, cleared: clearedTotal };
   return { ok: true, shipments: shipmentsDone, cleared: clearedTotal };
 }
 
@@ -4096,7 +4121,9 @@ app.post('/api/sync-fnskus', auth, async (req, res) => {
     let r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2 RETURNING asin', [f.fnSku, sku]);
     if (r.rowCount === 0 && f.asin) {
       // then by ASIN
-      r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2 RETURNING asin', [f.fnSku, f.asin]);
+      // Fallback by ASIN only fills a blank. An ASIN can have several SKUs;
+      // overwriting here made the FNSKU flip on every sync and undid manual fixes.
+      r = await pool.query("UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku='') RETURNING asin", [f.fnSku, f.asin]);
     }
     if (r.rowCount > 0) matched++;
     else unmatched.push({ sku, asin: f.asin, fnsku: f.fnSku });
@@ -5269,7 +5296,8 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
 
     if (f.fnSku) {
       let ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2', [f.fnSku, sku]);
-      if (ur.rowCount === 0) ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [f.fnSku, f.asin]);
+      // Fallback by ASIN only fills a blank — see sync-fnskus.
+      if (ur.rowCount === 0) ur = await pool.query("UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku='')", [f.fnSku, f.asin]);
       if (ur.rowCount > 0) fnskusSaved++;
     }
   }
@@ -5716,10 +5744,17 @@ app.post('/api/remap-fnsku', auth, async (req, res) => {
   const { fnsku, asin } = req.body;
   const fn = (fnsku||'').trim();
   if (!fn || !asin) return res.status(400).json({ error: 'fnsku + asin required' });
-  // clear this FNSKU from any product that wrongly has it
-  await pool.query("UPDATE inv_products SET fnsku=NULL WHERE UPPER(fnsku)=UPPER($1)", [fn]);
-  // assign to the correct product
-  await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [fn, asin]);
+  // One transaction: a mistyped ASIN used to clear the FNSKU from the right
+  // product, assign it nowhere, and still report ok.
+  const ok = await withTx(async (db) => {
+    // clear this FNSKU from any product that wrongly has it
+    await db.query("UPDATE inv_products SET fnsku=NULL WHERE UPPER(fnsku)=UPPER($1)", [fn]);
+    // assign to the correct product
+    const r = await db.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [fn, asin]);
+    if (!r.rowCount) throw Object.assign(new Error('No product with ASIN ' + asin + ' — nothing changed.'), { code: 'NOASIN' });
+    return true;
+  }).catch(e => { if (e.code === 'NOASIN') return e.message; throw e; });
+  if (ok !== true) return res.status(404).json({ ok: false, error: ok });
   res.json({ ok: true });
 });
 

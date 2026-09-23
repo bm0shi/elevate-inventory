@@ -12,32 +12,87 @@ const MARKETPLACE_ID = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
 let tokenCache = null;
 
+// Pick ONE complete credential set: all three _FM values, else all three base
+// values. Each value used to fall back on its own, so a half-configured _FM
+// set could pair the FM client with the main app's refresh token.
+function credentials() {
+  const e = process.env;
+  const fm = [e.AMAZON_CLIENT_ID_FM, e.AMAZON_CLIENT_SECRET_FM, e.AMAZON_REFRESH_TOKEN_FM];
+  const base = [e.AMAZON_CLIENT_ID, e.AMAZON_CLIENT_SECRET, e.AMAZON_REFRESH_TOKEN];
+  const fmSet = fm.filter(Boolean).length;
+  if (fmSet === 3) return { set: '_FM', clientId: fm[0], clientSecret: fm[1], refreshToken: fm[2] };
+  if (fmSet > 0) {
+    // Mixed sets usually fail with invalid_grant, but this is how it always
+    // behaved — don't break a setup that happens to work. Say so loudly.
+    if (!credentials._warned) { credentials._warned = true;
+      console.warn('[SP-API] WARNING: only some AMAZON_*_FM variables are set; mixing them with the base set. If calls fail with invalid_grant, set all three _FM values or none.'); }
+    const pick = (i) => fm[i] || base[i];
+    if (![0, 1, 2].every(pick)) throw new Error('SP-API credentials not set (AMAZON_CLIENT_ID / SECRET / REFRESH_TOKEN)');
+    return { set: 'mixed', clientId: pick(0), clientSecret: pick(1), refreshToken: pick(2) };
+  }
+  if (base.every(Boolean)) return { set: 'base', clientId: base[0], clientSecret: base[1], refreshToken: base[2] };
+  throw new Error('SP-API credentials not set (AMAZON_CLIENT_ID / SECRET / REFRESH_TOKEN)');
+}
+
 async function getAccessToken() {
-  if (tokenCache && tokenCache.expiry && Date.now() < tokenCache.expiry - 60000) {
+  // Five minutes' margin: long scans fetch a token per request (see http
+  // below), and a token that is about to lapse mid-request is no good.
+  if (tokenCache && tokenCache.expiry && Date.now() < tokenCache.expiry - 5 * 60000) {
     return tokenCache.token;
   }
-  const clientId = process.env.AMAZON_CLIENT_ID_FM || process.env.AMAZON_CLIENT_ID;
-  const clientSecret = process.env.AMAZON_CLIENT_SECRET_FM || process.env.AMAZON_CLIENT_SECRET;
-  const refreshToken = process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN;
-
-  if (!clientId || !clientSecret || !refreshToken) {
-    throw new Error('SP-API credentials not set (AMAZON_CLIENT_ID_FM / SECRET / REFRESH_TOKEN)');
-  }
-
-  const resp = await axios.post('https://api.amazon.com/auth/o2/token',
+  const c = credentials();
+  const resp = await http.post('https://api.amazon.com/auth/o2/token',
     qs.stringify({
       grant_type: 'refresh_token',
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
+      client_id: c.clientId,
+      client_secret: c.clientSecret,
+      refresh_token: c.refreshToken,
     }),
     { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
 
+  if (!tokenCache) console.log(`[SP-API] using the ${c.set} credential set.`);
   tokenCache = { token: resp.data.access_token, expiry: Date.now() + resp.data.expires_in * 1000 };
   return resp.data.access_token;
 }
 
+// Every SP-API call goes through this client:
+//  - a timeout, so a hung connection can't freeze a background job (and its
+//    "running" flag) until the next restart;
+//  - a fresh access token on every request. Functions fetch one token at the
+//    start and loop for up to an hour; after it expired every remaining call
+//    got 403 and prices / hazmat flags silently came back blank;
+//  - one retry with a new token if Amazon says the token is bad.
+const http = axios.create({ timeout: 90000 });
+http.interceptors.request.use(async (config) => {
+  if (String(config.url || '').startsWith(SP_API_BASE)) {
+    config.headers = config.headers || {};
+    config.headers['x-amz-access-token'] = await getAccessToken();
+  }
+  return config;
+});
+http.interceptors.response.use(null, async (err) => {
+  const cfg = err.config;
+  const body = JSON.stringify(err.response?.data || '');
+  if (cfg && !cfg._tokenRetry && err.response?.status === 403 &&
+      String(cfg.url || '').startsWith(SP_API_BASE) && /expired|Unauthorized|access token/i.test(body)) {
+    cfg._tokenRetry = true;
+    tokenCache = null;
+    return http(cfg);
+  }
+  throw err;
+});
+
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Put a throttled ASIN back on the end of the list, at most five times. It
+// used to be re-queued without limit, so a sustained 429 looped for ever.
+function requeue(list, asin) {
+  const tries = list._tries || (list._tries = {});
+  tries[asin] = (tries[asin] || 0) + 1;
+  if (tries[asin] > 5) return false;
+  list.push(asin);
+  return true;
+}
 
 // List inbound shipments updated recently, filtered to RECEIVED/CLOSED
 async function getReceivedShipments(sinceDays = 45) {
@@ -63,7 +118,7 @@ async function getReceivedShipments(sinceDays = 45) {
 
     let resp;
     try {
-      resp = await axios.get(`${SP_API_BASE}/fba/inbound/v0/shipments`, {
+      resp = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments`, {
         headers: { 'x-amz-access-token': token },
         params,
         // serialize arrays as repeated keys (SP-API requirement)
@@ -104,14 +159,16 @@ async function getShipmentReceivedItems(shipmentId) {
 
     let resp;
     try {
-      resp = await axios.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${shipmentId}/items`, {
+      resp = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${shipmentId}/items`, {
         headers: { 'x-amz-access-token': token },
         params,
       });
     } catch (err) {
       const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
       console.error(`[SP-API] items for ${shipmentId} failed:`, err.response?.status, body);
-      return items;
+      // Throw: an empty or partial list used to read as "everything received"
+      // and closed the shipment for good with no shortage flagged.
+      throw new Error(`SP-API items for ${shipmentId}: ${err.response?.status || ''} ${body}`);
     }
 
     const data = resp.data.payload?.ItemData || [];
@@ -144,7 +201,7 @@ async function getFbaInventory() {
     if (nextToken) params.nextToken = nextToken;
     let resp;
     try {
-      resp = await axios.get(`${SP_API_BASE}/fba/inventory/v1/summaries`, {
+      resp = await http.get(`${SP_API_BASE}/fba/inventory/v1/summaries`, {
         headers: { 'x-amz-access-token': token }, params,
       });
     } catch (err) {
@@ -173,7 +230,7 @@ async function getSalesVelocity(days = 30) {
   const after = new Date(Date.now() - days*24*60*60*1000).toISOString();
 
   // 1. Request the flat-file all-orders report
-  const createResp = await axios.post(`${SP_API_BASE}/reports/2021-06-30/reports`, {
+  const createResp = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, {
     reportType: 'GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL',
     marketplaceIds: [MARKETPLACE_ID],
     dataStartTime: after,
@@ -184,7 +241,7 @@ async function getSalesVelocity(days = 30) {
   let docId = null;
   for (let i=0;i<18;i++){
     await sleep(5000);
-    const st = await axios.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`, { headers:{'x-amz-access-token':token} });
+    const st = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`, { headers:{'x-amz-access-token':token} });
     const status = st.data.processingStatus;
     if (status==='DONE'){ docId = st.data.reportDocumentId; break; }
     if (status==='CANCELLED'||status==='FATAL') throw new Error('Report '+status);
@@ -192,8 +249,8 @@ async function getSalesVelocity(days = 30) {
   if(!docId) throw new Error('Report timed out — try again in a moment');
 
   // 3. Download + parse
-  const doc = await axios.get(`${SP_API_BASE}/reports/2021-06-30/documents/${docId}`, { headers:{'x-amz-access-token':token} });
-  const dl = await axios.get(doc.data.url, { responseType:'arraybuffer' });
+  const doc = await http.get(`${SP_API_BASE}/reports/2021-06-30/documents/${docId}`, { headers:{'x-amz-access-token':token} });
+  const dl = await http.get(doc.data.url, { responseType:'arraybuffer' });
   let body = doc.data.compressionAlgorithm==='GZIP' ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8') : Buffer.from(dl.data).toString('utf-8');
 
   const lines = body.split(/\r?\n/).filter(l=>l);
@@ -202,6 +259,10 @@ async function getSalesVelocity(days = 30) {
   const skuIdx = headers.indexOf('sku');
   const qtyIdx = headers.indexOf('quantity');
   const statusIdx = headers.indexOf('item-status');
+  // The report selects orders by LAST UPDATE. An order placed before the
+  // window but shipped/refunded inside it was counted, inflating velocity.
+  const dateIdx = headers.indexOf('purchase-date');
+  const afterMs = Date.parse(after);
   const skuUnits = {};
   for(let i=1;i<lines.length;i++){
     const c = lines[i].split('\t');
@@ -209,6 +270,7 @@ async function getSalesVelocity(days = 30) {
     const qty = parseInt(c[qtyIdx])||0;
     const st = (c[statusIdx]||'').toLowerCase();
     if(!sku || qty<=0 || st==='cancelled') continue;
+    if(dateIdx >= 0){ const pd = Date.parse(c[dateIdx]); if(!isNaN(pd) && pd < afterMs) continue; }
     skuUnits[sku] = (skuUnits[sku]||0) + qty;
   }
   return skuUnits;
@@ -227,7 +289,7 @@ async function getMyPrices(asins, onProgress) {
     let done = false;
     while (attempt < 4 && !done) {
       try {
-        const resp = await axios.get(
+        const resp = await http.get(
           `${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
           { headers: { 'x-amz-access-token': token } });
         const payload = resp.data.payload || {};
@@ -265,7 +327,7 @@ async function getCatalogImages(asins) {
   for (const asin of unique) {
     try {
       const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=images`;
-      const resp = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+      const resp = await http.get(url, { headers: { 'x-amz-access-token': token } });
       // images come back as images[].images[] with variant + link
       const imgGroups = resp.data.images || [];
       let bestUrl = null;
@@ -295,7 +357,7 @@ async function getLiveOffers(asins, onProgress) {
     i++;
     if (onProgress && i % 10 === 0) onProgress(`checking ${i} of ${asins.length} listings…`);
     try {
-      const resp = await axios.get(
+      const resp = await http.get(
         `${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
         { headers: { 'x-amz-access-token': token } }
       );
@@ -321,7 +383,7 @@ async function getLiveOffers(asins, onProgress) {
       };
     } catch (err) {
       const st = err.response?.status;
-      if (st === 429) { await sleep(4000); asins.push(asin); continue; }  // retry later
+      if (st === 429 && requeue(asins, asin)) { await sleep(4000); continue; }  // retry later
       out[asin] = { error: err.response?.data?.errors?.[0]?.message || err.message };
     }
     await sleep(2100);  // ~0.47/sec, under Amazon's getItemOffers limit
@@ -344,7 +406,7 @@ async function getCatalogItems(asins, onProgress) {
     if (onProgress && i % 5 === 0) onProgress(`${i} of ${unique.length} looked up…`);
     try {
       const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=summaries,images`;
-      const resp = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+      const resp = await http.get(url, { headers: { 'x-amz-access-token': token } });
 
       const sum = (resp.data.summaries || [])[0] || {};
       const name = sum.itemName || null;
@@ -359,7 +421,7 @@ async function getCatalogItems(asins, onProgress) {
       if (name || image) out[asin] = { asin, name, brand, image };
     } catch (e) {
       const st = e.response?.status;
-      if (st === 429) { await sleep(3000); unique.push(asin); continue; }  // retry later
+      if (st === 429 && requeue(unique, asin)) { await sleep(3000); continue; }  // retry later
       out[asin] = { asin, error: e.response?.data?.errors?.[0]?.message || e.message };
     }
     await sleep(600); // Catalog Items rate limit ~2/sec
@@ -388,7 +450,7 @@ async function getHazmatStatus(asins, onProgress) {
     // --- 1. seller-declared dangerous goods on the listing ---
     try {
       const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=attributes`;
-      const r = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+      const r = await http.get(url, { headers: { 'x-amz-access-token': token } });
       const attrs = r.data.attributes || {};
       const dg = attrs.supplier_declared_dg_hz_regulation;
       if (Array.isArray(dg) && dg.length) {
@@ -401,7 +463,7 @@ async function getHazmatStatus(asins, onProgress) {
         }
       }
     } catch (e) {
-      if (e.response?.status === 429) { await sleep(3000); unique.push(asin); continue; }
+      if (e.response?.status === 429 && requeue(unique, asin)) { await sleep(3000); continue; }
     }
     await sleep(600);
 
@@ -409,7 +471,7 @@ async function getHazmatStatus(asins, onProgress) {
     if (hazmat === null) {
       try {
         const url = `${SP_API_BASE}/fba/inbound/v1/eligibility/itemPreview?marketplaceIds=${MARKETPLACE_ID}&program=INBOUND&asinList=${asin}`;
-        const r = await axios.get(url, { headers: { 'x-amz-access-token': token } });
+        const r = await http.get(url, { headers: { 'x-amz-access-token': token } });
         const items = r.data.payload || [];
         const it = Array.isArray(items) ? items[0] : items;
         if (it) {
@@ -460,7 +522,11 @@ async function listSettlementReports(sinceDays = 180) {
     // Settlement reports are SCHEDULED, created by Amazon on its own cadence.
     // Filtering them by dataStartTime frequently returns nothing, so try the
     // plain listing first and only then the date-filtered variant.
+    // Without createdSince, getReports only looks back 90 days — a 180- or
+    // 365-day request silently came back with ~90 days. Ask for the full
+    // window first; the older shapes remain as fallbacks.
     const variants = [
+      { label: 'created since',    params: { reportTypes: rt, createdSince: after, pageSize: 100 } },
       { label: 'no date filter',   params: { reportTypes: rt, pageSize: 100 } },
       { label: 'DONE only',        params: { reportTypes: rt, processingStatuses: 'DONE', pageSize: 100 } },
       { label: 'date filtered',    params: { reportTypes: rt, processingStatuses: 'DONE', dataStartTime: after, pageSize: 100 } }
@@ -471,7 +537,7 @@ async function listSettlementReports(sinceDays = 180) {
       do {
         let resp;
         try {
-          resp = await axios.get(`${SP_API_BASE}/reports/2021-06-30/reports`, {
+          resp = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports`, {
             headers: { 'x-amz-access-token': token },
             params: nextToken ? { nextToken } : v.params,
             paramsSerializer: serialize
@@ -523,9 +589,9 @@ async function downloadReportDocument(documentId, onProgress) {
   for (let attempt = 0; attempt <= waits.length; attempt++) {
     const token = await getAccessToken();
     try {
-      const doc = await axios.get(`${SP_API_BASE}/reports/2021-06-30/documents/${documentId}`,
+      const doc = await http.get(`${SP_API_BASE}/reports/2021-06-30/documents/${documentId}`,
         { headers: { 'x-amz-access-token': token } });
-      const dl = await axios.get(doc.data.url, { responseType: 'arraybuffer' });
+      const dl = await http.get(doc.data.url, { responseType: 'arraybuffer' });
       return doc.data.compressionAlgorithm === 'GZIP'
         ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8')
         : Buffer.from(dl.data).toString('utf-8');
@@ -566,7 +632,7 @@ const INB = `${SP_API_BASE}/inbound/fba/2024-03-20`;
 async function inbGet(path, token, params) {
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      const r = await axios.get(INB + path, { headers: { 'x-amz-access-token': token }, params });
+      const r = await http.get(INB + path, { headers: { 'x-amz-access-token': token }, params });
       await sleep(600);
       return r.data;
     } catch (e) {
