@@ -156,6 +156,41 @@ const app = express();
 app.set('trust proxy', 1); // Railway sits behind a proxy — needed for a real req.ip
 app.use(express.json({ limit: '2mb' }));
 
+// Express 4 does not catch errors thrown inside async route handlers, and on
+// Node 15+ an uncaught promise rejection kills the process. One bad request
+// (a typo'd number, a missing field, a DB hiccup) used to take the whole app
+// down for everyone on the floor. Wrap every handler so its errors go to the
+// error middleware below instead.
+function wrapAsync(fn) {
+  return function (req, res, next) {
+    try {
+      const r = fn(req, res, next);
+      if (r && typeof r.catch === 'function') r.catch(next);
+    } catch (e) { next(e); }
+  };
+}
+for (const m of ['get', 'post', 'put', 'delete', 'patch']) {
+  const orig = app[m].bind(app);
+  // app.get('setting') with one argument reads a setting — leave that alone.
+  app[m] = (path, ...handlers) => orig(path, ...handlers.map(h =>
+    (typeof h === 'function' && h.length < 4) ? wrapAsync(h) : h));
+}
+
+// Registered last (after finance/autorun mount) — see the bottom of this file.
+function errorHandler(err, req, res, next) {
+  console.error(`[Inventory] ${req.method} ${req.path} failed:`, err && err.message);
+  if (res.headersSent) return next(err);
+  // 22P02 invalid text, 22003 out of range, 23502 missing value, 23503 unknown
+  // reference, 23505 duplicate: the request was bad, not the server.
+  const bad = err && ['22P02', '22003', '22007', '22008', '23502', '23503', '23505'].includes(err.code);
+  res.status(bad ? 400 : 500).json({ ok: false, error: (err && err.message) || 'server error' });
+}
+
+// Last line of defence for background jobs (timers, fire-and-forget pulls).
+process.on('unhandledRejection', (err) => {
+  console.error('[Inventory] unhandled rejection:', err && err.stack || err);
+});
+
 // ============================================================
 // PASSWORD GATES
 // ------------------------------------------------------------
@@ -271,7 +306,7 @@ async function buildLocationContext(asins) {
   const all = await pool.query(
     `SELECT p.asin, p.name, p.location, COALESCE(s.onhand,0)::int AS onhand,
        (
-         COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+         COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
        + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
        )::int AS pending_prep,
        (
@@ -531,6 +566,24 @@ const pool = new Pool({
     ? { rejectUnauthorized: false } : false
 });
 
+// Run several queries as one all-or-nothing unit. Stock moves touch several
+// tables; if the server dies halfway, a retry used to apply the first half
+// twice. fn gets a client — use client.query, not pool.query, inside it.
+async function withTx(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const out = await fn(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // ---- DB setup: create tables + seed products on first boot ----
 async function initDb() {
   await pool.query(`
@@ -591,8 +644,6 @@ async function initDb() {
       qty INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ DEFAULT now()
     );
-    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
-    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
@@ -638,6 +689,10 @@ async function initDb() {
       qty_expected INTEGER,
       qty_received INTEGER DEFAULT 0
     );
+    -- These ALTERs must come after the CREATEs above: on an empty database the
+    -- tables don't exist yet, and one failed statement rolls back the batch.
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
+    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -652,7 +707,6 @@ async function initDb() {
       received_at TIMESTAMPTZ,
       has_discrepancy BOOLEAN DEFAULT false
     );
-    ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS qty_received INTEGER;
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS has_discrepancy BOOLEAN DEFAULT false;
     -- Per-shipment line items (what we sent, tagged to a shipment)
@@ -663,6 +717,7 @@ async function initDb() {
       qty INTEGER,
       qty_received INTEGER
     );
+    ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS qty_received INTEGER;
   `);
 
   // Seed products once (only if table empty)
@@ -920,6 +975,18 @@ async function initDb() {
     console.log('[Inventory] Employees + timecards ready.');
   } catch(e) { console.error('employee migration skipped:', e.message); }
 
+  // ---- Hazmat flags (idempotent) ----
+  // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
+  // a manual call by the owner always outranks Amazon's declaration.
+  try {
+    await pool.query(`
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat BOOLEAN;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_source TEXT;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_detail TEXT;
+    `);
+    console.log('[Inventory] Hazmat columns ready.');
+  } catch(e) { console.error('hazmat migration skipped:', e.message); }
+
   // ---- Hazmat, keyed by ASIN (idempotent) ----
   // Originally stored on inv_products, which only holds the ~111 products we
   // actually carry. Products to Add is about the ~469 Keepa ASINs we DON'T
@@ -943,18 +1010,6 @@ async function initDb() {
       ON CONFLICT (asin) DO NOTHING`);
     console.log('[Inventory] Hazmat table ready.');
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
-
-  // ---- Hazmat flags (idempotent) ----
-  // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
-  // a manual call by the owner always outranks Amazon's declaration.
-  try {
-    await pool.query(`
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat BOOLEAN;
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_source TEXT;
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_detail TEXT;
-    `);
-    console.log('[Inventory] Hazmat columns ready.');
-  } catch(e) { console.error('hazmat migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
   // A mapping is only TRUSTED once a physical barcode scan has confirmed it.
@@ -1044,7 +1099,7 @@ app.get('/api/products', auth, async (req, res) => {
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
       )::int AS prepped,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
@@ -1061,7 +1116,7 @@ app.get('/api/products', auth, async (req, res) => {
            GREATEST(0,
              COALESCE(s2.onhand,0)
              - (
-                 COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=b2.component_asin AND is_duo=false),0)
+                 COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=b2.component_asin AND is_duo=false),0)
                + COALESCE((SELECT SUM(pp.qty*bb.qty) FROM inv_pending_prep pp JOIN inv_bundles bb ON bb.bundle_asin=pp.asin WHERE bb.component_asin=b2.component_asin),0)
                )
              - (
@@ -4280,7 +4335,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
   const committedMap = await pool.query(`
     SELECT p.asin,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
       + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       + COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
       + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
@@ -4437,7 +4492,7 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
   const stockRows = await pool.query(`
     SELECT p.asin, p.hazmat, p.hazmat_source, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       (
@@ -4548,7 +4603,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   const prodsRaw = await pool.query(`
     SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep
     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
@@ -4741,7 +4796,7 @@ async function runMfnScan(onProgress) {
   const stock = await pool.query(`
     SELECT p.asin, p.name, p.sku, p.image, COALESCE(s.onhand,0) AS onhand,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       (
@@ -5014,7 +5069,7 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   const ours = await pool.query(`
     SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       (
@@ -5179,13 +5234,18 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
     }
   }
 
-  // merge with an existing open request for the same item
-  const ex = await pool.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2', [requestAsin, duoFlag]);
-  if (ex.rows.length) {
-    await pool.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
-  } else {
-    await pool.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
-  }
+  // merge with an existing open request for the same item. The lock stops two
+  // taps landing together from both missing the existing row and inserting a
+  // duplicate work order.
+  await withTx(async (c) => {
+    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['pending-prep:' + requestAsin]);
+    const ex = await c.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 ORDER BY id LIMIT 1', [requestAsin, duoFlag]);
+    if (ex.rows.length) {
+      await c.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
+    } else {
+      await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
+    }
+  });
   res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag });
 });
 
@@ -5599,9 +5659,11 @@ initDb().then(() => {
   require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts });
   // Weekly automatic refresh of every Amazon input — Sundays 11:59 PM Arizona time
   require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT });
+  app.use(errorHandler);
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
+  app.use(errorHandler);
   // Start anyway so you can see errors
   app.listen(PORT, () => console.log(`[Inventory] Started (DB error) on port ${PORT}`));
 });
