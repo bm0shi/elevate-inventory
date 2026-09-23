@@ -4134,6 +4134,10 @@ function finLoadAuto() {
             + '<div style="font-size:11px;color:' + (s.ok || !s.finished ? '#5a6472' : '#c0392b') + '">' + String(s.detail || (s.finished ? '' : 'working…')).replace(/</g, '&lt;').slice(0, 160) + '</div></div>').join('')
         + '</div>';
     }
+    const em = d.email || {};
+    h += '<div class="hint" style="margin-top:10px">📧 ' + (em.configured
+        ? 'Each Sunday run emails its result to <b>' + esc(em.to) + '</b>. <a href="#" onclick="finAutoTestEmail();return false" style="color:#127a7a">Send a test email</a>'
+        : 'Weekly result email is <b>off</b> — set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and REPORT_EMAIL_TO in Railway to turn it on.') + '</div>';
     h += '<div class="hint" style="margin-top:10px"><b>Still yours to add</b> — these live outside Amazon: Cosmoprof invoices (Import costs), Homebase timesheets (Labor tab), bank balances (Cash &amp; Draws). The lights below show when one is overdue.</div></div>';
     box.innerHTML = h;
     if (d.running) setTimeout(finLoadAuto, 10000);
@@ -4142,6 +4146,11 @@ function finLoadAuto() {
 function finAutoRun() {
   if (!confirm('Run the full refresh now?\n\nIt pulls settlements, shipment fees, inventory and costs from Amazon. Allow 5–15 minutes; you can keep using the app.')) return;
   ownerApi('/api/auto/run', { method: 'POST', body: '{}' }).then(() => { toast('Refresh started'); setTimeout(finLoadAuto, 1500); });
+}
+function finAutoTestEmail() {
+  ownerApi('/api/auto/test-email', { method: 'POST', body: '{}' }).then(d => {
+    if (d && d.ok && d.sent) toast('Test email sent to ' + d.to); else toast((d && (d.error || 'Not sent — SMTP not configured')), true);
+  }).catch(e => toast('Email failed: ' + e.message, true));
 }
 function finAutoEnabled(on) {
   ownerApi('/api/auto/enabled', { method: 'POST', body: JSON.stringify({ enabled: on }) }).then(() => { toast(on ? 'Weekly refresh on' : 'Weekly refresh paused'); finLoadAuto(); });

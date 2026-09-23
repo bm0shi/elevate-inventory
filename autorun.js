@@ -207,7 +207,8 @@ module.exports = function registerAutorun(app, deps) {
       await ready;
       const runs = (await pool.query('SELECT * FROM fin_auto_runs ORDER BY id DESC LIMIT 8')).rows;
       res.json({ running, current, enabled: (await getSetting('auto_enabled')) !== 'false',
-                 next: nextScheduled().toISOString(), schedule: 'Sundays 11:59 PM Arizona time', runs });
+                 next: nextScheduled().toISOString(), schedule: 'Sundays 11:59 PM Arizona time', runs,
+                 email: { configured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), to: process.env.REPORT_EMAIL_TO || process.env.SMTP_USER || null } });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post('/api/auto/run', ownerAuth, async (req, res) => {
@@ -218,6 +219,14 @@ module.exports = function registerAutorun(app, deps) {
   app.post('/api/auto/enabled', ownerAuth, async (req, res) => {
     await setSetting('auto_enabled', req.body && req.body.enabled === false ? 'false' : 'true');
     res.json({ ok: true });
+  });
+  // Send the weekly email now, built from the latest run, to check the SMTP setup.
+  app.post('/api/auto/test-email', ownerAuth, async (req, res) => {
+    const last = (await pool.query('SELECT * FROM fin_auto_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1')).rows[0];
+    const run = last ? { ok: !!last.ok, steps: last.steps || [], weekKey: last.week_key, trigger: 'test' }
+                     : { ok: true, steps: [{ name: 'No runs yet', ok: true, detail: 'this is a test email' }], weekKey: null, trigger: 'test' };
+    try { res.json({ ok: true, ...(await deps.sendTestEmail(run)) }); }
+    catch (e) { res.status(500).json({ ok: false, error: 'Email failed: ' + e.message }); }
   });
   app.get('/api/auto/snapshots', ownerAuth, async (req, res) => {
     const r = await pool.query('SELECT id, week_key, taken_at, data FROM fin_snapshots ORDER BY id DESC LIMIT 26');

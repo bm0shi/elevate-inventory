@@ -5926,7 +5926,11 @@ initDb().then(() => {
   // Finance screens (P&L, product profit, cash & draws, data sources)
   require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts });
   // Weekly automatic refresh of every Amazon input — Sundays 11:59 PM Arizona time
-  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT });
+  // Weekly auto-refresh; each scheduled run emails its result (lib/weekly-email.js)
+  const { sendRunEmail } = require('./lib/weekly-email');
+  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT,
+    onRunFinished: (run) => run.trigger === 'scheduled' ? sendRunEmail(run, pool) : null,
+    sendTestEmail: (run) => sendRunEmail(run, pool) });
   app.use(errorHandler);
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
