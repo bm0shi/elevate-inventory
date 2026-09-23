@@ -240,6 +240,39 @@ function errorHandler(err, req, res, next) {
   res.status(bad ? 400 : 500).json({ ok: false, error: (err && err.message) || 'server error' });
 }
 
+// Same action, sent twice, applied once. The browser gives each stock action
+// (a receive, a ship, a check-in scan) an id and sends it as x-idem-key. A
+// double tap, a retry after a dropped connection, or a replayed offline scan
+// arrives with the same id and gets the first reply back instead of moving
+// stock again. Requests without the header behave exactly as before.
+async function idempotency(req, res, next) {
+  const key = req.get('x-idem-key');
+  if (!key || req.method !== 'POST') return next();
+  if (key.length > 100) return res.status(400).json({ ok: false, error: 'bad x-idem-key' });
+  const id = req.path + '|' + key;
+  const ins = await pool.query('INSERT INTO inv_idempotency(key) VALUES($1) ON CONFLICT DO NOTHING RETURNING 1', [id]);
+  if (!ins.rowCount) {
+    const r = await pool.query('SELECT status, body FROM inv_idempotency WHERE key=$1', [id]);
+    const row = r.rows[0];
+    if (row && row.body) { res.set('x-idem-replay', '1'); return res.status(row.status).json(row.body); }
+    return res.status(409).json({ ok: false, error: 'in_progress', message: 'That action is already being processed.' });
+  }
+  const send = res.json.bind(res);
+  res.json = (body) => {
+    // Keep successful replies; forget failures so the action can be retried.
+    const q = res.statusCode < 400
+      ? pool.query('UPDATE inv_idempotency SET status=$2, body=$3 WHERE key=$1', [id, res.statusCode, JSON.stringify(body === undefined ? null : body)])
+      : pool.query('DELETE FROM inv_idempotency WHERE key=$1', [id]);
+    q.catch(e => console.error('[Idempotency] save failed:', e.message));
+    return send(body);
+  };
+  next();
+}
+app.use(wrapAsync(idempotency));
+setInterval(() => {
+  pool.query("DELETE FROM inv_idempotency WHERE created_at < now() - interval '2 days'").catch(() => {});
+}, 6 * 3600 * 1000).unref();
+
 // Last line of defence for background jobs (timers, fire-and-forget pulls).
 process.on('unhandledRejection', (err) => {
   console.error('[Inventory] unhandled rejection:', err && err.stack || err);
@@ -747,6 +780,15 @@ async function initDb() {
     -- tables don't exist yet, and one failed statement rolls back the batch.
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
+    -- Replies to stock-changing requests, keyed by the client's action id, so
+    -- a retried or double-sent action is answered from here instead of
+    -- being applied twice. Pruned after two days.
+    CREATE TABLE IF NOT EXISTS inv_idempotency (
+      key TEXT PRIMARY KEY,
+      status INTEGER,
+      body JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -1246,24 +1288,32 @@ app.post('/api/assign-upc', auth, async (req, res) => {
 app.post('/api/receive', auth, async (req, res) => {
   const { asin, qty } = req.body;
   const q = parseInt(qty);
-  if (!asin || !q || q < 1) return res.status(400).json({ error: 'bad input' });
-  await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [q, asin]);
-  const p = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)',
-    ['in', asin, p.rows[0]?.name || '', q]);
-  res.json({ ok: true });
+  if (!asin || badQty(q)) return res.status(400).json({ ok: false, error: `Scan a product and enter a quantity from 1 to ${MAX_QTY}.` });
+  const name = await withTx(async (db) => {
+    const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    if (!p.rows.length) return null;
+    await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand + $2', [asin, q]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['in', asin, p.rows[0].name || '', q]);
+    return p.rows[0].name || '';
+  });
+  if (name === null) return res.status(404).json({ ok: false, error: 'Unknown product ' + asin });
+  res.json({ ok: true, asin, qty: q });
 });
 
 // ship out (single)
 app.post('/api/ship', auth, async (req, res) => {
   const { asin, qty } = req.body;
   const q = parseInt(qty);
-  if (!asin || !q || q < 1) return res.status(400).json({ error: 'bad input' });
-  await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, asin]);
-  const p = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)',
-    ['out', asin, p.rows[0]?.name || '', q]);
-  res.json({ ok: true });
+  if (!asin || badQty(q)) return res.status(400).json({ ok: false, error: `Scan a product and enter a quantity from 1 to ${MAX_QTY}.` });
+  const name = await withTx(async (db) => {
+    const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    if (!p.rows.length) return null;
+    await db.query('INSERT INTO inv_stock(asin, onhand, transit) VALUES($1,-$2,$2) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand - $2, transit = inv_stock.transit + $2', [asin, q]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['out', asin, p.rows[0].name || '', q]);
+    return p.rows[0].name || '';
+  });
+  if (name === null) return res.status(404).json({ ok: false, error: 'Unknown product ' + asin });
+  res.json({ ok: true, asin, qty: q });
 });
 
 // bulk ship (paste pack slip) — requires a shipment ID; tags units to it
@@ -5571,7 +5621,7 @@ app.get('/api/prep-performance', auth, async (req, res) => {
 app.post('/api/pending-prep/complete', auth, async (req, res) => {
   const { id, qty, completedBy } = req.body;
   const q = parseInt(qty);
-  if (!id || !q || q < 1) return res.status(400).json({ error: 'id + qty required' });
+  if (!id || badQty(q)) return res.status(400).json({ error: `id + qty (1–${MAX_QTY}) required` });
 
   const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ error: 'Job not found' });
@@ -5591,29 +5641,37 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
     }
   }
 
-  // move into Prepped & Ready (stored as-scanned: duo asin or single asin)
-  await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [asin, q]);
-  const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-    ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
+  // Locked, all-or-nothing. A double-submitted Complete used to add the
+  // prepped quantity twice and log the job twice.
+  const out = await withTx(async (db) => {
+    const lk = await db.query('SELECT qty FROM inv_pending_prep WHERE id=$1 FOR UPDATE', [id]);
+    if (!lk.rows.length) return { status: 409, body: { ok: false, error: 'This job was already completed or removed. Nothing was added.' } };
+    const requested = lk.rows[0].qty;
+    // move into Prepped & Ready (stored as-scanned: duo asin or single asin)
+    await db.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [asin, q]);
+    const nm = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
 
-  // ---- record prep performance ----
-  try {
+    // ---- record prep performance ----
     const startedAt = job.rows[0].claimed_at || null;
     const durSec = startedAt ? Math.max(1, Math.round((Date.now() - new Date(startedAt).getTime())/1000)) : null;
     const unitsHandled = is_duo ? q * 2 : q;
-    await pool.query(
+    await db.query(
       `INSERT INTO inv_prep_log(asin, name, qty, is_duo, units, worker, started_at, duration_sec)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
       [asin, nm.rows[0]?.name || asin, q, is_duo, unitsHandled, who, startedAt, durSec]);
-  } catch(e) { console.error('prep log failed:', e.message); }
 
-  // decrement / close the work order
-  const remaining = requested - q;
-  if (remaining <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
-  else await pool.query('UPDATE inv_pending_prep SET qty=$1, claimed_by=NULL, claimed_at=NULL WHERE id=$2', [remaining, id]);
+    // decrement / close the work order. Either way the crew is done with it —
+    // open crew rows used to stay open for ever and keep counting minutes.
+    const remaining = requested - q;
+    if (remaining <= 0) await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
+    else await db.query('UPDATE inv_pending_prep SET qty=$1, claimed_by=NULL, claimed_at=NULL WHERE id=$2', [remaining, id]);
+    await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [id]);
 
-  res.json({ ok: true, moved: q, requested, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0, isDuo: is_duo, warnings, completedBy: who });
+    return { status: 200, body: { ok: true, moved: q, requested, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0, isDuo: is_duo, warnings, completedBy: who } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // Adjust / remove a pending prep request
@@ -5676,7 +5734,7 @@ app.post('/api/assign-fnsku', auth, async (req, res) => {
 app.post('/api/prep/scan', auth, async (req, res) => {
   const { code, qty } = req.body;
   const q = parseInt(qty);
-  if (!code || !q || q < 1) return res.status(400).json({ error: 'code + qty required' });
+  if (!code || badQty(q)) return res.status(400).json({ error: `code + qty (1–${MAX_QTY}) required` });
   const prod = await resolveCode(code);
   if (!prod) return res.json({ ok: false, reason: 'unknown_code', code });
 
@@ -5698,21 +5756,28 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     }
   }
 
-  // store prepped AS SCANNED (the duo asin, or the single asin)
-  await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [prod.asin, q]);
-  // decrement the matching PENDING PREP work order (if any)
-  let pendingInfo = null;
-  const pend = await pool.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1', [prod.asin]);
-  if (pend.rows.length) {
-    const remaining = pend.rows[0].qty - q;
-    pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
-    if (remaining <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [pend.rows[0].id]);
-    else await pool.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [remaining, pend.rows[0].id]);
-  }
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-    ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
+  const out = await withTx(async (db) => {
+    // store prepped AS SCANNED (the duo asin, or the single asin)
+    await db.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [prod.asin, q]);
+    // decrement the matching PENDING PREP work order (if any). Row-locked: two
+    // scans at once used to both read 10 and both write 9.
+    let pendingInfo = null;
+    const pend = await db.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 ORDER BY id LIMIT 1 FOR UPDATE', [prod.asin]);
+    if (pend.rows.length) {
+      const remaining = pend.rows[0].qty - q;
+      pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
+      if (remaining <= 0) {
+        await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [pend.rows[0].id]);
+        await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [pend.rows[0].id]);
+      }
+      else await db.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [remaining, pend.rows[0].id]);
+    }
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
+    return pendingInfo;
+  });
 
-  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo });
+  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo: out });
 });
 
 // How many units of a component ASIN are committed across all prepped items

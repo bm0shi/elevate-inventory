@@ -815,8 +815,15 @@ let PW = '';
 let products = [];
 let currentIn = null, currentOut = null, pendingUpc = null;
 
+// An id for one stock action. Sent as x-idem-key, it lets the server
+// recognise a double tap or a retry of the same action and apply it once.
+function newIdem(){
+  try{ if(window.crypto && crypto.randomUUID) return crypto.randomUUID(); }catch(e){}
+  return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);
+}
 function api(path, opts={}) {
   opts.headers = Object.assign({'Content-Type':'application/json','x-app-password':PW}, opts.headers||{});
+  if(opts.idem){ opts.headers['x-idem-key']=opts.idem; delete opts.idem; }
   // A non-JSON reply (proxy error page, server restarting) rejects, so the
   // caller's .catch shows an error instead of a false "done".
   return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
@@ -895,7 +902,29 @@ document.getElementById('scanIn').addEventListener('keydown', e=>{
     }
   });
 });
-document.getElementById('qtyIn').addEventListener('keydown',e=>{if(e.key==='Enter')doReceive();});
+document.getElementById('qtyIn').addEventListener('keydown',e=>{if(e.key==='Enter'){ if(!qtyLooksLikeScan('In')) doReceive(); }});
+
+// The scanner types into whatever has focus. After a match, focus sits in the
+// qty box, so scanning the NEXT item typed its barcode in as the quantity
+// (012345678905 → twelve billion units). A qty of 8+ digits is a barcode:
+// hand it to the scan box as a new scan instead.
+const QTY_CONFIRM_ABOVE = 500;
+function qtyLooksLikeScan(which){
+  const q=document.getElementById('qty'+which), v=(q.value||'').trim();
+  if(!/^\d{8,}$/.test(v)) return false;
+  q.value='';
+  const sc=document.getElementById('scan'+which);
+  sc.value=v;
+  sc.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  toast('That looked like a barcode, so it was scanned as the next item — not used as a quantity.',true);
+  return true;
+}
+function qtyOk(qty){
+  if(qty>MAX_QTY_UI){ toast('Quantity '+qty+' is too large (max '+MAX_QTY_UI+').',true); return false; }
+  if(qty>QTY_CONFIRM_ABOVE && !confirm('Quantity is '+qty+'. Is that right?')) return false;
+  return true;
+}
+const MAX_QTY_UI = 5000;
 
 function showPicker(which){
   document.getElementById('picker'+which+'Wrap').style.display='block';
@@ -920,15 +949,24 @@ function assignPick(which, asin){
 }
 
 function doReceive(){
+  if(qtyLooksLikeScan('In')) return;
   const qty=parseInt(document.getElementById('qtyIn').value);
   if(!currentIn||!qty||qty<1){toast('Scan product + enter qty',true);return;}
-  const nm=currentIn.name.slice(0,26);
-  api('/api/receive',{method:'POST',body:JSON.stringify({asin:currentIn.asin,qty})}).then(()=>{
+  if(!qtyOk(qty)) return;
+  if(window._receiving) return;   // Enter + tap used to receive twice
+  window._receiving=true;
+  const item=currentIn, nm=item.name.slice(0,26);
+  // Same id on a retry of this receive, so it can never land twice.
+  if(!item._idem || item._idemQty!==qty){ item._idem=newIdem(); item._idemQty=qty; }
+  api('/api/receive',{method:'POST',idem:item._idem,body:JSON.stringify({asin:item.asin,qty})}).then(d=>{
+    window._receiving=false;
+    if(!d || d.ok===false || d.error){ toast('NOT received: '+((d&&(d.message||d.error))||'unknown error'),true); return; }
+    item._idem=null;
     toast('+'+qty+' '+nm);
     resetScanner('In');
     loadProducts();
     if(!scanning['In']) document.getElementById('scanIn').focus();
-  });
+  }).catch(e=>{ window._receiving=false; toast('NOT received — connection problem. Tap Receive again to retry (it will not double-count).',true); });
 }
 
 // SHIP single
@@ -944,15 +982,24 @@ document.getElementById('scanOut').addEventListener('keydown', e=>{
     } else { currentOut=null; box.className='matched show notfound'; box.innerHTML=`<div class="pname">Not found: ${code}</div><div class="pmeta">Receive it first to assign the barcode.</div>`; document.getElementById('qtyRowOut').style.display='none'; document.getElementById('scanOut').value=''; }
   });
 });
-document.getElementById('qtyOut').addEventListener('keydown',e=>{if(e.key==='Enter')doShip();});
+document.getElementById('qtyOut').addEventListener('keydown',e=>{if(e.key==='Enter'){ if(!qtyLooksLikeScan('Out')) doShip(); }});
 function doShip(){
+  if(qtyLooksLikeScan('Out')) return;
   const qty=parseInt(document.getElementById('qtyOut').value);
   if(!currentOut||!qty||qty<1){toast('Scan + qty',true);return;}
-  api('/api/ship',{method:'POST',body:JSON.stringify({asin:currentOut.asin,qty})}).then(()=>{
+  if(!qtyOk(qty)) return;
+  if(window._shipping) return;
+  window._shipping=true;
+  const item=currentOut;
+  if(!item._idem || item._idemQty!==qty){ item._idem=newIdem(); item._idemQty=qty; }
+  api('/api/ship',{method:'POST',idem:item._idem,body:JSON.stringify({asin:item.asin,qty})}).then(d=>{
+    window._shipping=false;
+    if(!d || d.ok===false || d.error){ toast('NOT shipped: '+((d&&(d.message||d.error))||'unknown error'),true); return; }
+    item._idem=null;
     toast('Shipped '+qty);
     resetScanner('Out');
     loadProducts();
-  });
+  }).catch(e=>{ window._shipping=false; toast('NOT shipped — connection problem. Tap again to retry (it will not double-count).',true); });
 }
 
 let _shipTsvFile=null; let _reconcileFile=null;
@@ -2547,7 +2594,7 @@ function submitFinishPrep(id){
   if(!verified){ alert('Please check the COUNT VERIFIED box to confirm you counted these.'); return; }
   const who = localStorage_get('prepWorkerName') || '';
   closeFinishModal();
-  api('/api/pending-prep/complete',{method:'POST',body:JSON.stringify({id,qty,completedBy:who})}).then(d=>{
+  api('/api/pending-prep/complete',{method:'POST',idem:newIdem(),body:JSON.stringify({id,qty,completedBy:who})}).then(d=>{
     if(d.error){ toast(d.error,true); return; }
     let msg='✅ '+d.moved+(d.isDuo?' duos':' units')+' sent to Prepped & Ready.';
     if(d.remaining>0) msg+='\n\nStill outstanding on this job: '+d.remaining;
@@ -2689,7 +2736,7 @@ function loadFnStatus(){
 }
 function doPrepScan(code, qty){
   _scanInFlight=true;
-  api('/api/prep/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+  api('/api/prep/scan',{method:'POST',idem:newIdem(),body:JSON.stringify({code,qty})}).finally(()=>{ _scanInFlight=false; }).then(d=>{
     _scanInFlight=false;
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
     if(typeof scanFeedback==='function') scanFeedback();
@@ -3202,6 +3249,7 @@ function doAssignNewUpc(asin, name, code, pc){
     if(qtyStr===null) return;
     const qty=parseInt(qtyStr);
     if(!qty||qty<1){ toast('Enter a valid quantity',true); return; }
+    if(!qtyOk(qty)) return;
     // Now run the normal scan — it will count it, or offer to link the
     // Cosmo number if that invoice line is still unmapped.
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d=>{
@@ -5079,6 +5127,7 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
     if(qtyStr===null){ if(window._resetScan)window._resetScan('Recon'); return; } // cancelled
     const qty = parseInt(qtyStr);
     if(!qty || qty<1){ toast('Enter a valid quantity',true); if(window._resetScan)window._resetScan('Recon'); return; }
+    if(!qtyOk(qty)){ if(window._resetScan)window._resetScan('Recon'); return; }
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
       if(d.ok){
         scanFeedback();
