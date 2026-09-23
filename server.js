@@ -835,6 +835,14 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now(),
       undone_at TIMESTAMPTZ
     );
+    -- Cycle counts: what was counted at a rack location, and the adjustments made.
+    CREATE TABLE IF NOT EXISTS inv_counts (
+      id SERIAL PRIMARY KEY,
+      location TEXT,
+      counted_by TEXT,
+      lines JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -5870,6 +5878,65 @@ app.post('/api/assign-fnsku', auth, async (req, res) => {
 
 // Scan an item into Prepped. Stores the item AS SCANNED (duo shows as duo, single as single).
 // The on-hand warning still checks component availability underneath.
+// ============================================================
+// CYCLE COUNTS
+// Count one rack location: the app lists what should be there, the counter
+// scans what is, and saving sets On Hand to match. Prepped units sit in
+// staging, not on the rack, so the rack is expected to hold
+// on hand − prepped, and the new On Hand is counted + prepped.
+// ============================================================
+app.get('/api/count/location/:loc', auth, async (req, res) => {
+  const loc = normLoc(req.params.loc);
+  if (!loc) return res.status(400).json({ ok: false, error: 'Unknown location ' + req.params.loc });
+  const r = await pool.query(
+    `SELECT p.asin, p.name, p.image, p.fnsku, COALESCE(s.onhand,0) AS onhand
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin
+     WHERE p.location=$1 AND p.asin NOT IN (SELECT bundle_asin FROM inv_bundles) ORDER BY p.name`, [loc]);
+  const items = [];
+  for (const x of r.rows) {
+    const staged = await componentCommitted(x.asin);
+    items.push({ ...x, staged, expected: Math.max(0, x.onhand - staged) });
+  }
+  const last = await pool.query('SELECT counted_by, created_at FROM inv_counts WHERE location=$1 ORDER BY id DESC LIMIT 1', [loc]);
+  res.json({ ok: true, location: loc, items, lastCount: last.rows[0] || null });
+});
+
+app.post('/api/count/apply', auth, async (req, res) => {
+  const loc = normLoc(req.body.location);
+  const by = String(req.body.countedBy || '').trim().slice(0, 60) || 'unknown';
+  const counts = Array.isArray(req.body.counts) ? req.body.counts : [];
+  if (!loc) return res.status(400).json({ ok: false, error: 'location required' });
+  for (const c of counts) {
+    const n = parseInt(c.counted, 10);
+    if (!c.asin || !Number.isInteger(n) || n < 0 || n > MAX_QTY) return res.status(400).json({ ok: false, error: `Bad count for ${c.asin}` });
+  }
+  const out = await withTx(async (db) => {
+    const lines = [];
+    for (const c of counts) {
+      const counted = parseInt(c.counted, 10);
+      const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [c.asin]);
+      if (!p.rows.length) continue;
+      await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($1,0) ON CONFLICT (asin) DO NOTHING', [c.asin]);
+      const st = await db.query('SELECT onhand FROM inv_stock WHERE asin=$1 FOR UPDATE', [c.asin]);
+      const before = st.rows[0].onhand;
+      const staged = await componentCommitted(c.asin);
+      const after = counted + staged;
+      const delta = after - before;
+      lines.push({ asin: c.asin, name: p.rows[0].name, counted, staged, before, after, delta });
+      if (delta !== 0) {
+        await db.query('UPDATE inv_stock SET onhand=$2 WHERE asin=$1', [c.asin, after]);
+        await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['adjust', c.asin, p.rows[0].name, delta, `Cycle count ${loc} by ${by}: ${before} → ${after}`]);
+      }
+      // A product found here that was filed elsewhere now lives here.
+      if (c.moveHere) await db.query('UPDATE inv_products SET location=$2 WHERE asin=$1', [c.asin, loc]);
+    }
+    await db.query('INSERT INTO inv_counts(location, counted_by, lines) VALUES($1,$2,$3)', [loc, by, JSON.stringify(lines)]);
+    return lines;
+  });
+  res.json({ ok: true, location: loc, lines: out, adjusted: out.filter(l => l.delta !== 0).length });
+});
+
 app.post('/api/undo/:id', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!id) return res.status(400).json({ ok: false, error: 'bad id' });
