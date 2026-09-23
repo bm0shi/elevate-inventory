@@ -50,7 +50,6 @@ async function getProducts(asins, onProgress, onBatch) {
         else body = err.message;
         // retry upstream/5xx errors a couple times before giving up
         if (status >= 500 || String(body).includes('upstream')) {
-          attempts++;
           if (attempts < 4) { await sleep(5000); continue; }
         }
         console.error(`[Keepa] ${status || ''}: ${String(body).slice(0,120)}`);
@@ -58,7 +57,6 @@ async function getProducts(asins, onProgress, onBatch) {
       }
       // response might not be JSON (Keepa returned an error page)
       if (typeof resp.data === 'string') {
-        attempts++;
         if (attempts < 4) { await sleep(5000); continue; }
         console.error('[Keepa] non-JSON response (overloaded or out of tokens) — abandoning this batch.');
         break;
@@ -68,12 +66,9 @@ async function getProducts(asins, onProgress, onBatch) {
         await sleep(Math.min(refillIn + 1000, 65000));
         continue;
       }
-      if (resp.data.tokensLeft != null && resp.data.tokensLeft < 0) {
-        // negative tokens — wait for refill
-        const refillIn = resp.data.refillIn || 30000;
-        await sleep(Math.min(refillIn + 1000, 65000));
-        continue;
-      }
+      // A negative balance still comes with valid products — Keepa answers,
+      // THEN charges. Throwing them away and asking again paid twice for the
+      // same batch. Keep them; the wait below covers the deficit.
       tokensLeft = resp.data.tokensLeft;
       const products = resp.data.products || [];
       const simplified = products.map(simplify);
@@ -85,9 +80,15 @@ async function getProducts(asins, onProgress, onBatch) {
       }
 
       // if tokens are running low, wait for the bucket to refill before next batch
+      // One refill is not enough when a batch costs hundreds of tokens: wait
+      // until the balance is back above zero plus a margin (refillRate is
+      // tokens per minute).
       if (tokensLeft != null && tokensLeft < 50 && i + 100 < asins.length) {
+        const rate = resp.data.refillRate || 0;
         const refillIn = resp.data.refillIn || 15000;
-        await sleep(Math.min(refillIn + 1000, 65000));
+        const waitMs = rate > 0 ? refillIn + Math.max(0, (50 - tokensLeft) / rate) * 60000 : refillIn + 1000;
+        if (onProgress && waitMs > 70000) onProgress(`waiting ${Math.round(waitMs/60000)} min for Keepa tokens…`);
+        await sleep(Math.min(waitMs, 30 * 60000));
       } else {
         await sleep(1200);
       }

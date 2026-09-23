@@ -163,7 +163,12 @@ module.exports = function registerFinance(app, deps) {
       SELECT l.shipment_id, (l.amount_description ~* 'placement') AS is_placement,
              to_char(l.posted_date,'YYYY-MM') AS m, l.amount_description AS descr,
              SUM(l.amount)::numeric AS amt,
-             BOOL_OR(s.shipment_id IS NOT NULL) AS in_app
+             -- Only "in the app" if the shipment has product lines to spread the
+             -- charge over. A shipment with no item rows (or none with an ASIN)
+             -- used to swallow its charge: nothing to allocate it to, and kept
+             -- out of the unmatched bucket too.
+             BOOL_OR(s.shipment_id IS NOT NULL AND EXISTS (
+               SELECT 1 FROM inv_shipment_items i WHERE i.shipment_id = s.shipment_id AND i.asin IS NOT NULL AND i.qty > 0)) AS in_app
       FROM inv_settlement_lines l LEFT JOIN inv_shipments s ON s.shipment_id = l.shipment_id
       WHERE l.amount_description ~* $1 OR l.transaction_type ~* $1
       GROUP BY l.shipment_id, is_placement, m, descr`, [pat]);
@@ -188,7 +193,9 @@ module.exports = function registerFinance(app, deps) {
     try {
       const ships = await pool.query(`
         SELECT s.shipment_id,
-               COALESCE((SELECT SUM(qty) FROM inv_shipment_items i WHERE i.shipment_id=s.shipment_id),0)::int AS units,
+               -- ASIN lines only: the charge is spread over these below, so lines
+               -- without an ASIN must not dilute the per-unit rate.
+               COALESCE((SELECT SUM(qty) FROM inv_shipment_items i WHERE i.shipment_id=s.shipment_id AND i.asin IS NOT NULL),0)::int AS units,
                COALESCE((SELECT SUM(amount) FROM inv_shipment_costs c WHERE c.shipment_id=s.shipment_id AND c.kind ILIKE '%placement%'),0)::numeric AS placement,
                COALESCE((SELECT SUM(amount) FROM inv_shipment_costs c WHERE c.shipment_id=s.shipment_id AND c.kind NOT ILIKE '%placement%'),0)::numeric AS freight
         FROM inv_shipments s
@@ -295,7 +302,10 @@ module.exports = function registerFinance(app, deps) {
       const key = r.asin || (r.sku ? 'sku:' + r.sku : null);
       if (isPassThroughTax(r.amount_type, d)) { t.tax += amt; continue; }
       if (isReserve(d)) { t.reserve += amt; continue; }
-      if (INBOUND_FEE_PATTERNS.test(d)) { t.inboundSettled += amt; continue; } // allocated per unit instead
+      // allocated per unit instead. Same test as settledInbound(), which also
+      // matches on transaction_type — testing only the description here
+      // counted such a line once as a fee and again as freight.
+      if (INBOUND_FEE_PATTERNS.test(d) || INBOUND_FEE_PATTERNS.test(r.transaction_type || '')) { t.inboundSettled += amt; continue; }
 
       if (r.amount_type === 'ItemPrice') {
         const principal = /principal/i.test(d);

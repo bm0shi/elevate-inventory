@@ -97,6 +97,112 @@ function parseInvoiceText(text) {
 }
 
 // Parse + persist.
+// Write (or re-write) an invoice's lines. Shared by the PDF/paste importers.
+//
+// Re-importing used to DELETE every line and insert it again with
+// qty_received = 0, so re-uploading a PDF (to fix the date, say) threw away a
+// half-scanned pallet's counts. Now:
+//   - a received invoice is refused outright (its stock is already on hand);
+//   - on a pending invoice, counts already scanned carry over by Cosmo #, and
+//     a line a scan bound to an ASIN keeps that ASIN;
+//   - it all happens in one transaction, so a crash mid-loop can't leave the
+//     invoice with half its lines.
+// Counts on a checked-in invoice are history: its stock was added when it was
+// completed. Scanning into it afterwards changed the numbers without moving
+// stock, and the counts drifted from what was actually on the shelf.
+async function pendingInvoiceOnly(req, res, next) {
+  const r = await pool.query('SELECT status FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
+  if (r.rows[0] && r.rows[0].status === 'received') {
+    return res.status(409).json({ ok: false, error: 'already_completed',
+      message: `Invoice ${req.params.orderNumber} is already checked in. Use Receiving for extra units.` });
+  }
+  next();
+}
+
+// Largest quantity one action may move. A barcode scanned into a qty box
+// (012345678905) used to be taken as the quantity; nothing real is this big.
+const MAX_QTY = 5000;
+function badQty(q) { return !Number.isInteger(q) || q < 1 || q > MAX_QTY; }
+
+// ---- Undo ----
+// A scanner action records how to reverse itself; the browser shows an Undo
+// button for 10 seconds. Safer than asking staff to fix counts by hand.
+// ops: { t:'stock', asin, onhand, transit } adds the deltas;
+//      { t:'prepped', asin, qty } adds to Prepped & Ready;
+//      { t:'pending', id, asin, is_duo, qty } puts qty back on a work order.
+const UNDO_WINDOW_MIN = 10;
+async function recordUndo(db, kind, label, ops) {
+  const r = await db.query('INSERT INTO inv_undo(kind, label, ops) VALUES($1,$2,$3) RETURNING id', [kind, label, JSON.stringify(ops)]);
+  return r.rows[0].id;
+}
+async function applyUndo(db, id) {
+  const r = await db.query('SELECT * FROM inv_undo WHERE id=$1 FOR UPDATE', [id]);
+  const u = r.rows[0];
+  if (!u) return { status: 404, body: { ok: false, error: 'Nothing to undo.' } };
+  if (u.undone_at) return { status: 409, body: { ok: false, error: 'Already undone.' } };
+  if (Date.now() - new Date(u.created_at).getTime() > UNDO_WINDOW_MIN * 60000) {
+    return { status: 409, body: { ok: false, error: `Too late to undo (over ${UNDO_WINDOW_MIN} minutes). Correct it by hand.` } };
+  }
+  for (const op of u.ops || []) {
+    if (op.t === 'stock') {
+      await db.query('UPDATE inv_stock SET onhand = onhand + $2, transit = GREATEST(0, transit + $3) WHERE asin=$1', [op.asin, op.onhand || 0, op.transit || 0]);
+    } else if (op.t === 'prepped') {
+      await db.query('UPDATE inv_prepped SET qty = GREATEST(0, qty + $2), updated_at=now() WHERE asin=$1', [op.asin, op.qty]);
+      await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
+    } else if (op.t === 'pending' && op.qty > 0) {
+      const up = await db.query('UPDATE inv_pending_prep SET qty = qty + $2 WHERE id=$1', [op.id, op.qty]);
+      if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [op.asin, op.qty, !!op.is_duo]);
+    }
+  }
+  await db.query('UPDATE inv_undo SET undone_at=now() WHERE id=$1', [id]);
+  await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+    ['undo', (u.ops && u.ops[0] && u.ops[0].asin) || '', u.label || u.kind, 0, 'Undone: ' + (u.label || u.kind)]);
+  return { status: 200, body: { ok: true, undone: u.label || u.kind } };
+}
+
+async function writeInvoiceLines(orderNumber, date, items, opts = {}) {
+  return withTx(async (c) => {
+    const cur = await c.query('SELECT status FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [orderNumber]);
+    if (cur.rows[0] && cur.rows[0].status === 'received') {
+      return { refused: `Order ${orderNumber} is already checked in — not re-imported (its stock is on hand). Delete it first if it really needs reloading.` };
+    }
+    await c.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
+      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date || '']);
+    if (opts.oms) await c.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, opts.oms]);
+
+    const prev = new Map();
+    const old = await c.query('SELECT cosmo_num, asin, qty_received FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
+    for (const r of old.rows) {
+      const p = prev.get(r.cosmo_num) || { received: 0, asin: null };
+      p.received += r.qty_received || 0;
+      if (r.qty_received > 0 && r.asin) p.asin = r.asin;
+      prev.set(r.cosmo_num, p);
+    }
+    await c.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
+
+    let mapped = 0, carried = 0; const unmapped = [];
+    for (const it of items) {
+      const c6 = (it.cosmo_num.length === 7 && it.cosmo_num[0] === '1') ? it.cosmo_num.slice(1) : it.cosmo_num;
+      const mm = await c.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
+      const p = prev.get(it.cosmo_num);
+      const asin = (p && p.asin) || mm.rows[0]?.asin || null;
+      const received = p ? p.received : 0;
+      if (p) p.received = 0;   // a Cosmo # listed twice carries its count once
+      if (received) carried++;
+      if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
+      await c.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, received, it.unit_cost || null]);
+      // NOTE: deliberately NOT overwriting inv_products.unit_cost here. A sale
+      // invoice would overwrite the regular cost permanently. Cost is recorded
+      // as a lot at check-in completion and blended in recomputeCosts().
+      if (opts.seedUnitCost && asin && it.unit_cost) {
+        await c.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [it.unit_cost, asin]);
+      }
+    }
+    return { mapped, unmapped, carried };
+  });
+}
+
 async function processInvoiceText(text) {
   const orders = parseInvoiceText(text);
   const created = [], errors = [];
@@ -121,25 +227,9 @@ async function processInvoiceText(text) {
       errors.push(`Order ${orderNumber}: ${o.rejected.length} line(s) looked like items but did NOT parse — ${o.rejected.join(' | ')}`);
     }
 
-    await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
-      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date]);
-    if (o.oms) { try { await pool.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, o.oms]); } catch (e) {} }
-    await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
-    let mapped = 0, unmapped = 0;
-    for (const it of items) {
-      const c6 = (it.cosmo_num.length === 7 && it.cosmo_num[0] === '1') ? it.cosmo_num.slice(1) : it.cosmo_num;
-      const mm = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
-      const asin = mm.rows[0]?.asin || null;
-      if (asin) mapped++; else unmapped++;
-      await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,0,$6)`,
-        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, it.unit_cost || null]);
-      // NOTE: deliberately NOT writing inv_products.unit_cost here. A sale
-      // invoice would overwrite the regular cost permanently. Cost is recorded
-      // as a lot at check-in completion and blended in recomputeCosts().
-      if (asin && it.unit_cost) {
-        await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [it.unit_cost, asin]);
-      }
-    }
+    const w = await writeInvoiceLines(orderNumber, date, items, { oms: o.oms, seedUnitCost: true });
+    if (w.refused) { errors.push(w.refused); continue; }
+    const mapped = w.mapped, unmapped = w.unmapped.length;
     console.log(`[Invoice] ${orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
     created.push({ orderNumber, items: items.length, mapped, unmapped, date,
                    pages: o.pages, merged: mergedCount, rejected: o.rejected.length });
@@ -155,6 +245,81 @@ async function processInvoiceText(text) {
 const app = express();
 app.set('trust proxy', 1); // Railway sits behind a proxy — needed for a real req.ip
 app.use(express.json({ limit: '2mb' }));
+
+// Express 4 does not catch errors thrown inside async route handlers, and on
+// Node 15+ an uncaught promise rejection kills the process. One bad request
+// (a typo'd number, a missing field, a DB hiccup) used to take the whole app
+// down for everyone on the floor. Wrap every handler so its errors go to the
+// error middleware below instead.
+function wrapAsync(fn) {
+  return function (req, res, next) {
+    try {
+      const r = fn(req, res, next);
+      if (r && typeof r.catch === 'function') r.catch(next);
+    } catch (e) { next(e); }
+  };
+}
+for (const m of ['get', 'post', 'put', 'delete', 'patch']) {
+  const orig = app[m].bind(app);
+  // app.get('setting') with one argument reads a setting — leave that alone.
+  app[m] = (path, ...handlers) => orig(path, ...handlers.map(h =>
+    (typeof h === 'function' && h.length < 4) ? wrapAsync(h) : h));
+}
+
+// Registered last (after finance/autorun mount) — see the bottom of this file.
+function errorHandler(err, req, res, next) {
+  console.error(`[Inventory] ${req.method} ${req.path} failed:`, err && err.message);
+  if (res.headersSent) return next(err);
+  // 22P02 invalid text, 22003 out of range, 23502 missing value, 23503 unknown
+  // reference, 23505 duplicate: the request was bad, not the server.
+  const bad = err && ['22P02', '22003', '22007', '22008', '23502', '23503', '23505'].includes(err.code);
+  res.status(bad ? 400 : 500).json({ ok: false, error: (err && err.message) || 'server error' });
+}
+
+// Same action, sent twice, applied once. The browser gives each stock action
+// (a receive, a ship, a check-in scan) an id and sends it as x-idem-key. A
+// double tap, a retry after a dropped connection, or a replayed offline scan
+// arrives with the same id and gets the first reply back instead of moving
+// stock again. Requests without the header behave exactly as before.
+async function idempotency(req, res, next) {
+  const key = req.get('x-idem-key');
+  if (!key || req.method !== 'POST') return next();
+  if (key.length > 100) return res.status(400).json({ ok: false, error: 'bad x-idem-key' });
+  // The id includes a hash of the credentials sent, so a stored reply is only
+  // replayed to a caller who could have made the original request (this runs
+  // before the auth checks).
+  const who = crypto.createHash('sha256').update(String(req.get('x-app-password') || '') + '|' + String(req.get('x-owner-password') || '')).digest('hex').slice(0, 16);
+  const id = req.path + '|' + key + '|' + who;
+  // A row with no reply after a minute was left by a request that died (a
+  // restart mid-request): its transaction rolled back, so let this retry run.
+  await pool.query("DELETE FROM inv_idempotency WHERE key=$1 AND body IS NULL AND created_at < now() - interval '60 seconds'", [id]);
+  const ins = await pool.query('INSERT INTO inv_idempotency(key) VALUES($1) ON CONFLICT DO NOTHING RETURNING 1', [id]);
+  if (!ins.rowCount) {
+    const r = await pool.query('SELECT status, body FROM inv_idempotency WHERE key=$1', [id]);
+    const row = r.rows[0];
+    if (row && row.body) { res.set('x-idem-replay', '1'); return res.status(row.status).json(row.body); }
+    return res.status(409).json({ ok: false, error: 'in_progress', message: 'Still working on the first try — wait a few seconds, then try again (it will not double-count).' });
+  }
+  const send = res.json.bind(res);
+  res.json = (body) => {
+    // Keep successful replies; forget failures so the action can be retried.
+    const q = res.statusCode < 400
+      ? pool.query('UPDATE inv_idempotency SET status=$2, body=$3 WHERE key=$1', [id, res.statusCode, JSON.stringify(body === undefined ? null : body)])
+      : pool.query('DELETE FROM inv_idempotency WHERE key=$1', [id]);
+    q.catch(e => console.error('[Idempotency] save failed:', e.message));
+    return send(body);
+  };
+  next();
+}
+app.use(wrapAsync(idempotency));
+setInterval(() => {
+  pool.query("DELETE FROM inv_idempotency WHERE created_at < now() - interval '2 days'").catch(() => {});
+}, 6 * 3600 * 1000).unref();
+
+// Last line of defence for background jobs (timers, fire-and-forget pulls).
+process.on('unhandledRejection', (err) => {
+  console.error('[Inventory] unhandled rejection:', err && err.stack || err);
+});
 
 // ============================================================
 // PASSWORD GATES
@@ -271,7 +436,7 @@ async function buildLocationContext(asins) {
   const all = await pool.query(
     `SELECT p.asin, p.name, p.location, COALESCE(s.onhand,0)::int AS onhand,
        (
-         COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+         COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
        + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
        )::int AS pending_prep,
        (
@@ -522,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'autorun-0922-1007';
+const BUILD_ID = 'fixes-0923';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -530,6 +695,24 @@ const pool = new Pool({
   ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('railway')
     ? { rejectUnauthorized: false } : false
 });
+
+// Run several queries as one all-or-nothing unit. Stock moves touch several
+// tables; if the server dies halfway, a retry used to apply the first half
+// twice. fn gets a client — use client.query, not pool.query, inside it.
+async function withTx(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const out = await fn(client);
+    await client.query('COMMIT');
+    return out;
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 
 // ---- DB setup: create tables + seed products on first boot ----
 async function initDb() {
@@ -591,8 +774,6 @@ async function initDb() {
       qty INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ DEFAULT now()
     );
-    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
-    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
@@ -638,6 +819,37 @@ async function initDb() {
       qty_expected INTEGER,
       qty_received INTEGER DEFAULT 0
     );
+    -- These ALTERs must come after the CREATEs above: on an empty database the
+    -- tables don't exist yet, and one failed statement rolls back the batch.
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
+    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
+    -- Replies to stock-changing requests, keyed by the client's action id, so
+    -- a retried or double-sent action is answered from here instead of
+    -- being applied twice. Pruned after two days.
+    CREATE TABLE IF NOT EXISTS inv_idempotency (
+      key TEXT PRIMARY KEY,
+      status INTEGER,
+      body JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+    -- What it takes to reverse a recent scanner action (receive, ship, prep
+    -- scan), for the Undo button. Each row can be used once, for 10 minutes.
+    CREATE TABLE IF NOT EXISTS inv_undo (
+      id SERIAL PRIMARY KEY,
+      kind TEXT,
+      label TEXT,
+      ops JSONB,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      undone_at TIMESTAMPTZ
+    );
+    -- Cycle counts: what was counted at a rack location, and the adjustments made.
+    CREATE TABLE IF NOT EXISTS inv_counts (
+      id SERIAL PRIMARY KEY,
+      location TEXT,
+      counted_by TEXT,
+      lines JSONB,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -652,7 +864,6 @@ async function initDb() {
       received_at TIMESTAMPTZ,
       has_discrepancy BOOLEAN DEFAULT false
     );
-    ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS qty_received INTEGER;
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS has_discrepancy BOOLEAN DEFAULT false;
     -- Per-shipment line items (what we sent, tagged to a shipment)
@@ -663,6 +874,7 @@ async function initDb() {
       qty INTEGER,
       qty_received INTEGER
     );
+    ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS qty_received INTEGER;
   `);
 
   // Seed products once (only if table empty)
@@ -777,6 +989,18 @@ async function initDb() {
         linked_shipment_id TEXT,
         UNIQUE (settlement_id, description, amount, posted_date)
       );
+    `);
+    // Unlinked fees were de-duplicated on (settlement, description, amount,
+    // date), so two shipments charged the same placement fee on the same day
+    // collapsed into one row. Key on the settlement row instead.
+    await pool.query(`
+      ALTER TABLE inv_unlinked_fees ADD COLUMN IF NOT EXISTS row_idx INTEGER;
+      DO $$ DECLARE c text; BEGIN
+        SELECT conname INTO c FROM pg_constraint
+         WHERE conrelid = 'inv_unlinked_fees'::regclass AND contype = 'u' AND array_length(conkey, 1) = 4;
+        IF c IS NOT NULL THEN EXECUTE 'ALTER TABLE inv_unlinked_fees DROP CONSTRAINT ' || quote_ident(c); END IF;
+      END $$;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_unlinked_fee_row ON inv_unlinked_fees(settlement_id, row_idx);
     `);
     console.log('[Inventory] Shipment cost tables ready.');
   } catch(e) { console.error('shipment cost migration skipped:', e.message); }
@@ -920,6 +1144,18 @@ async function initDb() {
     console.log('[Inventory] Employees + timecards ready.');
   } catch(e) { console.error('employee migration skipped:', e.message); }
 
+  // ---- Hazmat flags (idempotent) ----
+  // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
+  // a manual call by the owner always outranks Amazon's declaration.
+  try {
+    await pool.query(`
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat BOOLEAN;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_source TEXT;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_detail TEXT;
+    `);
+    console.log('[Inventory] Hazmat columns ready.');
+  } catch(e) { console.error('hazmat migration skipped:', e.message); }
+
   // ---- Hazmat, keyed by ASIN (idempotent) ----
   // Originally stored on inv_products, which only holds the ~111 products we
   // actually carry. Products to Add is about the ~469 Keepa ASINs we DON'T
@@ -943,18 +1179,6 @@ async function initDb() {
       ON CONFLICT (asin) DO NOTHING`);
     console.log('[Inventory] Hazmat table ready.');
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
-
-  // ---- Hazmat flags (idempotent) ----
-  // hazmat: true / false / NULL(unknown). hazmat_source records who decided —
-  // a manual call by the owner always outranks Amazon's declaration.
-  try {
-    await pool.query(`
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat BOOLEAN;
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_source TEXT;
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_detail TEXT;
-    `);
-    console.log('[Inventory] Hazmat columns ready.');
-  } catch(e) { console.error('hazmat migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
   // A mapping is only TRUSTED once a physical barcode scan has confirmed it.
@@ -1044,7 +1268,7 @@ app.get('/api/products', auth, async (req, res) => {
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
       )::int AS prepped,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
@@ -1061,7 +1285,7 @@ app.get('/api/products', auth, async (req, res) => {
            GREATEST(0,
              COALESCE(s2.onhand,0)
              - (
-                 COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=b2.component_asin AND is_duo=false),0)
+                 COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=b2.component_asin AND is_duo=false),0)
                + COALESCE((SELECT SUM(pp.qty*bb.qty) FROM inv_pending_prep pp JOIN inv_bundles bb ON bb.bundle_asin=pp.asin WHERE bb.component_asin=b2.component_asin),0)
                )
              - (
@@ -1137,24 +1361,34 @@ app.post('/api/assign-upc', auth, async (req, res) => {
 app.post('/api/receive', auth, async (req, res) => {
   const { asin, qty } = req.body;
   const q = parseInt(qty);
-  if (!asin || !q || q < 1) return res.status(400).json({ error: 'bad input' });
-  await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [q, asin]);
-  const p = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)',
-    ['in', asin, p.rows[0]?.name || '', q]);
-  res.json({ ok: true });
+  if (!asin || badQty(q)) return res.status(400).json({ ok: false, error: `Scan a product and enter a quantity from 1 to ${MAX_QTY}.` });
+  const name = await withTx(async (db) => {
+    const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    if (!p.rows.length) return null;
+    await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand + $2', [asin, q]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['in', asin, p.rows[0].name || '', q]);
+    const undoId = await recordUndo(db, 'receive', `Received ${q} × ${(p.rows[0].name || asin).slice(0, 40)}`, [{ t: 'stock', asin, onhand: -q }]);
+    return { name: p.rows[0].name || '', undoId };
+  });
+  if (name === null) return res.status(404).json({ ok: false, error: 'Unknown product ' + asin });
+  res.json({ ok: true, asin, qty: q, undoId: name.undoId });
 });
 
 // ship out (single)
 app.post('/api/ship', auth, async (req, res) => {
   const { asin, qty } = req.body;
   const q = parseInt(qty);
-  if (!asin || !q || q < 1) return res.status(400).json({ error: 'bad input' });
-  await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [q, asin]);
-  const p = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)',
-    ['out', asin, p.rows[0]?.name || '', q]);
-  res.json({ ok: true });
+  if (!asin || badQty(q)) return res.status(400).json({ ok: false, error: `Scan a product and enter a quantity from 1 to ${MAX_QTY}.` });
+  const name = await withTx(async (db) => {
+    const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    if (!p.rows.length) return null;
+    await db.query('INSERT INTO inv_stock(asin, onhand, transit) VALUES($1, -($2::int), $2::int) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand - $2::int, transit = inv_stock.transit + $2::int', [asin, q]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['out', asin, p.rows[0].name || '', q]);
+    const undoId = await recordUndo(db, 'ship', `Shipped ${q} × ${(p.rows[0].name || asin).slice(0, 40)}`, [{ t: 'stock', asin, onhand: q, transit: -q }]);
+    return { name: p.rows[0].name || '', undoId };
+  });
+  if (name === null) return res.status(404).json({ ok: false, error: 'Unknown product ' + asin });
+  res.json({ ok: true, asin, qty: q, undoId: name.undoId });
 });
 
 // bulk ship (paste pack slip) — requires a shipment ID; tags units to it
@@ -1162,48 +1396,49 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
   const items = req.body.items || [];
   const shipmentId = (req.body.shipmentId || '').trim();
   const shipmentName = (req.body.shipmentName || '').trim();
+  const allowAppend = !!req.body.allowAppend;
   if (!shipmentId) return res.status(400).json({ error: 'Shipment ID required' });
-
-  // Register the shipment (so the sync knows this one belongs to us)
-  await pool.query(
-    `INSERT INTO inv_shipments(shipment_id, shipment_name) VALUES($1,$2)
-     ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
-    [shipmentId, shipmentName]);
-
-  let done = 0, notfound = [], expandedNote = [];
   for (const it of items) {
-    const code = String(it.code).trim();
     const q = parseInt(it.qty);
-    if (!q || q < 1) continue;
-    const { rows } = await pool.query(
-      `SELECT p.asin, p.name FROM inv_products p
-       WHERE p.asin IN (SELECT asin FROM inv_upcs WHERE upc_norm=$1)
-          OR UPPER(p.asin)=UPPER($2) OR UPPER(p.sku)=UPPER($2)
-          OR p.upc_norm=$1 LIMIT 1`, [normCode(code), code]);
-    if (rows.length) {
+    if (q > MAX_QTY) return res.status(400).json({ ok: false, error: `${it.code}: quantity ${q} is too large (max ${MAX_QTY}).` });
+  }
+
+  const out = await withTx(async (db) => {
+    const already = await lockShipment(db, shipmentId, shipmentName);
+    if (already > 0 && !allowAppend) {
+      return { status: 409, body: { ok: false, error: 'shipment_exists', units: already,
+        message: `Shipment ${shipmentId} already has ${already} units recorded. Posting again would deduct them a second time.` } };
+    }
+    let done = 0; const notfound = [], expandedNote = [];
+    for (const it of items) {
+      const code = String(it.code).trim();
+      const q = parseInt(it.qty);
+      if (!q || q < 1) continue;
+      const { rows } = await db.query(
+        `SELECT p.asin, p.name FROM inv_products p
+         WHERE p.asin IN (SELECT asin FROM inv_upcs WHERE upc_norm=$1)
+            OR UPPER(p.asin)=UPPER($2) OR UPPER(p.sku)=UPPER($2)
+            OR p.upc_norm=$1 LIMIT 1`, [normCode(code), code]);
+      if (!rows.length) { notfound.push(code); continue; }
       const matchedAsin = rows[0].asin;
       // expand bundles -> component singles (or itself if not a bundle)
       const parts = await expandToComponents(matchedAsin, q);
       for (const part of parts) {
-        await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
-        await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
+        await db.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
+        await db.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
         const note = part.fromBundle ? ('Shipment ' + shipmentId + ' (from ' + rows[0].name.slice(0,20) + ' duo)') : ('Shipment ' + shipmentId);
-        await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+        await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
           ['out', part.asin, part.name, part.qty, note]);
       }
       if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${code} → ${parts.length} singles`);
       // clear prepped ONLY for the specific items that actually shipped (not everything)
-      for (const part of parts) {
-        await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [part.qty, part.asin]);
-      }
-      // also clear the duo's own prepped entry if we shipped it as a duo
-      await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [q, matchedAsin]);
-      await pool.query('DELETE FROM inv_prepped WHERE qty <= 0');
+      await consumePrepped(db, matchedAsin, q, parts);
       done++;
-    } else { notfound.push(code); }
-  }
-  // SAFETY: never wipe the whole prepped list. Only the items that shipped were cleared above.
-  res.json({ ok: true, done, notfound, shipmentId, expanded: expandedNote });
+    }
+    await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
+    return { status: 200, body: { ok: true, done, notfound, shipmentId, expanded: expandedNote } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // List shipments currently in transit (with their items)
@@ -1219,7 +1454,14 @@ app.get('/api/shipments', auth, async (req, res) => {
 });
 
 // Delete an invoice (and its line items)
-app.post('/api/invoices/:orderNumber/delete', auth, async (req, res) => {
+// Deleting a checked-in invoice erases the record of stock already added, so
+// it needs the owner. Staff can still delete a pending (bad) import.
+async function ownerIfReceived(req, res, next) {
+  const r = await pool.query('SELECT status FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
+  if (r.rows[0] && r.rows[0].status === 'received') return ownerAuth(req, res, next);
+  next();
+}
+app.post('/api/invoices/:orderNumber/delete', auth, ownerIfReceived, async (req, res) => {
   await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [req.params.orderNumber]);
   await pool.query('DELETE FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
   res.json({ ok: true });
@@ -1245,16 +1487,24 @@ app.get('/api/all-shipments', auth, async (req, res) => {
 app.post('/api/receive-shipment', auth, async (req, res) => {
   const shipmentId = (req.body.shipmentId || '').trim();
   if (!shipmentId) return res.status(400).json({ error: 'shipmentId required' });
-  const items = await pool.query('SELECT asin, qty FROM inv_shipment_items WHERE shipment_id=$1', [shipmentId]);
-  let cleared = 0;
-  for (const it of items.rows) {
-    await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
-    cleared += it.qty;
-  }
-  await pool.query("UPDATE inv_shipments SET status='received' WHERE shipment_id=$1", [shipmentId]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-    ['checkin', '', 'Shipment ' + shipmentId, cleared, 'manually marked received']);
-  res.json({ ok: true, cleared });
+  // Only an in-transit shipment can be marked received. Doing it twice (or
+  // after the Amazon check-in sync already cleared it) used to subtract its
+  // units from transit again, eating units that belong to other shipments.
+  const out = await withTx(async (db) => {
+    const st = await db.query("UPDATE inv_shipments SET status='received', received_at=COALESCE(received_at, now()) WHERE shipment_id=$1 AND status='in_transit' RETURNING 1", [shipmentId]);
+    if (!st.rowCount) return { status: 409, body: { ok: false, error: `Shipment ${shipmentId} is not in transit (already received, or not found). Nothing changed.` } };
+    const items = await db.query('SELECT asin, qty FROM inv_shipment_items WHERE shipment_id=$1', [shipmentId]);
+    let cleared = 0;
+    for (const it of items.rows) {
+      await db.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+      cleared += it.qty;
+    }
+    await db.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [shipmentId, cleared]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['checkin', '', 'Shipment ' + shipmentId, cleared, 'manually marked received']);
+    return { status: 200, body: { ok: true, cleared } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // mark transit as received at FBA (clears transit) — optional housekeeping
@@ -1307,51 +1557,81 @@ async function reconcileInTransit() {
   let clearedTotal = 0;
   let shipmentsDone = 0;
 
+  let failed = 0;
   for (const s of shipments) {
     const sid = s.ShipmentId;
     // ONLY process shipments the app itself created (matched by ID).
     // This ignores all legacy / externally-created shipments entirely.
-    const known = await pool.query("SELECT 1 FROM inv_shipments WHERE shipment_id=$1 AND status='in_transit'", [sid]);
+    const known = await pool.query('SELECT status FROM inv_shipments WHERE shipment_id=$1', [sid]);
     if (!known.rows.length) continue;
+    const firstTime = known.rows[0].status === 'in_transit';
 
-    // skip if already processed
+    // skip if already processed (finalised once Amazon CLOSED it)
     const seen = await pool.query('SELECT 1 FROM inv_processed_shipments WHERE shipment_id=$1', [sid]);
     if (seen.rows.length) continue;
+    if (!firstTime && known.rows[0].status !== 'received') continue;
 
-    // Pull Amazon's actual per-SKU received quantities
-    const amazonItems = await getShipmentReceivedItems(sid);
-    // Map SKU -> received qty from Amazon
-    const recvBySku = {};
-    for (const ai of amazonItems) { recvBySku[ai.sku] = (recvBySku[ai.sku]||0) + (ai.received||0); }
+    // RECEIVING means Amazon is still counting. The units have left our
+    // transit either way, but the received counts are partial: finalising
+    // then flagged shortages that weren't real and never looked again. Keep
+    // re-reading until CLOSED; only then judge discrepancies.
+    const closed = String(s.ShipmentStatus || '').toUpperCase() === 'CLOSED';
+
+    // Pull Amazon's actual per-SKU received quantities. A failed call is
+    // skipped for this run rather than read as "all received".
+    let amazonItems;
+    try { amazonItems = await getShipmentReceivedItems(sid); }
+    catch (e) { failed++; console.error(`[SP-API] Shipment ${sid}: items call failed, will retry next run —`, e.message); continue; }
 
     // Our recorded items for this shipment
     const ourItems = await pool.query(
       `SELECT si.asin, si.qty, p.sku, p.name FROM inv_shipment_items si
        JOIN inv_products p ON p.asin = si.asin WHERE si.shipment_id=$1`, [sid]);
-
-    let clearedThis = 0;
-    let anyDiscrepancy = false;
-    for (const it of ourItems.rows) {
-      // match Amazon's received by this product's SKU
-      const received = recvBySku[it.sku] != null ? recvBySku[it.sku] : it.qty; // fallback: assume all received
-      // clear what we sent from transit (transit reflects what left our warehouse)
-      await pool.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
-      // record what Amazon received on the line
-      await pool.query('UPDATE inv_shipment_items SET qty_received=$1 WHERE shipment_id=$2 AND asin=$3', [received, sid, it.asin]);
-      if (received < it.qty) anyDiscrepancy = true;
-      clearedThis += it.qty;
+    if (!amazonItems.length && ourItems.rows.length) {
+      console.log(`[SP-API] Shipment ${sid}: Amazon returned no items yet — will retry next run.`);
+      continue;
     }
+    // Map SKU -> received qty from Amazon
+    const recvBySku = {};
+    for (const ai of amazonItems) { recvBySku[ai.sku] = (recvBySku[ai.sku]||0) + (ai.received||0); }
 
-    await pool.query("UPDATE inv_shipments SET status='received', received_at=now(), has_discrepancy=$2 WHERE shipment_id=$1", [sid, anyDiscrepancy]);
-    await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-      ['checkin', '', 'Shipment ' + sid, clearedThis, anyDiscrepancy ? 'Checked in — DISCREPANCY' : 'Checked in — all received']);
-    await pool.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
-    clearedTotal += clearedThis;
-    shipmentsDone++;
-    console.log(`[SP-API] Shipment ${sid}: cleared ${clearedThis} units, discrepancy=${anyDiscrepancy}.`);
+    const r = await withTx(async (db) => {
+      // Re-check inside the transaction: the Amazon call above is slow, and a
+      // manual "mark received" or an overlapping run may have finished it.
+      const cur = await db.query('SELECT status FROM inv_shipments WHERE shipment_id=$1 FOR UPDATE', [sid]);
+      if (!cur.rows.length || (firstTime && cur.rows[0].status !== 'in_transit')) return { clearedThis: 0, flag: false, skipped: true };
+      let clearedThis = 0, anyDiscrepancy = false;
+      for (const it of ourItems.rows) {
+        // match Amazon's received by this product's SKU
+        const received = recvBySku[it.sku] != null ? recvBySku[it.sku] : it.qty; // SKU not on Amazon's list: assume all received
+        // clear what we sent from transit (transit reflects what left our warehouse) — once
+        if (firstTime) await db.query('UPDATE inv_stock SET transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+        // record what Amazon received on the line
+        await db.query('UPDATE inv_shipment_items SET qty_received=$1 WHERE shipment_id=$2 AND asin=$3', [received, sid, it.asin]);
+        if (received < it.qty) anyDiscrepancy = true;
+        clearedThis += it.qty;
+      }
+      const flag = closed && anyDiscrepancy;
+      if (firstTime) {
+        await db.query("UPDATE inv_shipments SET status='received', received_at=now(), has_discrepancy=$2 WHERE shipment_id=$1", [sid, flag]);
+        await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['checkin', '', 'Shipment ' + sid, clearedThis, !closed ? 'Checked in — Amazon still receiving' : flag ? 'Checked in — DISCREPANCY' : 'Checked in — all received']);
+      } else {
+        await db.query('UPDATE inv_shipments SET has_discrepancy=$2 WHERE shipment_id=$1', [sid, flag]);
+        if (closed) await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['checkin', '', 'Shipment ' + sid, 0, flag ? 'Amazon closed — DISCREPANCY' : 'Amazon closed — all received']);
+      }
+      if (closed) await db.query('INSERT INTO inv_processed_shipments(shipment_id, units_cleared) VALUES($1,$2) ON CONFLICT (shipment_id) DO NOTHING', [sid, clearedThis]);
+      return { clearedThis: firstTime ? clearedThis : 0, flag };
+    });
+    if (r.skipped) continue;
+    clearedTotal += r.clearedThis;
+    if (firstTime) shipmentsDone++;
+    console.log(`[SP-API] Shipment ${sid}: ${firstTime ? 'cleared ' + r.clearedThis + ' units' : 'counts refreshed'}, ${closed ? 'closed' : 'still receiving'}, discrepancy=${r.flag}.`);
   }
 
   console.log(`[SP-API] Reconcile done. ${shipmentsDone} new shipments, ${clearedTotal} units cleared.`);
+  if (failed) return { ok: false, error: `${failed} shipment(s) could not be read from Amazon — will retry next run`, shipments: shipmentsDone, cleared: clearedTotal };
   return { ok: true, shipments: shipmentsDone, cleared: clearedTotal };
 }
 
@@ -1369,6 +1649,42 @@ setInterval(() => {
 
 // Given a product ASIN + quantity, expand into actual stock deductions.
 // If it's a bundle, return component singles; else return itself.
+// Take shipped units off the Prepped & Ready list.
+//
+// Prepped is stored as scanned: a single under its own ASIN, a duo under the
+// DUO's ASIN. Shipping used to subtract the single's row twice (ship 10 of 20
+// prepped and it showed 0), and for a duo it also ate the components' own
+// single-prepped rows. Now the scanned ASIN comes off first; only if a duo
+// ships beyond what was prepped as duos (e.g. it was prepped as two singles)
+// does the shortfall come off the component singles.
+async function consumePrepped(db, matchedAsin, qty, parts) {
+  const cur = await db.query('SELECT qty FROM inv_prepped WHERE asin=$1 FOR UPDATE', [matchedAsin]);
+  const have = cur.rows[0] ? cur.rows[0].qty : 0;
+  const take = Math.min(have, qty);
+  if (take > 0) await db.query('UPDATE inv_prepped SET qty = qty - $1, updated_at=now() WHERE asin=$2', [take, matchedAsin]);
+  const short = qty - take;
+  if (short > 0 && parts.length && parts[0].fromBundle) {
+    for (const part of parts) {
+      const per = part.qty / qty;
+      await db.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1), updated_at=now() WHERE asin=$2', [short * per, part.asin]);
+    }
+  }
+}
+
+// A shipment's units should be deducted once. Re-uploading the same plan or
+// re-posting the same pack slip used to deduct On Hand again and double the
+// transit count. Locks the shipment row (so two uploads at once queue up) and
+// reports how many units are already recorded against it.
+async function lockShipment(db, shipmentId, shipmentName) {
+  await db.query(
+    `INSERT INTO inv_shipments(shipment_id, shipment_name) VALUES($1,$2)
+     ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
+    [shipmentId, shipmentName || '']);
+  await db.query('SELECT 1 FROM inv_shipments WHERE shipment_id=$1 FOR UPDATE', [shipmentId]);
+  const r = await db.query('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [shipmentId]);
+  return r.rows[0].n;
+}
+
 async function expandToComponents(asin, qty) {
   const comps = await pool.query(
     `SELECT b.component_asin AS asin, b.qty AS per, p.name
@@ -1601,25 +1917,9 @@ app.post('/api/invoices/add', auth, async (req, res) => {
   const parsed = parseCosmoInvoice(req.body.text || '');
   if (!parsed.orderNumber) return res.status(400).json({ error: 'Could not find order number in invoice' });
   if (!parsed.items.length) return res.status(400).json({ error: 'No line items found' });
-
-  await pool.query(
-    `INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
-     ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`,
-    [parsed.orderNumber, parsed.date || findInvoiceDate(req.body.text || '')]);
-  // clear old items for this invoice, re-add
-  await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [parsed.orderNumber]);
-  let mapped = 0, unmapped = [];
-  for (const it of parsed.items) {
-    const c6 = (it.cosmo_num.length===7 && it.cosmo_num[0]==='1') ? it.cosmo_num.slice(1) : it.cosmo_num;
-    const m = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
-    const asin = m.rows[0]?.asin || null;
-    if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
-    await pool.query(
-      `INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received)
-       VALUES($1,$2,$3,$4,$5,0)`,
-      [parsed.orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped]);
-  }
-  res.json({ ok: true, orderNumber: parsed.orderNumber, items: parsed.items.length, mapped, unmapped });
+  const w = await writeInvoiceLines(parsed.orderNumber, parsed.date || findInvoiceDate(req.body.text || ''), parsed.items);
+  if (w.refused) return res.status(409).json({ ok: false, error: w.refused });
+  res.json({ ok: true, orderNumber: parsed.orderNumber, items: parsed.items.length, mapped: w.mapped, unmapped: w.unmapped, carried: w.carried });
 });
 
 // List invoices (pending + recent)
@@ -1715,10 +2015,11 @@ app.post('/api/location', auth, async (req, res) => {
 });
 
 // Scan an item against an open invoice -> increment received for that line
-app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
+app.post('/api/invoices/:orderNumber/scan', auth, pendingInvoiceOnly, async (req, res) => {
   const order = req.params.orderNumber;
   const code = (req.body.code || '').trim();
-  const qty = parseInt(req.body.qty) || 1;
+  const qty = req.body.qty == null || req.body.qty === '' ? 1 : parseInt(req.body.qty);
+  if (badQty(qty)) return res.status(400).json({ ok: false, error: `Quantity must be 1–${MAX_QTY}.` });
   // resolve scanned code -> asin (via multi-upc, asin, or sku)
   let r = await pool.query('SELECT asin FROM inv_upcs WHERE upc_norm=$1 LIMIT 1', [normCode(code)]);
   let asin = r.rows[0]?.asin;
@@ -2681,45 +2982,64 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         // settlement and ~50,000 across the set — slow enough that a run never
         // finished. 500 rows per statement is ~5,500 parameters, well inside
         // Postgres's 65,535 limit.
-        if (force) {
-          const del = await pool.query('DELETE FROM inv_settlement_lines WHERE settlement_id=$1', [header.settlement_id]);
-          if (del.rowCount) console.log(`[Settlement] cleared ${del.rowCount} old line(s) for ${header.settlement_id}.`);
+        // All-or-nothing per settlement: the old lines (on force), the new
+        // lines and the summary row commit together or not at all.
+        let inserted;
+        try {
+          inserted = await withTx(async (db) => {
+            if (force) {
+              // Unlinked fees stored before row_idx existed never match on
+              // re-import (NULL ≠ NULL) and would be listed twice.
+              await db.query('DELETE FROM inv_unlinked_fees WHERE settlement_id=$1 AND row_idx IS NULL AND linked_shipment_id IS NULL', [header.settlement_id]);
+              const del = await db.query('DELETE FROM inv_settlement_lines WHERE settlement_id=$1', [header.settlement_id]);
+              if (del.rowCount) console.log(`[Settlement] cleared ${del.rowCount} old line(s) for ${header.settlement_id}.`);
+            }
+            let inserted = 0;
+            const CHUNK = 500;
+            for (let off = 0; off < rows.length; off += CHUNK) {
+              const slice = rows.slice(off, off + CHUNK);
+              const vals = [], params = [];
+              let n = 0;
+              for (const r of slice) {
+                const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
+                vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12},$${n+13})`);
+                params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
+                            r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx, r.shipment_id || null);
+                n += 13;
+              }
+              try {
+                const res2 = await db.query(
+                  `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
+                     amount_type, amount_description, amount, quantity, deposit_date, row_idx, shipment_id)
+                   VALUES ${vals.join(',')}
+                   ON CONFLICT (settlement_id, row_idx) DO UPDATE SET
+                     posted_date=EXCLUDED.posted_date, transaction_type=EXCLUDED.transaction_type,
+                     order_id=EXCLUDED.order_id, sku=EXCLUDED.sku, asin=EXCLUDED.asin,
+                     amount_type=EXCLUDED.amount_type, amount_description=EXCLUDED.amount_description,
+                     amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date, shipment_id=EXCLUDED.shipment_id`, params);
+                inserted += res2.rowCount || 0;
+              } catch (e) {
+                // Fail the whole settlement: it used to log, carry on, and still
+                // mark the report imported, so later runs skipped it and those
+                // lines' revenue and fees were missing for good.
+                throw new Error(`batch insert failed at row ${off}: ${e.message}`);
+              }
+              if (off % 2000 === 0) {
+                settleJob.progress = `report ${n2}/${todo.length} — storing ${off + slice.length}/${rows.length} lines…`;
+              }
+            }
+            await db.query(
+              `INSERT INTO inv_settlements(settlement_id, start_date, end_date, deposit_date, total_amount, lines)
+               VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
+              [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
+            return inserted;
+          });
+        } catch (e) {
+          console.error(`[Settlement] ${header.settlement_id}: NOT stored — ${e.message}. Left as 'downloaded' so the next run tries again.`);
+          settleJob.storeFailed = (settleJob.storeFailed || 0) + 1;
+          if (n2 < todo.length) await new Promise(r => setTimeout(r, 62000));
+          continue;
         }
-        let inserted = 0;
-        const CHUNK = 500;
-        for (let off = 0; off < rows.length; off += CHUNK) {
-          const slice = rows.slice(off, off + CHUNK);
-          const vals = [], params = [];
-          let n = 0;
-          for (const r of slice) {
-            const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
-            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12},$${n+13})`);
-            params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
-                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx, r.shipment_id || null);
-            n += 13;
-          }
-          try {
-            const res2 = await pool.query(
-              `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
-                 amount_type, amount_description, amount, quantity, deposit_date, row_idx, shipment_id)
-               VALUES ${vals.join(',')}
-               ON CONFLICT (settlement_id, row_idx) DO UPDATE SET
-                 posted_date=EXCLUDED.posted_date, transaction_type=EXCLUDED.transaction_type,
-                 order_id=EXCLUDED.order_id, sku=EXCLUDED.sku, asin=EXCLUDED.asin,
-                 amount_type=EXCLUDED.amount_type, amount_description=EXCLUDED.amount_description,
-                 amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date, shipment_id=EXCLUDED.shipment_id`, params);
-            inserted += res2.rowCount || 0;
-          } catch (e) {
-            console.error(`[Settlement] batch insert failed at row ${off}: ${e.message}`);
-          }
-          if (off % 2000 === 0) {
-            settleJob.progress = `report ${n2}/${todo.length} — storing ${off + slice.length}/${rows.length} lines…`;
-          }
-        }
-        await pool.query(
-          `INSERT INTO inv_settlements(settlement_id, start_date, end_date, deposit_date, total_amount, lines)
-           VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
-          [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
 
         // ---- Inbound freight / placement fees ----
         // These are charged per SHIPMENT, not per sale, so they carry no SKU.
@@ -2727,6 +3047,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         // one-tap linking. Either way they are recorded ONCE, as 'actual',
         // which supersedes whatever was typed in as an estimate.
         try {
+          const linkedRefs = new Set();
           for (const r of rows) {
             const desc = r.amount_description || '';
             if (!INBOUND_FEE_PATTERNS.test(desc)) continue;
@@ -2738,8 +3059,28 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
               const m = await pool.query('SELECT shipment_id FROM inv_shipments WHERE shipment_id=$1', [shipRef]);
               if (m.rows.length) linked = shipRef;
             }
-            if (linked) {
-              const kind = /placement/i.test(desc) ? 'placement' : 'freight';
+            if (linked) linkedRefs.add(linked);
+            else {
+              await pool.query(
+                `INSERT INTO inv_unlinked_fees(settlement_id, posted_date, description, amount, raw_shipment_id, row_idx)
+                 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+                [header.settlement_id, r.posted_date, desc, r.amount, shipRef || null, r.row_idx]);
+            }
+          }
+          // Recorded ONCE per shipment and kind, as 'actual', which supersedes
+          // whatever was typed in as an estimate. The amount is the signed sum
+          // of every settlement line billed to that shipment: it used to be
+          // the LAST line's absolute value, so a shipment billed a carrier
+          // charge plus a fee kept only one, and a refunded fee became a cost.
+          for (const ref of linkedRefs) {
+            const t = await pool.query(`
+              SELECT (amount_description ~* 'placement') AS is_pl, -SUM(amount)::numeric AS cost
+              FROM inv_settlement_lines
+              WHERE COALESCE(NULLIF(shipment_id,''), order_id) = $1 AND amount_description ~* $2
+              GROUP BY 1`, [ref, INBOUND_FEE_PATTERNS.source]);
+            for (const x of t.rows) {
+              const kind = x.is_pl ? 'placement' : 'freight';
+              const amt = Number(x.cost) || 0;
               // Keep what was typed and record the gap. A figure pulled from a
               // completed Amazon shipment is usually right; a real difference
               // means a reweigh or recalculation and is worth seeing, not hiding.
@@ -2751,12 +3092,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
                    variance = CASE WHEN inv_shipment_costs.entered_amount IS NOT NULL
                                    AND ABS(inv_shipment_costs.entered_amount - $3) > 0.01
                               THEN $3 - inv_shipment_costs.entered_amount ELSE NULL END`,
-                [linked, kind, Math.abs(Number(r.amount)), header.settlement_id, desc]);
-            } else {
-              await pool.query(
-                `INSERT INTO inv_unlinked_fees(settlement_id, posted_date, description, amount, raw_shipment_id)
-                 VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-                [header.settlement_id, r.posted_date, desc, r.amount, shipRef || null]);
+                [ref, kind, amt, header.settlement_id, 'Amazon settlement total']);
             }
           }
         } catch (e) { console.error('[Settlement] inbound fee capture failed:', e.message); }
@@ -2783,6 +3119,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines`
         + (settleJob.skipped ? `, ${settleJob.skipped} already on file` : '')
         + (settleJob.failed ? `, ${settleJob.failed} still rate-limited` : '')
+        + (settleJob.storeFailed ? `, ${settleJob.storeFailed} FAILED to store (will retry next run — see log)` : '')
         + (settleJob.remaining ? `. ${settleJob.remaining} report(s) left — run it again to continue` : '.');
       settleJob.running = false; settleJob.done = true;
     } catch (e) {
@@ -3351,8 +3688,16 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
   // labor and supplies: deliberately null until their data exists
   const labor = null, supplies = null, overhead = null;
 
-  const netProfit = deposited - cogs - inboundAllocated
-                    - (labor || 0) - (supplies || 0) - (overhead || 0);
+  // Inbound freight: `deposited` already has the settlement's inbound
+  // charges taken off, and inboundAllocated charges the same freight again per
+  // unit sold. Profit uses the per-unit (matched) figure only, so the
+  // settlement's inbound lines are added back first.
+  // Missing costs: profit with COGS = 0 looked great and was wrong. It is only
+  // reported when every seller has a cost.
+  const cogsComplete = cogsMissing.length === 0;
+  const netProfit = !cogsComplete ? null
+    : (deposited - inboundFees) - cogs - inboundAllocated
+      - (labor || 0) - (supplies || 0) - (overhead || 0);
 
   // What inbound cost has been CAPTURED, regardless of whether anything has
   // sold yet. Capture and allocation are different states: money recorded
@@ -3408,7 +3753,8 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     inboundPerUnitCaptured: inboundUnits ? inboundCaptured / inboundUnits : null,
     labor, supplies, overhead,
     netProfit,
-    marginPct: netSales ? (netProfit / netSales) * 100 : null,
+    marginPct: (netSales && netProfit != null) ? (netProfit / netSales) * 100 : null,
+    cogsComplete,
     hasSettlements: lines.rows.length > 0,
     unmatchedSkuLines: (await pool.query(
       `SELECT COUNT(*)::int AS n FROM inv_settlement_lines WHERE asin IS NULL AND sku IS NOT NULL`)).rows[0].n,
@@ -3574,7 +3920,7 @@ app.post('/api/shipment-costs/link', ownerAuth, async (req, res) => {
 });
 
 // Owner override — always wins over Amazon's declaration.
-app.post('/api/hazmat/set', auth, async (req, res) => {
+app.post('/api/hazmat/set', ownerAuth, async (req, res) => {
   const { asin, hazmat } = req.body || {};
   if (!asin) return res.status(400).json({ error: 'asin required' });
   const v = (hazmat === null || hazmat === undefined || hazmat === '') ? null : !!hazmat;
@@ -3595,7 +3941,7 @@ app.post('/api/hazmat/set', auth, async (req, res) => {
 
 // Background scan of Amazon's hazmat data. Never overwrites a manual call.
 let hazJob = { running:false, done:false, error:null, progress:'', found:0, checked:0 };
-app.post('/api/hazmat/scan', auth, async (req, res) => {
+app.post('/api/hazmat/scan', ownerAuth, async (req, res) => {
   if (hazJob.running) return res.json({ ok:true, already:true });
   hazJob = { running:true, done:false, error:null, progress:'starting…', found:0, checked:0 };
   res.json({ ok:true });
@@ -3671,10 +4017,12 @@ app.post('/api/invoices/:orderNumber/set-expected', auth, async (req, res) => {
 });
 
 // Manually set a received qty on a line (corrections)
-app.post('/api/invoices/:orderNumber/set-line', auth, async (req, res) => {
+app.post('/api/invoices/:orderNumber/set-line', auth, pendingInvoiceOnly, async (req, res) => {
   const { asin, qty_received } = req.body;
+  const qr = parseInt(qty_received) || 0;
+  if (qr < 0 || qr > MAX_QTY) return res.status(400).json({ ok: false, error: `Quantity must be 0–${MAX_QTY}.` });
   await pool.query('UPDATE inv_invoice_items SET qty_received=$1 WHERE order_number=$2 AND asin=$3',
-    [parseInt(qty_received)||0, req.params.orderNumber, asin]);
+    [qr, req.params.orderNumber, asin]);
   res.json({ ok: true });
 });
 
@@ -3717,7 +4065,7 @@ app.get('/api/cosmo-map', auth, async (req, res) => {
 
 // Complete an invoice -> push RECEIVED quantities into on-hand
 // Set every line's received qty to the expected qty (clean truck, no exceptions).
-app.post('/api/invoices/:orderNumber/receive-all', auth, async (req, res) => {
+app.post('/api/invoices/:orderNumber/receive-all', auth, pendingInvoiceOnly, async (req, res) => {
   const order = req.params.orderNumber;
   const r = await pool.query(
     'UPDATE inv_invoice_items SET qty_received = qty_expected WHERE order_number=$1 AND asin IS NOT NULL RETURNING id',
@@ -3741,16 +4089,28 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   // double-added. Cost lots, locations and the received stamp still happen.
   const skipStock = !!(req.body && req.body.skipStock);
 
-  const lines = await pool.query(
+  // One transaction, with the invoice row locked. Completing twice (a double
+  // tap, two tablets, or reopening an old invoice from the Invoice Manager)
+  // used to add every line's stock to On Hand a second time.
+  const run = async (db) => {
+  if (!dryRun) {
+    const st = await db.query('SELECT status FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [order]);
+    if (!st.rows.length) return { status: 404, body: { ok: false, error: 'Invoice not found' } };
+    if (st.rows[0].status === 'received') {
+      return { status: 409, body: { ok: false, error: 'already_completed',
+        message: `Invoice ${order} is already checked in — its stock was added then. Nothing was changed.` } };
+    }
+  }
+  const lines = await db.query(
     'SELECT asin, cosmo_num, description, qty_expected, qty_received, unit_cost FROM inv_invoice_items WHERE order_number=$1',
     [order]);
-  const invMeta = await pool.query('SELECT invoice_date FROM inv_invoices WHERE order_number=$1', [order]);
+  const invMeta = await db.query('SELECT invoice_date FROM inv_invoices WHERE order_number=$1', [order]);
   const invDate = invMeta.rows[0] ? invMeta.rows[0].invoice_date : null;
 
   // ---- HARD STOP: never silently drop unmapped lines ----
   const unmapped = lines.rows.filter(l => !l.asin);
   if (unmapped.length && !force) {
-    return res.status(409).json({
+    return { status: 409, body: {
       ok: false,
       error: 'unmapped_lines',
       unmapped: unmapped.map(l => ({
@@ -3760,7 +4120,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
         qty_received: l.qty_received
       })),
       unmappedUnits: unmapped.reduce((n, l) => n + (l.qty_received || l.qty_expected || 0), 0)
-    });
+    } };
   }
 
   let added = 0;
@@ -3774,9 +4134,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     const loc = normLoc(raw);
     if (!loc) continue;
     if (!dryRun) {
-      try {
-        await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
-      } catch (e) { console.error('[Location] set failed for', asin, e.message); continue; }
+      await db.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
     }
     locSet++;
   }
@@ -3791,12 +4149,12 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     if (l.qty_received > 0) {
       if (!dryRun) {
         if (!skipStock) {
-          await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
-          await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+          await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($2,$1) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand + $1', [l.qty_received, l.asin]);
+          await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
             ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
         } else {
           // audit trail only — zero quantity so no count moves
-          await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+          await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
             ['in', l.asin, 0, 'Invoice ' + order + ' recorded — stock NOT added (already counted)']);
         }
       }
@@ -3804,13 +4162,11 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
       // Record the purchase lot: what was paid, when, how many. Sale pricing is
       // preserved rather than overwriting the regular cost.
       if (!dryRun && l.unit_cost != null && l.qty_received > 0) {
-        try {
-          await pool.query(
-            `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
-             VALUES($1,$2,$3,$4,$5)
-             ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
-            [l.asin, order, invDate, l.unit_cost, l.qty_received]);
-        } catch (e) { console.error('[Costs] lot insert failed:', e.message); }
+        await db.query(
+          `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
+           VALUES($1,$2,$3,$4,$5)
+           ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
+          [l.asin, order, invDate, l.unit_cost, l.qty_received]);
       }
       preview.push({ description: l.description, asin: l.asin, qty: l.qty_received,
                      expected: l.qty_expected, location: locs[l.asin] || null,
@@ -3827,18 +4183,23 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   }
 
   if (!dryRun) {
-    await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
-    try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
+    await db.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
   }
 
-  if (skipStock && !dryRun) console.log(`[Invoice] ${order} recorded WITHOUT adding ${added} units (already on hand).`);
-
-  res.json({
+  return { status: 200, body: {
     ok: true, dryRun, skipStock, added, discrepancies, preview,
     locationsSet: locSet,
     unmappedCount: unmapped.length,
     lineCount: lines.rows.length
-  });
+  } };
+  };
+
+  const out = dryRun ? await run(pool) : await withTx(run);
+  if (!dryRun && out.status === 200) {
+    try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
+    if (skipStock) console.log(`[Invoice] ${order} recorded WITHOUT adding ${out.body.added} units (already on hand).`);
+  }
+  res.status(out.status).json(out.body);
 });
 
 // Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs
@@ -3892,7 +4253,9 @@ app.post('/api/sync-fnskus', auth, async (req, res) => {
     let r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2 RETURNING asin', [f.fnSku, sku]);
     if (r.rowCount === 0 && f.asin) {
       // then by ASIN
-      r = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2 RETURNING asin', [f.fnSku, f.asin]);
+      // Fallback by ASIN only fills a blank. An ASIN can have several SKUs;
+      // overwriting here made the FNSKU flip on every sync and undid manual fixes.
+      r = await pool.query("UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku='') RETURNING asin", [f.fnSku, f.asin]);
     }
     if (r.rowCount > 0) matched++;
     else unmatched.push({ sku, asin: f.asin, fnsku: f.fnSku });
@@ -3954,9 +4317,13 @@ app.post('/api/reconcile-shipment', auth, upload.single('file'), async (req, res
     for(const p of parts) expected[p.asin]=(expected[p.asin]||0)+p.qty;
   }
 
+  // Locked and all-or-nothing: two reconciles at once used to both see the
+  // same gaps and apply them twice.
+  const result = await withTx(async (db) => {
+  if(!preview.isPreview) await lockShipment(db, shipmentId, '');
   // What's ALREADY recorded in this shipment
   const recorded={};
-  const rec=await pool.query('SELECT asin, SUM(qty) AS q FROM inv_shipment_items WHERE shipment_id=$1 GROUP BY asin',[shipmentId]);
+  const rec=await db.query('SELECT asin, SUM(qty) AS q FROM inv_shipment_items WHERE shipment_id=$1 GROUP BY asin',[shipmentId]);
   for(const r of rec.rows) recorded[r.asin]=parseInt(r.q);
 
   // The GAP = expected - recorded (only positive gaps need adding)
@@ -3964,26 +4331,28 @@ app.post('/api/reconcile-shipment', auth, upload.single('file'), async (req, res
   for(const asin in expected){
     const need=expected[asin]-(recorded[asin]||0);
     if(need>0){
-      const nm=await pool.query('SELECT name FROM inv_products WHERE asin=$1',[asin]);
+      const nm=await db.query('SELECT name FROM inv_products WHERE asin=$1',[asin]);
       gaps.push({asin, name:nm.rows[0]?.name||asin, missing:need, expected:expected[asin], recorded:recorded[asin]||0});
     }
   }
 
   if(preview.isPreview){
-    return res.json({ok:true, preview:true, shipmentId, gaps});
+    return {ok:true, preview:true, shipmentId, gaps};
   }
 
   // Apply the gaps: deduct from on-hand, add to shipment + transit
   let added=0;
   for(const g of gaps){
-    await pool.query('UPDATE inv_stock SET onhand=onhand-$1, transit=transit+$1 WHERE asin=$2',[g.missing,g.asin]);
-    await pool.query('INSERT INTO inv_shipment_items(shipment_id,asin,qty) VALUES($1,$2,$3)',[shipmentId,g.asin,g.missing]);
-    await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',['out',g.asin,g.name,g.missing,'Reconcile '+shipmentId]);
-    await pool.query('UPDATE inv_prepped SET qty=GREATEST(0,qty-$1) WHERE asin=$2',[g.missing,g.asin]);
+    await db.query('UPDATE inv_stock SET onhand=onhand-$1, transit=transit+$1 WHERE asin=$2',[g.missing,g.asin]);
+    await db.query('INSERT INTO inv_shipment_items(shipment_id,asin,qty) VALUES($1,$2,$3)',[shipmentId,g.asin,g.missing]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',['out',g.asin,g.name,g.missing,'Reconcile '+shipmentId]);
+    await db.query('UPDATE inv_prepped SET qty=GREATEST(0,qty-$1) WHERE asin=$2',[g.missing,g.asin]);
     added+=g.missing;
   }
-  await pool.query('DELETE FROM inv_prepped WHERE qty<=0');
-  res.json({ok:true, shipmentId, gapsFixed:gaps.length, unitsAdded:added, gaps});
+  await db.query('DELETE FROM inv_prepped WHERE qty<=0');
+  return {ok:true, shipmentId, gapsFixed:gaps.length, unitsAdded:added, gaps};
+  });
+  res.json(result);
 });
 
 // Full bundle dump — every bundle with its components (to spot bad mappings)
@@ -4058,44 +4427,53 @@ app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => 
   }
   if (!items.length) return res.status(400).json({ error: 'No line items with a shipped quantity.' });
 
-  // register shipment
-  await pool.query(
-    `INSERT INTO inv_shipments(shipment_id, shipment_name) VALUES($1,$2)
-     ON CONFLICT (shipment_id) DO UPDATE SET shipment_name = COALESCE(NULLIF($2,''), inv_shipments.shipment_name)`,
-    [shipmentId, shipmentName]);
-
   const isPreview = req.body.preview === 'true' || req.body.preview === true;
-  let done = 0, notfound = [], expandedNote = [], previewLines = [];
-  for (const it of items) {
-    // match by ASIN, then FNSKU, then SKU
-    let r = await pool.query('SELECT asin, name FROM inv_products WHERE UPPER(asin)=UPPER($1) OR UPPER(fnsku)=UPPER($2) OR UPPER(sku)=UPPER($3) LIMIT 1', [it.asin, it.fnsku, it.sku]);
-    if (!r.rows.length) { notfound.push(it.asin || it.sku || it.fnsku); continue; }
-    const matchedAsin = r.rows[0].asin;
-    const parts = await expandToComponents(matchedAsin, it.qty);
-    // build preview line
-    if (parts.length > 1 || parts[0].fromBundle) {
-      previewLines.push(`${r.rows[0].name.slice(0,30)} (DUO ×${it.qty}) → ` + parts.map(p=>`${p.qty} ${p.name.slice(0,24)}`).join(' + '));
+
+  const out = await withTx(async (db) => {
+    let already = 0;
+    if (isPreview) {
+      const r = await db.query('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [shipmentId]);
+      already = r.rows[0].n;
     } else {
-      previewLines.push(`${r.rows[0].name.slice(0,40)} → deduct ${it.qty}`);
+      already = await lockShipment(db, shipmentId, shipmentName);
+      if (already > 0) {
+        return { status: 409, body: { ok: false, error: 'shipment_exists', shipmentId, units: already,
+          message: `Shipment ${shipmentId} was already deducted (${already} units recorded). Uploading it again would deduct it twice. If lines are missing, use Reconcile instead — it only adds what's missing.` } };
+      }
     }
-    if (isPreview) { done++; continue; }  // preview: don't actually deduct
-    for (const part of parts) {
-      await pool.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
-      await pool.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
-      await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-        ['out', part.asin, part.name, part.qty, part.fromBundle ? ('Shipment '+shipmentId+' (duo)') : ('Shipment '+shipmentId)]);
-      // clear ONLY this item from prepped
-      await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [part.qty, part.asin]);
+    let done = 0; const notfound = [], expandedNote = [], previewLines = [];
+    for (const it of items) {
+      if (it.qty > MAX_QTY) return { status: 400, body: { ok: false, error: `${it.asin || it.sku}: quantity ${it.qty} is too large (max ${MAX_QTY}).` } };
+      // match by ASIN, then FNSKU, then SKU
+      const r = await db.query('SELECT asin, name FROM inv_products WHERE UPPER(asin)=UPPER($1) OR UPPER(fnsku)=UPPER($2) OR UPPER(sku)=UPPER($3) LIMIT 1', [it.asin, it.fnsku, it.sku]);
+      if (!r.rows.length) { notfound.push(it.asin || it.sku || it.fnsku); continue; }
+      const matchedAsin = r.rows[0].asin;
+      const parts = await expandToComponents(matchedAsin, it.qty);
+      // build preview line
+      if (parts.length > 1 || parts[0].fromBundle) {
+        previewLines.push(`${r.rows[0].name.slice(0,30)} (DUO ×${it.qty}) → ` + parts.map(p=>`${p.qty} ${p.name.slice(0,24)}`).join(' + '));
+      } else {
+        previewLines.push(`${r.rows[0].name.slice(0,40)} → deduct ${it.qty}`);
+      }
+      if (isPreview) { done++; continue; }  // preview: don't actually deduct
+      for (const part of parts) {
+        await db.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
+        await db.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
+        await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['out', part.asin, part.name, part.qty, part.fromBundle ? ('Shipment '+shipmentId+' (duo)') : ('Shipment '+shipmentId)]);
+      }
+      await consumePrepped(db, matchedAsin, it.qty, parts);
+      if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${it.asin} → ${parts.length} singles`);
+      done++;
     }
-    await pool.query('UPDATE inv_prepped SET qty = GREATEST(0, qty - $1) WHERE asin=$2', [it.qty, matchedAsin]);
-    if (parts.length > 1 || parts[0].fromBundle) expandedNote.push(`${it.asin} → ${parts.length} singles`);
-    done++;
-  }
-  if (isPreview) {
-    return res.json({ ok: true, preview: true, shipmentId, shipmentName, done, notfound, previewLines, totalLines: items.length });
-  }
-  await pool.query('DELETE FROM inv_prepped WHERE qty <= 0');
-  res.json({ ok: true, shipmentId, shipmentName, done, notfound, expanded: expandedNote, totalLines: items.length });
+    if (isPreview) {
+      return { status: 200, body: { ok: true, preview: true, shipmentId, shipmentName, done, notfound, previewLines,
+        totalLines: items.length, alreadyRecorded: already } };
+    }
+    await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
+    return { status: 200, body: { ok: true, shipmentId, shipmentName, done, notfound, expanded: expandedNote, totalLines: items.length } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // PDF upload -> extract text -> process (multi-order)
@@ -4280,7 +4658,7 @@ app.get('/api/dashboard', auth, async (req, res) => {
   const committedMap = await pool.query(`
     SELECT p.asin,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
       + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       + COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
       + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=p.asin),0)
@@ -4437,7 +4815,7 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
   const stockRows = await pool.query(`
     SELECT p.asin, p.hazmat, p.hazmat_source, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       (
@@ -4548,7 +4926,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   const prodsRaw = await pool.query(`
     SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0) AS onhand, COALESCE(s.transit,0) AS transit,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep
     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`);
@@ -4572,6 +4950,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     if (v.asin) velByAsin[v.asin] = v;
   }
 
+  const bundleSet = new Set((await pool.query('SELECT DISTINCT bundle_asin FROM inv_bundles')).rows.map(r => r.bundle_asin));
   const rows = [];
   for (const p of prods.rows) {
     const m = mByAsin[p.asin] || {};
@@ -4655,7 +5034,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     const canSend = available > 0;
     if (demandPerDay > 0 || salesRank != null || onhand > 0) {
       rows.push({
-        asin: p.asin, name: p.name || m.title, onhand, transit, prepped, pendingPrep, available,
+        asin: p.asin, sku: p.sku || null, isBundle: bundleSet.has(p.asin), name: p.name || m.title, onhand, transit, prepped, pendingPrep, available,
         fbaFulfillable: fbaTotal, fbaInbound,
         soldPerDay: Math.round(demandPerDay*10)/10,   // MARKET demand/day (the driver)
         ourSoldPerDay: Math.round(ourSoldPerDay*10)/10, // our actual (reference)
@@ -4741,7 +5120,7 @@ async function runMfnScan(onProgress) {
   const stock = await pool.query(`
     SELECT p.asin, p.name, p.sku, p.image, COALESCE(s.onhand,0) AS onhand,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       (
@@ -5014,7 +5393,7 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   const ours = await pool.query(`
     SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
       (
-        COALESCE((SELECT qty FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
+        COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty*b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       (
@@ -5050,7 +5429,8 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
 
     if (f.fnSku) {
       let ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE sku=$2', [f.fnSku, sku]);
-      if (ur.rowCount === 0) ur = await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [f.fnSku, f.asin]);
+      // Fallback by ASIN only fills a blank — see sync-fnskus.
+      if (ur.rowCount === 0) ur = await pool.query("UPDATE inv_products SET fnsku=$1 WHERE asin=$2 AND (fnsku IS NULL OR fnsku='')", [f.fnSku, f.asin]);
       if (ur.rowCount > 0) fnskusSaved++;
     }
   }
@@ -5179,21 +5559,28 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
     }
   }
 
-  // merge with an existing open request for the same item
-  const ex = await pool.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2', [requestAsin, duoFlag]);
-  if (ex.rows.length) {
-    await pool.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
-  } else {
-    await pool.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
-  }
+  // merge with an existing open request for the same item. The lock stops two
+  // taps landing together from both missing the existing row and inserting a
+  // duplicate work order.
+  await withTx(async (c) => {
+    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['pending-prep:' + requestAsin]);
+    const ex = await c.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 ORDER BY id LIMIT 1', [requestAsin, duoFlag]);
+    if (ex.rows.length) {
+      await c.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
+    } else {
+      await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
+    }
+  });
   res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag });
 });
 
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image, p.location
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image, p.location,
+            COALESCE(st.onhand,0) AS onhand
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
+     LEFT JOIN inv_stock st ON st.asin = pp.asin
      WHERE pp.qty > 0 ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
   // for duos, also return the component names so the worker knows what to grab
   const out = [];
@@ -5201,7 +5588,7 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     let components = [];
     if (r.is_duo) {
       const c = await pool.query(
-        `SELECT b.component_asin AS asin, p.name, p.location, COALESCE(s.onhand,0) AS onhand
+        `SELECT b.component_asin AS asin, p.name, p.location, COALESCE(s.onhand,0) AS onhand, COALESCE(b.qty,1) AS per
          FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin
          LEFT JOIN inv_stock s ON s.asin=b.component_asin
          WHERE b.bundle_asin=$1`, [r.asin]);
@@ -5337,7 +5724,7 @@ app.post('/api/pending-prep/release', auth, async (req, res) => {
 });
 
 // Delete a single prep log entry (for removing test data)
-app.post('/api/prep-log/delete', auth, async (req, res) => {
+app.post('/api/prep-log/delete', ownerAuth, async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: 'id required' });
   await pool.query('DELETE FROM inv_prep_log WHERE id=$1', [id]);
@@ -5345,7 +5732,7 @@ app.post('/api/prep-log/delete', auth, async (req, res) => {
 });
 
 // Clear ALL prep log entries (wipe test data)
-app.post('/api/prep-log/clear-all', auth, async (req, res) => {
+app.post('/api/prep-log/clear-all', ownerAuth, async (req, res) => {
   const r = await pool.query('DELETE FROM inv_prep_log');
   res.json({ ok: true, deleted: r.rowCount });
 });
@@ -5397,7 +5784,7 @@ app.get('/api/prep-performance', auth, async (req, res) => {
 app.post('/api/pending-prep/complete', auth, async (req, res) => {
   const { id, qty, completedBy } = req.body;
   const q = parseInt(qty);
-  if (!id || !q || q < 1) return res.status(400).json({ error: 'id + qty required' });
+  if (!id || badQty(q)) return res.status(400).json({ error: `id + qty (1–${MAX_QTY}) required` });
 
   const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ error: 'Job not found' });
@@ -5417,29 +5804,37 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
     }
   }
 
-  // move into Prepped & Ready (stored as-scanned: duo asin or single asin)
-  await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [asin, q]);
-  const nm = await pool.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-    ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
+  // Locked, all-or-nothing. A double-submitted Complete used to add the
+  // prepped quantity twice and log the job twice.
+  const out = await withTx(async (db) => {
+    const lk = await db.query('SELECT qty FROM inv_pending_prep WHERE id=$1 FOR UPDATE', [id]);
+    if (!lk.rows.length) return { status: 409, body: { ok: false, error: 'This job was already completed or removed. Nothing was added.' } };
+    const requested = lk.rows[0].qty;
+    // move into Prepped & Ready (stored as-scanned: duo asin or single asin)
+    await db.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [asin, q]);
+    const nm = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
 
-  // ---- record prep performance ----
-  try {
+    // ---- record prep performance ----
     const startedAt = job.rows[0].claimed_at || null;
     const durSec = startedAt ? Math.max(1, Math.round((Date.now() - new Date(startedAt).getTime())/1000)) : null;
     const unitsHandled = is_duo ? q * 2 : q;
-    await pool.query(
+    await db.query(
       `INSERT INTO inv_prep_log(asin, name, qty, is_duo, units, worker, started_at, duration_sec)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
       [asin, nm.rows[0]?.name || asin, q, is_duo, unitsHandled, who, startedAt, durSec]);
-  } catch(e) { console.error('prep log failed:', e.message); }
 
-  // decrement / close the work order
-  const remaining = requested - q;
-  if (remaining <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
-  else await pool.query('UPDATE inv_pending_prep SET qty=$1, claimed_by=NULL, claimed_at=NULL WHERE id=$2', [remaining, id]);
+    // decrement / close the work order. Either way the crew is done with it —
+    // open crew rows used to stay open for ever and keep counting minutes.
+    const remaining = requested - q;
+    if (remaining <= 0) await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
+    else await db.query('UPDATE inv_pending_prep SET qty=$1, claimed_by=NULL, claimed_at=NULL WHERE id=$2', [remaining, id]);
+    await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [id]);
 
-  res.json({ ok: true, moved: q, requested, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0, isDuo: is_duo, warnings, completedBy: who });
+    return { status: 200, body: { ok: true, moved: q, requested, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0, isDuo: is_duo, warnings, completedBy: who } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // Adjust / remove a pending prep request
@@ -5484,10 +5879,17 @@ app.post('/api/remap-fnsku', auth, async (req, res) => {
   const { fnsku, asin } = req.body;
   const fn = (fnsku||'').trim();
   if (!fn || !asin) return res.status(400).json({ error: 'fnsku + asin required' });
-  // clear this FNSKU from any product that wrongly has it
-  await pool.query("UPDATE inv_products SET fnsku=NULL WHERE UPPER(fnsku)=UPPER($1)", [fn]);
-  // assign to the correct product
-  await pool.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [fn, asin]);
+  // One transaction: a mistyped ASIN used to clear the FNSKU from the right
+  // product, assign it nowhere, and still report ok.
+  const ok = await withTx(async (db) => {
+    // clear this FNSKU from any product that wrongly has it
+    await db.query("UPDATE inv_products SET fnsku=NULL WHERE UPPER(fnsku)=UPPER($1)", [fn]);
+    // assign to the correct product
+    const r = await db.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [fn, asin]);
+    if (!r.rowCount) throw Object.assign(new Error('No product with ASIN ' + asin + ' — nothing changed.'), { code: 'NOASIN' });
+    return true;
+  }).catch(e => { if (e.code === 'NOASIN') return e.message; throw e; });
+  if (ok !== true) return res.status(404).json({ ok: false, error: ok });
   res.json({ ok: true });
 });
 
@@ -5499,10 +5901,75 @@ app.post('/api/assign-fnsku', auth, async (req, res) => {
 
 // Scan an item into Prepped. Stores the item AS SCANNED (duo shows as duo, single as single).
 // The on-hand warning still checks component availability underneath.
+// ============================================================
+// CYCLE COUNTS
+// Count one rack location: the app lists what should be there, the counter
+// scans what is, and saving sets On Hand to match. Prepped units sit in
+// staging, not on the rack, so the rack is expected to hold
+// on hand − prepped, and the new On Hand is counted + prepped.
+// ============================================================
+app.get('/api/count/location/:loc', auth, async (req, res) => {
+  const loc = normLoc(req.params.loc);
+  if (!loc) return res.status(400).json({ ok: false, error: 'Unknown location ' + req.params.loc });
+  const r = await pool.query(
+    `SELECT p.asin, p.name, p.image, p.fnsku, COALESCE(s.onhand,0) AS onhand
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin
+     WHERE p.location=$1 AND p.asin NOT IN (SELECT bundle_asin FROM inv_bundles) ORDER BY p.name`, [loc]);
+  const items = [];
+  for (const x of r.rows) {
+    const staged = await componentCommitted(x.asin);
+    items.push({ ...x, staged, expected: Math.max(0, x.onhand - staged) });
+  }
+  const last = await pool.query('SELECT counted_by, created_at FROM inv_counts WHERE location=$1 ORDER BY id DESC LIMIT 1', [loc]);
+  res.json({ ok: true, location: loc, items, lastCount: last.rows[0] || null });
+});
+
+app.post('/api/count/apply', auth, async (req, res) => {
+  const loc = normLoc(req.body.location);
+  const by = String(req.body.countedBy || '').trim().slice(0, 60) || 'unknown';
+  const counts = Array.isArray(req.body.counts) ? req.body.counts : [];
+  if (!loc) return res.status(400).json({ ok: false, error: 'location required' });
+  for (const c of counts) {
+    const n = parseInt(c.counted, 10);
+    if (!c.asin || !Number.isInteger(n) || n < 0 || n > MAX_QTY) return res.status(400).json({ ok: false, error: `Bad count for ${c.asin}` });
+  }
+  const out = await withTx(async (db) => {
+    const lines = [];
+    for (const c of counts) {
+      const counted = parseInt(c.counted, 10);
+      const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [c.asin]);
+      if (!p.rows.length) continue;
+      await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($1,0) ON CONFLICT (asin) DO NOTHING', [c.asin]);
+      const st = await db.query('SELECT onhand FROM inv_stock WHERE asin=$1 FOR UPDATE', [c.asin]);
+      const before = st.rows[0].onhand;
+      const staged = await componentCommitted(c.asin);
+      const after = counted + staged;
+      const delta = after - before;
+      lines.push({ asin: c.asin, name: p.rows[0].name, counted, staged, before, after, delta });
+      if (delta !== 0) {
+        await db.query('UPDATE inv_stock SET onhand=$2 WHERE asin=$1', [c.asin, after]);
+        await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+          ['adjust', c.asin, p.rows[0].name, delta, `Cycle count ${loc} by ${by}: ${before} → ${after}`]);
+      }
+      // A product found here that was filed elsewhere now lives here.
+      if (c.moveHere) await db.query('UPDATE inv_products SET location=$2 WHERE asin=$1', [c.asin, loc]);
+    }
+    await db.query('INSERT INTO inv_counts(location, counted_by, lines) VALUES($1,$2,$3)', [loc, by, JSON.stringify(lines)]);
+    return lines;
+  });
+  res.json({ ok: true, location: loc, lines: out, adjusted: out.filter(l => l.delta !== 0).length });
+});
+
+app.post('/api/undo/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ ok: false, error: 'bad id' });
+  const out = await withTx(db => applyUndo(db, id));
+  res.status(out.status).json(out.body);
+});
 app.post('/api/prep/scan', auth, async (req, res) => {
   const { code, qty } = req.body;
   const q = parseInt(qty);
-  if (!code || !q || q < 1) return res.status(400).json({ error: 'code + qty required' });
+  if (!code || badQty(q)) return res.status(400).json({ error: `code + qty (1–${MAX_QTY}) required` });
   const prod = await resolveCode(code);
   if (!prod) return res.json({ ok: false, reason: 'unknown_code', code });
 
@@ -5524,21 +5991,31 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     }
   }
 
-  // store prepped AS SCANNED (the duo asin, or the single asin)
-  await pool.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [prod.asin, q]);
-  // decrement the matching PENDING PREP work order (if any)
-  let pendingInfo = null;
-  const pend = await pool.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1', [prod.asin]);
-  if (pend.rows.length) {
-    const remaining = pend.rows[0].qty - q;
-    pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
-    if (remaining <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [pend.rows[0].id]);
-    else await pool.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [remaining, pend.rows[0].id]);
-  }
-  await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-    ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
+  const out = await withTx(async (db) => {
+    // store prepped AS SCANNED (the duo asin, or the single asin)
+    await db.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [prod.asin, q]);
+    // decrement the matching PENDING PREP work order (if any). Row-locked: two
+    // scans at once used to both read 10 and both write 9.
+    let pendingInfo = null;
+    const undoOps = [{ t: 'prepped', asin: prod.asin, qty: -q }];
+    const pend = await db.query('SELECT id, qty, is_duo FROM inv_pending_prep WHERE asin=$1 ORDER BY id LIMIT 1 FOR UPDATE', [prod.asin]);
+    if (pend.rows.length) {
+      undoOps.push({ t: 'pending', id: pend.rows[0].id, asin: prod.asin, is_duo: pend.rows[0].is_duo, qty: Math.min(q, pend.rows[0].qty) });
+      const remaining = pend.rows[0].qty - q;
+      pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
+      if (remaining <= 0) {
+        await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [pend.rows[0].id]);
+        await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [pend.rows[0].id]);
+      }
+      else await db.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [remaining, pend.rows[0].id]);
+    }
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
+    const undoId = await recordUndo(db, 'prep', `Prepped ${q} × ${(prod.name || prod.asin).slice(0, 40)}`, undoOps);
+    return { pendingInfo, undoId };
+  });
 
-  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo });
+  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo: out.pendingInfo, undoId: out.undoId });
 });
 
 // How many units of a component ASIN are committed across all prepped items
@@ -5585,7 +6062,7 @@ app.post('/api/prep/set', auth, async (req, res) => {
 async function clearAllPrepped() {
   await pool.query('DELETE FROM inv_prepped');
 }
-app.post('/api/prep/clear', auth, async (req, res) => {
+app.post('/api/prep/clear', ownerAuth, async (req, res) => {
   await clearAllPrepped();
   res.json({ ok: true });
 });
@@ -5598,10 +6075,16 @@ initDb().then(() => {
   // Finance screens (P&L, product profit, cash & draws, data sources)
   require('./finance')(app, { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts });
   // Weekly automatic refresh of every Amazon input — Sundays 11:59 PM Arizona time
-  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT });
+  // Weekly auto-refresh; each scheduled run emails its result (lib/weekly-email.js)
+  const { sendRunEmail } = require('./lib/weekly-email');
+  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT,
+    onRunFinished: (run) => run.trigger === 'scheduled' ? sendRunEmail(run, pool) : null,
+    sendTestEmail: (run) => sendRunEmail(run, pool) });
+  app.use(errorHandler);
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
+  app.use(errorHandler);
   // Start anyway so you can see errors
   app.listen(PORT, () => console.log(`[Inventory] Started (DB error) on port ${PORT}`));
 });

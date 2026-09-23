@@ -24,6 +24,7 @@ module.exports = function registerAutorun(app, deps) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   let running = false, current = null;
+  const RETRY_MS = 3 * 3600 * 1000, MAX_TRIES = 4;
 
   const ready = (async () => {
     await pool.query(`
@@ -58,7 +59,9 @@ module.exports = function registerAutorun(app, deps) {
     return new Date(l.utc.getTime() + 7 * 86400000);
   }
 
-  async function getSetting(k) { try { const r = await pool.query('SELECT value FROM fin_settings WHERE key=$1', [k]); return r.rows[0] ? r.rows[0].value : null; } catch (e) { return null; } }
+  // Throws on a DB error. It used to return null, which read as "never run" /
+  // "not disabled": a DB blip could run a disabled job or skip a week.
+  async function getSetting(k) { const r = await pool.query('SELECT value FROM fin_settings WHERE key=$1', [k]); return r.rows[0] ? r.rows[0].value : null; }
   async function setSetting(k, v) { await pool.query('INSERT INTO fin_settings(key,value) VALUES($1,$2) ON CONFLICT (key) DO UPDATE SET value=$2', [k, v]); }
 
   async function call(method, path, body, timeout = 120000) {
@@ -83,11 +86,16 @@ module.exports = function registerAutorun(app, deps) {
     current = { trigger, started: new Date().toISOString(), steps };
     const idRow = await pool.query('INSERT INTO fin_auto_runs(trigger, week_key, steps) VALUES($1,$2,$3) RETURNING id', [trigger, weekKey, JSON.stringify(steps)]);
     const runId = idRow.rows[0].id;
-    const step = async (name, fn) => {
+    const step = async (name, fn, limitMin = 45) => {
       const s = { name, started: new Date().toISOString(), ok: false, detail: '' };
       steps.push(s);
-      try { s.detail = (await fn()) || 'done'; s.ok = true; }
+      // A step that hangs (a stuck Amazon connection) used to leave the job
+      // "running" until the next restart, and no weekly run happened again.
+      let timer;
+      const limit = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`timed out after ${limitMin} min`)), limitMin * 60000); });
+      try { s.detail = (await Promise.race([fn(), limit])) || 'done'; s.ok = true; }
       catch (e) { s.detail = e.message; console.error(`[Auto] ${name} failed:`, e.message); }
+      finally { clearTimeout(timer); }
       s.finished = new Date().toISOString();
       await pool.query('UPDATE fin_auto_runs SET steps=$2 WHERE id=$1', [runId, JSON.stringify(steps)]).catch(() => {});
     };
@@ -95,7 +103,10 @@ module.exports = function registerAutorun(app, deps) {
 
     await step('Shipment receiving status', async () => {
       const r = await reconcileInTransit();
-      return r && r.ok !== false ? `${r.shipments || 0} shipment(s) checked` : (r && r.error) || 'checked';
+      // reconcileInTransit reports failure as {ok:false}; it used to be shown
+      // as a green step with the error text as its "result".
+      if (!r || r.ok === false) throw new Error((r && r.error) || 'shipment check failed');
+      return `${r.shipments || 0} shipment(s) checked`;
     });
     await step('FBA inventory', async () => {
       const r = await call('get', '/api/fba-inventory', null, 300000);
@@ -105,6 +116,11 @@ module.exports = function registerAutorun(app, deps) {
       await call('post', '/api/settlements/sync', { sinceDays: 120, maxReports: 6 });
       const s = await pollUntilDone('/api/settlements/status', 30, x => x.running);
       if (s.error) throw new Error(s.error);
+      // Amazon refusing access, or listing nothing, used to finish "OK" with
+      // 0 new — every week — while the P&L quietly went stale.
+      if (!s.done) throw new Error(s.progress || 'settlement sync did not finish');
+      if (!s.reports) throw new Error('Amazon listed no settlement reports — check the app still has the Finance and Accounting role. ' + (s.progress || ''));
+      if (s.storeFailed) throw new Error(`${s.storeFailed} settlement(s) failed to store — ${s.progress}`);
       return `${s.imported || 0} new · ${s.skipped || 0} already on file`;
     });
     await step('Match SKUs to products', async () => {
@@ -128,14 +144,32 @@ module.exports = function registerAutorun(app, deps) {
         month: m.month, netSales: m.netSales, deposited: m.deposited, paidToBank: m.paidToBank,
         cogs: m.cogs, costCoverage: m.costCoverage, carrier: m.carrier, placement: m.placement,
         royalty: m.royalty, overhead: m.overhead, net: m.net, complete: m.complete }));
-      await pool.query('INSERT INTO fin_snapshots(week_key, data) VALUES($1,$2)', [weekKey, JSON.stringify({ months })]);
+      // Record which inputs failed, so a snapshot built on stale data says so.
+      const failed = steps.filter(x => x !== steps[steps.length - 1] && !x.ok).map(x => x.name);
+      await pool.query('INSERT INTO fin_snapshots(week_key, data) VALUES($1,$2)', [weekKey, JSON.stringify({ months, ok: !failed.length, failed })]);
       const cur = months[months.length - 1];
       return cur ? `${cur.month}: net ${cur.net != null ? '$' + Math.round(cur.net).toLocaleString() : '—'}` : 'saved';
     });
 
     const ok = steps.every(s => s.ok);
     await pool.query('UPDATE fin_auto_runs SET finished_at=now(), ok=$2, steps=$3 WHERE id=$1', [runId, ok, JSON.stringify(steps)]).catch(() => {});
-    if (weekKey) await setSetting('auto_last_week', weekKey).catch(() => {});
+    // Only a clean run closes the week. A failed one (Amazon throttled or
+    // down at 11:59 PM) used to count as done, with no retry until next
+    // Sunday. It now retries every 3 hours, up to MAX_TRIES runs.
+    if (weekKey) {
+      if (ok) await setSetting('auto_last_week', weekKey).catch(() => {});
+      else {
+        // tries was counted when this attempt was claimed (see tick)
+        const tries = parseInt(await getSetting('auto_tries_' + weekKey).catch(() => '0'), 10) || 0;
+        await setSetting('auto_retry_after', String(Date.now() + RETRY_MS)).catch(() => {});
+        if (tries >= MAX_TRIES) {
+          console.error(`[Auto] ${weekKey}: still failing after ${tries} runs — giving up until next Sunday.`);
+          await setSetting('auto_last_week', weekKey).catch(() => {});
+        }
+      }
+    }
+    try { if (typeof deps.onRunFinished === 'function') await deps.onRunFinished({ ok, steps, weekKey, trigger }); }
+    catch (e) { console.error('[Auto] run summary failed:', e.message); }
     console.log(`[Auto] weekly refresh finished — ${steps.filter(s => s.ok).length}/${steps.length} steps ok.`);
     running = false; current = null;
     return { ok };
@@ -152,6 +186,20 @@ module.exports = function registerAutorun(app, deps) {
       if (last === null) { await setSetting('auto_last_week', l.key); return; }   // first deploy: start from next Sunday
       if (last === l.key) return;
       if (Date.now() - l.utc.getTime() > 6 * 86400000) { await setSetting('auto_last_week', l.key); return; }
+      const retryAfter = parseInt(await getSetting('auto_retry_after'), 10) || 0;
+      if (Date.now() < retryAfter) return;
+      // Claim this attempt atomically. With two copies of the server running
+      // (a replica, or old and new overlapping during a deploy) both used to
+      // see the week as due and run the whole job twice.
+      const tries = parseInt(await getSetting('auto_tries_' + l.key), 10) || 0;
+      const attempt = `${l.key}#${tries}`;
+      const claim = await pool.query(
+        `INSERT INTO fin_settings(key, value) VALUES('auto_claim', $1)
+         ON CONFLICT (key) DO UPDATE SET value = $1 WHERE fin_settings.value IS DISTINCT FROM $1 RETURNING 1`, [attempt]);
+      if (!claim.rowCount) return;
+      // Count the attempt now, not when it finishes: a run killed mid-way (a
+      // deploy on Sunday night) must not leave this claim blocking every retry.
+      await setSetting('auto_tries_' + l.key, String(tries + 1));
       runAll('scheduled', l.key).catch(e => { running = false; console.error('[Auto] run failed:', e.message); });
     } catch (e) { console.error('[Auto] tick:', e.message); }
   }
@@ -163,7 +211,8 @@ module.exports = function registerAutorun(app, deps) {
       await ready;
       const runs = (await pool.query('SELECT * FROM fin_auto_runs ORDER BY id DESC LIMIT 8')).rows;
       res.json({ running, current, enabled: (await getSetting('auto_enabled')) !== 'false',
-                 next: nextScheduled().toISOString(), schedule: 'Sundays 11:59 PM Arizona time', runs });
+                 next: nextScheduled().toISOString(), schedule: 'Sundays 11:59 PM Arizona time', runs,
+                 email: { configured: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS), to: process.env.REPORT_EMAIL_TO || process.env.SMTP_USER || null } });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
   app.post('/api/auto/run', ownerAuth, async (req, res) => {
@@ -174,6 +223,14 @@ module.exports = function registerAutorun(app, deps) {
   app.post('/api/auto/enabled', ownerAuth, async (req, res) => {
     await setSetting('auto_enabled', req.body && req.body.enabled === false ? 'false' : 'true');
     res.json({ ok: true });
+  });
+  // Send the weekly email now, built from the latest run, to check the SMTP setup.
+  app.post('/api/auto/test-email', ownerAuth, async (req, res) => {
+    const last = (await pool.query('SELECT * FROM fin_auto_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1')).rows[0];
+    const run = last ? { ok: !!last.ok, steps: last.steps || [], weekKey: last.week_key, trigger: 'test' }
+                     : { ok: true, steps: [{ name: 'No runs yet', ok: true, detail: 'this is a test email' }], weekKey: null, trigger: 'test' };
+    try { res.json({ ok: true, ...(await deps.sendTestEmail(run)) }); }
+    catch (e) { res.status(500).json({ ok: false, error: 'Email failed: ' + e.message }); }
   });
   app.get('/api/auto/snapshots', ownerAuth, async (req, res) => {
     const r = await pool.query('SELECT id, week_key, taken_at, data FROM fin_snapshots ORDER BY id DESC LIMIT 26');

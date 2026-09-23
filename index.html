@@ -117,9 +117,14 @@
   .flowdiv { width:1px; background:rgba(255,255,255,0.18); margin:10px 10px; }
   .tabs .tab b { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:50%; background:rgba(255,255,255,0.18); font-size:11px; margin-right:7px; }
   .tabs .tab.active b { background:rgba(255,255,255,0.35); }
-  .subdiv { width:1px; background:#c9d4e0; margin:4px 8px; }
-  .subtabs { display:flex; flex-wrap:wrap; gap:6px; background:#eef2f6; padding:8px; border-radius:10px; margin-bottom:14px; }
-  .subtab { padding:10px 16px; font-size:13px; font-weight:700; background:#fff; color:#5a6472; border:none; border-radius:8px; cursor:pointer; }
+  /* Admin navigation: four labelled groups instead of one long row of 18 buttons. */
+  .subtabs { display:flex; flex-wrap:wrap; gap:10px 18px; align-items:flex-start; background:#eef2f6; padding:10px 12px; border-radius:10px; margin-bottom:14px; }
+  .subgroup { display:flex; flex-direction:column; gap:5px; min-width:0; }
+  .subgroup-label { font-size:10.5px; font-weight:800; letter-spacing:0.6px; text-transform:uppercase; color:#8a97a6; padding-left:2px; }
+  .subgroup-btns { display:flex; flex-wrap:wrap; gap:5px; }
+  .subtab { padding:8px 13px; font-size:13px; font-weight:700; background:#fff; color:#5a6472; border:none; border-radius:8px; cursor:pointer; }
+  .sublock { margin-left:auto; align-self:center; background:#e2e8f0; }
+  @media (max-width:640px){ .subtabs{ flex-direction:column; } .subgroup{ width:100%; } .sublock{ margin-left:0; } }
   .subtab:hover { background:#dde6f0; }
   .subtab.active { background:#7a4fb5; color:#fff; }
   .subpanel { display:none; }
@@ -158,6 +163,7 @@
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
     <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('receive',event)">Receiving (Manual)</button>
+    <button class="tab" onclick="showTab('count',event)">Cycle Count</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
     <button class="tab" onclick="showTab('admin',event)" style="background:#7a4fb5;color:#fff;margin-left:auto">🔒 ADMIN</button>
   </div>
@@ -185,6 +191,20 @@
       </div>
       <div class="hint">Scan a product → if it's a new barcode, pick which product it is (once) and it's remembered forever → enter quantity → Add.</div>
     </div>
+  </div>
+
+  <div id="count" class="panel">
+    <div class="box">
+      <div style="font-weight:700">📋 Cycle Count — count one rack location</div>
+      <div class="hint">Pick a location, then scan every bottle on it (each scan adds 1), or type the total next to a product. Save sets On Hand to what you counted. Prepped units in staging are kept on top — only loose bottles on the rack are counted here.</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <select id="countLoc" onchange="countLoad()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;background:#fff"></select>
+      </div>
+      <div id="countScanWrap" style="display:none;margin-top:10px">
+        <input type="text" id="scanCount" placeholder="Scan a bottle on this rack…" autocomplete="off" style="width:100%">
+      </div>
+    </div>
+    <div id="countBody"></div>
   </div>
 
   <div id="onhand" class="panel">
@@ -336,6 +356,7 @@
       </select>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
+    <button class="action full" onclick="showPickList()" style="margin-bottom:12px;background:#1a2b4a">🗺 Pick list — walk the racks in order</button>
     <div id="pendingPrepBody"></div>
     <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
@@ -451,26 +472,33 @@
     </div>
     <div id="adminContent" style="display:none">
       <div class="subtabs">
-        <button class="subtab active" onclick="showSubTab('dashboard',event)">📊 Dashboard</button>
-        <button class="subtab" onclick="showSubTab('restock',event)">🎯 Restock Plan</button>
-        <button class="subtab" onclick="showSubTab('toadd',event)">🚀 Products to Add</button>
-        <button class="subtab" onclick="showSubTab('market',event)">📈 Market Data</button>
-        <button class="subtab" onclick="showSubTab('velocity',event)">📊 Velocity</button>
-        <button class="subtab" onclick="showSubTab('value',event)">💰 Value</button>
-        <span class="subdiv"></span>
-        <button class="subtab" onclick="showSubTab('transit',event)">🚚 In Transit</button>
-        <button class="subtab" onclick="showSubTab('shipments',event)">📦 Shipments</button>
-        <button class="subtab" onclick="showSubTab('fbainv',event)">🏬 FBA Inventory</button>
-        <button class="subtab" onclick="showSubTab('history',event)">📥 Received Log</button>
-        <button class="subtab" onclick="showSubTab('bundles',event)">🔗 Bundles</button>
-        <button class="subtab" onclick="showSubTab('fpnl',event)" style="font-weight:800">📊 P&amp;L</button>
-        <button class="subtab" onclick="showSubTab('fprod',event)" style="font-weight:800">🏷️ Product Profit</button>
-        <button class="subtab" onclick="showSubTab('fcash',event)" style="font-weight:800">💵 Cash &amp; Draws</button>
-        <button class="subtab" onclick="showSubTab('fsrc',event)">⚙️ Data Sources</button>
-        <button class="subtab" onclick="showSubTab('labor',event)">👷 Labor</button>
-        <button class="subtab" onclick="showSubTab('audit',event)">🔎 Stock Audit</button>
-        <button class="subtab" onclick="showSubTab('maphealth',event)">🔍 Mapping Health</button>
-        <button class="subtab" onclick="adminLock()" style="margin-left:auto;background:#e2e8f0;color:#5a6472">🔒 Lock</button>
+        <div class="subgroup"><div class="subgroup-label">Money</div><div class="subgroup-btns">
+          <button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button>
+          <button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button>
+          <button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button>
+          <button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button>
+          <button class="subtab" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button>
+        </div></div>
+        <div class="subgroup"><div class="subgroup-label">Plan &amp; buy</div><div class="subgroup-btns">
+          <button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button>
+          <button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button>
+          <button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button>
+          <button class="subtab" data-sub="market" onclick="showSubTab('market',event)">Market Data</button>
+          <button class="subtab" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button>
+          <button class="subtab" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button>
+        </div></div>
+        <div class="subgroup"><div class="subgroup-label">Shipments &amp; stock</div><div class="subgroup-btns">
+          <button class="subtab" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button>
+          <button class="subtab" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button>
+          <button class="subtab" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button>
+          <button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button>
+          <button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button>
+        </div></div>
+        <div class="subgroup"><div class="subgroup-label">Checks</div><div class="subgroup-btns">
+          <button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button>
+          <button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button>
+        </div></div>
+        <button class="subtab sublock" onclick="adminLock()">🔒 Lock</button>
       </div>
       <div id="freshnessBar" style="margin:8px 0 2px"></div>
 <div id="sub-audit" class="subpanel">
@@ -809,15 +837,115 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div id="offlineBadge" onclick="flushOffline(true)" title="Tap to send now" style="display:none;position:fixed;top:10px;right:10px;z-index:10001;background:#b7791f;color:#fff;border-radius:18px;padding:7px 13px;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 3px 12px rgba(0,0,0,0.25)"></div>
+<div id="undoBar" style="display:none;position:fixed;left:50%;bottom:78px;transform:translateX(-50%);z-index:10000;background:#1a2b4a;color:#fff;border-radius:10px;padding:10px 12px 10px 16px;box-shadow:0 6px 24px rgba(0,0,0,0.3);align-items:center;gap:14px;max-width:calc(100vw - 32px);font-size:14px">
+  <span id="undoText" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <button onclick="doUndo()" style="background:#f6c343;color:#1a2b4a;border:none;border-radius:6px;padding:8px 14px;font-weight:800;cursor:pointer;flex-shrink:0">UNDO</button>
+</div>
 
 <script>
 let PW = '';
 let products = [];
 let currentIn = null, currentOut = null, pendingUpc = null;
 
+// Make text safe to put inside HTML. Product names, invoice descriptions and
+// error messages come from Amazon, Cosmoprof PDFs and staff typing; put into
+// innerHTML raw, a name like <img src=x onerror=...> ran as code in the
+// owner's browser (and could read the saved passwords). Wrap any such value.
+function esc(v){
+  return v==null ? '' : String(v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+// An id for one stock action. Sent as x-idem-key, it lets the server
+// recognise a double tap or a retry of the same action and apply it once.
+function newIdem(){
+  try{ if(window.crypto && crypto.randomUUID) return crypto.randomUUID(); }catch(e){}
+  return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2)+Math.random().toString(36).slice(2);
+}
 function api(path, opts={}) {
   opts.headers = Object.assign({'Content-Type':'application/json','x-app-password':PW}, opts.headers||{});
-  return fetch(path, opts).then(r => r.json());
+  if(opts.idem){ opts.headers['x-idem-key']=opts.idem; delete opts.idem; }
+  // A non-JSON reply (proxy error page, server restarting) rejects, so the
+  // caller's .catch shows an error instead of a false "done".
+  return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
+}
+// ---- OFFLINE QUEUE ----
+// When the warehouse Wi-Fi drops, a receive / ship / prep scan is kept on
+// this device and sent when the connection is back (every 15 s, and as soon
+// as the browser says it's online). Each carries its action id, so a scan
+// that did reach the server before the drop is not counted twice.
+const OFFLINE_KEY='offlineQueue';
+function offlineLoad(){ try{ return JSON.parse(localStorage_get(OFFLINE_KEY)||'[]'); }catch(e){ return []; } }
+function offlineSave(q){ localStorage_set(OFFLINE_KEY, JSON.stringify(q)); offlineBadge(); }
+function offlineBadge(){
+  const q=offlineLoad(), el=document.getElementById('offlineBadge'); if(!el) return;
+  const failed=JSON.parse(localStorage_get('offlineFailed')||'[]');
+  if(!q.length && !failed.length){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.style.background = q.length ? '#b7791f' : '#c0392b';
+  el.textContent = q.length ? '⏳ '+q.length+' scan'+(q.length===1?'':'s')+' waiting to sync' : '⚠ '+failed.length+' offline scan'+(failed.length===1?'':'s')+' refused — tap';
+}
+function isNetworkError(e){ return e && (e.name==='TypeError' || /Server error 5\d\d|Failed to fetch|NetworkError|Load failed/i.test(e.message||'')); }
+function offlineQueue(path, body, idem, label){
+  const q=offlineLoad(); q.push({path, body, idem, label, ts:Date.now()}); offlineSave(q);
+}
+let _flushing=false;
+async function flushOffline(manual){
+  const failedList=JSON.parse(localStorage_get('offlineFailed')||'[]');
+  if(manual && !offlineLoad().length && failedList.length){
+    alert('These offline scans were refused by the server and did NOT count:\n\n'+failedList.map(f=>'  • '+f.label+' — '+f.error).join('\n')+'\n\nRedo them by hand if needed.');
+    localStorage_set('offlineFailed','[]'); offlineBadge(); return;
+  }
+  if(_flushing) return; _flushing=true;
+  let sent=0;
+  try{
+    let q=offlineLoad();
+    while(q.length){
+      const it=q[0];
+      let d;
+      try{ d=await api(it.path,{method:'POST',idem:it.idem,body:JSON.stringify(it.body)}); }
+      catch(e){ if(isNetworkError(e)) break; d={ok:false,error:e.message}; }
+      if(d && d.error==='in_progress') break;          // first try still running — next round
+      if(!(d && d.ok)){
+        const f=JSON.parse(localStorage_get('offlineFailed')||'[]');
+        f.push({label:it.label, error:(d&&(d.message||d.error))||'refused'}); localStorage_set('offlineFailed', JSON.stringify(f));
+      } else sent++;
+      q=offlineLoad(); q.shift(); offlineSave(q);
+    }
+  } finally { _flushing=false; offlineBadge(); }
+  if(sent){ toast('Synced '+sent+' offline scan'+(sent===1?'':'s')); try{ loadProducts(); }catch(e){} }
+}
+setInterval(()=>{ if(offlineLoad().length) flushOffline(); }, 15000);
+window.addEventListener('online', ()=>flushOffline());
+window.addEventListener('load', ()=>{ offlineBadge(); if(offlineLoad().length) setTimeout(()=>flushOffline(),3000); });
+
+// Match a scanned code against the product list already loaded, for when the
+// server can't be reached. Covers ASIN, SKU, UPC and FNSKU (not extra UPCs).
+function localFind(code){
+  const c=String(code||'').trim().toUpperCase(), digits=c.replace(/^0+/,'');
+  const p=(products||[]).find(x=>[x.asin,x.sku,x.fnsku].some(v=>v&&String(v).toUpperCase()===c) || (x.upc && String(x.upc).replace(/^0+/,'')===digits));
+  return p ? {found:true, product:p, scanned:code, offline:true} : {found:false, offline:true};
+}
+function findCode(code){
+  return api('/api/find/'+encodeURIComponent(code)).catch(e=>{ if(isNetworkError(e)) return localFind(code); throw e; });
+}
+
+// Undo: shown for 10 seconds after a receive, ship or prep scan.
+let _undo=null, _undoTimer=null;
+function showUndo(id, text){
+  if(!id) return;
+  _undo={id,text};
+  document.getElementById('undoText').textContent=text;
+  const bar=document.getElementById('undoBar'); bar.style.display='flex';
+  clearTimeout(_undoTimer); _undoTimer=setTimeout(hideUndo,10000);
+}
+function hideUndo(){ document.getElementById('undoBar').style.display='none'; _undo=null; }
+function doUndo(){
+  if(!_undo) return;
+  const u=_undo; hideUndo();
+  api('/api/undo/'+u.id,{method:'POST',body:'{}'}).then(d=>{
+    if(d && d.ok){ toast('Undone: '+u.text); loadProducts(); if(typeof loadPrepList==='function') try{ loadPrepList(); }catch(e){} }
+    else toast('Could not undo: '+((d&&d.error)||'unknown'),true);
+  }).catch(()=>toast('Could not undo — connection problem',true));
 }
 function toast(m, err) { const t=document.getElementById('toast'); t.textContent=m; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',1800); }
 
@@ -863,7 +991,8 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 
 function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); ev.target.classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){loadProducts();} if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
+  if(t==='count'){ countInit(); }
   if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
@@ -873,13 +1002,13 @@ function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classLi
 document.getElementById('scanIn').addEventListener('keydown', e=>{
   if(e.key!=='Enter') return;
   const code = e.target.value.trim(); if(!code) return;
-  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+  findCode(code).then(d=>{
     const box=document.getElementById('matchIn');
     document.getElementById('pickerInWrap').style.display='none';
     if(d.found){
       currentIn=d.product; pendingUpc=null;
       box.className='matched show ok';
-      box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">ASIN ${d.product.asin} · Scanned ${d.scanned||code} · On hand ${d.product.onhand||0}</div>`;
+      box.innerHTML=`<div class="pname">${esc(d.product.name)}</div><div class="pmeta">ASIN ${d.product.asin} · Scanned ${d.scanned||code} · On hand ${d.product.onhand||0}</div>`;
       document.getElementById('qtyRowIn').style.display='flex';
       document.getElementById('scanIn').value='';   // clear the scan box now that we captured it
       document.getElementById('qtyIn').focus();
@@ -893,7 +1022,29 @@ document.getElementById('scanIn').addEventListener('keydown', e=>{
     }
   });
 });
-document.getElementById('qtyIn').addEventListener('keydown',e=>{if(e.key==='Enter')doReceive();});
+document.getElementById('qtyIn').addEventListener('keydown',e=>{if(e.key==='Enter'){ if(!qtyLooksLikeScan('In')) doReceive(); }});
+
+// The scanner types into whatever has focus. After a match, focus sits in the
+// qty box, so scanning the NEXT item typed its barcode in as the quantity
+// (012345678905 → twelve billion units). A qty of 8+ digits is a barcode:
+// hand it to the scan box as a new scan instead.
+const QTY_CONFIRM_ABOVE = 500;
+function qtyLooksLikeScan(which){
+  const q=document.getElementById('qty'+which), v=(q.value||'').trim();
+  if(!/^\d{8,}$/.test(v)) return false;
+  q.value='';
+  const sc=document.getElementById('scan'+which);
+  sc.value=v;
+  sc.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));
+  toast('That looked like a barcode, so it was scanned as the next item — not used as a quantity.',true);
+  return true;
+}
+function qtyOk(qty){
+  if(qty>MAX_QTY_UI){ toast('Quantity '+qty+' is too large (max '+MAX_QTY_UI+').',true); return false; }
+  if(qty>QTY_CONFIRM_ABOVE && !confirm('Quantity is '+qty+'. Is that right?')) return false;
+  return true;
+}
+const MAX_QTY_UI = 5000;
 
 function showPicker(which){
   document.getElementById('picker'+which+'Wrap').style.display='block';
@@ -904,7 +1055,7 @@ function filterPicker(which){
   const q=(document.getElementById('picker'+which+'Search').value||'').toLowerCase();
   const el=document.getElementById('picker'+which);
   el.innerHTML = products.filter(p=>!q || p.name.toLowerCase().includes(q) || (p.asin||'').toLowerCase().includes(q))
-    .slice(0,40).map(p=>`<div class="picker-item" onclick="assignPick('${which}','${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+    .slice(0,40).map(p=>`<div class="picker-item" onclick="assignPick('${which}','${p.asin}')">${esc(p.name)} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
 }
 function assignPick(which, asin){
   const p=products.find(x=>x.asin===asin);
@@ -912,19 +1063,37 @@ function assignPick(which, asin){
     if(pendingUpc){ const savedUpc=pendingUpc; api('/api/assign-upc',{method:'POST',body:JSON.stringify({asin,upc:savedUpc})}).then(()=>{ if(window._resetScan)window._resetScan('In'); loadProducts(); toast('Barcode '+savedUpc+' linked to '+p.name.slice(0,20)); }); }
     currentIn=p;
     document.getElementById('pickerInWrap').style.display='none';
-    document.getElementById('matchIn').innerHTML=`<div class="pname">${p.name}</div><div class="pmeta">ASIN ${p.asin} · UPC ${pendingUpc||p.upc||'—'}</div>`;
+    document.getElementById('matchIn').innerHTML=`<div class="pname">${esc(p.name)}</div><div class="pmeta">ASIN ${p.asin} · UPC ${pendingUpc||p.upc||'—'}</div>`;
     document.getElementById('qtyRowIn').style.display='flex'; document.getElementById('qtyIn').focus();
   }
 }
 
 function doReceive(){
+  if(qtyLooksLikeScan('In')) return;
   const qty=parseInt(document.getElementById('qtyIn').value);
   if(!currentIn||!qty||qty<1){toast('Scan product + enter qty',true);return;}
-  const nm=currentIn.name.slice(0,26);
-  api('/api/receive',{method:'POST',body:JSON.stringify({asin:currentIn.asin,qty})}).then(()=>{
+  if(!qtyOk(qty)) return;
+  if(window._receiving) return;   // Enter + tap used to receive twice
+  window._receiving=true;
+  const item=currentIn, nm=item.name.slice(0,26);
+  // Same id on a retry of this receive, so it can never land twice.
+  if(!item._idem || item._idemQty!==qty){ item._idem=newIdem(); item._idemQty=qty; }
+  api('/api/receive',{method:'POST',idem:item._idem,body:JSON.stringify({asin:item.asin,qty})}).then(d=>{
+    window._receiving=false;
+    if(!d || d.ok===false || d.error){ toast('NOT received: '+((d&&(d.message||d.error))||'unknown error'),true); return; }
+    item._idem=null;
     toast('+'+qty+' '+nm);
+    showUndo(d.undoId,'Received '+qty+' × '+nm);
     resetScanner('In');
     loadProducts();
+    if(!scanning['In']) document.getElementById('scanIn').focus();
+  }).catch(e=>{
+    window._receiving=false;
+    if(!isNetworkError(e)){ toast('NOT received: '+e.message,true); return; }
+    offlineQueue('/api/receive',{asin:item.asin,qty},item._idem,'Receive '+qty+' × '+nm);
+    item._idem=null;
+    toast('📶 Offline — saved on this device, will sync: +'+qty+' '+nm);
+    resetScanner('In');
     if(!scanning['In']) document.getElementById('scanIn').focus();
   });
 }
@@ -932,24 +1101,41 @@ function doReceive(){
 // SHIP single
 document.getElementById('scanOut').addEventListener('keydown', e=>{
   if(e.key!=='Enter')return; const code=e.target.value.trim(); if(!code)return;
-  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+  findCode(code).then(d=>{
     const box=document.getElementById('matchOut');
     if(d.found){ currentOut=d.product; box.className='matched show ok';
-      box.innerHTML=`<div class="pname">${d.product.name}</div><div class="pmeta">On hand ${d.product.onhand||0}</div>`;
+      box.innerHTML=`<div class="pname">${esc(d.product.name)}</div><div class="pmeta">On hand ${d.product.onhand||0}</div>`;
       document.getElementById('qtyRowOut').style.display='flex';
       document.getElementById('scanOut').value='';
       document.getElementById('qtyOut').focus();
     } else { currentOut=null; box.className='matched show notfound'; box.innerHTML=`<div class="pname">Not found: ${code}</div><div class="pmeta">Receive it first to assign the barcode.</div>`; document.getElementById('qtyRowOut').style.display='none'; document.getElementById('scanOut').value=''; }
   });
 });
-document.getElementById('qtyOut').addEventListener('keydown',e=>{if(e.key==='Enter')doShip();});
+document.getElementById('qtyOut').addEventListener('keydown',e=>{if(e.key==='Enter'){ if(!qtyLooksLikeScan('Out')) doShip(); }});
 function doShip(){
+  if(qtyLooksLikeScan('Out')) return;
   const qty=parseInt(document.getElementById('qtyOut').value);
   if(!currentOut||!qty||qty<1){toast('Scan + qty',true);return;}
-  api('/api/ship',{method:'POST',body:JSON.stringify({asin:currentOut.asin,qty})}).then(()=>{
+  if(!qtyOk(qty)) return;
+  if(window._shipping) return;
+  window._shipping=true;
+  const item=currentOut;
+  if(!item._idem || item._idemQty!==qty){ item._idem=newIdem(); item._idemQty=qty; }
+  api('/api/ship',{method:'POST',idem:item._idem,body:JSON.stringify({asin:item.asin,qty})}).then(d=>{
+    window._shipping=false;
+    if(!d || d.ok===false || d.error){ toast('NOT shipped: '+((d&&(d.message||d.error))||'unknown error'),true); return; }
+    item._idem=null;
     toast('Shipped '+qty);
+    showUndo(d.undoId,'Shipped '+qty+' × '+String(item.name||'').slice(0,26));
     resetScanner('Out');
     loadProducts();
+  }).catch(e=>{
+    window._shipping=false;
+    if(!isNetworkError(e)){ toast('NOT shipped: '+e.message,true); return; }
+    offlineQueue('/api/ship',{asin:item.asin,qty},item._idem,'Ship '+qty+' × '+String(item.name||'').slice(0,26));
+    item._idem=null;
+    toast('📶 Offline — saved on this device, will sync: ship '+qty);
+    resetScanner('Out');
   });
 }
 
@@ -991,6 +1177,10 @@ function shipFromTsv(){
     // show PREVIEW and ask to confirm
     let msg='PREVIEW — Shipment '+d.shipmentId+(d.shipmentName?' ('+d.shipmentName+')':'')+'\n\nThis will deduct:\n\n'+d.previewLines.join('\n');
     if(d.notfound && d.notfound.length) msg+='\n\n⚠ NOT matched ('+d.notfound.length+'): '+d.notfound.join(', ');
+    if(d.alreadyRecorded>0){
+      alert('⚠ Shipment '+d.shipmentId+' was already deducted ('+d.alreadyRecorded+' units recorded).\n\nUploading it again would deduct it twice, so it will be refused. If lines are missing, use Reconcile instead.');
+      document.getElementById('shipTsvFile').value=''; _shipTsvFile=null; return;
+    }
     msg+='\n\nProceed with the deduction?';
     if(confirm(msg)){ commitShipTsv(); }
     else { document.getElementById('shipTsvFile').value=''; _shipTsvFile=null; toast('Cancelled — nothing deducted'); }
@@ -1003,24 +1193,32 @@ function commitShipTsv(){
   fetch('/api/ship-from-tsv',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
     btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false;
     document.getElementById('shipTsvFile').value=''; _shipTsvFile=null;
-    if(d.error){ toast(d.error,true); return; }
+    if(d.error){ const m=d.message||d.error; toast(m,true); alert(m); return; }
     toast('Shipped '+d.done+' items — on-hand updated');
     alert('✓ Done. '+d.done+' of '+d.totalLines+' items deducted → In Transit'+(d.expanded&&d.expanded.length?'\n'+d.expanded.length+' duos expanded to singles':'')+(d.notfound&&d.notfound.length?'\n\n⚠ Not matched: '+d.notfound.join(', '):''));
     loadProducts();
   }).catch(()=>{ btn.textContent='📄 Upload Shipment Plan TSV'; btn.disabled=false; toast('Failed',true); });
 }
-function doBulkShip(){
+function doBulkShip(allowAppend){
   const shipmentId=document.getElementById('shipmentId').value.trim();
   const shipmentName=document.getElementById('shipmentName').value.trim();
   if(!shipmentId){toast('Enter the Amazon Shipment ID first',true);return;}
   const lines=document.getElementById('packSlip').value.trim().split('\n');
   const items=[]; lines.forEach(l=>{ const parts=l.trim().split(/[\s,\t]+/); if(parts.length>=2){ items.push({code:parts[0], qty:parts[parts.length-1]}); } });
   if(!items.length){toast('Nothing to deduct',true);return;}
-  api('/api/bulk-ship',{method:'POST',body:JSON.stringify({items,shipmentId,shipmentName})}).then(d=>{
+  if(window._bulkShipping) return;   // a second tap used to post the slip twice
+  window._bulkShipping=true;
+  api('/api/bulk-ship',{method:'POST',body:JSON.stringify({items,shipmentId,shipmentName,allowAppend:!!allowAppend})}).then(d=>{
+    window._bulkShipping=false;
+    if(d.error==='shipment_exists'){
+      if(confirm(d.message+'\n\nOnly continue if this pack slip is ADDITIONAL units for the same shipment.\n\nOK = add these on top\nCancel = stop (nothing deducted)')) doBulkShip(true);
+      return;
+    }
+    if(d.ok===false || d.error){ const m=d.message||d.error; toast(m,true); alert(m); return; }
     toast('Shipment '+d.shipmentId+': '+d.done+' lines'+(d.expanded&&d.expanded.length?' ('+d.expanded.length+' duo→singles)':'')+(d.notfound.length?', '+d.notfound.length+' not found':''), d.notfound.length>0);
     if(d.notfound.length) alert('Not found (add these barcodes/ASINs first):\n'+d.notfound.join('\n'));
     document.getElementById('packSlip').value=''; document.getElementById('shipmentId').value=''; document.getElementById('shipmentName').value=''; loadProducts();
-  });
+  }).catch(e=>{ window._bulkShipping=false; toast('Ship failed — nothing deducted. '+(e&&e.message||''),true); });
 }
 
 // ==================== DATA TABS ====================
@@ -1040,6 +1238,20 @@ function ownerUnlock(which){
         if(which==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
       } else toast('Wrong owner password',true);
     });
+}
+// For a warehouse-screen action that needs the owner (wiping the prep log,
+// deleting a checked-in invoice): try it, and if the server asks for the
+// owner, prompt for the password for this one request (not remembered
+// unless Admin is already unlocked).
+function withOwner(path, opts){
+  opts=opts||{};
+  const send=pw=>api(path, Object.assign({}, opts, {headers:Object.assign({}, opts.headers||{}, {'x-owner-password':pw})}));
+  return send(OWNER_PW||'').then(d=>{
+    if(!(d && /owner access required/i.test(d.error||''))) return d;
+    const pw=prompt('This needs the owner password:');
+    if(!pw) return {ok:false, cancelled:true, error:'Cancelled — nothing changed.'};
+    return send(pw).then(d2=>{ if(d2 && /owner access required/i.test(d2.error||'')) return {ok:false, error:'Wrong owner password — nothing changed.'}; return d2; });
+  });
 }
 function ownerApi(path, opts){
   opts = opts || {};
@@ -1085,12 +1297,12 @@ function loadDashboard(){
       h+='<div class="hint" style="margin-bottom:10px">Items you have in the warehouse where <b>Amazon itself has no live offer</b>. Source: Keepa, which tracks the Amazon retail offer directly — typically refreshed within the hour, so <b>verify on the listing before you act</b>.'+(m.updatedAt?' Last scan: '+new Date(m.updatedAt).toLocaleString()+'.':'')+(m.total?' Showing top '+m.items.length+' of '+m.total+'.':'')+'</div>';
       h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>Available</th><th>Amazon</th><th>Buy Box</th><th>Offers</th><th>Rank</th><th>Why</th></tr></thead><tbody>';
       h+=m.items.map(x=>{
-        const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${(x.name||x.asin).slice(0,52)}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${x.asin}</div>`;
+        const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${esc((x.name||x.asin).slice(0,52))}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${x.asin}</div>`;
         const amz = x.amazonSelling
           ? '<span style="color:#5a6472;font-weight:700">selling</span>'
           : '<span style="background:#c0392b;color:#fff;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:800">NOT SELLING</span>';
         const bb = x.buyBoxPrice!=null ? '$'+x.buyBoxPrice.toFixed(2)+(x.buyBoxIsFba?'<div style="font-size:9px;color:#9db0c9">FBA</div>':'') : '<span style="color:#c0392b;font-weight:700">none</span>';
-        return `<tr><td>${link}</td><td class="onhand-num" style="color:#1e8449">${x.available}</td><td>${amz}</td><td>${bb}</td><td>${x.totalOffers!=null?x.totalOffers:'—'}</td><td>${x.salesRank!=null?x.salesRank.toLocaleString():'—'}</td><td style="font-size:12px;color:#c0392b;font-weight:600">${x.reason||''}</td></tr>`;
+        return `<tr><td>${link}</td><td class="onhand-num" style="color:#1e8449">${x.available}</td><td>${amz}</td><td>${bb}</td><td>${x.totalOffers!=null?x.totalOffers:'—'}</td><td>${x.salesRank!=null?x.salesRank.toLocaleString():'—'}</td><td style="font-size:12px;color:#c0392b;font-weight:600">${esc(x.reason||'')}</td></tr>`;
       }).join('');
       h+='</tbody></table></div>';
     } else if(d.mfnOpportunities){
@@ -1100,26 +1312,26 @@ function loadDashboard(){
     // low stock list
     if(d.lowList && d.lowList.length){
       h+='<div class="box"><div style="font-weight:700;color:#c0392b;margin-bottom:6px">⚠ Low Stock (≤20 units)</div>';
-      h+=d.lowList.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
+      h+=d.lowList.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${esc(x.name)}</a>`:x.name;return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
       h+='</div>';
     }
     // top stock
     if(d.topStock && d.topStock.length){
       h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">📦 Most Stocked</div>';
-      h+=d.topStock.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
+      h+=d.topStock.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${esc(x.name)}</a>`:x.name;return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
       h+='</div>';
     }
     // under-stocked by revenue (top sellers we're low/out on)
     if(d.underStocked && d.underStocked.length){
       h+='<div class="box"><div style="font-weight:700;color:#b7791f;margin-bottom:2px">🔥 Under-Stocked Top Sellers (≤100 units)</div><div class="hint" style="margin-bottom:8px">Highest-revenue items you\'re low or out on — restock priority. Based on last velocity + price pull.</div>';
       h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>On Hand</th><th>Sold</th><th>Revenue</th></tr></thead><tbody>';
-      h+=d.underStocked.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name}</a>`:x.name;const rev=x.revenue?'$'+Math.round(x.revenue).toLocaleString():'—';const oh=x.onhand<=20?`<b style="color:#c0392b">${x.onhand}</b>`:x.onhand;return `<tr><td>${link}</td><td>${oh}</td><td>${x.sold}</td><td class="onhand-num">${rev}</td></tr>`;}).join('');
+      h+=d.underStocked.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${esc(x.name)}</a>`:x.name;const rev=x.revenue?'$'+Math.round(x.revenue).toLocaleString():'—';const oh=x.onhand<=20?`<b style="color:#c0392b">${x.onhand}</b>`:x.onhand;return `<tr><td>${link}</td><td>${oh}</td><td>${x.sold}</td><td class="onhand-num">${rev}</td></tr>`;}).join('');
       h+='</tbody></table></div>';
     }
     // recent activity
     if(d.recent && d.recent.length){
       h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">🕐 Recent Activity ('+d.todayActivity+' today)</div>';
-      h+=d.recent.map(a=>{const tag=a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT');const col=a.direction==='in'?'#1e8449':(a.direction==='checkin'?'#2563a8':'#c0392b');return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #f0f0f0"><span><b style="color:${col}">${tag}</b> ${a.qty} ${(a.name||'').slice(0,30)}</span><span style="color:#9db0c9">${new Date(a.ts).toLocaleString()}</span></div>`;}).join('');
+      h+=d.recent.map(a=>{const tag=a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT');const col=a.direction==='in'?'#1e8449':(a.direction==='checkin'?'#2563a8':'#c0392b');return `<div style="display:flex;justify-content:space-between;padding:4px 0;font-size:12px;border-bottom:1px solid #f0f0f0"><span><b style="color:${col}">${tag}</b> ${a.qty} ${esc((a.name||'').slice(0,30))}</span><span style="color:#9db0c9">${new Date(a.ts).toLocaleString()}</span></div>`;}).join('');
       h+='</div>';
     }
     b.innerHTML=h;
@@ -1171,7 +1383,7 @@ function renderHistory(){
   let h='<div class="cards"><div class="card"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units Received</div></div><div class="card"><div class="n">'+d.invoices.length+'</div><div class="l">Orders Checked In</div></div></div>';
   if(d.invoices.length){
     h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">Orders in range</div>';
-    h+=d.invoices.map(i=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>#${i.order_number} · ${i.invoice_date||''}</span><b>${i.units} units</b></div>`).join('');
+    h+=d.invoices.map(i=>`<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0"><span>#${i.order_number} · ${esc(i.invoice_date||'')}</span><b>${i.units} units</b></div>`).join('');
     h+='</div>';
   } else h+='<div class="hint">No completed check-ins in this range.</div>';
   if(window._histLoadedAt) h+='<div class="hint">Last loaded: '+window._histLoadedAt.toLocaleString()+'</div>';
@@ -1209,7 +1421,7 @@ function loadFbaInv(){
   const btn=document.getElementById('fbaInvBtn'); btn.textContent='Loading from Amazon...'; btn.disabled=true;
   api('/api/fba-inventory').then(d=>{
     btn.textContent='Load FBA Inventory'; btn.disabled=false;
-    if(d.error){ document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    if(d.error){ document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+esc(d.error)+'</div>'; return; }
     window._fbaData = Array.isArray(d) ? d : (d.items||[]);
     window._fbaVal = Array.isArray(d) ? null : (d.valuation||null);
     window._fbaSort={col:'grand_total',dir:-1}; window._fbaLoadedAt=new Date();
@@ -1392,7 +1604,7 @@ function renderFbaInv(){
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
-  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');return `<tr><td>${link}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`;}).join('');
+  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${esc(x.name||x.asin)}</a>`:(x.name||'');return `<tr><td>${link}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
 }
@@ -1403,7 +1615,7 @@ function loadVelocity(){
   const btn=document.getElementById('velBtn'); btn.textContent='Loading...'; btn.disabled=true;
   ownerApi('/api/velocity?days='+days).then(d=>{
     btn.textContent='Load'; btn.disabled=false;
-    if(d.error){ document.getElementById('velocityBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    if(d.error){ document.getElementById('velocityBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+esc(d.error)+'</div>'; return; }
     window._velData=d.items; window._velDays=d.days; window._velSort={col:'sold',dir:-1}; window._velLoadedAt=new Date();
     renderVelocity();
   });
@@ -1432,7 +1644,7 @@ function renderVelocity(){
   h+=sorted.map(x=>{
     const dl=x.daysLeft===null?'—':(x.daysLeft+'d');
     const col=x.daysLeft!==null&&x.daysLeft<21?'style="color:#c0392b;font-weight:700"':'';
-    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${esc(x.name||x.asin)}</a>`:(x.name||'');
     return `<tr><td>${link}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;
   }).join('');
   h+='</tbody></table><div class="hint">Click a product name to open its Amazon listing. Red = under 21 days of stock left. Based on last '+window._velDays+' days of Amazon sales.'+(window._velLoadedAt?' · Last loaded: '+window._velLoadedAt.toLocaleString():'')+'</div>';
@@ -1444,10 +1656,10 @@ function loadValue(){
   const btn=document.getElementById('valLoadBtn'); if(btn){btn.textContent='Starting…';btn.disabled=true;}
   const body=document.getElementById('valueBody');
   ownerApi('/api/inventory-value/start',{method:'POST'}).then(d=>{
-    if(d.error){ if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;} body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+d.error+'</div>'; return; }
+    if(d.error){ if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;} body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+esc(d.error)+'</div>'; return; }
     body.innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pulling Amazon prices…</div><div id="valProgress" class="hint" style="margin-top:6px">starting…</div><div class="hint" style="margin-top:10px;color:#9db0c9">Amazon limits this to about 2 products per second, so a full catalog takes a few minutes. Runs in the background — you can switch tabs.</div></div>';
     pollValJob();
-  }).catch(err=>{ if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;} body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(err.message||err)+'</div>'; });
+  }).catch(err=>{ if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;} body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(esc(err.message||err))+'</div>'; });
 }
 function pollValJob(){
   ownerApi('/api/inventory-value/status').then(j=>{
@@ -1455,7 +1667,7 @@ function pollValJob(){
     if(p) p.textContent=j.progress||'…';
     if(j.running){ setTimeout(pollValJob, 3000); return; }
     const btn=document.getElementById('valLoadBtn'); if(btn){btn.textContent='↻ Refresh Amazon Prices';btn.disabled=false;}
-    if(j.error){ document.getElementById('valueBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Price pull failed: '+j.error+'</div>'; return; }
+    if(j.error){ document.getElementById('valueBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Price pull failed: '+esc(j.error)+'</div>'; return; }
     if(j.done){ toast('Prices updated ('+j.count+' products)'); loadValCache(); }
   }).catch(()=>{ setTimeout(pollValJob, 5000); });
 }
@@ -1469,7 +1681,7 @@ function loadValCache(){
     } else {
       document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:28px"><div style="font-weight:700;font-size:16px;margin-bottom:6px">No price data yet</div><div class="hint" style="margin-bottom:14px">Pull current Amazon prices to value your inventory. Takes a few minutes and runs in the background.</div><button class="action" id="valLoadBtn" onclick="loadValue()" style="background:#b7791f;padding:12px 22px">↻ Pull Amazon Prices</button></div>';
     }
-  }).catch(err=>{ console.error('value cache error', err); document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load saved prices: '+(err&&err.message?err.message:err)+' <button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:8px 16px;margin-left:8px">Pull Amazon Prices</button></div>'; });
+  }).catch(err=>{ console.error('value cache error', err); document.getElementById('valueBody').innerHTML='<div class="hint" style="padding:16px;color:#c0392b">Could not load saved prices: '+(esc(err&&err.message?err.message:err))+' <button class="action" id="valLoadBtn" onclick="loadValue()" style="padding:8px 16px;margin-left:8px">Pull Amazon Prices</button></div>'; });
 }
 function valSort(col){
   const s=window._valSort||(window._valSort={col:'_retailVal',dir:-1});
@@ -1523,7 +1735,7 @@ function renderValue(){
      '<th style="cursor:pointer" onclick="valSort(\'_retail\')">Amazon Price'+arrow('_retail')+'</th>'+
      '<th style="cursor:pointer" onclick="valSort(\'_retailVal\')">Retail Value'+arrow('_retailVal')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
-    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${x.name||x.asin}</a>`:(x.name||'');
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${esc(x.name||x.asin)}</a>`:(x.name||'');
     const committed=(x._pending||0)+(x._prepped||0);
     return `<tr><td>${link}</td><td style="font-weight:700;color:${x.onhand>0?'#1e8449':'#c0392b'}">${x.onhand}</td><td>${x._onhandTotal||0}${committed>0?`<div style="font-size:10px;color:#9db0c9">${committed} committed</div>`:''}</td><td>${x._retail?'$'+x._retail.toFixed(2):'—'}</td><td class="onhand-num">${x._retailVal?'$'+x._retailVal.toFixed(0):'—'}</td></tr>`;
   }).join('');
@@ -1566,7 +1778,7 @@ function loadToAdd(){
   const btn=document.getElementById('toaddBtn'); if(btn){btn.textContent='Loading...';btn.disabled=true;}
   ownerApi('/api/products-to-add').then(d=>{
     if(btn){btn.textContent='Load';btn.disabled=false;}
-    if(d.error){ document.getElementById('toaddBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    if(d.error){ document.getElementById('toaddBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+esc(d.error)+'</div>'; return; }
     window._toaddData=d; window._toaddSort={col:'_profitMo',dir:-1};
     renderToAdd();
   }).catch(()=>{ if(btn){btn.textContent='Load';btn.disabled=false;} });
@@ -1765,7 +1977,7 @@ function renderToAdd(){
     '<th style="cursor:pointer" onclick="toaddSort(\'hazmat\')">Hazmat</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th></tr></thead><tbody>';
   h+=list.slice(0,300).map(x=>{
-    const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${x.title||x.asin}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
+    const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${esc(x.title||x.asin)}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const units=x.ssUnits!=null?x.ssUnits.toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
@@ -1828,7 +2040,7 @@ function loadRestock(){
   document.getElementById('restockBody').innerHTML='<div class="hint" style="padding:16px">Requesting plan from server...</div>';
   ownerApi('/api/restock-priority').then(d=>{
     btn.textContent='🎯 Build Restock Plan'; btn.disabled=false;
-    if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+d.error+'</div>'; return; }
+    if(d.error){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+esc(d.error)+'</div>'; return; }
     if(!d.items){ document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b">No items in response. Raw: '+JSON.stringify(d).slice(0,300)+'</div>'; return; }
     window._restockData=d.items||[]; window._restockFresh=d.freshness; window._restockSort={col:'score',dir:-1}; window._restockLoadedAt=new Date();
     if(d.items.length===0){
@@ -1838,9 +2050,9 @@ function loadRestock(){
     try {
       renderRestock();
     } catch(e){
-      document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Render error: '+(e.message||e)+'<br><br>Got '+d.items.length+' items. First item: '+JSON.stringify(d.items[0]||{}).slice(0,300)+'</div>';
+      document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Render error: '+(esc(e.message||e))+'<br><br>Got '+d.items.length+' items. First item: '+JSON.stringify(d.items[0]||{}).slice(0,300)+'</div>';
     }
-  }).catch(err=>{ btn.textContent='🎯 Build Restock Plan'; btn.disabled=false; document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Failed: '+(err.message||err)+'</div>'; });
+  }).catch(err=>{ btn.textContent='🎯 Build Restock Plan'; btn.disabled=false; document.getElementById('restockBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Failed: '+(esc(err.message||err))+'</div>'; });
 }
 function loadRestockCache(){
   document.getElementById('restockBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved plan...</div>';
@@ -1877,6 +2089,7 @@ function renderRestock(){
   if(withVelocity < 5){
     h+='<div class="box" style="background:#fdf6e3;border:1px solid #b7791f;margin-bottom:10px"><b style="color:#b7791f">⚠ Sales data missing.</b> Only '+withVelocity+' products show sales velocity. Send Qty needs your sales data. <b>Load the Velocity tab and FBA Inventory tab first</b>, then rebuild this plan for accurate send quantities.</div>';
   }
+  if(totalSuggested>0) h+='<button class="action full" onclick="openShipBuilder()" style="margin-bottom:10px;background:#127a7a">📦 Build a shipment from this plan ('+totalSuggested.toLocaleString()+' units suggested)</button>';
   h+='<div class="cards"><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+urgent+'</div><div class="l">Urgent Restocks</div></div><div class="card"><div class="n">'+totalSuggested.toLocaleString()+'</div><div class="l">Total Units Suggested</div></div><div class="card"><div class="n">'+withVelocity+'</div><div class="l">Products w/ Sales Data</div></div></div>';
   h+='<table><thead><tr>'+
     '<th style="cursor:pointer" onclick="restockSort(\'name\')">Product'+arrow('name')+'</th>'+
@@ -1929,10 +2142,10 @@ function loadMarket(){
   const minPrice=parseFloat((document.getElementById('mktMinPrice')||{}).value)||0;
   const maxAgeDays=parseFloat((document.getElementById('mktMaxAge')||{}).value)||0;
   ownerApi('/api/market-data/start',{method:'POST',body:JSON.stringify({minPrice:minPrice,maxAgeDays:maxAgeDays})}).then(d=>{
-    if(d.error){ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+d.error+'</div>'; return; }
+    if(d.error){ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Error: '+esc(d.error)+'</div>'; return; }
     body.innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pulling Keepa data…</div><div id="mktProgress" class="hint" style="margin-top:6px">starting…</div><div class="hint" style="margin-top:10px;color:#9db0c9">This runs in the background and can take several minutes for a large catalog. You can switch tabs — it keeps running.</div></div>';
     pollMarketJob();
-  }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(err.message||err)+'</div>'; });
+  }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(esc(err.message||err))+'</div>'; });
 }
 function mktJobSummary(j){
   const bits=[];
@@ -1950,7 +2163,7 @@ function pollMarketJob(){
     if(j.running){ setTimeout(pollMarketJob, 3000); return; }
     btn.textContent='↻ Refresh Market Data'; btn.disabled=false;
     if(j.error){
-      document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Pull failed: '+j.error+'</div>';
+      document.getElementById('marketBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Pull failed: '+esc(j.error)+'</div>';
       return;
     }
     if(j.done){ toast('Market data updated ('+j.count+' products)'); loadMktCache(); }
@@ -2023,7 +2236,7 @@ function renderMarket(){
     '<th style="cursor:pointer" onclick="mktSort(\'_oppScore\')">Opportunity'+arrow('_oppScore')+'</th></tr></thead><tbody>';
   h+=sorted.map(x=>{
     const nm=x.name||x.asin;
-    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${nm}</a>`:nm;
+    const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">${esc(nm)}</a>`:nm;
     const asinLine=x.asin?`<div style="font-family:monospace;font-size:13px;color:#2563a8;font-weight:700;margin-top:3px">${x.asin}</div>`:'';
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const sold=x.monthlySold!=null?x.monthlySold.toLocaleString():'—';
@@ -2051,7 +2264,8 @@ function fmtDur(sec){
 }
 function deletePrepLog(id){
   if(!confirm('Delete this prep log entry?')) return;
-  api('/api/prep-log/delete',{method:'POST',body:JSON.stringify({id})}).then(d=>{
+  withOwner('/api/prep-log/delete',{method:'POST',body:JSON.stringify({id})}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     if(d.error){ toast(d.error,true); return; }
     toast('Entry deleted'); loadPrepPerformance();
   });
@@ -2059,7 +2273,8 @@ function deletePrepLog(id){
 function clearAllPrepLog(){
   if(!confirm('Delete ALL prep log entries?\n\nThis wipes every recorded prep job and its timing data. Use this to clear test data.\n\nThis cannot be undone.')) return;
   if(!confirm('Are you sure? This removes ALL prep performance history.')) return;
-  api('/api/prep-log/clear-all',{method:'POST'}).then(d=>{
+  withOwner('/api/prep-log/clear-all',{method:'POST'}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     if(d.error){ toast(d.error,true); return; }
     toast('Cleared '+(d.deleted||0)+' entries'); loadPrepPerformance();
   });
@@ -2084,7 +2299,7 @@ function loadPrepPerformance(){
     if(d.byWorker && d.byWorker.length){
       h+='<div class="box"><div style="font-weight:700;margin-bottom:8px">👷 By Worker</div>';
       h+='<table><thead><tr><th>Worker</th><th>Jobs</th><th>Units</th><th>Time</th><th>Units/hr</th></tr></thead><tbody>';
-      h+=d.byWorker.map(w=>`<tr><td><b>${w.worker||'unknown'}</b></td><td>${w.jobs}</td><td>${(w.units||0).toLocaleString()}</td><td>${fmtDur(w.total_sec)}</td><td class="onhand-num" style="color:#1e8449">${w.units_per_hour!=null?w.units_per_hour:'—'}</td></tr>`).join('');
+      h+=d.byWorker.map(w=>`<tr><td><b>${esc(w.worker||'unknown')}</b></td><td>${w.jobs}</td><td>${(w.units||0).toLocaleString()}</td><td>${fmtDur(w.total_sec)}</td><td class="onhand-num" style="color:#1e8449">${w.units_per_hour!=null?w.units_per_hour:'—'}</td></tr>`).join('');
       h+='</tbody></table></div>';
     }
 
@@ -2093,7 +2308,7 @@ function loadPrepPerformance(){
       h+='<div class="box"><div style="font-weight:700;margin-bottom:2px">📦 By Product</div><div class="hint" style="margin-bottom:8px">Sorted slowest first — low units/hr may mean an awkward prep process worth fixing.</div>';
       h+='<table><thead><tr><th>Product</th><th>Jobs</th><th>Units</th><th>Time</th><th>Units/hr</th></tr></thead><tbody>';
       h+=d.byAsin.slice(0,25).map(a=>{
-        const link=`<a href="https://www.amazon.com/dp/${a.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(a.name||a.asin)}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${a.asin}</div>`;
+        const link=`<a href="https://www.amazon.com/dp/${a.asin}" target="_blank" style="color:#127a7a;text-decoration:none">${(esc(a.name||a.asin))}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${a.asin}</div>`;
         const uph=a.units_per_hour;
         const col=uph!=null&&uph<60?'#c0392b':'#1a2b4a';
         return `<tr><td>${link}</td><td>${a.jobs}</td><td>${(a.units||0).toLocaleString()}</td><td>${fmtDur(a.total_sec)}</td><td class="onhand-num" style="color:${col}">${uph!=null?uph:'—'}</td></tr>`;
@@ -2107,7 +2322,7 @@ function loadPrepPerformance(){
       h+=d.recent.slice(0,30).map(r=>{
         const uph = r.duration_sec>0 ? Math.round((r.units/(r.duration_sec/3600))*10)/10 : null;
         return `<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid #f0f0f0;font-size:13px;flex-wrap:wrap">
-          <span style="flex:1;min-width:200px"><b>${r.worker||'unknown'}</b> — ${(r.name||r.asin).slice(0,48)}${r.is_duo?' <span style="color:#c0392b;font-weight:700">(DUO)</span>':''}
+          <span style="flex:1;min-width:200px"><b>${esc(r.worker||'unknown')}</b> — ${esc((r.name||r.asin).slice(0,48))}${r.is_duo?' <span style="color:#c0392b;font-weight:700">(DUO)</span>':''}
             <div style="font-family:monospace;font-size:11px;color:#2563a8">${r.asin}</div></span>
           <span style="white-space:nowrap;text-align:right;display:flex;align-items:center;gap:10px">
             <span>
@@ -2149,6 +2364,10 @@ function adminLock(){
   document.getElementById('adminContent').style.display='none';
   document.getElementById('adminPw').value='';
   sessionStorage_set('adminUnlocked','');
+  // Forget the owner password too. Lock used to only hide the screen, so the
+  // next person at a shared PC could still use it from the browser console.
+  OWNER_PW='';
+  sessionStorage_set('adminPw','');
   toast('Admin locked');
 }
 function sessionStorage_get(k){ try { return window.sessionStorage.getItem(k); } catch(e){ return window['_ss_'+k]||''; } }
@@ -2158,8 +2377,9 @@ function showSubTab(name, ev){
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
-  if(ev && ev.target) ev.target.classList.add('active');
-  else { const btns=document.querySelectorAll('.subtab'); if(btns[0]) btns[0].classList.add('active'); }
+  // Highlight the button for this panel — also when opened from a link
+  // elsewhere, which used to highlight the first button instead.
+  const btn=document.querySelector('.subtab[data-sub="'+name+'"]'); if(btn) btn.classList.add('active');
   // load the data for that sub-tab
   if(name==='dashboard'){ loadDashboard(); }
   if(name==='restock'){ if(window._restockData) renderRestock(); else loadRestockCache(); }
@@ -2202,7 +2422,7 @@ function printLabels(fnsku, title, suggestedQty){
     labels += `<div class="label">
       <svg class="bc" data-code="${fnsku}"></svg>
       <div class="fn">${fnsku}</div>
-      <div class="ti">New - ${title}</div>
+      <div class="ti">New - ${esc(title)}</div>
     </div>`;
   }
 
@@ -2271,7 +2491,7 @@ function requestPrep(asin, canDuo){
   modal.innerHTML=`
     <div style="background:#fff;border-radius:12px;padding:22px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.3)">
       <div style="font-weight:700;font-size:17px;margin-bottom:4px">Request Prep</div>
-      <div style="font-size:13px;color:#5a6472;line-height:1.4;margin-bottom:4px">${p.name}</div>
+      <div style="font-size:13px;color:#5a6472;line-height:1.4;margin-bottom:4px">${esc(p.name)}</div>
       <div style="font-size:12px;color:#9db0c9">Available: <b style="color:#1e8449">${avail}</b></div>
       ${partnerHtml}
       <label style="margin-top:14px;display:block;font-size:13px;font-weight:700">Quantity to prep</label>
@@ -2313,6 +2533,234 @@ function loadPendingPrep(){
   api('/api/pending-prep/list').then(d=>{
     window._pendingPrepData=d;
     renderPendingPrep();
+  });
+}
+// ---- SHIPMENT BUILDER ----
+// Turns the Restock Plan's suggested send quantities into a draft shipment:
+// edit the quantities, then send it to Pending Prep as work orders and/or
+// download a file for Amazon's Send to Amazon upload. Quantities are capped
+// at what is free on hand (not already prepped or on a work order).
+function openShipBuilder(){
+  const rows=(window._restockData||[]).filter(x=>(x.suggestedSend||0)>0)
+    .sort((a,b)=>b.score-a.score)
+    .map(x=>{ const p=(products||[]).find(y=>y.asin===x.asin)||{};
+      return { asin:x.asin, sku:x.sku||p.sku||'', name:x.name||p.name||x.asin, isBundle:!!x.isBundle, available:x.available||0, daysAtFba:x.daysAtFba, qty:x.suggestedSend, on:true }; });
+  window._sb={ rows, idem:{} };
+  const old=document.getElementById('sbModal'); if(old) old.remove();
+  const m=document.createElement('div'); m.id='sbModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  document.body.appendChild(m);
+  renderShipBuilder();
+}
+function renderShipBuilder(){
+  const sb=window._sb, m=document.getElementById('sbModal'); if(!sb||!m) return;
+  const on=sb.rows.filter(r=>r.on&&r.qty>0);
+  const units=on.reduce((n,r)=>n+r.qty,0);
+  const noSku=on.filter(r=>!r.sku).length;
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:820px;width:100%">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:18px">📦 Draft shipment</b>'
+    +'<div class="hint">'+on.length+' product'+(on.length===1?'':'s')+' · <b>'+units.toLocaleString()+'</b> units · most urgent first</div></div>'
+    +'<button class="action" onclick="document.getElementById(\'sbModal\').remove()" style="background:#5a6472">Close</button></div>'
+    +'<table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:13.5px"><thead><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
+    +'<th></th><th style="text-align:left;padding:6px">Product</th><th style="text-align:right;padding:6px">Days at FBA</th><th style="text-align:right;padding:6px">Free</th><th style="text-align:right;padding:6px">Send</th></tr></thead><tbody>'
+    +sb.rows.map((r,i)=>'<tr style="border-top:1px solid #eef2f6'+(r.on?'':';opacity:0.45')+'"><td style="padding:6px"><input type="checkbox" '+(r.on?'checked':'')+' onchange="_sb.rows['+i+'].on=this.checked;renderShipBuilder()"></td>'
+      +'<td style="padding:6px">'+esc(r.name)+(r.isBundle?' <b style="color:#c0392b;font-size:11px">DUO</b>':'')+'<div class="hint">'+esc(r.sku||'no SKU on file')+'</div></td>'
+      +'<td style="text-align:right;padding:6px">'+(r.daysAtFba==null?'—':r.daysAtFba)+'</td>'
+      +'<td style="text-align:right;padding:6px">'+r.available+'</td>'
+      +'<td style="text-align:right;padding:6px"><input type="number" min="0" max="'+r.available+'" value="'+r.qty+'" onchange="_sb.rows['+i+'].qty=Math.max(0,Math.min('+r.available+',parseInt(this.value)||0));renderShipBuilder()" style="width:80px;text-align:right;padding:5px"></td></tr>').join('')
+    +'</tbody></table>'
+    +(noSku?'<div class="hint" style="color:#c0392b;margin-top:8px">'+noSku+' product'+(noSku===1?' has':'s have')+' no Seller SKU on file and will be left out of the Amazon file.</div>':'')
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'
+    +'<button class="action" onclick="shipBuilderToPrep()" style="flex:1;min-width:220px;background:#7a4fb5">🔧 Send to Pending Prep</button>'
+    +'<button class="action" onclick="shipBuilderDownload()" style="flex:1;min-width:220px;background:#1a2b4a">⬇ Download file for Send to Amazon</button></div>'
+    +'<div class="hint" style="margin-top:8px">The file has Amazon\'s column names (Merchant SKU, Quantity, Prep owner, Labeling owner). Open Amazon\'s Send to Amazon upload template and paste these rows into it, or upload the file where Amazon accepts it.</div>'
+    +'</div>';
+}
+function shipBuilderToPrep(){
+  const on=_sb.rows.filter(r=>r.on&&r.qty>0);
+  if(!on.length){ toast('Nothing selected',true); return; }
+  if(!confirm('Add '+on.length+' work order'+(on.length===1?'':'s')+' ('+on.reduce((n,r)=>n+r.qty,0)+' units) to Pending Prep?')) return;
+  let ok=0, fail=[];
+  (async()=>{
+    for(const r of on){
+      // one id per line, kept across retries, so pressing it again can't double the orders
+      const key=_sb.idem[r.asin]||(_sb.idem[r.asin]=newIdem());
+      try{
+        const d=await api('/api/pending-prep/add',{method:'POST',idem:key,body:JSON.stringify({asin:r.asin,qty:r.qty,isDuo:r.isBundle})});
+        if(d&&d.ok) ok++; else fail.push(r.name+': '+((d&&(d.error||d.message))||'failed'));
+      }catch(e){ fail.push(r.name+': connection problem'); }
+    }
+    alert('✓ '+ok+' work order'+(ok===1?'':'s')+' added to Pending Prep.'+(fail.length?'\n\nNot added:\n'+fail.join('\n'):''));
+    loadPendingPrep();
+  })();
+}
+function shipBuilderDownload(){
+  const on=_sb.rows.filter(r=>r.on&&r.qty>0&&r.sku);
+  if(!on.length){ toast('Nothing to export',true); return; }
+  const q=v=>/[",\n]/.test(v)?'"'+String(v).replace(/"/g,'""')+'"':String(v);
+  const csv=['Merchant SKU,Quantity,Prep owner,Labeling owner'].concat(on.map(r=>[q(r.sku),r.qty,'Seller','Seller'].join(','))).join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='shipment-draft-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ---- CYCLE COUNT ----
+let _count=null;   // { location, items:[{asin,name,expected,staged,onhand,counted,extra,moveHere,elsewhere}] }
+function countInit(){
+  loadLocations().then(()=>{
+    const sel=document.getElementById('countLoc'); if(!sel) return;
+    const cur=sel.value;
+    sel.innerHTML='<option value="">— pick a rack location —</option>'+(LOC.slots||[]).map(sl=>{
+      const n=(LOC.occupants[sl]||[]).length;
+      return '<option value="'+sl+'"'+(sl===cur?' selected':'')+'>'+sl+(n?' · '+n+' product'+(n===1?'':'s'):' · empty')+'</option>';
+    }).join('');
+  });
+}
+function countLoad(){
+  const loc=document.getElementById('countLoc').value;
+  if(!loc){ _count=null; document.getElementById('countBody').innerHTML=''; document.getElementById('countScanWrap').style.display='none'; return; }
+  if(_count && _count.dirty && !confirm('Discard the count in progress for '+_count.location+'?')){ document.getElementById('countLoc').value=_count.location; return; }
+  api('/api/count/location/'+encodeURIComponent(loc)).then(d=>{
+    if(!d.ok){ toast(d.error,true); return; }
+    _count={ location:d.location, lastCount:d.lastCount, items:d.items.map(x=>({...x, counted:null})), idem:newIdem(), dirty:false };
+    document.getElementById('countScanWrap').style.display='block';
+    renderCount();
+    document.getElementById('scanCount').focus();
+  });
+}
+function renderCount(){
+  const c=_count, b=document.getElementById('countBody'); if(!c) return;
+  const rows=c.items.map((x,i)=>{
+    const diff = x.counted==null ? null : x.counted - x.expected;
+    const col = diff==null ? '#8a97a6' : diff===0 ? '#1e8449' : '#c0392b';
+    return '<tr><td style="padding:8px 6px">'+esc(x.name||x.asin)
+      +(x.extra?'<div class="hint" style="color:#b7791f">Not filed here'+(x.elsewhere?' (filed at '+esc(x.elsewhere)+')':'')+' — <label><input type="checkbox" '+(x.moveHere?'checked':'')+' onchange="_count.items['+i+'].moveHere=this.checked"> move it here</label></div>':'')
+      +(x.staged?'<div class="hint">'+x.staged+' more prepped in staging</div>':'')+'</td>'
+      +'<td style="text-align:right;padding:8px 6px">'+x.expected+'</td>'
+      +'<td style="text-align:right;padding:8px 6px"><input type="number" min="0" value="'+(x.counted==null?'':x.counted)+'" placeholder="—" oninput="countSet('+i+',this.value)" style="width:80px;text-align:right;padding:6px"></td>'
+      +'<td style="text-align:right;padding:8px 6px;font-weight:800;color:'+col+'">'+(diff==null?'':(diff>0?'+':'')+diff)+'</td></tr>';
+  }).join('');
+  const done=c.items.filter(x=>x.counted!=null).length;
+  b.innerHTML='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">'
+    +'<div><b style="font-size:16px">Rack '+esc(c.location)+'</b><div class="hint">'+done+' of '+c.items.length+' counted'
+    +(c.lastCount?' · last counted '+new Date(c.lastCount.created_at).toLocaleDateString()+' by '+esc(c.lastCount.counted_by):' · never counted')+'</div></div>'
+    +'<button class="action" onclick="countSave()" style="background:#127a7a">Save count</button></div>'
+    +(c.items.length?'<table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:14px"><thead><tr style="font-size:11px;color:#5a6472;text-transform:uppercase"><th style="text-align:left;padding:6px">Product</th><th style="text-align:right;padding:6px">Expected</th><th style="text-align:right;padding:6px">Counted</th><th style="text-align:right;padding:6px">Diff</th></tr></thead><tbody>'+rows+'</tbody></table>'
+      :'<div class="hint" style="margin-top:10px">Nothing is filed at this location. Scan what you find here.</div>')
+    +'</div>';
+}
+function countSet(i,v){ const x=_count.items[i]; x.counted = v==='' ? null : Math.max(0,parseInt(v,10)||0); _count.dirty=true;
+  // update just the diff cell rather than re-rendering (keeps focus in the box)
+  const diff = x.counted==null ? null : x.counted - x.expected;
+  const cell=document.querySelectorAll('#countBody tbody tr')[i].lastChild;
+  cell.textContent = diff==null ? '' : (diff>0?'+':'')+diff; cell.style.color = diff==null ? '#8a97a6' : diff===0 ? '#1e8449' : '#c0392b';
+}
+document.getElementById('scanCount').addEventListener('keydown', e=>{
+  if(e.key!=='Enter') return; const code=e.target.value.trim(); e.target.value=''; if(!code||!_count) return;
+  api('/api/find/'+encodeURIComponent(code)).then(d=>{
+    if(!d.found){ toast('Unknown barcode '+code+' — link it in Receiving first',true); return; }
+    let x=_count.items.find(i=>i.asin===d.product.asin);
+    if(!x){
+      x={ asin:d.product.asin, name:d.product.name, expected:0, staged:0, onhand:d.product.onhand||0, counted:0, extra:true, elsewhere:d.product.location||null, moveHere:false };
+      _count.items.push(x);
+    }
+    x.counted=(x.counted||0)+1; _count.dirty=true;
+    if(typeof scanFeedback==='function') scanFeedback();
+    renderCount();
+    document.getElementById('scanCount').focus();
+  });
+});
+function countSave(){
+  const c=_count; if(!c) return;
+  const uncounted=c.items.filter(x=>x.counted==null);
+  if(uncounted.length && !confirm(uncounted.length+' product'+(uncounted.length===1?' was':'s were')+' not counted:\n\n'+uncounted.map(x=>'  • '+String(x.name).slice(0,50)).join('\n')+'\n\nOK = none of them are on this rack (count them as 0)\nCancel = go back and count them')) return;
+  const counts=c.items.map(x=>({ asin:x.asin, counted:x.counted==null?0:x.counted, moveHere:!!x.moveHere }));
+  const changes=c.items.filter(x=>(x.counted||0)!==x.expected);
+  if(!confirm('Save the count for rack '+c.location+'?\n\n'+(changes.length?changes.map(x=>'  '+String(x.name).slice(0,40)+': '+x.expected+' → '+(x.counted||0)).join('\n'):'Everything matches — no changes.')+'\n\nOn Hand will be set to match.')) return;
+  const who=localStorage_get('prepWorkerName')||'';
+  api('/api/count/apply',{method:'POST',idem:c.idem,body:JSON.stringify({location:c.location,countedBy:who,counts})}).then(d=>{
+    if(!d.ok){ toast('NOT saved: '+(d.message||d.error),true); return; }
+    alert('✓ Rack '+d.location+' saved. '+d.adjusted+' product'+(d.adjusted===1?'':'s')+' adjusted.');
+    _count.dirty=false; countLoad(); loadProducts();
+  }).catch(()=>toast('NOT saved — connection problem. Tap Save again (it will not double-apply).',true));
+}
+
+// ---- PICK LIST ----
+// Every bottle the listed jobs need, added up per product and sorted by rack
+// (A-1, A-2 … B-20, then no location), so one walk collects everything.
+// Duos are broken into the bottles to grab. A line turns red when the jobs
+// need more than is on hand, before anyone walks over to find out.
+function locOrder(loc){
+  const m=/^([A-Z])-(\d+)$/.exec(String(loc||'').toUpperCase());
+  return m ? m[1].charCodeAt(0)*1000+parseInt(m[2],10) : 1e9;
+}
+function buildPickList(items){
+  const by={};
+  const add=(asin,name,location,onhand,qty,job)=>{
+    const r=by[asin]=by[asin]||{asin,name,location,onhand:Number(onhand)||0,need:0,jobs:[]};
+    r.need+=qty; r.jobs.push(job);
+  };
+  for(const x of items){
+    const job=(x.is_duo?'duo ':'')+x.qty+'× '+String(x.name||x.asin).slice(0,40);
+    if(x.is_duo && x.components && x.components.length){
+      for(const c of x.components) add(c.asin,c.name,c.location,c.onhand,x.qty*(Number(c.per)||1),job);
+    } else add(x.asin,x.name,x.location,x.onhand,x.qty,job);
+  }
+  return Object.values(by).sort((a,b)=>locOrder(a.location)-locOrder(b.location)||String(a.name).localeCompare(String(b.name)));
+}
+function pickListHtml(lines){
+  return '<table class="picklist"><thead><tr><th></th><th>Rack</th><th>Grab</th><th>Product</th><th>On hand</th></tr></thead><tbody>'
+    + lines.map(l=>{
+        const short=l.need>l.onhand;
+        return '<tr'+(short?' class="short"':'')+'><td><input type="checkbox"></td>'
+          +'<td class="loc">'+esc(l.location||'—')+'</td>'
+          +'<td class="need">'+l.need+'</td>'
+          +'<td>'+esc(l.name||l.asin)+'<div class="jobs">'+esc(l.jobs.join(' · '))+'</div></td>'
+          +'<td class="oh">'+l.onhand+(short?'<div class="warn">short '+(l.need-l.onhand)+'</div>':'')+'</td></tr>';
+      }).join('')
+    + '</tbody></table>';
+}
+const PICK_CSS='.picklist{width:100%;border-collapse:collapse;font-size:14px}.picklist th{text-align:left;font-size:11px;color:#5a6472;text-transform:uppercase;padding:6px;border-bottom:2px solid #d8dee6}.picklist td{padding:8px 6px;border-bottom:1px solid #eef2f6;vertical-align:top}.picklist .loc{font-weight:800;white-space:nowrap}.picklist .need{font-weight:800;font-size:18px;color:#7a4fb5}.picklist .jobs{font-size:11px;color:#8a97a6;margin-top:2px}.picklist .oh{text-align:right;white-space:nowrap}.picklist tr.short td{background:#fdeceb}.picklist .warn{color:#c0392b;font-weight:800;font-size:11px}.picklist input{width:20px;height:20px}';
+function showPickList(){
+  const d=window._pendingPrepData;
+  if(!d||!d.items.length){ toast('Nothing pending to pick',true); return; }
+  const items=ppFiltered(d.items);
+  const lines=buildPickList(items);
+  const short=lines.filter(l=>l.need>l.onhand).length;
+  const old=document.getElementById('pickModal'); if(old) old.remove();
+  const m=document.createElement('div'); m.id='pickModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  m.innerHTML='<style>'+PICK_CSS+'</style><div style="background:#fff;border-radius:12px;padding:18px;max-width:760px;width:100%">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:18px">🗺 Pick list</b>'
+    +'<div class="hint">'+items.length+' job'+(items.length===1?'':'s')+' · '+lines.length+' product'+(lines.length===1?'':'s')+' · sorted by rack'
+    +(short?' · <b style="color:#c0392b">'+short+' short</b>':'')+'</div></div>'
+    +'<div style="display:flex;gap:8px"><button class="action" onclick="printPickList()" style="background:#1a2b4a">🖨 Print</button>'
+    +'<button class="action" onclick="document.getElementById(\'pickModal\').remove()" style="background:#5a6472">Close</button></div></div>'
+    +'<div class="hint" style="margin:6px 0 10px">Uses the jobs shown with the current filter. Duos are listed as the bottles to grab.</div>'
+    +pickListHtml(lines)+'</div>';
+  document.body.appendChild(m);
+  window._pickLines=lines;
+}
+function printPickList(){
+  const w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to print',true); return; }
+  w.document.write('<!doctype html><html><head><title>Pick list</title><style>body{font-family:-apple-system,Segoe UI,Arial,sans-serif;margin:18px}'+PICK_CSS+'</style></head><body>'
+    +'<h2 style="margin:0 0 4px">Pick list</h2><div style="color:#5a6472;margin-bottom:12px">'+new Date().toLocaleString()+'</div>'
+    +pickListHtml(window._pickLines||[])+'<script>window.onload=()=>window.print()<\/script></body></html>');
+  w.document.close();
+}
+function ppFiltered(all){
+  const ppFilter=(document.getElementById('ppFilter')||{}).value||'all';
+  const ppQ=((document.getElementById('ppSearch')||{}).value||'').toLowerCase();
+  return all.filter(x=>{
+    if(ppQ && !(x.name||'').toLowerCase().includes(ppQ) && !(x.asin||'').toLowerCase().includes(ppQ) && !(x.fnsku||'').toLowerCase().includes(ppQ)) return false;
+    if(ppFilter==='duos' && !x.is_duo) return false;
+    if(ppFilter==='singles' && x.is_duo) return false;
+    if(ppFilter==='unclaimed' && x.claimed_by) return false;
+    if(ppFilter==='inprogress' && !x.claimed_by) return false;
+    if(ppFilter==='notinplan' && x.in_plan) return false;
+    if(ppFilter==='inplan' && !x.in_plan) return false;
+    return true;
   });
 }
 function renderPendingPrep(){
@@ -2362,14 +2810,14 @@ function renderPendingPrep(){
   h+='<div class="pcards">';
   h+=items.map((x,idx)=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
-    const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${x.name}</a>`;
+    const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`;
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
-    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${label}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${label}" class="copybtn">📋</button></div>`:'';
+    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     let compLines='';
     if(x.is_duo && x.components && x.components.length){
       compLines='<div style="margin-top:10px;padding:10px 12px;background:#fdf6f5;border-radius:8px;border:1px solid #f3d9d6;font-size:12.5px">'+
         '<div style="font-weight:800;color:#c0392b;margin-bottom:6px;font-size:13px;letter-spacing:0.2px">⚡ GRAB '+x.qty+' OF EACH</div>'+
-        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1;line-height:1.3"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${c.name}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button>${c.location?`<span style="margin-left:5px;background:#1a2b4a;color:#fff;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;letter-spacing:0.3px;white-space:nowrap">📍 ${c.location}</span>`:`<span style="margin-left:5px;background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;white-space:nowrap">📍 none</span>`}</div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand}</span></div>`).join('')+
+        x.components.map(c=>`<div style="display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1;line-height:1.3"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(c.name)}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button>${c.location?`<span style="margin-left:5px;background:#1a2b4a;color:#fff;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;letter-spacing:0.3px;white-space:nowrap">📍 ${c.location}</span>`:`<span style="margin-left:5px;background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;white-space:nowrap">📍 none</span>`}</div></span><span style="font-weight:800;font-size:14px;white-space:nowrap;color:${c.onhand>=x.qty?'#1e8449':'#c0392b'}">${c.onhand}</span></div>`).join('')+
         '</div>';
     }
     const claimed = !!x.claimed_by;
@@ -2380,9 +2828,9 @@ function renderPendingPrep(){
     const crewChips = crew.map(c=>{
       const nm=String(c.employee).replace(/'/g,"\\'");
       return '<span style="display:inline-flex;align-items:center;gap:7px;background:rgba(255,255,255,0.95);color:#1e8449;padding:6px 8px 6px 12px;border-radius:16px;font-size:12.5px;font-weight:800;white-space:nowrap">'
-        +'👷 '+c.employee
+        +'👷 '+esc(c.employee)
         +'<b class="elapsed" data-since="'+(c.since||'')+'" style="font-weight:700;color:#5a6472">—</b>'
-        +'<button onclick="leavePrepper('+x.id+',\''+nm+'\')" title="'+c.employee+' steps off this job" '
+        +'<button onclick="leavePrepper('+x.id+',\''+esc(nm)+'\')" title="'+esc(c.employee)+' steps off this job" '
         +'style="padding:3px 9px;font-size:10.5px;font-weight:800;background:#eef2f6;color:#5a6472;border:none;border-radius:12px;cursor:pointer">leave</button>'
         +'</span>';
     }).join('');
@@ -2413,7 +2861,7 @@ function renderPendingPrep(){
     const divider=(idx===lastActiveIdx)
       ? `<div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;margin:8px 0 2px"><div style="flex:1;height:1px;background:#d8dee6"></div><span style="font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6;text-transform:uppercase">Not started</span><div style="flex:1;height:1px;background:#d8dee6"></div></div>`
       : '';
-    return `${divider}<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#1a2b4a':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${String(x.name).replace(/'/g,"\\'").replace(/"/g,'')}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
+    return `${divider}<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#1a2b4a':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
   b.innerHTML=h;
@@ -2506,7 +2954,7 @@ function finishPrepJob(id, name, requestedQty, isDuo){
   modal.innerHTML=`
     <div style="background:#fff;border-radius:12px;padding:24px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.35)">
       <div style="font-weight:800;font-size:19px;margin-bottom:4px;color:#127a7a">✅ Confirm Prep Complete</div>
-      <div style="font-size:13px;color:#5a6472;line-height:1.4;margin-bottom:16px">${name}${isDuo?' <b style="color:#c0392b">(DUO)</b>':''}</div>
+      <div style="font-size:13px;color:#5a6472;line-height:1.4;margin-bottom:16px">${esc(name)}${isDuo?' <b style="color:#c0392b">(DUO)</b>':''}</div>
 
       <label style="display:block;font-size:13px;font-weight:700;margin-bottom:4px">How many did you actually prep?</label>
       <input type="number" id="finishQty" value="${requestedQty}" style="width:100%;padding:14px;font-size:20px;font-weight:700;text-align:center;border:2px solid #127a7a;border-radius:8px">
@@ -2533,7 +2981,7 @@ function submitFinishPrep(id){
   if(!verified){ alert('Please check the COUNT VERIFIED box to confirm you counted these.'); return; }
   const who = localStorage_get('prepWorkerName') || '';
   closeFinishModal();
-  api('/api/pending-prep/complete',{method:'POST',body:JSON.stringify({id,qty,completedBy:who})}).then(d=>{
+  api('/api/pending-prep/complete',{method:'POST',idem:newIdem(),body:JSON.stringify({id,qty,completedBy:who})}).then(d=>{
     if(d.error){ toast(d.error,true); return; }
     let msg='✅ '+d.moved+(d.isDuo?' duos':' units')+' sent to Prepped & Ready.';
     if(d.remaining>0) msg+='\n\nStill outstanding on this job: '+d.remaining;
@@ -2649,12 +3097,12 @@ function filterFixProd(){
   const q=(document.getElementById('fixProdSearch').value||'').toLowerCase();
   const el=document.getElementById('fixProdList');
   el.innerHTML=products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,20)
-    .map(p=>`<div class="picker-item" onclick="remapFnsku('${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+    .map(p=>`<div class="picker-item" onclick="remapFnsku('${p.asin}')">${esc(p.name)} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
 }
 function remapFnsku(asin){
   const fn=window._fixFnsku; const p=products.find(x=>x.asin===asin);
   api('/api/remap-fnsku',{method:'POST',body:JSON.stringify({fnsku:fn,asin})}).then(d=>{
-    if(d.ok){ toast('FNSKU '+fn+' → '+p.name.slice(0,22)); document.getElementById('fixFnskuResult').innerHTML='<div class="hint" style="color:#1e8449">✓ Fixed — '+fn+' now links to '+p.name+'</div>'; document.getElementById('fixFnsku').value=''; loadProducts(); loadFnStatus(); }
+    if(d.ok){ toast('FNSKU '+fn+' → '+p.name.slice(0,22)); document.getElementById('fixFnskuResult').innerHTML='<div class="hint" style="color:#1e8449">✓ Fixed — '+fn+' now links to '+esc(p.name)+'</div>'; document.getElementById('fixFnsku').value=''; loadProducts(); loadFnStatus(); }
     else toast('Fix failed',true);
   });
 }
@@ -2675,11 +3123,21 @@ function loadFnStatus(){
 }
 function doPrepScan(code, qty){
   _scanInFlight=true;
-  api('/api/prep/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+  const idem=newIdem();
+  api('/api/prep/scan',{method:'POST',idem,body:JSON.stringify({code,qty})}).finally(()=>{ _scanInFlight=false; }).catch(e=>{
+    if(!isNetworkError(e)) throw e;
+    offlineQueue('/api/prep/scan',{code,qty},idem,'Prep '+qty+' × '+code);
+    toast('📶 Offline — prep scan saved on this device, will sync');
+    if(window._resetScan)window._resetScan('Prep');
+    document.getElementById('scanPrep').focus();
+    return null;
+  }).then(d=>{
+    if(d===null) return;
     _scanInFlight=false;
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
     if(typeof scanFeedback==='function') scanFeedback();
     toast('+'+qty+' prepped'+(d.isBundle?' (duo → components)':''));
+    showUndo(d.undoId,'Prepped '+qty+' × '+String((d.product&&d.product.name)||'').slice(0,26));
     if(d.pendingInfo){
       if(d.pendingInfo.over>0){
         alert('⚠ OVER-PREPPED\n\nRequested: '+d.pendingInfo.requested+'\nYou scanned: '+d.pendingInfo.scanned+'\nOver by: '+d.pendingInfo.over+'\n\nThe request is now closed. Verify this is intentional.');
@@ -2700,7 +3158,7 @@ function filterPrepPick(){
   const q=(document.getElementById('prepPickSearch').value||'').toLowerCase();
   const el=document.getElementById('prepPickList');
   el.innerHTML=products.filter(p=>!q||p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
-    .map(p=>`<div class="picker-item" onclick="assignPrepFnsku('${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+    .map(p=>`<div class="picker-item" onclick="assignPrepFnsku('${p.asin}')">${esc(p.name)} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
 }
 function assignPrepFnsku(asin){
   if(!prepPendingFnsku)return;
@@ -2744,10 +3202,10 @@ function renderPrepList(){
   h+='<div class="pcards">';
   h+=items.map(x=>{
     const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
-    const nameLink=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${x.name}</a>`:x.name;
+    const nameLink=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`:x.name;
     const badge=x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span>':'';
     // labeled pill rows for ASIN + FNSKU (like the reference app)
-    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${label}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${label}" class="copybtn">📋</button></div>`:'';
+    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     const border=x.isBundle?'border:1px solid #fdeceb;':'';
     return `<div class="pcard" style="${border};align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
   }).join('');
@@ -2801,7 +3259,7 @@ function loadInvoiceList(){
     const sel=document.getElementById('invoicePick');
     const pending=list.filter(i=>i.status==='pending');
     sel.innerHTML='<option value="">— pick an invoice —</option>'+
-      pending.map(i=>`<option value="${i.order_number}">#${i.order_number} · ${i.invoice_date} · ${i.received}/${i.expected} received</option>`).join('');
+      pending.map(i=>`<option value="${i.order_number}">#${i.order_number} · ${esc(i.invoice_date)} · ${i.received}/${i.expected} received</option>`).join('');
     const mgr=document.getElementById('invManager');
     if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   });
@@ -2820,7 +3278,7 @@ function runAudit(){
   if(!t){ toast('Paste the invoice text first',true); return; }
   out.innerHTML='<div class="hint" style="padding:10px">Comparing…</div>';
   api('/api/invoices/audit',{method:'POST',body:JSON.stringify({text:t})}).then(d=>{
-    if(!d || !d.ok){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">'+((d&&d.error)||'Audit failed')+'</div>'; return; }
+    if(!d || !d.ok){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">'+(esc((d&&d.error)||'Audit failed'))+'</div>'; return; }
     let h='';
     for(const r of d.report){
       const bad = !r.inDatabase || r.missing.length || r.qtyMismatch.length || r.extra.length;
@@ -2837,24 +3295,24 @@ function runAudit(){
         h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px;margin-bottom:7px">'
           +'<b style="color:#c0392b">❌ '+r.missing.length+' line'+(r.missing.length===1?'':'s')+' on the paper are MISSING from the database ('+lost.toLocaleString()+' units)</b>'
           +'<div class="hint" style="margin:3px 0 5px">This is the multi-page bug — these never made it in, so they were never received.</div>';
-        for(const m of r.missing) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description).slice(0,48)+' · <b>'+m.paperQty+' units</b></div>';
+        for(const m of r.missing) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+esc(String(m.description).slice(0,48))+' · <b>'+m.paperQty+' units</b></div>';
         h+='</div>';
       }
       if(r.qtyMismatch.length){
         h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px;margin-bottom:7px"><b style="color:#b7791f">⚠ '+r.qtyMismatch.length+' quantity mismatch(es)</b>';
-        for(const m of r.qtyMismatch) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description).slice(0,42)+' · paper '+m.paperQty+' vs db '+m.dbExpected+' (received '+m.dbReceived+')</div>';
+        for(const m of r.qtyMismatch) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+esc(String(m.description).slice(0,42))+' · paper '+m.paperQty+' vs db '+m.dbExpected+' (received '+m.dbReceived+')</div>';
         h+='</div>';
       }
       if(r.extra.length){
         h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px;margin-bottom:7px"><b style="color:#b7791f">⚠ '+r.extra.length+' line(s) in the database that are NOT on this paper</b>';
-        for(const m of r.extra) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description||'').slice(0,48)+'</div>';
+        for(const m of r.extra) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+esc(String(m.description||'').slice(0,48))+'</div>';
         h+='</div>';
       }
       if(r.suspect.length){
         const units=r.suspect.reduce((n,x)=>n+x.received,0);
         h+='<div style="padding:9px;background:#fff;border:1px solid #f3d9d6;border-radius:6px"><b style="color:#c0392b">🔀 '+units.toLocaleString()+' received units sit on a COLLIDING cosmo number</b>'
           +'<div class="hint" style="margin:3px 0 5px">Two numbers share that ASIN, so this stock may be on the wrong product.</div>';
-        for(const m of r.suspect) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+String(m.description).slice(0,40)+' → <b>'+String(m.mappedName||m.asin).slice(0,38)+'</b> ('+m.received+' units)</div>';
+        for(const m of r.suspect) h+='<div style="font-size:12px;padding:2px 0"><span style="font-family:monospace;font-weight:700">'+m.cosmo_num+'</span> · '+esc(String(m.description).slice(0,40))+' → <b>'+String(m.mappedName||m.asin).slice(0,38)+'</b> ('+m.received+' units)</div>';
         h+='</div>';
       }
       if(!bad && !r.suspect.length) h+='<div style="font-size:13px;color:#1e8449;font-weight:700">Paper and database match. Nothing lost.</div>';
@@ -2886,7 +3344,7 @@ function renderInvoiceManager(){
       return '<div style="display:flex;gap:9px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6;flex-wrap:wrap">'
         +'<div style="flex:1;min-width:150px">'
         +'<div style="font-weight:700;font-size:13.5px">#'+i.order_number+' <span style="color:#8a97a6;font-weight:500">· '
-          +(i.invoice_date ? i.invoice_date
+          +(i.invoice_date ? esc(i.invoice_date)
              : '<span style="color:#b7791f">no date on file'+(i.created_at?' · uploaded '+new Date(i.created_at).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'}):'')+'</span>'
                +' <a href="#" onclick="event.stopPropagation();setInvoiceDate(\''+i.order_number+'\');return false" style="color:#127a7a;font-size:12px">set date</a>')
           +'</span></div>'
@@ -2919,7 +3377,8 @@ function deleteInvoiceByNumber(order, status, received){
   }
   msg+='\n\nThis cannot be undone.';
   if(!confirm(msg))return;
-  api('/api/invoices/'+order+'/delete',{method:'POST'}).then(()=>{
+  withOwner('/api/invoices/'+order+'/delete',{method:'POST'}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     toast('Invoice #'+order+' deleted');
     if(currentInvoice===order){
       currentInvoice=null;
@@ -3002,7 +3461,7 @@ function candBtn(cosmoNum, asin, name, conf, image){
   return '<div style="display:flex;gap:10px;align-items:center;margin-top:7px;padding:10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;font-size:13px;line-height:1.4">'
     +img
     +'<div style="flex:1;min-width:0">'
-      +'<div style="font-weight:600">'+confHtml+String(name||'')+'</div>'
+      +'<div style="font-weight:600">'+confHtml+esc(String(name||''))+'</div>'
       +'<div style="margin-top:4px;display:flex;align-items:center;gap:5px;flex-wrap:wrap">'
         +'<a href="https://www.amazon.com/dp/'+asin+'" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8">'+asin+'</a>'
         +'<span style="font-size:11px;color:#9db0c9">↗ open on Amazon to verify</span>'
@@ -3083,6 +3542,7 @@ function handleBindUnmapped(d, code, qty){
     if(r && r.error){ toast(r.error,true); return; }
     // linked — now count the scan that created it
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d2=>{
+      if(invoiceLocked(d2)) return;
       if(d2 && d2.ok){
         scanFeedback();
         toast('🔗 Linked + ✅ verified · +'+qty+' '+(d2.line.name||'').slice(0,18));
@@ -3154,7 +3614,7 @@ function searchNewUpc(inp){
     const safe=String(p.name||'').replace(/\\/g,'').replace(/'/g,"\\'").replace(/"/g,'');
     const img=p.image?'<img src="'+p.image+'" onerror="this.style.display=\'none\'" style="width:46px;height:46px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:46px;height:46px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
     return '<div style="display:flex;gap:10px;align-items:center;margin-top:7px;padding:10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;font-size:13px;line-height:1.4">'
-      +img+'<div style="flex:1;min-width:0"><div style="font-weight:600">'+p.name+'</div>'
+      +img+'<div style="flex:1;min-width:0"><div style="font-weight:600">'+esc(p.name)+'</div>'
       +'<div style="margin-top:4px"><a href="https://www.amazon.com/dp/'+p.asin+'" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8">'+p.asin+' ↗</a></div></div>'
       +'<button onclick="assignNewUpc(\''+p.asin+'\',\''+safe+'\')" style="padding:9px 15px;font-size:12.5px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap;flex-shrink:0">This one</button></div>';
   }).join('');
@@ -3188,9 +3648,11 @@ function doAssignNewUpc(asin, name, code, pc){
     if(qtyStr===null) return;
     const qty=parseInt(qtyStr);
     if(!qty||qty<1){ toast('Enter a valid quantity',true); return; }
+    if(!qtyOk(qty)) return;
     // Now run the normal scan — it will count it, or offer to link the
     // Cosmo number if that invoice line is still unmapped.
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code:code,qty:qty})}).then(d=>{
+      if(invoiceLocked(d)) return;
       if(d.ok){ scanFeedback(); toast('+'+qty+' '+(d.line.name||'').slice(0,20)); renderReconLines(); }
       else if(d.reason==='bind_unmapped'){ handleBindUnmapped(d, code, qty); }
       else if(d.reason==='mapping_mismatch'){ handleMappingMismatch(d, code); }
@@ -3217,7 +3679,7 @@ function pollNameRefresh(){
       setTimeout(pollNameRefresh,3000); return;
     }
     btn.disabled=false; btn.textContent='Check Amazon for updated names';
-    if(j.error){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+j.error+'</div>'; return; }
+    if(j.error){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+esc(j.error)+'</div>'; return; }
     if(!j.changes || !j.changes.length){
       out.innerHTML='<div class="box" style="margin-top:10px;border:2px solid #1e8449;background:#f4fbf7"><b style="color:#1e8449">✅ All product names already match Amazon.</b> ('+j.checked+' checked)</div>';
       return;
@@ -3278,7 +3740,7 @@ function loadStockAudit(){
         +'<div style="font-weight:800;color:#c0392b;font-size:16px">⚠ The same invoice was received more than once</div>'
         +'<div class="hint" style="margin-bottom:8px">'+units.toLocaleString()+' units were added twice. Subtract the extra from On Hand on the affected products.</div>'
         +'<table><thead><tr><th>Invoice</th><th>Product</th><th>Times</th><th>Units added</th><th>First</th><th>Last</th></tr></thead><tbody>'
-        +d.duplicates.map(x=>'<tr><td style="font-size:12px">'+x.note+'</td>'
+        +d.duplicates.map(x=>'<tr><td style="font-size:12px">'+esc(x.note)+'</td>'
           +'<td style="font-family:monospace;font-size:11px">'+(x.asin||'—')+'</td>'
           +'<td style="color:#c0392b;font-weight:800">'+x.times+'×</td>'
           +'<td><b>'+x.units.toLocaleString()+'</b></td>'
@@ -3290,7 +3752,7 @@ function loadStockAudit(){
     if(d.bundleStock && d.bundleStock.length){
       h+='<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">⚠ Stock sitting on a duo/bundle ASIN</b>'
         +'<div class="hint">Duos are meant to be held as components. Units on the bundle ASIN itself are likely counted twice.</div>'
-        +d.bundleStock.map(x=>'<div style="font-size:12.5px;padding:3px 0">'+(x.name||x.asin)+' — <b>'+x.onhand+'</b></div>').join('')+'</div>';
+        +d.bundleStock.map(x=>'<div style="font-size:12.5px;padding:3px 0">'+(esc(x.name||x.asin))+' — <b>'+x.onhand+'</b></div>').join('')+'</div>';
     }
     if(d.orphans && d.orphans.length){
       h+='<div class="box" style="border:2px solid #b7791f;background:#fffdf7"><b style="color:#b7791f">⚠ Stock with no product record</b>'
@@ -3302,7 +3764,7 @@ function loadStockAudit(){
       h+='<div class="box" style="border:2px solid #2563a8"><b style="font-size:15px">Where every unit came from</b>'
         +'<div class="hint">All '+tot.toLocaleString()+' units ever added to stock, by source. Invoice check-ins are only one route — manual receiving and hand edits count too.</div>'
         +'<table style="margin-top:6px"><thead><tr><th>Source</th><th>Movements</th><th>Units</th><th>Share</th><th>First</th><th>Last</th></tr></thead><tbody>'
-        +d.sources.map(x=>'<tr><td><b>'+x.source+'</b></td><td>'+x.movements+'</td><td><b>'+x.units.toLocaleString()+'</b></td>'
+        +d.sources.map(x=>'<tr><td><b>'+esc(x.source)+'</b></td><td>'+x.movements+'</td><td><b>'+x.units.toLocaleString()+'</b></td>'
           +'<td>'+(tot?Math.round(x.units/tot*100):0)+'%</td>'
           +'<td style="font-size:11px">'+new Date(x.first_ts).toLocaleDateString()+'</td>'
           +'<td style="font-size:11px">'+new Date(x.last_ts).toLocaleDateString()+'</td></tr>').join('')
@@ -3314,22 +3776,22 @@ function loadStockAudit(){
       h+='<div class="box"><b style="font-size:15px">Last 60 stock additions</b>'
         +'<table style="margin-top:6px"><thead><tr><th>When</th><th>Product</th><th>Qty</th><th>Note</th></tr></thead><tbody>'
         +d.recentIn.map(r=>'<tr><td style="font-size:11px;white-space:nowrap">'+new Date(r.ts).toLocaleString()+'</td>'
-          +'<td style="max-width:260px;font-size:12px">'+(r.name||r.asin||'—')+'</td>'
-          +'<td><b>+'+r.qty+'</b></td><td style="font-size:11.5px;color:#5a6472">'+(r.note||'<i>none</i>')+'</td></tr>').join('')
+          +'<td style="max-width:260px;font-size:12px">'+(esc(r.name||r.asin||'—'))+'</td>'
+          +'<td><b>+'+r.qty+'</b></td><td style="font-size:11.5px;color:#5a6472">'+(esc(r.note)||'<i>none</i>')+'</td></tr>').join('')
         +'</tbody></table></div>';
     }
 
     h+='<div class="box"><b style="font-size:15px">Receipts booked into stock</b>'
       +'<div class="hint">Newest first. The same invoice appearing twice here is the usual cause of an inflated On Hand.</div>'
       +'<table style="margin-top:6px"><thead><tr><th>Invoice</th><th>SKUs</th><th>Units</th><th>When</th></tr></thead><tbody>'
-      +(d.receipts||[]).map(r=>'<tr><td style="font-size:12px">'+r.note+'</td><td>'+r.skus+'</td><td><b>'+r.units.toLocaleString()+'</b></td>'
+      +(d.receipts||[]).map(r=>'<tr><td style="font-size:12px">'+esc(r.note)+'</td><td>'+r.skus+'</td><td><b>'+r.units.toLocaleString()+'</b></td>'
         +'<td style="font-size:11px">'+new Date(r.ts).toLocaleString()+'</td></tr>').join('')
       +'</tbody></table></div>';
 
     h+='<div class="box"><b style="font-size:15px">Per product</b>'
       +'<div class="hint"><b>Drift</b> is On Hand minus everything the activity log accounts for. Non-zero usually means stock was set by hand, or seeded before logging began — not necessarily an error.</div>'
       +'<table style="margin-top:6px"><thead><tr><th>Product</th><th>On Hand</th><th>In</th><th>Out</th><th>Net</th><th>Drift</th></tr></thead><tbody>'
-      +d.rows.map(r=>'<tr><td style="max-width:320px">'+(r.name||r.asin)+'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+r.asin+'</div></td>'
+      +d.rows.map(r=>'<tr><td style="max-width:320px">'+(esc(r.name||r.asin))+'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+r.asin+'</div></td>'
         +'<td><b>'+r.onhand.toLocaleString()+'</b></td><td>'+r.total_in.toLocaleString()+'</td><td>'+r.total_out.toLocaleString()+'</td>'
         +'<td>'+r.net_movement.toLocaleString()+'</td>'
         +'<td style="'+(r.drift?'color:#c0392b;font-weight:700':'color:#1e8449')+'">'+(r.drift>0?'+':'')+r.drift.toLocaleString()+'</td></tr>').join('')
@@ -3388,7 +3850,7 @@ function importTimesheets(dry){
   if(!t){ toast('Choose a CSV file or paste the text first',true); return; }
   out.innerHTML='<div class="hint" style="padding:10px">Working…</div>';
   ownerApi('/api/timesheets/import',{method:'POST',body:JSON.stringify({text:t, dryRun:!!dry})}).then(d=>{
-    if(!d||d.error){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">'+((d&&d.error)||'Import failed')+'</div>'; return; }
+    if(!d||d.error){ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">'+(esc((d&&d.error)||'Import failed'))+'</div>'; return; }
     let h='<div class="box" style="margin-top:10px;border:2px solid '+(dry?'#7a4fb5':'#1e8449')+';background:'+(dry?'#faf7fd':'#f4fbf7')+'">';
     h+='<div style="font-weight:800;font-size:15px;color:'+(dry?'#7a4fb5':'#1e8449')+'">'+(dry?'🧪 Preview — nothing saved':'✅ Imported')+'</div>';
     h+='<div class="hint">'+d.shifts+' shift'+(d.shifts===1?'':'s')+' in the file'
@@ -3406,7 +3868,7 @@ function importTimesheets(dry){
       h+='<div style="margin-top:10px;padding:9px;background:#fdeceb;border:1px solid #f3d9d6;border-radius:6px">'
         +'<b style="color:#c0392b">⚠ '+d.unmatched.length+' name(s) in the file do not match a team member</b>'
         +'<div class="hint">Their hours were NOT imported. Edit the team member above and set the Homebase name to match exactly.</div>';
-      for(const u of d.unmatched) h+='<div style="font-size:12px;padding:2px 0"><b>'+u.name+'</b> — '+u.shifts+' shift'+(u.shifts===1?'':'s')+'</div>';
+      for(const u of d.unmatched) h+='<div style="font-size:12px;padding:2px 0"><b>'+esc(u.name)+'</b> — '+u.shifts+' shift'+(u.shifts===1?'':'s')+'</div>';
       h+='</div>';
     }
     if(d.warnings && d.warnings.length) h+='<div class="hint" style="color:#b7791f;margin-top:6px">'+d.warnings.join(' · ')+'</div>';
@@ -3433,7 +3895,7 @@ function relinkSettlements(){
   const box=document.getElementById('setOut');
   if(box) box.innerHTML='<div class="hint">Matching…</div>';
   ownerApi('/api/settlements/relink',{method:'POST',body:'{}'}).then(d=>{
-    if(!d||d.error){ if(box) box.innerHTML='<div class="hint" style="color:#c0392b">'+((d&&d.error)||'Failed')+'</div>'; return; }
+    if(!d||d.error){ if(box) box.innerHTML='<div class="hint" style="color:#c0392b">'+(esc((d&&d.error)||'Failed'))+'</div>'; return; }
     let h='<div class="box" style="border:2px solid #1e8449;background:#f6fbf8"><b style="color:#1e8449">'+d.linked+' line(s) gained an ASIN</b>'
       +'<div class="hint">'+d.after.matched+' matched · '+d.after.unmatched+' still unmatched</div></div>';
     if(d.orphans && d.orphans.length){
@@ -3473,7 +3935,7 @@ function loadFinPnl() {
   const n = (document.getElementById('fpnlMonths') || {}).value || 12;
   ownerApi('/api/finance/pnl?months=' + n + (window._finPnlAll ? '&all=1' : '')).then(d => {
     const st = document.getElementById('fpnlStart'); if (st && d) st.value = d.startMonth || '';
-    if (!d || d.error || !d.months) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load. Deploy finance.js and server.js.') + '</div>'; return; }
+    if (!d || d.error || !d.months) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + (esc((d && d.error) || 'Could not load. Deploy finance.js and server.js.')) + '</div>'; return; }
     window._finPnl = d; renderFinPnl();
   }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load the P&amp;L.</div>'; });
 }
@@ -3570,7 +4032,7 @@ function renderFinPnl() {
     if (o.hideZero && !months.some(m => m[key])) continue;
     const style = o.total ? 'border-top:2px solid #1a2a3a;font-weight:800;background:#f7f9fb;' : '';
     t += '<tr style="' + style + '"><td style="position:sticky;left:0;background:' + (o.total ? '#f7f9fb' : '#fff') + ';padding:9px 12px;' + (o.big ? 'font-size:15px;' : '') + '">'
-      + label + (o.note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + o.note + '</div>' : '') + '</td>';
+      + esc(label) + (o.note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + esc(o.note) + '</div>' : '') + '</td>';
     for (const m of months) {
       let v = m[key], cell;
       if (!m.hasData) cell = '<span style="color:#cfd8e3">—</span>';
@@ -3646,7 +4108,7 @@ function loadRoyaltyWorksheet(showMonths) {
     const inp = 'padding:4px 6px;border:1px solid #cfd8e3;border-radius:4px;width:110px;text-align:right;font-size:12px';
     const cell = 'text-align:right;padding:9px 12px;vertical-align:top;white-space:nowrap';
     const label = (t, note) => '<td style="position:sticky;left:0;background:#fff;padding:9px 12px;font-weight:700;vertical-align:top;min-width:170px">' + t
-      + (note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + note + '</div>' : '') + '</td>';
+      + (note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + esc(note) + '</div>' : '') + '</td>';
 
     let h = '<div class="box" style="border:2px solid #b7791f;overflow-x:auto;padding:14px 0 10px">'
       + '<div style="padding:0 16px"><b style="font-size:15px">Royalty worksheet</b><div class="hint">'
@@ -3709,9 +4171,9 @@ function loadRoyaltyWorksheet(showMonths) {
               + '<td style="font-family:monospace">' + o.order_number + '</td><td>' + (o.date || '—') + (o.dateGuessed ? '<div style="font-size:10px;color:#b7791f">upload date — invoice had none</div>' : '') + '</td>'
               + '<td style="text-align:right">' + (o.lines || 0) + '</td>'
               + '<td style="text-align:right;font-weight:700">' + fin$(o.total, 2) + (o.tax ? '<div style="font-size:10px;color:#9db0c9">incl. ' + fin$(o.tax, 2) + ' tax</div>' : '') + '</td>'
-              + '<td>' + o.source
+              + '<td>' + esc(o.source)
                 + (o.oms && !o.isStoreOrder ? ' <span style="color:#5a6472">· bills store order ' + o.oms + '</span>' : '')
-                + (o.unpriced ? ' <span style="color:#b7791f">· ' + o.unpriced + ' unpriced line(s)</span>' : '') + (o.note ? ' <span style="color:#b7791f">· ' + o.note + '</span>' : '') + '</td>'
+                + (o.unpriced ? ' <span style="color:#b7791f">· ' + o.unpriced + ' unpriced line(s)</span>' : '') + (o.note ? ' <span style="color:#b7791f">· ' + esc(o.note) + '</span>' : '') + '</td>'
               + '<td>' + (o.replacedBy
                   ? (o.forced
                       ? '<span style="font-size:11px;color:#c0392b;font-weight:700">counted anyway</span> <a href="#" style="font-size:11px" onclick="finForceOrder(\'' + o.order_number + '\',false);return false">undo</a>'
@@ -3755,7 +4217,7 @@ function finEditRoyalty(m) {
   box.innerHTML = '<div style="background:#fffdf7;border:1px solid #f0d9a8;border-radius:6px;padding:8px;margin-top:6px;text-align:left">'
     + '<div style="font-size:11px;color:#5a6472">Formula says <b>' + (r.calculated == null ? '—' : fin$(r.calculated, 2)) + '</b>. What was actually paid?</div>'
     + '<input type="number" step="0.01" min="0" id="royAmt_' + m + '" value="' + (r.agreed ? r.agreed.paid : '') + '" placeholder="0.00" style="' + inp + ';width:110px;margin-top:4px">'
-    + '<input id="royNote_' + m + '" value="' + (r.agreed && r.agreed.note ? String(r.agreed.note).replace(/"/g, '&quot;') : '') + '" placeholder="Reason (e.g. agreed deduction for …)" style="' + inp + ';width:100%;margin-top:4px">'
+    + '<input id="royNote_' + m + '" value="' + (esc(r.agreed && r.agreed.note ? String(r.agreed.note) : '')) + '" placeholder="Reason (e.g. agreed deduction for …)" style="' + inp + ';width:100%;margin-top:4px">'
     + '<div style="display:flex;gap:6px;margin-top:6px">'
     + '<button class="mini" style="background:#b7791f;color:#fff;border-color:#b7791f" onclick="finSaveRoyaltyAdj(\'' + m + '\')">Save</button>'
     + (r.agreed ? '<button class="mini" onclick="document.getElementById(\'royAmt_' + m + '\').value=\'\';finSaveRoyaltyAdj(\'' + m + '\')">Use formula again</button>' : '')
@@ -3800,15 +4262,15 @@ function finShowUncosted(month) {
     } else if (x.fix === 'cost') {
       fix = '<a href="#" onclick="window._finCostQ=\'' + x.asin + '\';window._finCostAll=true;showSubTab(\'fsrc\');setTimeout(()=>finOpenEditor(\'costs\'),300);return false" style="color:#127a7a;font-weight:700">add cost →</a>';
     } else if (x.fix === 'duo') {
-      fix = (x.missingParts || []).map(c => '<div><a href="#" onclick="window._finCostQ=\'' + c.asin + '\';window._finCostAll=true;showSubTab(\'fsrc\');setTimeout(()=>finOpenEditor(\'costs\'),300);return false" style="color:#127a7a;font-weight:700">cost ' + String(c.name || c.asin).slice(0, 40) + ' →</a></div>').join('')
+      fix = (x.missingParts || []).map(c => '<div><a href="#" onclick="window._finCostQ=\'' + c.asin + '\';window._finCostAll=true;showSubTab(\'fsrc\');setTimeout(()=>finOpenEditor(\'costs\'),300);return false" style="color:#127a7a;font-weight:700">cost ' + esc(String(c.name || c.asin).slice(0, 40)) + ' →</a></div>').join('')
         || '<span class="hint">save any cost to recalculate</span>';
     } else {
       fix = '<span class="hint">add it under Products to Add, then give it a cost</span>';
     }
-    h += '<tr><td style="max-width:320px"><div style="font-size:13px;font-weight:600">' + (x.name || x.sku || x.asin) + '</div>'
+    h += '<tr><td style="max-width:320px"><div style="font-size:13px;font-weight:600">' + (esc(x.name || x.sku || x.asin)) + '</div>'
       + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + (x.asin || ('SKU ' + x.sku)) + '</div></td>'
       + '<td style="text-align:right">' + x.units + '</td><td style="text-align:right;font-weight:700">' + fin$(x.sales) + '</td>'
-      + '<td style="font-size:12px;color:#b7791f;font-weight:700">' + x.reason + '</td><td>' + fix + '</td></tr>';
+      + '<td style="font-size:12px;color:#b7791f;font-weight:700">' + esc(x.reason) + '</td><td>' + fix + '</td></tr>';
   }
   if (!list.length) h += '<tr><td colspan="5" class="hint">Nothing uncosted in this month.</td></tr>';
   h += '</tbody></table>'
@@ -3836,7 +4298,7 @@ function loadFinProducts() {
   const m = (document.getElementById('fprodMonth') || {}).value || '';
   b.innerHTML = '<div class="hint" style="padding:16px">Loading…</div>';
   ownerApi('/api/finance/products' + (m ? '?month=' + m : '')).then(d => {
-    if (!d || d.error || !d.items) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    if (!d || d.error || !d.items) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + (esc((d && d.error) || 'Could not load.')) + '</div>'; return; }
     window._finProd = d; renderFinProducts();
   }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load products.</div>'; });
 }
@@ -3869,7 +4331,7 @@ function renderFinProducts() {
   items.forEach((x, i) => {
     const mc = x.marginPct == null ? '#9db0c9' : (x.marginPct < 10 ? '#c0392b' : (x.marginPct >= 20 ? '#1e8449' : '#b7791f'));
     h += '<tr style="cursor:pointer" onclick="finToggleRow(' + i + ')"><td style="max-width:340px">'
-      + '<div style="font-weight:600;color:#1a2a3a;font-size:13px">' + (x.name || x.sku || x.asin) + '</div>'
+      + '<div style="font-weight:600;color:#1a2a3a;font-size:13px">' + (esc(x.name || x.sku || x.asin)) + '</div>'
       + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + (x.asin || ('SKU ' + x.sku)) + (x.missing.length ? ' · <span style="color:#b7791f;font-family:inherit">missing ' + x.missing.join(', ') + '</span>' : '') + '</div></td>'
       + '<td style="text-align:right">' + x.netUnits + (x.unitsRefunded ? '<div style="font-size:10px;color:#c0392b">' + x.unitsRefunded + ' returned</div>' : '') + '</td>'
       + '<td style="text-align:right">' + fin$(x.netSales) + '</td>'
@@ -3925,7 +4387,7 @@ function loadFinCash() {
   const b = document.getElementById('fcashBody'); if (!b) return;
   b.innerHTML = '<div class="hint" style="padding:16px">Loading…</div>';
   ownerApi('/api/finance/cash').then(d => {
-    if (!d || d.error) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    if (!d || d.error) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + (esc((d && d.error) || 'Could not load.')) + '</div>'; return; }
     const inp = 'padding:9px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px;width:150px';
     const today = new Date().toISOString().slice(0, 10);
     const s = d.settings || {};
@@ -4012,15 +4474,15 @@ const FIN_SRC_ACTIONS = {
 function loadFinSources() {
   const b = document.getElementById('fsrcBody'); if (!b) return;
   ownerApi('/api/finance/sources').then(d => {
-    if (!d || !d.sources) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    if (!d || !d.sources) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + (esc((d && d.error) || 'Could not load.')) + '</div>'; return; }
     const col = { ok: '#1e8449', warn: '#d69e2e', missing: '#c0392b' };
     let h = '<div id="finAuto"></div><div class="box" style="padding:0">';
     for (const s of d.sources) {
       const a = FIN_SRC_ACTIONS[s.key] || [];
       h += '<div style="display:flex;align-items:center;gap:14px;padding:14px 16px;border-bottom:1px solid #eef2f6;flex-wrap:wrap">'
         + '<span style="width:14px;height:14px;border-radius:50%;background:' + col[s.status] + ';flex:none"></span>'
-        + '<div style="flex:1;min-width:220px"><div style="font-weight:800;font-size:14px">' + s.label + '</div>'
-        + '<div class="hint" style="margin:0">' + s.detail + '</div><div style="font-size:10px;color:#9db0c9">feeds: ' + s.feeds + '</div></div>'
+        + '<div style="flex:1;min-width:220px"><div style="font-weight:800;font-size:14px">' + esc(s.label) + '</div>'
+        + '<div class="hint" style="margin:0">' + esc(s.detail) + '</div><div style="font-size:10px;color:#9db0c9">feeds: ' + s.feeds + '</div></div>'
         + (a[0] ? '<button class="mini" onclick="' + a[1] + '" style="padding:8px 12px">' + a[0] + ' →</button>' : '') + '</div>';
     }
     h += '</div><div id="finEditor"></div>'
@@ -4057,10 +4519,14 @@ function finLoadAuto() {
         + (last.finished_at ? (allOk ? ' · <span style="color:#1e8449">all steps OK</span>' : ' · <span style="color:#c0392b">some steps failed</span>') : '')) + '</div>'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:6px;margin-top:6px">'
         + steps.map(s => '<div style="background:#f7f9fb;border-radius:6px;padding:6px 9px;border-left:3px solid ' + (s.finished ? (s.ok ? '#1e8449' : '#c0392b') : '#d69e2e') + '">'
-            + '<div style="font-size:12px;font-weight:700">' + (s.finished ? (s.ok ? '✓ ' : '✗ ') : '… ') + s.name + '</div>'
+            + '<div style="font-size:12px;font-weight:700">' + (s.finished ? (s.ok ? '✓ ' : '✗ ') : '… ') + esc(s.name) + '</div>'
             + '<div style="font-size:11px;color:' + (s.ok || !s.finished ? '#5a6472' : '#c0392b') + '">' + String(s.detail || (s.finished ? '' : 'working…')).replace(/</g, '&lt;').slice(0, 160) + '</div></div>').join('')
         + '</div>';
     }
+    const em = d.email || {};
+    h += '<div class="hint" style="margin-top:10px">📧 ' + (em.configured
+        ? 'Each Sunday run emails its result to <b>' + esc(em.to) + '</b>. <a href="#" onclick="finAutoTestEmail();return false" style="color:#127a7a">Send a test email</a>'
+        : 'Weekly result email is <b>off</b> — set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS and REPORT_EMAIL_TO in Railway to turn it on.') + '</div>';
     h += '<div class="hint" style="margin-top:10px"><b>Still yours to add</b> — these live outside Amazon: Cosmoprof invoices (Import costs), Homebase timesheets (Labor tab), bank balances (Cash &amp; Draws). The lights below show when one is overdue.</div></div>';
     box.innerHTML = h;
     if (d.running) setTimeout(finLoadAuto, 10000);
@@ -4069,6 +4535,11 @@ function finLoadAuto() {
 function finAutoRun() {
   if (!confirm('Run the full refresh now?\n\nIt pulls settlements, shipment fees, inventory and costs from Amazon. Allow 5–15 minutes; you can keep using the app.')) return;
   ownerApi('/api/auto/run', { method: 'POST', body: '{}' }).then(() => { toast('Refresh started'); setTimeout(finLoadAuto, 1500); });
+}
+function finAutoTestEmail() {
+  ownerApi('/api/auto/test-email', { method: 'POST', body: '{}' }).then(d => {
+    if (d && d.ok && d.sent) toast('Test email sent to ' + d.to); else toast((d && (d.error || 'Not sent — SMTP not configured')), true);
+  }).catch(e => toast('Email failed: ' + e.message, true));
 }
 function finAutoEnabled(on) {
   ownerApi('/api/auto/enabled', { method: 'POST', body: JSON.stringify({ enabled: on }) }).then(() => { toast(on ? 'Weekly refresh on' : 'Weekly refresh paused'); finLoadAuto(); });
@@ -4098,7 +4569,7 @@ function finOpenEditor(which) {
       box.innerHTML = '<div class="box" style="border:2px solid #127a7a"><b style="font-size:15px">Supplies per unit, by size</b>'
         + '<div class="hint">Bags, labels, tape, box share, bubble — whatever each unit consumes. Products are sorted into sizes from their names.</div>'
         + '<table style="margin-top:8px"><thead><tr><th>Size</th><th style="text-align:right">Products</th><th>$ per unit</th></tr></thead><tbody>'
-        + d.items.map(x => '<tr><td>' + x.label + '</td><td style="text-align:right">' + x.products + '</td>'
+        + d.items.map(x => '<tr><td>' + esc(x.label) + '</td><td style="text-align:right">' + x.products + '</td>'
           + '<td><input type="number" step="0.01" min="0" data-size="' + x.size_key + '" value="' + (x.per_unit == null ? '' : Number(x.per_unit)) + '" placeholder="not set" style="' + inp + ';width:110px"></td></tr>').join('')
         + '</tbody></table><div style="display:flex;gap:8px;margin-top:10px"><button class="action" onclick="finSaveSupplies()" style="background:#127a7a;flex:1">Save supply costs</button>'
         + '<button class="mini" onclick="finCloseEditor()">Close</button></div></div>';
@@ -4111,7 +4582,7 @@ function finOpenEditor(which) {
       let h = '<div class="box" style="border:2px solid #7d3c98"><b style="font-size:15px">Rent &amp; overhead</b>'
         + '<div class="hint">Fixed monthly costs that don\'t depend on how much you sell. Set a start month so moving warehouses doesn\'t rewrite history — end the old rent, add the new one.</div>'
         + '<table style="margin-top:8px"><thead><tr><th>Item</th><th>Category</th><th style="text-align:right">Per month</th><th>From</th><th>Until</th><th></th></tr></thead><tbody>';
-      h += d.items.map(x => '<tr style="' + (x.active ? '' : 'opacity:.5') + '"><td>' + x.name + '</td><td>' + (x.category || '') + '</td>'
+      h += d.items.map(x => '<tr style="' + (x.active ? '' : 'opacity:.5') + '"><td>' + esc(x.name) + '</td><td>' + (x.category || '') + '</td>'
         + '<td style="text-align:right;font-weight:700">' + fin$(Number(x.monthly_amount), 2) + '</td>'
         + '<td>' + (x.start_month || 'always') + '</td><td>' + (x.end_month || 'ongoing') + '</td>'
         + '<td><button class="mini" onclick=\'finEditOverhead(' + JSON.stringify(x).replace(/'/g, '&#39;') + ')\'>Edit</button> '
@@ -4145,7 +4616,7 @@ function finLoadCostList() {
   const all = window._finCostAll ? '1' : '0';
   box.innerHTML = '<div class="box hint">Loading products…</div>';
   ownerApi('/api/finance/missing-costs?all=' + all).then(d => {
-    if (!d || !d.items) { box.innerHTML = '<div class="box hint" style="color:#c0392b">' + ((d && d.error) || 'Could not load.') + '</div>'; return; }
+    if (!d || !d.items) { box.innerHTML = '<div class="box hint" style="color:#c0392b">' + (esc((d && d.error) || 'Could not load.')) + '</div>'; return; }
     window._finCost = d; finRenderCostList();
     box.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
@@ -4181,7 +4652,7 @@ function finRenderCostList() {
                 : '<span style="font-size:11px;font-weight:700;color:#c0392b">no cost</span>';
     h += '<tr id="row_' + id + '"><td style="max-width:360px"><div style="display:flex;gap:8px;align-items:center">'
       + (x.image ? '<img src="' + x.image + '" style="width:34px;height:34px;object-fit:contain;flex:none">' : '')
-      + '<div><div style="font-size:13px;font-weight:600">' + (x.name || x.asin) + '</div>'
+      + '<div><div style="font-size:13px;font-weight:600">' + (esc(x.name || x.asin)) + '</div>'
       + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + x.asin + '</div></div></div></td>'
       + '<td id="cz_' + id + '">' + finCosmoCell(x) + '</td>'
       + '<td style="text-align:right">' + (x.units90 ? x.units90.toLocaleString() + ' units<div style="font-size:11px;color:#5a6472">' + fin$(x.sales90) + '</div>'
@@ -4236,7 +4707,7 @@ function finSaveManualCost(asin) {
   const st = document.getElementById('st_mc_' + asin);
   if (st) st.innerHTML = '<span class="hint">saving…</span>';
   ownerApi('/api/finance/manual-cost', { method: 'POST', body: JSON.stringify({ asin, unit_cost: v === '' ? null : v }) }).then(d => {
-    if (!d || !d.ok) { if (st) st.innerHTML = '<span style="color:#c0392b;font-size:11px">' + ((d && d.error) || 'Failed') + '</span>'; return; }
+    if (!d || !d.ok) { if (st) st.innerHTML = '<span style="color:#c0392b;font-size:11px">' + (esc((d && d.error) || 'Failed')) + '</span>'; return; }
     const it = (window._finCost.items || []).find(x => x.asin === asin);
     if (it) { it.manualCost = v === '' ? null : Number(v); it.state = v === '' ? 'none' : 'manual'; it.cost = d.cost; }
     if (st) st.innerHTML = v === '' ? '<span style="font-size:11px;font-weight:700;color:#c0392b">no cost</span>'
@@ -4280,7 +4751,7 @@ function finSettledInbound() {
           + '<td style="text-align:right">' + fin$(m.spread, 2) + '</td><td style="text-align:right">' + fin$(m.charged, 2) + '</td>'
           + '<td><details><summary style="cursor:pointer;color:#2563a8">' + m.lines.length + ' line(s)</summary>'
           + m.lines.map(l => '<div>' + (l.shipmentId ? '<span style="font-family:monospace">' + l.shipmentId + '</span>' : '<i>no shipment ID</i>')
-              + ' · ' + l.description + ' · <b>' + fin$(l.amount, 2) + '</b>' + (l.shipmentId && !l.inApp ? ' <span style="color:#b7791f">(not in app)</span>' : '') + '</div>').join('')
+              + ' · ' + esc(l.description) + ' · <b>' + fin$(l.amount, 2) + '</b>' + (l.shipmentId && !l.inApp ? ' <span style="color:#b7791f">(not in app)</span>' : '') + '</div>').join('')
           + '</details></td></tr>').join('')
       + '</tbody></table>';
     box.innerHTML = h;
@@ -4295,7 +4766,7 @@ function finShipFeesPoll(once) {
   ownerApi('/api/shipment-fees/status').then(d => {
     if (!d) return;
     if (d.running) { out.innerHTML = '<div class="hint">Asking Amazon… ' + (d.progress || '') + '</div>'; setTimeout(finShipFeesPoll, 2500); return; }
-    if (d.error) { out.innerHTML = '<div class="hint" style="color:#c0392b"><b>Amazon returned an error:</b> ' + d.error + '</div>'; return; }
+    if (d.error) { out.innerHTML = '<div class="hint" style="color:#c0392b"><b>Amazon returned an error:</b> ' + esc(d.error) + '</div>'; return; }
     if (!d.done) { if (!once) out.innerHTML = ''; return; }
     finShipFeesRender(d);
   });
@@ -4323,13 +4794,13 @@ function finShipFeesRender(d) {
       + '<table style="font-size:12px;margin-top:4px"><thead><tr><th>Plan</th><th>Created</th><th>Status</th><th style="text-align:right">Shipments</th><th style="text-align:right">Placement</th><th>Note</th></tr></thead><tbody>'
       + d.planList.map(p => '<tr><td>' + p.plan + '</td><td>' + String(p.created || '').slice(0, 10) + '</td><td>' + (p.status || '') + '</td>'
           + '<td style="text-align:right">' + p.shipments + '</td><td style="text-align:right">' + (p.placement ? fin$(p.placement, 2) : '—') + '</td>'
-          + '<td style="color:#b7791f">' + (p.note || '') + '</td></tr>').join('')
+          + '<td style="color:#b7791f">' + (esc(p.note || '')) + '</td></tr>').join('')
       + '</tbody></table></details>';
   }
   h += '<div style="overflow-x:auto"><table style="margin-top:6px;min-width:720px"><thead><tr><th>Shipment</th><th>Plan created</th><th style="text-align:right">Units</th>'
     + '<th style="text-align:right">Freight</th><th style="text-align:right">Placement</th><th>Carrier</th></tr></thead><tbody>'
     + (rows.length ? rows.map(r => '<tr><td><div style="font-family:monospace;font-weight:700">' + (r.shipmentId || '(no ID yet)') + '</div>'
-        + '<div style="font-size:11px;color:#5a6472">' + (r.name || r.plan || '') + '</div>'
+        + '<div style="font-size:11px;color:#5a6472">' + (esc(r.name || r.plan || '')) + '</div>'
         + (r.inApp ? '' : '<div style="font-size:10px;color:#2563a8">not shipped through the app yet — fees will attach once it is</div>') + '</td>'
         + '<td>' + String(r.planCreated || '').slice(0, 10) + '</td><td style="text-align:right">' + (r.units || 0).toLocaleString() + '</td>'
         + '<td style="text-align:right">' + cellFor(r.freight) + '</td><td style="text-align:right">' + cellFor(r.placement) + '</td>'
@@ -4379,14 +4850,14 @@ function loadPnl(){
           const el=document.getElementById('pnlMonth'); if(el) el.value=m; }
   b.innerHTML='<div class="hint" style="padding:16px">Building…</div>';
   ownerApi('/api/pnl?month='+encodeURIComponent(m)).then(d=>{
-    if(!d||d.error){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">'+((d&&d.error)||'Could not load — deploy the latest server.js.')+'</div>'; return; }
+    if(!d||d.error){ b.innerHTML='<div class="hint" style="padding:16px;color:#c0392b">'+(esc((d&&d.error)||'Could not load — deploy the latest server.js.'))+'</div>'; return; }
     const money=v=>(v==null?null:(v<0?'-$':'$')+Math.abs(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}));
     const line=(label,val,opts)=>{
       opts=opts||{};
       const missing=(val==null);
       return '<tr'+(opts.bold?' style="font-weight:800"':'')+(opts.top?' style="border-top:2px solid #cfd8e3;font-weight:800"':'')+'>'
-        +'<td style="padding:7px 0">'+label
-        +(opts.note?'<div style="font-size:11px;color:#9db0c9;font-weight:400">'+opts.note+'</div>':'')+'</td>'
+        +'<td style="padding:7px 0">'+esc(label)
+        +(opts.note?'<div style="font-size:11px;color:#9db0c9;font-weight:400">'+esc(opts.note)+'</div>':'')+'</td>'
         +'<td style="text-align:right;white-space:nowrap;'+(opts.neg?'color:#c0392b;':'')+(opts.bold||opts.top?'font-size:16px;':'')+'">'
         +(missing?'<span style="color:#b7791f;font-weight:700">— not tracked yet</span>':money(val))+'</td>'
         +'<td style="text-align:right;width:120px">'+(opts.src||'')+'</td></tr>';
@@ -4427,7 +4898,7 @@ function loadPnl(){
     h+=line('Prep labor', d.labor, {neg:true, src:TODO, note:'needs a timesheet upload'});
     h+=line('Supplies', d.supplies, {neg:true, src:TODO, note:'needs per-unit costs by size'});
     h+=line('Overhead', d.overhead, {neg:true, src:TODO, note:'rent, insurance, utilities'});
-    h+=line('NET PROFIT', d.netProfit||0, {top:true});
+    h+=line('NET PROFIT', d.netProfit, {top:true});  // null = costs missing → shown as not tracked, not $0
     h+='</tbody></table>';
     h+='<div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;padding-top:12px;border-top:1px solid #eef2f6">'
       +'<div><div style="font-size:11px;color:#8a97a6;font-weight:700">MARGIN ON NET SALES</div><div style="font-size:22px;font-weight:800;color:'+((d.marginPct||0)>=20?'#1e8449':'#b7791f')+'">'+(d.marginPct==null?'—':d.marginPct.toFixed(1)+'%')+'</div></div>'
@@ -4454,7 +4925,7 @@ function loadPnl(){
         h+='<div class="hint" style="margin-top:10px;font-weight:700">Biggest sellers with no cost — price these first</div>'
           +'<table style="margin-top:4px"><thead><tr><th>ASIN</th><th>Product</th><th style="text-align:right">Units</th></tr></thead><tbody>'
           +g.topUnpriced.map(x=>'<tr><td style="font-family:monospace;font-size:12px">'+x.asin+'</td>'
-            +'<td style="font-size:12px">'+(x.name||(x.known?'':'<i style="color:#b7791f">not in catalogue</i>'))+'</td>'
+            +'<td style="font-size:12px">'+(esc(x.name)||(x.known?'':'<i style="color:#b7791f">not in catalogue</i>'))+'</td>'
             +'<td style="text-align:right;font-weight:700">'+x.units+'</td></tr>').join('')
           +'</tbody></table>';
       }
@@ -4494,7 +4965,7 @@ function pollSettlements(){
     const b=document.getElementById('setSyncBtn'), o=document.getElementById('setOut');
     if(j.running){ o.innerHTML='<div class="hint" style="padding:10px">'+(j.progress||'working…')+'</div>'; setTimeout(pollSettlements,4000); return; }
     if(b){ b.disabled=false; b.textContent='⤓ Pull settlements from Amazon'; }
-    if(j.error){ o.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+j.error+'</div>'; return; }
+    if(j.error){ o.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Failed: '+esc(j.error)+'</div>'; return; }
     const ok=(j.reports>0);
     let head='<div class="box" style="margin-top:10px;border:2px solid '+(ok?'#1e8449':'#b7791f')+';background:'+(ok?'#f4fbf7':'#fffdf7')+'">'
       +'<div style="font-weight:800;color:'+(ok?'#1e8449':'#b7791f')+'">'+(ok?'✅ ':'⚠️ ')+(j.progress||'Done')+'</div>';
@@ -4505,7 +4976,7 @@ function pollSettlements(){
       head+='<div class="hint" style="margin-top:8px"><b>What Amazon returned:</b></div>'
         +'<table style="margin-top:4px"><thead><tr><th>Report type</th><th>Query</th><th>Seen</th><th>Result</th></tr></thead><tbody>'
         +j.attempts.map(a=>'<tr><td style="font-family:monospace;font-size:11px">'+a.reportType+'</td><td style="font-size:12px">'+a.variant+'</td><td>'+a.seen+'</td>'
-          +'<td style="font-size:11px;color:'+(a.error?'#c0392b':'#5a6472')+'">'+(a.error||'ok')+'</td></tr>').join('')
+          +'<td style="font-size:11px;color:'+(a.error?'#c0392b':'#5a6472')+'">'+(esc(a.error||'ok'))+'</td></tr>').join('')
         +'</tbody></table>';
     }
     head+='</div>';
@@ -4539,7 +5010,7 @@ function loadSettlementSummary(){
     h+='<table><thead><tr><th>Product</th><th>Units</th><th>Net Sales</th><th>Fees</th><th>Fee %</th><th>Refund %</th><th>Deposited</th><th>COGS</th><th>Profit</th><th>Margin</th></tr></thead><tbody>';
     for(const x of d.items){
       const mCol=x.marginPct==null?'':(x.marginPct<10?'color:#c0392b;font-weight:700':(x.marginPct>=25?'color:#1e8449;font-weight:700':''));
-      h+='<tr><td style="max-width:280px">'+(x.asin?'<a href="https://www.amazon.com/dp/'+x.asin+'" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">'+x.name+'</a>':x.name)
+      h+='<tr><td style="max-width:280px">'+(x.asin?'<a href="https://www.amazon.com/dp/'+x.asin+'" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">'+esc(x.name)+'</a>':esc(x.name))
         +'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+(x.asin||x.sku||'')+'</div></td>'
         +'<td>'+x.netUnits+(x.unitsRefunded?'<div style="font-size:10px;color:#c0392b">'+x.unitsRefunded+' returned</div>':'')+'</td>'
         +'<td>$'+x.netSales.toFixed(2)+'</td>'
@@ -4594,7 +5065,7 @@ function costImport(commit){
   fd.append('commit', commit?'true':'false');
   out.innerHTML='<div class="hint" style="padding:10px">Reading '+inp.files.length+' file(s)…</div>';
   ownerApi('/api/costs/import-invoice',{method:'POST',body:fd}).then(d=>{
-    if(!d||d.error){ out.innerHTML='<div class="hint" style="color:#c0392b;padding:10px">'+((d&&d.error)||'Failed')+'</div>'; return; }
+    if(!d||d.error){ out.innerHTML='<div class="hint" style="color:#c0392b;padding:10px">'+(esc((d&&d.error)||'Failed'))+'</div>'; return; }
     let h='';
     if(d.commit){
       h='<div class="box" style="border:2px solid #1e8449;background:#f6fbf8"><b style="color:#1e8449">Saved '+d.written+' cost lot(s)</b>'
@@ -4614,7 +5085,7 @@ function costImport(commit){
       });
       if(d.lots && d.lots.length){
         h+='<table style="margin-top:8px"><thead><tr><th>Product</th><th>Order</th><th style="text-align:right">Unit cost</th><th style="text-align:right">Qty</th></tr></thead><tbody>'
-          +d.lots.slice(0,60).map(l=>'<tr><td style="font-size:12px">'+(l.name||l.asin)+'</td>'
+          +d.lots.slice(0,60).map(l=>'<tr><td style="font-size:12px">'+(esc(l.name||l.asin))+'</td>'
             +'<td style="font-family:monospace;font-size:11px">'+l.order_number+'</td>'
             +'<td style="text-align:right;font-weight:700">$'+Number(l.unit_cost).toFixed(2)+'</td>'
             +'<td style="text-align:right">'+l.qty+'</td></tr>').join('')
@@ -4707,7 +5178,7 @@ function renderCosts(){
       +'<tr><td>…and with a received quantity</td><td><b>'+(g.linesReadyToBackfill!=null?g.linesReadyToBackfill:'?')+'</b></td></tr>'
       +'<tr><td>Invoices marked received</td><td>'+(g.receivedInvoices!=null?g.receivedInvoices:'?')+'</td></tr>'
       +'</tbody></table>';
-    if(g.error) why+='<div class="hint" style="color:#c0392b">Diagnostic error: '+g.error+' — the cost tables may not have been created. Check the Railway boot log for "Cost history ready."</div>';
+    if(g.error) why+='<div class="hint" style="color:#c0392b">Diagnostic error: '+esc(g.error)+' — the cost tables may not have been created. Check the Railway boot log for "Cost history ready."</div>';
     else if(g.linesReadyToBackfill>0) why+='<div class="hint" style="margin-top:8px"><b>'+g.linesReadyToBackfill+' lines are ready.</b> Hit <b>⤵ Backfill from past invoices</b> above.</div>';
     else if(g.linesWithCostAndAsin>0) why+='<div class="hint" style="margin-top:8px">Costs exist but no line has a received quantity. Backfill and choose the pending/expected option when prompted.</div>';
     else if(g.linesWithCost>0) why+='<div class="hint" style="margin-top:8px">Costs exist but the lines are not linked to products. Link them on the Order Check-In page first.</div>';
@@ -4739,7 +5210,7 @@ function renderCosts(){
     const savedTag=x.saleUnits?'<div style="font-size:10px;color:#1e8449;font-weight:700">saved $'+Math.round(x.saved).toLocaleString()+'</div>':'';
     const marginCol=x.marginPct==null?'':(x.marginPct<15?'color:#c0392b;font-weight:700':(x.marginPct>=30?'color:#1e8449;font-weight:700':''));
     h+='<tr>'
-      +'<td style="max-width:300px"><a href="https://www.amazon.com/dp/'+x.asin+'" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">'+x.name+'</a>'
+      +'<td style="max-width:300px"><a href="https://www.amazon.com/dp/'+x.asin+'" target="_blank" style="color:#127a7a;text-decoration:none;font-weight:600">'+esc(x.name)+'</a>'
       +'<div style="font-family:monospace;font-size:11px;color:#2563a8">'+x.asin+'</div></td>'
       +'<td>'+money(x.regularCost)+'</td>'
       +'<td><b>'+money(x.avgCost)+'</b>'+(x.lowestSale?'<div style="font-size:10px;color:#9db0c9">sale low '+money(x.lowestSale)+'</div>':'')+'</td>'
@@ -4762,7 +5233,7 @@ function renderCosts(){
 function cycleHazmat(asin){
   const row=(window._toaddData||[]).find(x=>x.asin===asin); if(!row)return;
   const next = row.hazmat===true ? false : (row.hazmat===false ? null : true);
-  api('/api/hazmat/set',{method:'POST',body:JSON.stringify({asin:asin, hazmat:next})}).then(d=>{
+  ownerApi('/api/hazmat/set',{method:'POST',body:JSON.stringify({asin:asin, hazmat:next})}).then(d=>{
     if(d && d.error){ toast(d.error,true); return; }
     if(!d || typeof d.hazmat === 'undefined'){
       toast('Not saved — server did not accept the hazmat flag. Deploy the latest server.js.',true);
@@ -4776,7 +5247,7 @@ function cycleHazmat(asin){
 
 function startHazmatScan(){
   const b=document.getElementById('hazScanBtn'); if(b){ b.disabled=true; b.textContent='Checking Amazon…'; }
-  api('/api/hazmat/scan',{method:'POST'}).then(()=>pollHazmat()).catch(()=>{ if(b){b.disabled=false;b.textContent='⚠️ Check hazmat with Amazon';} });
+  ownerApi('/api/hazmat/scan',{method:'POST'}).then(()=>pollHazmat()).catch(()=>{ if(b){b.disabled=false;b.textContent='⚠️ Check hazmat with Amazon';} });
 }
 function pollHazmat(){
   api('/api/hazmat/status').then(j=>{
@@ -4823,7 +5294,7 @@ function loadFreshness(){
       const fg = !ts ? '#c0392b' : (stale?'#b7791f':'#1e8449');
       return '<span style="display:inline-flex;align-items:center;gap:5px;background:'+bg+';color:'+fg
         +';padding:4px 10px;border-radius:6px;font-size:11.5px;font-weight:700;white-space:nowrap">'
-        +(!ts?'⚠':(stale?'⌛':'✓'))+' '+f.label+': '+(age||'NEVER LOADED')
+        +(!ts?'⚠':(stale?'⌛':'✓'))+' '+esc(f.label)+': '+(age||'NEVER LOADED')
         +(c&&c.count?'<span style="font-weight:400;opacity:.75"> ('+c.count+')</span>':'')+'</span>';
     }).join(' ');
     bar.innerHTML='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:1px solid '
@@ -4858,12 +5329,12 @@ function loadMappingHealth(){
         const img=c.image?'<img src="'+c.image+'" onerror="this.style.display=\'none\'" style="width:44px;height:44px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:44px;height:44px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
         h+='<div style="background:#fff;border:1px solid #f3d9d6;border-radius:7px;padding:10px;margin-bottom:8px">'
           +'<div style="display:flex;gap:10px;align-items:center;margin-bottom:7px">'+img
-          +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px;line-height:1.3">'+(c.name||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
+          +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px;line-height:1.3">'+(esc(c.name)||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
           +'<div style="font-family:monospace;font-size:11px;color:#2563a8;margin-top:2px">'+c.asin+'</div></div></div>';
         for(const nm of c.numbers){
           h+='<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid #f7eceb;flex-wrap:wrap">'
             +'<span style="font-family:monospace;font-weight:800;font-size:12.5px;min-width:60px">'+nm.cosmo_num+'</span>'
-            +'<span style="flex:1;min-width:140px;font-size:12px;color:#5a6472">'+(nm.description||'<i>no invoice description yet</i>')+'</span>'
+            +'<span style="flex:1;min-width:140px;font-size:12px;color:#5a6472">'+(esc(nm.description)||'<i>no invoice description yet</i>')+'</span>'
             +'<button onclick="unlinkCosmo(\''+nm.cosmo_num+'\')" style="padding:5px 10px;font-size:11px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:5px;cursor:pointer">Unlink</button>'
             +'</div>';
         }
@@ -4886,7 +5357,7 @@ function loadMappingHealth(){
       for(const m of d.missingUpc.slice(0,40)){
         const img=m.image?'<img src="'+m.image+'" onerror="this.style.display=\'none\'" style="width:38px;height:38px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:38px;height:38px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
         h+='<div style="display:flex;gap:9px;align-items:center;padding:7px 0;border-bottom:1px solid #eef2f6">'+img
-          +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12.5px;line-height:1.3">'+m.name+'</div>'
+          +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12.5px;line-height:1.3">'+esc(m.name)+'</div>'
           +'<div style="font-size:11px;color:#8a97a6;margin-top:2px"><span style="font-family:monospace;color:#2563a8">'+m.asin+'</span>'
           +(m.location?' · 📍'+m.location:'')+(m.is_component?' · <b style="color:#c0392b">DUO COMPONENT</b>':'')+'</div></div>'
           +'<span style="white-space:nowrap;font-weight:800;font-size:13px;color:'+(m.onhand>0?'#1e8449':'#9db0c9')+'">'+m.onhand+'</span>'
@@ -4903,7 +5374,7 @@ function loadMappingHealth(){
       const img=r.image?'<img src="'+r.image+'" onerror="this.style.display=\'none\'" style="width:40px;height:40px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:40px;height:40px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
       return '<div style="display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6">'
         +img
-        +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;line-height:1.3">'+(r.name||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
+        +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;line-height:1.3">'+(esc(r.name)||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
         +'<div style="font-size:11px;color:#8a97a6;margin-top:2px">Cosmo# '+r.cosmo_num+' · <span style="font-family:monospace;color:#2563a8">'+(r.asin||'—')+'</span>'
         +(r.is_component?' · <b style="color:#c0392b">DUO COMPONENT</b>':'')+'</div></div>'
         +'<span style="white-space:nowrap;font-size:11px;font-weight:800;padding:3px 9px;border-radius:5px;background:'+(r.verified?'#eafaf1':'#fdeceb')+';color:'+(r.verified?'#1e8449':'#c0392b')+'">'+(r.verified?'✅ VERIFIED':'⚠ GUESS')+'</span>'
@@ -4938,6 +5409,7 @@ function receiveAllExpected(){
   if(!currentInvoice)return;
   if(!confirm('Set every linked line to its invoice quantity?\n\nUse this when the truck matched the paperwork — then scan or edit only the exceptions.'))return;
   api('/api/invoices/'+currentInvoice+'/receive-all',{method:'POST'}).then(d=>{
+    if(invoiceLocked(d)) return;
     toast('Set '+(d.lines||0)+' lines to expected');
     renderReconLines();
   });
@@ -4966,14 +5438,14 @@ function showReconPreview(d){
   h+='<div style="max-height:320px;overflow:auto;font-size:12.5px;border-top:1px solid #ece6f5">';
   for(const r of (d.preview||[])){
     h+='<div style="display:flex;justify-content:space-between;gap:8px;padding:7px 0;border-bottom:1px solid #ece6f5">'
-      +'<span style="flex:1;line-height:1.3">'+(r.willAdd?'✅':'⛔')+' '+String(r.description||'').slice(0,54)
+      +'<span style="flex:1;line-height:1.3">'+(r.willAdd?'✅':'⛔')+' '+esc(String(r.description||'').slice(0,54))
       +(r.location?' <b style="color:#1a2b4a">📍'+r.location+'</b>':'')+'</span>'
-      +'<span style="font-weight:800;white-space:nowrap;color:'+(r.willAdd?'#1e8449':'#c0392b')+'">'+(r.willAdd?'+'+r.qty:(r.reason||'—'))+'</span></div>';
+      +'<span style="font-weight:800;white-space:nowrap;color:'+(r.willAdd?'#1e8449':'#c0392b')+'">'+(esc(r.willAdd?'+'+r.qty:(r.reason||'—')))+'</span></div>';
   }
   h+='</div>';
   if(d.discrepancies && d.discrepancies.length){
     h+='<div style="margin-top:10px;font-weight:800;color:#c0392b;font-size:13px">Discrepancies ('+d.discrepancies.length+')</div>';
-    for(const x of d.discrepancies) h+='<div style="font-size:12px;color:#c0392b;margin-top:2px">• '+String(x.description).slice(0,50)+': expected '+x.expected+', received '+x.received+'</div>';
+    for(const x of d.discrepancies) h+='<div style="font-size:12px;color:#c0392b;margin-top:2px">• '+esc(String(x.description).slice(0,50))+': expected '+x.expected+', received '+x.received+'</div>';
   }
   h+='<button class="action full" onclick="document.getElementById(\'reconPreview\').innerHTML=\'\'" style="margin-top:12px;background:#5a6472">Close preview</button></div>';
   box.innerHTML=h;
@@ -5037,7 +5509,7 @@ function renderReconLines(){
           +'</div>';
       }
       return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
-        <div style="font-weight:700;font-size:13px">${nm}</div>
+        <div style="font-weight:700;font-size:13px">${esc(nm)}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
           <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:64px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${rec} / ${exp} &nbsp; ${status}</span>
@@ -5065,7 +5537,9 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
     if(qtyStr===null){ if(window._resetScan)window._resetScan('Recon'); return; } // cancelled
     const qty = parseInt(qtyStr);
     if(!qty || qty<1){ toast('Enter a valid quantity',true); if(window._resetScan)window._resetScan('Recon'); return; }
+    if(!qtyOk(qty)){ if(window._resetScan)window._resetScan('Recon'); return; }
     api('/api/invoices/'+currentInvoice+'/scan',{method:'POST',body:JSON.stringify({code,qty})}).then(d=>{
+      if(invoiceLocked(d)){ if(window._resetScan)window._resetScan('Recon'); return; }
       if(d.ok){
         scanFeedback();
         toast((d.justVerified?'✅ VERIFIED · ':'')+'+'+qty+' '+(d.line.name||'').slice(0,20)+' ('+d.line.qty_received+'/'+d.line.qty_expected+')');
@@ -5082,7 +5556,8 @@ document.getElementById('scanRecon').addEventListener('keydown', e=>{
 function deleteInvoice(){
   if(!currentInvoice)return;
   if(!confirm('Delete invoice '+currentInvoice+'? This removes it entirely (nothing added to on-hand). Use this to clear a bad/scrambled import.'))return;
-  api('/api/invoices/'+currentInvoice+'/delete',{method:'POST'}).then(()=>{
+  withOwner('/api/invoices/'+currentInvoice+'/delete',{method:'POST'}).then(d=>{
+    if(d && d.ok===false){ toast(d.error,true); return; }
     toast('Invoice deleted');
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
     document.getElementById('invoicePick').value='';
@@ -5108,6 +5583,13 @@ function completeInvoiceNoStock(){
   completeInvoice(true, true);
 }
 
+// A checked-in invoice refuses scans (its stock was added when it was
+// completed). Say so plainly instead of a misleading "not on this invoice".
+function invoiceLocked(d){
+  if(d && d.ok===false && d.error==='already_completed'){ alert(d.message); return true; }
+  if(d && d.ok===false && d.error && !d.reason){ toast(d.message||d.error,true); return true; }
+  return false;
+}
 function completeInvoice(force, skipStock){
   if(!currentInvoice)return;
   const c=collectLocations();
@@ -5115,7 +5597,13 @@ function completeInvoice(force, skipStock){
     if(c.missing && !confirm(c.missing+' item'+(c.missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
     if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
   }
+  // One request at a time: a second tap while the first is still running
+  // used to add the invoice's stock twice.
+  if(window._completing) return;
+  window._completing=true;
   api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations:c.locations,force:!!force,skipStock:!!skipStock})}).then(d=>{
+    window._completing=false;
+    if(d && d.ok===false && d.error==='already_completed'){ alert(d.message); return; }
     // HARD STOP — unlinked lines would be silently lost, so the server refuses.
     if(d && d.ok===false && d.error==='unmapped_lines'){
       const list=(d.unmapped||[]).map(u=>'  • #'+u.cosmo_num+'  '+String(u.description||'').slice(0,44)+'  ('+(u.qty_received||u.qty_expected||0)+' units)').join('\n');
@@ -5135,7 +5623,7 @@ function completeInvoice(force, skipStock){
     alert(msg);
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
     loadInvoiceList(); loadLocations(); loadProducts();
-  });
+  }).catch(e=>{ window._completing=false; alert('Could not complete the invoice: '+(e&&e.message||e)+'\n\nNothing was added. Check the connection and try again.'); });
 }
 
 // ---- BUNDLES ----
@@ -5146,7 +5634,7 @@ function filterBundlePick(){
   if(!q){ el.style.display='none'; return; }
   el.style.display='block';
   el.innerHTML=products.filter(p=>p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
-    .map(p=>`<div class="picker-item" onclick="pickBundle('${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+    .map(p=>`<div class="picker-item" onclick="pickBundle('${p.asin}')">${esc(p.name)} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
 }
 function pickBundle(asin){
   const p=products.find(x=>x.asin===asin); bundleSel.asin=asin; bundleSel.name=p.name;
@@ -5161,7 +5649,7 @@ function filterComp(n){
   if(!q){ el.style.display='none'; return; }
   el.style.display='block';
   el.innerHTML=products.filter(p=>p.name.toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
-    .map(p=>`<div class="picker-item" onclick="pickComp(${n},'${p.asin}')">${p.name} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
+    .map(p=>`<div class="picker-item" onclick="pickComp(${n},'${p.asin}')">${esc(p.name)} <span style="color:#9db0c9">${p.asin}</span></div>`).join('');
 }
 function pickComp(n,asin){
   const p=products.find(x=>x.asin===asin);
@@ -5188,7 +5676,7 @@ function renderBundles(){
     const b=document.getElementById('bundlesList');
     if(!list.length){ b.innerHTML='<div class="hint">No bundles defined yet.</div>'; return; }
     b.innerHTML=list.map(bn=>`<div class="box" style="margin-bottom:8px">
-      <div style="font-weight:700">${bn.bundle_name}</div>
+      <div style="font-weight:700">${esc(bn.bundle_name)}</div>
       <div class="pmeta" style="margin:4px 0">${bn.bundle_asin} → deducts: ${bn.components.map(c=>`${c.qty}× ${c.name}`).join(' + ')}</div>
       <button class="action danger" style="padding:6px 12px;font-size:12px" onclick="deleteBundle('${bn.bundle_asin}')">Remove</button>
     </div>`).join('');
@@ -5235,7 +5723,7 @@ function shipCostBlock(shipId, units){
       ? '<span style="font-size:10px;font-weight:800;color:#c0392b;white-space:nowrap" title="You entered $'+Number(c.entered_amount).toFixed(2)+', Amazon settled $'+Number(c.amount).toFixed(2)+'">Δ '+(Number(c.variance)>0?'+':'')+Number(c.variance).toFixed(2)+'</span>'
       : '';
     const val=c?Number(c.amount).toFixed(2):'';
-    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#5a6472;white-space:nowrap">'+label
+    return '<label style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#5a6472;white-space:nowrap">'+esc(label)
       +' $<input type="number" step="0.01" min="0" value="'+val+'" '
       +(locked?'disabled title="Amazon has billed this — the settled amount stands" ':'')
       +'onchange="saveShipCost(\''+shipId+'\',\''+k+'\',this.value)" '
@@ -5278,14 +5766,14 @@ function drawShipments(list,b){
         const recTxt = (s.status==='received' && rec!=null)
           ? `${rec} / ${it.qty}` + (isShort?` <span class="short-flag">(short ${it.qty-rec})</span>`:'')
           : `${it.qty} sent`;
-        const idPill=(icon,label,val,color)=>val?`<span style="display:inline-flex;align-items:center;gap:3px;margin-right:10px"><span style="font-size:9px;font-weight:800;color:#5a6472;text-transform:uppercase">${icon} ${label}</span><span style="font-family:monospace;font-size:12px;font-weight:700;color:#1a2b4a;background:${color};padding:2px 7px;border-radius:4px;cursor:pointer" onclick="copyText('${val}',this)" title="click to copy">${val}</span></span>`:'';
+        const idPill=(icon,label,val,color)=>val?`<span style="display:inline-flex;align-items:center;gap:3px;margin-right:10px"><span style="font-size:9px;font-weight:800;color:#5a6472;text-transform:uppercase">${icon} ${esc(label)}</span><span style="font-family:monospace;font-size:12px;font-weight:700;color:#1a2b4a;background:${color};padding:2px 7px;border-radius:4px;cursor:pointer" onclick="copyText('${val}',this)" title="click to copy">${val}</span></span>`:'';
         const ids=`<div style="margin-top:4px">${idPill('🏷️','ASIN',it.asin,'#eef4fb')}${idPill('📦','FNSKU',it.fnsku,'#fdf3e6')}${it.sku?idPill('🔖','SKU',it.sku,'#f0f4ef'):''}</div>`;
         const img=it.image?`<img src="${it.image}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0;margin-right:10px">`:'';
-        return `<div class="ship-item-row ${isShort?'short':''}" style="align-items:flex-start"><span style="flex:1;display:flex;align-items:flex-start">${img}<span><a href="https://www.amazon.com/dp/${it.asin}" target="_blank" style="color:#1f2733;text-decoration:none;font-weight:600">${it.name}</a>${ids}</span></span><span class="qty-cmp" style="white-space:nowrap;font-weight:700;padding-left:10px">${recTxt}</span></div>`;
+        return `<div class="ship-item-row ${isShort?'short':''}" style="align-items:flex-start"><span style="flex:1;display:flex;align-items:flex-start">${img}<span><a href="https://www.amazon.com/dp/${it.asin}" target="_blank" style="color:#1f2733;text-decoration:none;font-weight:600">${esc(it.name)}</a>${ids}</span></span><span class="qty-cmp" style="white-space:nowrap;font-weight:700;padding-left:10px">${recTxt}</span></div>`;
       }).join('');
       return `<div class="ship-card">
         <div class="ship-head" onclick="document.getElementById('si${i}').classList.toggle('open')">
-          <div><div class="ship-title">${title}</div><div class="ship-sub">${s.shipment_id} · ${totalSent} units sent · ${new Date(s.created_at).toLocaleDateString()}</div></div>
+          <div><div class="ship-title">${esc(title)}</div><div class="ship-sub">${s.shipment_id} · ${totalSent} units sent · ${new Date(s.created_at).toLocaleDateString()}</div></div>
           ${badge}
         </div>
         <div class="ship-items" id="si${i}">${rows||'<div class="ship-item-row">No items</div>'}</div>
@@ -5298,12 +5786,12 @@ function drawShipments(list,b){
         +'<b style="color:#b7791f;font-size:15px">⚠ '+d.unlinked.length+' inbound fee(s) from Amazon with no shipment attached</b>'
         +'<div class="hint">Amazon billed these but did not say which shipment. Pick one and the charge moves onto it as the actual cost.</div>'
         +d.unlinked.map(f=>'<div style="display:flex;gap:9px;align-items:center;padding:7px 0;border-bottom:1px solid #f0ead9;flex-wrap:wrap">'
-          +'<span style="flex:1;min-width:190px;font-size:12.5px">'+(f.description||'fee')
+          +'<span style="flex:1;min-width:190px;font-size:12.5px">'+(esc(f.description||'fee'))
           +'<div style="font-size:11px;color:#8a97a6">'+(f.posted_date?String(f.posted_date).slice(0,10):'')+' · settlement '+(f.settlement_id||'—')+'</div></span>'
           +'<b style="white-space:nowrap">$'+Math.abs(Number(f.amount)).toFixed(2)+'</b>'
           +'<select onchange="linkShipFee('+f.id+',this.value)" style="padding:7px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12.5px">'
           +'<option value="">— attach to shipment —</option>'
-          +list.map(s=>'<option value="'+s.shipment_id+'">'+(s.shipment_name||s.shipment_id)+'</option>').join('')
+          +list.map(s=>'<option value="'+s.shipment_id+'">'+(esc(s.shipment_name||s.shipment_id))+'</option>').join('')
           +'</select></div>').join('')
         +'</div>' + b.innerHTML;
     }
@@ -5322,7 +5810,7 @@ function renderTransit(){
     const b=document.getElementById('transitBody');
     if(!rows.length){b.innerHTML='<div class="hint">Nothing in transit right now.</div>';return;}
     b.innerHTML=rows.map(s=>`<div class="box" style="margin-bottom:10px">
-      <div style="font-weight:700">${s.shipment_name||s.shipment_id}</div>
+      <div style="font-weight:700">${esc(s.shipment_name||s.shipment_id)}</div>
       <div class="pmeta" style="margin:4px 0">ID: ${s.shipment_id} · <b>${s.units}</b> units · sent ${new Date(s.created_at).toLocaleDateString()}</div>
       <button class="action" style="padding:8px 14px;font-size:13px" onclick="markReceived('${s.shipment_id}')">Mark Received</button>
     </div>`).join('');
@@ -5331,6 +5819,7 @@ function renderTransit(){
 function markReceived(sid){
   if(!confirm('Mark shipment '+sid+' as received? This clears its units from In Transit.'))return;
   api('/api/receive-shipment',{method:'POST',body:JSON.stringify({shipmentId:sid})}).then(d=>{
+    if(d.ok===false){ toast(d.error,true); renderTransit(); return; }
     toast('Cleared '+d.cleared+' units'); renderTransit(); loadProducts();
   });
 }
@@ -5397,8 +5886,8 @@ function renderOnhand(){
   });
   body.innerHTML = '<div class="pcards">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
     const img=p.image?`<img src="${p.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
-    const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${p.name}</a>`:p.name;
-    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${label}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${label}" class="copybtn">📋</button></div>`:'';
+    const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(p.name)}</a>`:p.name;
+    const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     let duoNote='';
     if(p.is_component){
       duoNote='<div style="margin-top:8px;font-size:12px;color:#c0392b;font-weight:700">🔗 PAIRS INTO A DUO <span style="color:#9db0c9;font-weight:600">(partner / qty)</span></div>';
@@ -5494,7 +5983,7 @@ function syncFba(){
 }
 function renderLog(){ api('/api/activity').then(rows=>{ const b=document.getElementById('logBody');
   if(!rows.length){b.innerHTML='<div class="hint">No activity yet.</div>';return;}
-  b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction==='out'?'out':''}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT')}</span> <b>${a.qty}</b> ${a.name} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
+  b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction==='out'?'out':''}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT')}</span> <b>${a.qty}</b> ${esc(a.name)} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
 });}
 
 // ---- SCAN FEEDBACK: vibrate + beep + flash ----
