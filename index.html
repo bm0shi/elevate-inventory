@@ -822,6 +822,10 @@
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div id="undoBar" style="display:none;position:fixed;left:50%;bottom:78px;transform:translateX(-50%);z-index:10000;background:#1a2b4a;color:#fff;border-radius:10px;padding:10px 12px 10px 16px;box-shadow:0 6px 24px rgba(0,0,0,0.3);align-items:center;gap:14px;max-width:calc(100vw - 32px);font-size:14px">
+  <span id="undoText" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></span>
+  <button onclick="doUndo()" style="background:#f6c343;color:#1a2b4a;border:none;border-radius:6px;padding:8px 14px;font-weight:800;cursor:pointer;flex-shrink:0">UNDO</button>
+</div>
 
 <script>
 let PW = '';
@@ -847,6 +851,24 @@ function api(path, opts={}) {
   // A non-JSON reply (proxy error page, server restarting) rejects, so the
   // caller's .catch shows an error instead of a false "done".
   return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
+}
+// Undo: shown for 10 seconds after a receive, ship or prep scan.
+let _undo=null, _undoTimer=null;
+function showUndo(id, text){
+  if(!id) return;
+  _undo={id,text};
+  document.getElementById('undoText').textContent=text;
+  const bar=document.getElementById('undoBar'); bar.style.display='flex';
+  clearTimeout(_undoTimer); _undoTimer=setTimeout(hideUndo,10000);
+}
+function hideUndo(){ document.getElementById('undoBar').style.display='none'; _undo=null; }
+function doUndo(){
+  if(!_undo) return;
+  const u=_undo; hideUndo();
+  api('/api/undo/'+u.id,{method:'POST',body:'{}'}).then(d=>{
+    if(d && d.ok){ toast('Undone: '+u.text); loadProducts(); if(typeof loadPrepList==='function') try{ loadPrepList(); }catch(e){} }
+    else toast('Could not undo: '+((d&&d.error)||'unknown'),true);
+  }).catch(()=>toast('Could not undo — connection problem',true));
 }
 function toast(m, err) { const t=document.getElementById('toast'); t.textContent=m; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',1800); }
 
@@ -983,6 +1005,7 @@ function doReceive(){
     if(!d || d.ok===false || d.error){ toast('NOT received: '+((d&&(d.message||d.error))||'unknown error'),true); return; }
     item._idem=null;
     toast('+'+qty+' '+nm);
+    showUndo(d.undoId,'Received '+qty+' × '+nm);
     resetScanner('In');
     loadProducts();
     if(!scanning['In']) document.getElementById('scanIn').focus();
@@ -1017,6 +1040,7 @@ function doShip(){
     if(!d || d.ok===false || d.error){ toast('NOT shipped: '+((d&&(d.message||d.error))||'unknown error'),true); return; }
     item._idem=null;
     toast('Shipped '+qty);
+    showUndo(d.undoId,'Shipped '+qty+' × '+String(item.name||'').slice(0,26));
     resetScanner('Out');
     loadProducts();
   }).catch(e=>{ window._shipping=false; toast('NOT shipped — connection problem. Tap again to retry (it will not double-count).',true); });
@@ -2843,6 +2867,7 @@ function doPrepScan(code, qty){
     if(!d.ok){ toast(d.reason==='unknown_code'?'Unknown code':'Could not prep',true); document.getElementById('scanPrep').focus(); return; }
     if(typeof scanFeedback==='function') scanFeedback();
     toast('+'+qty+' prepped'+(d.isBundle?' (duo → components)':''));
+    showUndo(d.undoId,'Prepped '+qty+' × '+String((d.product&&d.product.name)||'').slice(0,26));
     if(d.pendingInfo){
       if(d.pendingInfo.over>0){
         alert('⚠ OVER-PREPPED\n\nRequested: '+d.pendingInfo.requested+'\nYou scanned: '+d.pendingInfo.scanned+'\nOver by: '+d.pendingInfo.over+'\n\nThe request is now closed. Verify this is intentional.');

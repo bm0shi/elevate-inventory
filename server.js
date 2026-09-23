@@ -124,6 +124,42 @@ async function pendingInvoiceOnly(req, res, next) {
 const MAX_QTY = 5000;
 function badQty(q) { return !Number.isInteger(q) || q < 1 || q > MAX_QTY; }
 
+// ---- Undo ----
+// A scanner action records how to reverse itself; the browser shows an Undo
+// button for 10 seconds. Safer than asking staff to fix counts by hand.
+// ops: { t:'stock', asin, onhand, transit } adds the deltas;
+//      { t:'prepped', asin, qty } adds to Prepped & Ready;
+//      { t:'pending', id, asin, is_duo, qty } puts qty back on a work order.
+const UNDO_WINDOW_MIN = 10;
+async function recordUndo(db, kind, label, ops) {
+  const r = await db.query('INSERT INTO inv_undo(kind, label, ops) VALUES($1,$2,$3) RETURNING id', [kind, label, JSON.stringify(ops)]);
+  return r.rows[0].id;
+}
+async function applyUndo(db, id) {
+  const r = await db.query('SELECT * FROM inv_undo WHERE id=$1 FOR UPDATE', [id]);
+  const u = r.rows[0];
+  if (!u) return { status: 404, body: { ok: false, error: 'Nothing to undo.' } };
+  if (u.undone_at) return { status: 409, body: { ok: false, error: 'Already undone.' } };
+  if (Date.now() - new Date(u.created_at).getTime() > UNDO_WINDOW_MIN * 60000) {
+    return { status: 409, body: { ok: false, error: `Too late to undo (over ${UNDO_WINDOW_MIN} minutes). Correct it by hand.` } };
+  }
+  for (const op of u.ops || []) {
+    if (op.t === 'stock') {
+      await db.query('UPDATE inv_stock SET onhand = onhand + $2, transit = GREATEST(0, transit + $3) WHERE asin=$1', [op.asin, op.onhand || 0, op.transit || 0]);
+    } else if (op.t === 'prepped') {
+      await db.query('UPDATE inv_prepped SET qty = GREATEST(0, qty + $2), updated_at=now() WHERE asin=$1', [op.asin, op.qty]);
+      await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
+    } else if (op.t === 'pending' && op.qty > 0) {
+      const up = await db.query('UPDATE inv_pending_prep SET qty = qty + $2 WHERE id=$1', [op.id, op.qty]);
+      if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [op.asin, op.qty, !!op.is_duo]);
+    }
+  }
+  await db.query('UPDATE inv_undo SET undone_at=now() WHERE id=$1', [id]);
+  await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+    ['undo', (u.ops && u.ops[0] && u.ops[0].asin) || '', u.label || u.kind, 0, 'Undone: ' + (u.label || u.kind)]);
+  return { status: 200, body: { ok: true, undone: u.label || u.kind } };
+}
+
 async function writeInvoiceLines(orderNumber, date, items, opts = {}) {
   return withTx(async (c) => {
     const cur = await c.query('SELECT status FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [orderNumber]);
@@ -789,6 +825,16 @@ async function initDb() {
       body JSONB,
       created_at TIMESTAMPTZ DEFAULT now()
     );
+    -- What it takes to reverse a recent scanner action (receive, ship, prep
+    -- scan), for the Undo button. Each row can be used once, for 10 minutes.
+    CREATE TABLE IF NOT EXISTS inv_undo (
+      id SERIAL PRIMARY KEY,
+      kind TEXT,
+      label TEXT,
+      ops JSONB,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      undone_at TIMESTAMPTZ
+    );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
       processed_at TIMESTAMPTZ DEFAULT now(),
@@ -1306,10 +1352,11 @@ app.post('/api/receive', auth, async (req, res) => {
     if (!p.rows.length) return null;
     await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand + $2', [asin, q]);
     await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['in', asin, p.rows[0].name || '', q]);
-    return p.rows[0].name || '';
+    const undoId = await recordUndo(db, 'receive', `Received ${q} × ${(p.rows[0].name || asin).slice(0, 40)}`, [{ t: 'stock', asin, onhand: -q }]);
+    return { name: p.rows[0].name || '', undoId };
   });
   if (name === null) return res.status(404).json({ ok: false, error: 'Unknown product ' + asin });
-  res.json({ ok: true, asin, qty: q });
+  res.json({ ok: true, asin, qty: q, undoId: name.undoId });
 });
 
 // ship out (single)
@@ -1322,10 +1369,11 @@ app.post('/api/ship', auth, async (req, res) => {
     if (!p.rows.length) return null;
     await db.query('INSERT INTO inv_stock(asin, onhand, transit) VALUES($1,-$2,$2) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand - $2, transit = inv_stock.transit + $2', [asin, q]);
     await db.query('INSERT INTO inv_activity(direction,asin,name,qty) VALUES($1,$2,$3,$4)', ['out', asin, p.rows[0].name || '', q]);
-    return p.rows[0].name || '';
+    const undoId = await recordUndo(db, 'ship', `Shipped ${q} × ${(p.rows[0].name || asin).slice(0, 40)}`, [{ t: 'stock', asin, onhand: q, transit: -q }]);
+    return { name: p.rows[0].name || '', undoId };
   });
   if (name === null) return res.status(404).json({ ok: false, error: 'Unknown product ' + asin });
-  res.json({ ok: true, asin, qty: q });
+  res.json({ ok: true, asin, qty: q, undoId: name.undoId });
 });
 
 // bulk ship (paste pack slip) — requires a shipment ID; tags units to it
@@ -5822,6 +5870,12 @@ app.post('/api/assign-fnsku', auth, async (req, res) => {
 
 // Scan an item into Prepped. Stores the item AS SCANNED (duo shows as duo, single as single).
 // The on-hand warning still checks component availability underneath.
+app.post('/api/undo/:id', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!id) return res.status(400).json({ ok: false, error: 'bad id' });
+  const out = await withTx(db => applyUndo(db, id));
+  res.status(out.status).json(out.body);
+});
 app.post('/api/prep/scan', auth, async (req, res) => {
   const { code, qty } = req.body;
   const q = parseInt(qty);
@@ -5853,8 +5907,10 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     // decrement the matching PENDING PREP work order (if any). Row-locked: two
     // scans at once used to both read 10 and both write 9.
     let pendingInfo = null;
-    const pend = await db.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 ORDER BY id LIMIT 1 FOR UPDATE', [prod.asin]);
+    const undoOps = [{ t: 'prepped', asin: prod.asin, qty: -q }];
+    const pend = await db.query('SELECT id, qty, is_duo FROM inv_pending_prep WHERE asin=$1 ORDER BY id LIMIT 1 FOR UPDATE', [prod.asin]);
     if (pend.rows.length) {
+      undoOps.push({ t: 'pending', id: pend.rows[0].id, asin: prod.asin, is_duo: pend.rows[0].is_duo, qty: Math.min(q, pend.rows[0].qty) });
       const remaining = pend.rows[0].qty - q;
       pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
       if (remaining <= 0) {
@@ -5865,10 +5921,11 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     }
     await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
       ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
-    return pendingInfo;
+    const undoId = await recordUndo(db, 'prep', `Prepped ${q} × ${(prod.name || prod.asin).slice(0, 40)}`, undoOps);
+    return { pendingInfo, undoId };
   });
 
-  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo: out });
+  res.json({ ok: true, product: prod, qty: q, isBundle, warnings, pendingInfo: out.pendingInfo, undoId: out.undoId });
 });
 
 // How many units of a component ASIN are committed across all prepped items
