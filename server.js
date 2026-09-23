@@ -5498,8 +5498,10 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image, p.location
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image, p.location,
+            COALESCE(st.onhand,0) AS onhand
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
+     LEFT JOIN inv_stock st ON st.asin = pp.asin
      WHERE pp.qty > 0 ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
   // for duos, also return the component names so the worker knows what to grab
   const out = [];
@@ -5507,7 +5509,7 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     let components = [];
     if (r.is_duo) {
       const c = await pool.query(
-        `SELECT b.component_asin AS asin, p.name, p.location, COALESCE(s.onhand,0) AS onhand
+        `SELECT b.component_asin AS asin, p.name, p.location, COALESCE(s.onhand,0) AS onhand, COALESCE(b.qty,1) AS per
          FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin
          LEFT JOIN inv_stock s ON s.asin=b.component_asin
          WHERE b.bundle_asin=$1`, [r.asin]);

@@ -341,6 +341,7 @@
       </select>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
+    <button class="action full" onclick="showPickList()" style="margin-bottom:12px;background:#1a2b4a">🗺 Pick list — walk the racks in order</button>
     <div id="pendingPrepBody"></div>
     <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
@@ -2398,6 +2399,83 @@ function loadPendingPrep(){
   api('/api/pending-prep/list').then(d=>{
     window._pendingPrepData=d;
     renderPendingPrep();
+  });
+}
+// ---- PICK LIST ----
+// Every bottle the listed jobs need, added up per product and sorted by rack
+// (A-1, A-2 … B-20, then no location), so one walk collects everything.
+// Duos are broken into the bottles to grab. A line turns red when the jobs
+// need more than is on hand, before anyone walks over to find out.
+function locOrder(loc){
+  const m=/^([A-Z])-(\d+)$/.exec(String(loc||'').toUpperCase());
+  return m ? m[1].charCodeAt(0)*1000+parseInt(m[2],10) : 1e9;
+}
+function buildPickList(items){
+  const by={};
+  const add=(asin,name,location,onhand,qty,job)=>{
+    const r=by[asin]=by[asin]||{asin,name,location,onhand:Number(onhand)||0,need:0,jobs:[]};
+    r.need+=qty; r.jobs.push(job);
+  };
+  for(const x of items){
+    const job=(x.is_duo?'duo ':'')+x.qty+'× '+String(x.name||x.asin).slice(0,40);
+    if(x.is_duo && x.components && x.components.length){
+      for(const c of x.components) add(c.asin,c.name,c.location,c.onhand,x.qty*(Number(c.per)||1),job);
+    } else add(x.asin,x.name,x.location,x.onhand,x.qty,job);
+  }
+  return Object.values(by).sort((a,b)=>locOrder(a.location)-locOrder(b.location)||String(a.name).localeCompare(String(b.name)));
+}
+function pickListHtml(lines){
+  return '<table class="picklist"><thead><tr><th></th><th>Rack</th><th>Grab</th><th>Product</th><th>On hand</th></tr></thead><tbody>'
+    + lines.map(l=>{
+        const short=l.need>l.onhand;
+        return '<tr'+(short?' class="short"':'')+'><td><input type="checkbox"></td>'
+          +'<td class="loc">'+esc(l.location||'—')+'</td>'
+          +'<td class="need">'+l.need+'</td>'
+          +'<td>'+esc(l.name||l.asin)+'<div class="jobs">'+esc(l.jobs.join(' · '))+'</div></td>'
+          +'<td class="oh">'+l.onhand+(short?'<div class="warn">short '+(l.need-l.onhand)+'</div>':'')+'</td></tr>';
+      }).join('')
+    + '</tbody></table>';
+}
+const PICK_CSS='.picklist{width:100%;border-collapse:collapse;font-size:14px}.picklist th{text-align:left;font-size:11px;color:#5a6472;text-transform:uppercase;padding:6px;border-bottom:2px solid #d8dee6}.picklist td{padding:8px 6px;border-bottom:1px solid #eef2f6;vertical-align:top}.picklist .loc{font-weight:800;white-space:nowrap}.picklist .need{font-weight:800;font-size:18px;color:#7a4fb5}.picklist .jobs{font-size:11px;color:#8a97a6;margin-top:2px}.picklist .oh{text-align:right;white-space:nowrap}.picklist tr.short td{background:#fdeceb}.picklist .warn{color:#c0392b;font-weight:800;font-size:11px}.picklist input{width:20px;height:20px}';
+function showPickList(){
+  const d=window._pendingPrepData;
+  if(!d||!d.items.length){ toast('Nothing pending to pick',true); return; }
+  const items=ppFiltered(d.items);
+  const lines=buildPickList(items);
+  const short=lines.filter(l=>l.need>l.onhand).length;
+  const old=document.getElementById('pickModal'); if(old) old.remove();
+  const m=document.createElement('div'); m.id='pickModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  m.innerHTML='<style>'+PICK_CSS+'</style><div style="background:#fff;border-radius:12px;padding:18px;max-width:760px;width:100%">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:18px">🗺 Pick list</b>'
+    +'<div class="hint">'+items.length+' job'+(items.length===1?'':'s')+' · '+lines.length+' product'+(lines.length===1?'':'s')+' · sorted by rack'
+    +(short?' · <b style="color:#c0392b">'+short+' short</b>':'')+'</div></div>'
+    +'<div style="display:flex;gap:8px"><button class="action" onclick="printPickList()" style="background:#1a2b4a">🖨 Print</button>'
+    +'<button class="action" onclick="document.getElementById(\'pickModal\').remove()" style="background:#5a6472">Close</button></div></div>'
+    +'<div class="hint" style="margin:6px 0 10px">Uses the jobs shown with the current filter. Duos are listed as the bottles to grab.</div>'
+    +pickListHtml(lines)+'</div>';
+  document.body.appendChild(m);
+  window._pickLines=lines;
+}
+function printPickList(){
+  const w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to print',true); return; }
+  w.document.write('<!doctype html><html><head><title>Pick list</title><style>body{font-family:-apple-system,Segoe UI,Arial,sans-serif;margin:18px}'+PICK_CSS+'</style></head><body>'
+    +'<h2 style="margin:0 0 4px">Pick list</h2><div style="color:#5a6472;margin-bottom:12px">'+new Date().toLocaleString()+'</div>'
+    +pickListHtml(window._pickLines||[])+'<script>window.onload=()=>window.print()<\/script></body></html>');
+  w.document.close();
+}
+function ppFiltered(all){
+  const ppFilter=(document.getElementById('ppFilter')||{}).value||'all';
+  const ppQ=((document.getElementById('ppSearch')||{}).value||'').toLowerCase();
+  return all.filter(x=>{
+    if(ppQ && !(x.name||'').toLowerCase().includes(ppQ) && !(x.asin||'').toLowerCase().includes(ppQ) && !(x.fnsku||'').toLowerCase().includes(ppQ)) return false;
+    if(ppFilter==='duos' && !x.is_duo) return false;
+    if(ppFilter==='singles' && x.is_duo) return false;
+    if(ppFilter==='unclaimed' && x.claimed_by) return false;
+    if(ppFilter==='inprogress' && !x.claimed_by) return false;
+    if(ppFilter==='notinplan' && x.in_plan) return false;
+    if(ppFilter==='inplan' && !x.in_plan) return false;
+    return true;
   });
 }
 function renderPendingPrep(){
