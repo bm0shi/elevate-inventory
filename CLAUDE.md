@@ -77,6 +77,17 @@ These live in comments next to the code. Read the comment before changing the co
 - Comments explain *why*, often with the incident that caused the rule. Keep that style.
 - Keep changes surgical. These files are large, and whole-file rewrites have broken things before.
 
+### Rules for anything that moves stock or money
+
+- **Errors:** every `app.get/post/...` handler is wrapped (see `wrapAsync`), so a thrown error becomes a 400/500 JSON reply instead of crashing the process. Don't add bare `process.exit` or unhandled timers.
+- **Transactions:** a change that touches more than one row or table goes through `withTx(async (db) => { ... })`, using `db.query` inside. Lock the row that decides whether the action is allowed (`SELECT ... FOR UPDATE`) and check its state inside the transaction. Examples: invoice complete, `lockShipment`, prep complete.
+- **Once only:** stock actions must be safe to send twice. Invoices can be completed once; a shipment's units are deducted once (`lockShipment`); marking a shipment received works only while it's `in_transit`.
+- **Action ids:** the browser sends `x-idem-key` (from `newIdem()`) on stock-changing POSTs. The `idempotency` middleware replays the first reply for a repeated id. Reuse the same id when retrying the same action.
+- **Quantities:** validate with `badQty(q)` (1..`MAX_QTY`). A barcode typed into a qty box is the usual cause of absurd quantities.
+- **Prepped:** stored as scanned (single under its ASIN, duo under the duo ASIN). Use `consumePrepped` when shipping.
+- **Front end:** wrap any outside text (names, descriptions, error messages) in `esc()` before putting it into HTML. Check `d.ok === false` / `d.error` on every stock action and show the failure; never toast success without checking.
+- **Amazon:** go through the `http` client in `spapi.js` (fresh token per request, timeout). Don't swallow errors into empty results — callers treat empty as "nothing there".
+
 ## Checking a change
 
 There's no test suite yet. At minimum:
