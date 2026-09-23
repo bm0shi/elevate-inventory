@@ -817,7 +817,9 @@ let currentIn = null, currentOut = null, pendingUpc = null;
 
 function api(path, opts={}) {
   opts.headers = Object.assign({'Content-Type':'application/json','x-app-password':PW}, opts.headers||{});
-  return fetch(path, opts).then(r => r.json());
+  // A non-JSON reply (proxy error page, server restarting) rejects, so the
+  // caller's .catch shows an error instead of a false "done".
+  return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
 }
 function toast(m, err) { const t=document.getElementById('toast'); t.textContent=m; t.className='toast show'+(err?' err':''); setTimeout(()=>t.className='toast',1800); }
 
@@ -5115,7 +5117,13 @@ function completeInvoice(force, skipStock){
     if(c.missing && !confirm(c.missing+' item'+(c.missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
     if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
   }
+  // One request at a time: a second tap while the first is still running
+  // used to add the invoice's stock twice.
+  if(window._completing) return;
+  window._completing=true;
   api('/api/invoices/'+currentInvoice+'/complete',{method:'POST',body:JSON.stringify({locations:c.locations,force:!!force,skipStock:!!skipStock})}).then(d=>{
+    window._completing=false;
+    if(d && d.ok===false && d.error==='already_completed'){ alert(d.message); return; }
     // HARD STOP — unlinked lines would be silently lost, so the server refuses.
     if(d && d.ok===false && d.error==='unmapped_lines'){
       const list=(d.unmapped||[]).map(u=>'  • #'+u.cosmo_num+'  '+String(u.description||'').slice(0,44)+'  ('+(u.qty_received||u.qty_expected||0)+' units)').join('\n');
@@ -5135,7 +5143,7 @@ function completeInvoice(force, skipStock){
     alert(msg);
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
     loadInvoiceList(); loadLocations(); loadProducts();
-  });
+  }).catch(e=>{ window._completing=false; alert('Could not complete the invoice: '+(e&&e.message||e)+'\n\nNothing was added. Check the connection and try again.'); });
 }
 
 // ---- BUNDLES ----

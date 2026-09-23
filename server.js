@@ -97,6 +97,76 @@ function parseInvoiceText(text) {
 }
 
 // Parse + persist.
+// Write (or re-write) an invoice's lines. Shared by the PDF/paste importers.
+//
+// Re-importing used to DELETE every line and insert it again with
+// qty_received = 0, so re-uploading a PDF (to fix the date, say) threw away a
+// half-scanned pallet's counts. Now:
+//   - a received invoice is refused outright (its stock is already on hand);
+//   - on a pending invoice, counts already scanned carry over by Cosmo #, and
+//     a line a scan bound to an ASIN keeps that ASIN;
+//   - it all happens in one transaction, so a crash mid-loop can't leave the
+//     invoice with half its lines.
+// Counts on a checked-in invoice are history: its stock was added when it was
+// completed. Scanning into it afterwards changed the numbers without moving
+// stock, and the counts drifted from what was actually on the shelf.
+async function pendingInvoiceOnly(req, res, next) {
+  const r = await pool.query('SELECT status FROM inv_invoices WHERE order_number=$1', [req.params.orderNumber]);
+  if (r.rows[0] && r.rows[0].status === 'received') {
+    return res.status(409).json({ ok: false, error: 'already_completed',
+      message: `Invoice ${req.params.orderNumber} is already checked in. Use Receiving for extra units.` });
+  }
+  next();
+}
+
+// Largest quantity one action may move. A barcode scanned into a qty box
+// (012345678905) used to be taken as the quantity; nothing real is this big.
+const MAX_QTY = 5000;
+function badQty(q) { return !Number.isInteger(q) || q < 1 || q > MAX_QTY; }
+
+async function writeInvoiceLines(orderNumber, date, items, opts = {}) {
+  return withTx(async (c) => {
+    const cur = await c.query('SELECT status FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [orderNumber]);
+    if (cur.rows[0] && cur.rows[0].status === 'received') {
+      return { refused: `Order ${orderNumber} is already checked in — not re-imported (its stock is on hand). Delete it first if it really needs reloading.` };
+    }
+    await c.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
+      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date || '']);
+    if (opts.oms) await c.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, opts.oms]);
+
+    const prev = new Map();
+    const old = await c.query('SELECT cosmo_num, asin, qty_received FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
+    for (const r of old.rows) {
+      const p = prev.get(r.cosmo_num) || { received: 0, asin: null };
+      p.received += r.qty_received || 0;
+      if (r.qty_received > 0 && r.asin) p.asin = r.asin;
+      prev.set(r.cosmo_num, p);
+    }
+    await c.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
+
+    let mapped = 0, carried = 0; const unmapped = [];
+    for (const it of items) {
+      const c6 = (it.cosmo_num.length === 7 && it.cosmo_num[0] === '1') ? it.cosmo_num.slice(1) : it.cosmo_num;
+      const mm = await c.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
+      const p = prev.get(it.cosmo_num);
+      const asin = (p && p.asin) || mm.rows[0]?.asin || null;
+      const received = p ? p.received : 0;
+      if (p) p.received = 0;   // a Cosmo # listed twice carries its count once
+      if (received) carried++;
+      if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
+      await c.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,$6,$7)`,
+        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, received, it.unit_cost || null]);
+      // NOTE: deliberately NOT overwriting inv_products.unit_cost here. A sale
+      // invoice would overwrite the regular cost permanently. Cost is recorded
+      // as a lot at check-in completion and blended in recomputeCosts().
+      if (opts.seedUnitCost && asin && it.unit_cost) {
+        await c.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [it.unit_cost, asin]);
+      }
+    }
+    return { mapped, unmapped, carried };
+  });
+}
+
 async function processInvoiceText(text) {
   const orders = parseInvoiceText(text);
   const created = [], errors = [];
@@ -121,25 +191,9 @@ async function processInvoiceText(text) {
       errors.push(`Order ${orderNumber}: ${o.rejected.length} line(s) looked like items but did NOT parse — ${o.rejected.join(' | ')}`);
     }
 
-    await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
-      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date]);
-    if (o.oms) { try { await pool.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, o.oms]); } catch (e) {} }
-    await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
-    let mapped = 0, unmapped = 0;
-    for (const it of items) {
-      const c6 = (it.cosmo_num.length === 7 && it.cosmo_num[0] === '1') ? it.cosmo_num.slice(1) : it.cosmo_num;
-      const mm = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
-      const asin = mm.rows[0]?.asin || null;
-      if (asin) mapped++; else unmapped++;
-      await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,0,$6)`,
-        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, it.unit_cost || null]);
-      // NOTE: deliberately NOT writing inv_products.unit_cost here. A sale
-      // invoice would overwrite the regular cost permanently. Cost is recorded
-      // as a lot at check-in completion and blended in recomputeCosts().
-      if (asin && it.unit_cost) {
-        await pool.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [it.unit_cost, asin]);
-      }
-    }
+    const w = await writeInvoiceLines(orderNumber, date, items, { oms: o.oms, seedUnitCost: true });
+    if (w.refused) { errors.push(w.refused); continue; }
+    const mapped = w.mapped, unmapped = w.unmapped.length;
     console.log(`[Invoice] ${orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
     created.push({ orderNumber, items: items.length, mapped, unmapped, date,
                    pages: o.pages, merged: mergedCount, rejected: o.rejected.length });
@@ -1656,25 +1710,9 @@ app.post('/api/invoices/add', auth, async (req, res) => {
   const parsed = parseCosmoInvoice(req.body.text || '');
   if (!parsed.orderNumber) return res.status(400).json({ error: 'Could not find order number in invoice' });
   if (!parsed.items.length) return res.status(400).json({ error: 'No line items found' });
-
-  await pool.query(
-    `INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
-     ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`,
-    [parsed.orderNumber, parsed.date || findInvoiceDate(req.body.text || '')]);
-  // clear old items for this invoice, re-add
-  await pool.query('DELETE FROM inv_invoice_items WHERE order_number=$1', [parsed.orderNumber]);
-  let mapped = 0, unmapped = [];
-  for (const it of parsed.items) {
-    const c6 = (it.cosmo_num.length===7 && it.cosmo_num[0]==='1') ? it.cosmo_num.slice(1) : it.cosmo_num;
-    const m = await pool.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
-    const asin = m.rows[0]?.asin || null;
-    if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
-    await pool.query(
-      `INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received)
-       VALUES($1,$2,$3,$4,$5,0)`,
-      [parsed.orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped]);
-  }
-  res.json({ ok: true, orderNumber: parsed.orderNumber, items: parsed.items.length, mapped, unmapped });
+  const w = await writeInvoiceLines(parsed.orderNumber, parsed.date || findInvoiceDate(req.body.text || ''), parsed.items);
+  if (w.refused) return res.status(409).json({ ok: false, error: w.refused });
+  res.json({ ok: true, orderNumber: parsed.orderNumber, items: parsed.items.length, mapped: w.mapped, unmapped: w.unmapped, carried: w.carried });
 });
 
 // List invoices (pending + recent)
@@ -1770,10 +1808,11 @@ app.post('/api/location', auth, async (req, res) => {
 });
 
 // Scan an item against an open invoice -> increment received for that line
-app.post('/api/invoices/:orderNumber/scan', auth, async (req, res) => {
+app.post('/api/invoices/:orderNumber/scan', auth, pendingInvoiceOnly, async (req, res) => {
   const order = req.params.orderNumber;
   const code = (req.body.code || '').trim();
-  const qty = parseInt(req.body.qty) || 1;
+  const qty = req.body.qty == null || req.body.qty === '' ? 1 : parseInt(req.body.qty);
+  if (badQty(qty)) return res.status(400).json({ ok: false, error: `Quantity must be 1–${MAX_QTY}.` });
   // resolve scanned code -> asin (via multi-upc, asin, or sku)
   let r = await pool.query('SELECT asin FROM inv_upcs WHERE upc_norm=$1 LIMIT 1', [normCode(code)]);
   let asin = r.rows[0]?.asin;
@@ -3726,10 +3765,12 @@ app.post('/api/invoices/:orderNumber/set-expected', auth, async (req, res) => {
 });
 
 // Manually set a received qty on a line (corrections)
-app.post('/api/invoices/:orderNumber/set-line', auth, async (req, res) => {
+app.post('/api/invoices/:orderNumber/set-line', auth, pendingInvoiceOnly, async (req, res) => {
   const { asin, qty_received } = req.body;
+  const qr = parseInt(qty_received) || 0;
+  if (qr < 0 || qr > MAX_QTY) return res.status(400).json({ ok: false, error: `Quantity must be 0–${MAX_QTY}.` });
   await pool.query('UPDATE inv_invoice_items SET qty_received=$1 WHERE order_number=$2 AND asin=$3',
-    [parseInt(qty_received)||0, req.params.orderNumber, asin]);
+    [qr, req.params.orderNumber, asin]);
   res.json({ ok: true });
 });
 
@@ -3772,7 +3813,7 @@ app.get('/api/cosmo-map', auth, async (req, res) => {
 
 // Complete an invoice -> push RECEIVED quantities into on-hand
 // Set every line's received qty to the expected qty (clean truck, no exceptions).
-app.post('/api/invoices/:orderNumber/receive-all', auth, async (req, res) => {
+app.post('/api/invoices/:orderNumber/receive-all', auth, pendingInvoiceOnly, async (req, res) => {
   const order = req.params.orderNumber;
   const r = await pool.query(
     'UPDATE inv_invoice_items SET qty_received = qty_expected WHERE order_number=$1 AND asin IS NOT NULL RETURNING id',
@@ -3796,16 +3837,28 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   // double-added. Cost lots, locations and the received stamp still happen.
   const skipStock = !!(req.body && req.body.skipStock);
 
-  const lines = await pool.query(
+  // One transaction, with the invoice row locked. Completing twice (a double
+  // tap, two tablets, or reopening an old invoice from the Invoice Manager)
+  // used to add every line's stock to On Hand a second time.
+  const run = async (db) => {
+  if (!dryRun) {
+    const st = await db.query('SELECT status FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [order]);
+    if (!st.rows.length) return { status: 404, body: { ok: false, error: 'Invoice not found' } };
+    if (st.rows[0].status === 'received') {
+      return { status: 409, body: { ok: false, error: 'already_completed',
+        message: `Invoice ${order} is already checked in — its stock was added then. Nothing was changed.` } };
+    }
+  }
+  const lines = await db.query(
     'SELECT asin, cosmo_num, description, qty_expected, qty_received, unit_cost FROM inv_invoice_items WHERE order_number=$1',
     [order]);
-  const invMeta = await pool.query('SELECT invoice_date FROM inv_invoices WHERE order_number=$1', [order]);
+  const invMeta = await db.query('SELECT invoice_date FROM inv_invoices WHERE order_number=$1', [order]);
   const invDate = invMeta.rows[0] ? invMeta.rows[0].invoice_date : null;
 
   // ---- HARD STOP: never silently drop unmapped lines ----
   const unmapped = lines.rows.filter(l => !l.asin);
   if (unmapped.length && !force) {
-    return res.status(409).json({
+    return { status: 409, body: {
       ok: false,
       error: 'unmapped_lines',
       unmapped: unmapped.map(l => ({
@@ -3815,7 +3868,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
         qty_received: l.qty_received
       })),
       unmappedUnits: unmapped.reduce((n, l) => n + (l.qty_received || l.qty_expected || 0), 0)
-    });
+    } };
   }
 
   let added = 0;
@@ -3829,9 +3882,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     const loc = normLoc(raw);
     if (!loc) continue;
     if (!dryRun) {
-      try {
-        await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
-      } catch (e) { console.error('[Location] set failed for', asin, e.message); continue; }
+      await db.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
     }
     locSet++;
   }
@@ -3846,12 +3897,12 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     if (l.qty_received > 0) {
       if (!dryRun) {
         if (!skipStock) {
-          await pool.query('UPDATE inv_stock SET onhand = onhand + $1 WHERE asin=$2', [l.qty_received, l.asin]);
-          await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+          await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($2,$1) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand + $1', [l.qty_received, l.asin]);
+          await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
             ['in', l.asin, l.qty_received, 'Received invoice ' + order]);
         } else {
           // audit trail only — zero quantity so no count moves
-          await pool.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+          await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
             ['in', l.asin, 0, 'Invoice ' + order + ' recorded — stock NOT added (already counted)']);
         }
       }
@@ -3859,13 +3910,11 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
       // Record the purchase lot: what was paid, when, how many. Sale pricing is
       // preserved rather than overwriting the regular cost.
       if (!dryRun && l.unit_cost != null && l.qty_received > 0) {
-        try {
-          await pool.query(
-            `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
-             VALUES($1,$2,$3,$4,$5)
-             ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
-            [l.asin, order, invDate, l.unit_cost, l.qty_received]);
-        } catch (e) { console.error('[Costs] lot insert failed:', e.message); }
+        await db.query(
+          `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty)
+           VALUES($1,$2,$3,$4,$5)
+           ON CONFLICT (order_number, asin) DO UPDATE SET unit_cost=$4, qty=$5, invoice_date=$3`,
+          [l.asin, order, invDate, l.unit_cost, l.qty_received]);
       }
       preview.push({ description: l.description, asin: l.asin, qty: l.qty_received,
                      expected: l.qty_expected, location: locs[l.asin] || null,
@@ -3882,18 +3931,23 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
   }
 
   if (!dryRun) {
-    await pool.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
-    try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
+    await db.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
   }
 
-  if (skipStock && !dryRun) console.log(`[Invoice] ${order} recorded WITHOUT adding ${added} units (already on hand).`);
-
-  res.json({
+  return { status: 200, body: {
     ok: true, dryRun, skipStock, added, discrepancies, preview,
     locationsSet: locSet,
     unmappedCount: unmapped.length,
     lineCount: lines.rows.length
-  });
+  } };
+  };
+
+  const out = dryRun ? await run(pool) : await withTx(run);
+  if (!dryRun && out.status === 200) {
+    try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
+    if (skipStock) console.log(`[Invoice] ${order} recorded WITHOUT adding ${out.body.added} units (already on hand).`);
+  }
+  res.status(out.status).json(out.body);
 });
 
 // Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs
