@@ -929,6 +929,18 @@ async function initDb() {
         UNIQUE (settlement_id, description, amount, posted_date)
       );
     `);
+    // Unlinked fees were de-duplicated on (settlement, description, amount,
+    // date), so two shipments charged the same placement fee on the same day
+    // collapsed into one row. Key on the settlement row instead.
+    await pool.query(`
+      ALTER TABLE inv_unlinked_fees ADD COLUMN IF NOT EXISTS row_idx INTEGER;
+      DO $$ DECLARE c text; BEGIN
+        SELECT conname INTO c FROM pg_constraint
+         WHERE conrelid = 'inv_unlinked_fees'::regclass AND contype = 'u' AND array_length(conkey, 1) = 4;
+        IF c IS NOT NULL THEN EXECUTE 'ALTER TABLE inv_unlinked_fees DROP CONSTRAINT ' || quote_ident(c); END IF;
+      END $$;
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_unlinked_fee_row ON inv_unlinked_fees(settlement_id, row_idx);
+    `);
     console.log('[Inventory] Shipment cost tables ready.');
   } catch(e) { console.error('shipment cost migration skipped:', e.message); }
 
@@ -2895,45 +2907,61 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         // settlement and ~50,000 across the set — slow enough that a run never
         // finished. 500 rows per statement is ~5,500 parameters, well inside
         // Postgres's 65,535 limit.
-        if (force) {
-          const del = await pool.query('DELETE FROM inv_settlement_lines WHERE settlement_id=$1', [header.settlement_id]);
-          if (del.rowCount) console.log(`[Settlement] cleared ${del.rowCount} old line(s) for ${header.settlement_id}.`);
+        // All-or-nothing per settlement: the old lines (on force), the new
+        // lines and the summary row commit together or not at all.
+        let inserted;
+        try {
+          inserted = await withTx(async (db) => {
+            if (force) {
+              const del = await db.query('DELETE FROM inv_settlement_lines WHERE settlement_id=$1', [header.settlement_id]);
+              if (del.rowCount) console.log(`[Settlement] cleared ${del.rowCount} old line(s) for ${header.settlement_id}.`);
+            }
+            let inserted = 0;
+            const CHUNK = 500;
+            for (let off = 0; off < rows.length; off += CHUNK) {
+              const slice = rows.slice(off, off + CHUNK);
+              const vals = [], params = [];
+              let n = 0;
+              for (const r of slice) {
+                const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
+                vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12},$${n+13})`);
+                params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
+                            r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx, r.shipment_id || null);
+                n += 13;
+              }
+              try {
+                const res2 = await db.query(
+                  `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
+                     amount_type, amount_description, amount, quantity, deposit_date, row_idx, shipment_id)
+                   VALUES ${vals.join(',')}
+                   ON CONFLICT (settlement_id, row_idx) DO UPDATE SET
+                     posted_date=EXCLUDED.posted_date, transaction_type=EXCLUDED.transaction_type,
+                     order_id=EXCLUDED.order_id, sku=EXCLUDED.sku, asin=EXCLUDED.asin,
+                     amount_type=EXCLUDED.amount_type, amount_description=EXCLUDED.amount_description,
+                     amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date, shipment_id=EXCLUDED.shipment_id`, params);
+                inserted += res2.rowCount || 0;
+              } catch (e) {
+                // Fail the whole settlement: it used to log, carry on, and still
+                // mark the report imported, so later runs skipped it and those
+                // lines' revenue and fees were missing for good.
+                throw new Error(`batch insert failed at row ${off}: ${e.message}`);
+              }
+              if (off % 2000 === 0) {
+                settleJob.progress = `report ${n2}/${todo.length} — storing ${off + slice.length}/${rows.length} lines…`;
+              }
+            }
+            await db.query(
+              `INSERT INTO inv_settlements(settlement_id, start_date, end_date, deposit_date, total_amount, lines)
+               VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
+              [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
+            return inserted;
+          });
+        } catch (e) {
+          console.error(`[Settlement] ${header.settlement_id}: NOT stored — ${e.message}. Left as 'downloaded' so the next run tries again.`);
+          settleJob.storeFailed = (settleJob.storeFailed || 0) + 1;
+          if (n2 < todo.length) await new Promise(r => setTimeout(r, 62000));
+          continue;
         }
-        let inserted = 0;
-        const CHUNK = 500;
-        for (let off = 0; off < rows.length; off += CHUNK) {
-          const slice = rows.slice(off, off + CHUNK);
-          const vals = [], params = [];
-          let n = 0;
-          for (const r of slice) {
-            const asin = r.sku ? (skuMap[r.sku.toLowerCase()] || null) : null;
-            vals.push(`($${n+1},$${n+2},$${n+3},$${n+4},$${n+5},$${n+6},$${n+7},$${n+8},$${n+9},$${n+10},$${n+11},$${n+12},$${n+13})`);
-            params.push(r.settlement_id, r.posted_date, r.transaction_type, r.order_id, r.sku, asin,
-                        r.amount_type, r.amount_description, r.amount, r.quantity, r.deposit_date, r.row_idx, r.shipment_id || null);
-            n += 13;
-          }
-          try {
-            const res2 = await pool.query(
-              `INSERT INTO inv_settlement_lines(settlement_id, posted_date, transaction_type, order_id, sku, asin,
-                 amount_type, amount_description, amount, quantity, deposit_date, row_idx, shipment_id)
-               VALUES ${vals.join(',')}
-               ON CONFLICT (settlement_id, row_idx) DO UPDATE SET
-                 posted_date=EXCLUDED.posted_date, transaction_type=EXCLUDED.transaction_type,
-                 order_id=EXCLUDED.order_id, sku=EXCLUDED.sku, asin=EXCLUDED.asin,
-                 amount_type=EXCLUDED.amount_type, amount_description=EXCLUDED.amount_description,
-                 amount=EXCLUDED.amount, quantity=EXCLUDED.quantity, deposit_date=EXCLUDED.deposit_date, shipment_id=EXCLUDED.shipment_id`, params);
-            inserted += res2.rowCount || 0;
-          } catch (e) {
-            console.error(`[Settlement] batch insert failed at row ${off}: ${e.message}`);
-          }
-          if (off % 2000 === 0) {
-            settleJob.progress = `report ${n2}/${todo.length} — storing ${off + slice.length}/${rows.length} lines…`;
-          }
-        }
-        await pool.query(
-          `INSERT INTO inv_settlements(settlement_id, start_date, end_date, deposit_date, total_amount, lines)
-           VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (settlement_id) DO UPDATE SET lines=$6, total_amount=$5`,
-          [header.settlement_id, header.start_date, header.end_date, header.deposit_date, header.total_amount, inserted]);
 
         // ---- Inbound freight / placement fees ----
         // These are charged per SHIPMENT, not per sale, so they carry no SKU.
@@ -2941,6 +2969,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
         // one-tap linking. Either way they are recorded ONCE, as 'actual',
         // which supersedes whatever was typed in as an estimate.
         try {
+          const linkedRefs = new Set();
           for (const r of rows) {
             const desc = r.amount_description || '';
             if (!INBOUND_FEE_PATTERNS.test(desc)) continue;
@@ -2952,8 +2981,28 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
               const m = await pool.query('SELECT shipment_id FROM inv_shipments WHERE shipment_id=$1', [shipRef]);
               if (m.rows.length) linked = shipRef;
             }
-            if (linked) {
-              const kind = /placement/i.test(desc) ? 'placement' : 'freight';
+            if (linked) linkedRefs.add(linked);
+            else {
+              await pool.query(
+                `INSERT INTO inv_unlinked_fees(settlement_id, posted_date, description, amount, raw_shipment_id, row_idx)
+                 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+                [header.settlement_id, r.posted_date, desc, r.amount, shipRef || null, r.row_idx]);
+            }
+          }
+          // Recorded ONCE per shipment and kind, as 'actual', which supersedes
+          // whatever was typed in as an estimate. The amount is the signed sum
+          // of every settlement line billed to that shipment: it used to be
+          // the LAST line's absolute value, so a shipment billed a carrier
+          // charge plus a fee kept only one, and a refunded fee became a cost.
+          for (const ref of linkedRefs) {
+            const t = await pool.query(`
+              SELECT (amount_description ~* 'placement') AS is_pl, -SUM(amount)::numeric AS cost
+              FROM inv_settlement_lines
+              WHERE COALESCE(NULLIF(shipment_id,''), order_id) = $1 AND amount_description ~* $2
+              GROUP BY 1`, [ref, INBOUND_FEE_PATTERNS.source]);
+            for (const x of t.rows) {
+              const kind = x.is_pl ? 'placement' : 'freight';
+              const amt = Number(x.cost) || 0;
               // Keep what was typed and record the gap. A figure pulled from a
               // completed Amazon shipment is usually right; a real difference
               // means a reweigh or recalculation and is worth seeing, not hiding.
@@ -2965,12 +3014,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
                    variance = CASE WHEN inv_shipment_costs.entered_amount IS NOT NULL
                                    AND ABS(inv_shipment_costs.entered_amount - $3) > 0.01
                               THEN $3 - inv_shipment_costs.entered_amount ELSE NULL END`,
-                [linked, kind, Math.abs(Number(r.amount)), header.settlement_id, desc]);
-            } else {
-              await pool.query(
-                `INSERT INTO inv_unlinked_fees(settlement_id, posted_date, description, amount, raw_shipment_id)
-                 VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`,
-                [header.settlement_id, r.posted_date, desc, r.amount, shipRef || null]);
+                [ref, kind, amt, header.settlement_id, 'Amazon settlement total']);
             }
           }
         } catch (e) { console.error('[Settlement] inbound fee capture failed:', e.message); }
@@ -2997,6 +3041,7 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       settleJob.progress = `${settleJob.imported} settlement(s) imported, ${settleJob.lines} lines`
         + (settleJob.skipped ? `, ${settleJob.skipped} already on file` : '')
         + (settleJob.failed ? `, ${settleJob.failed} still rate-limited` : '')
+        + (settleJob.storeFailed ? `, ${settleJob.storeFailed} FAILED to store (will retry next run — see log)` : '')
         + (settleJob.remaining ? `. ${settleJob.remaining} report(s) left — run it again to continue` : '.');
       settleJob.running = false; settleJob.done = true;
     } catch (e) {
@@ -3565,8 +3610,16 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
   // labor and supplies: deliberately null until their data exists
   const labor = null, supplies = null, overhead = null;
 
-  const netProfit = deposited - cogs - inboundAllocated
-                    - (labor || 0) - (supplies || 0) - (overhead || 0);
+  // Inbound freight: `deposited` already has the settlement's inbound
+  // charges taken off, and inboundAllocated charges the same freight again per
+  // unit sold. Profit uses the per-unit (matched) figure only, so the
+  // settlement's inbound lines are added back first.
+  // Missing costs: profit with COGS = 0 looked great and was wrong. It is only
+  // reported when every seller has a cost.
+  const cogsComplete = cogsMissing.length === 0;
+  const netProfit = !cogsComplete ? null
+    : (deposited - inboundFees) - cogs - inboundAllocated
+      - (labor || 0) - (supplies || 0) - (overhead || 0);
 
   // What inbound cost has been CAPTURED, regardless of whether anything has
   // sold yet. Capture and allocation are different states: money recorded
@@ -3622,7 +3675,8 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     inboundPerUnitCaptured: inboundUnits ? inboundCaptured / inboundUnits : null,
     labor, supplies, overhead,
     netProfit,
-    marginPct: netSales ? (netProfit / netSales) * 100 : null,
+    marginPct: (netSales && netProfit != null) ? (netProfit / netSales) * 100 : null,
+    cogsComplete,
     hasSettlements: lines.rows.length > 0,
     unmatchedSkuLines: (await pool.query(
       `SELECT COUNT(*)::int AS n FROM inv_settlement_lines WHERE asin IS NULL AND sku IS NOT NULL`)).rows[0].n,
