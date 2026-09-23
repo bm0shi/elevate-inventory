@@ -4943,6 +4943,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     if (v.asin) velByAsin[v.asin] = v;
   }
 
+  const bundleSet = new Set((await pool.query('SELECT DISTINCT bundle_asin FROM inv_bundles')).rows.map(r => r.bundle_asin));
   const rows = [];
   for (const p of prods.rows) {
     const m = mByAsin[p.asin] || {};
@@ -5026,7 +5027,7 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
     const canSend = available > 0;
     if (demandPerDay > 0 || salesRank != null || onhand > 0) {
       rows.push({
-        asin: p.asin, name: p.name || m.title, onhand, transit, prepped, pendingPrep, available,
+        asin: p.asin, sku: p.sku || null, isBundle: bundleSet.has(p.asin), name: p.name || m.title, onhand, transit, prepped, pendingPrep, available,
         fbaFulfillable: fbaTotal, fbaInbound,
         soldPerDay: Math.round(demandPerDay*10)/10,   // MARKET demand/day (the driver)
         ourSoldPerDay: Math.round(ourSoldPerDay*10)/10, // our actual (reference)
