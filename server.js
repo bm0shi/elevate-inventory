@@ -687,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sku-safety-0924';
+const BUILD_ID = 'no-loop-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5504,7 +5504,12 @@ async function pullFbaInventory(onProgress) {
   // summary figures still stand.
   let pipelineNote = null;
   try {
-    const pipe = await getInboundPipeline(180, onProgress);
+    // Hard limit: whatever happens in here, the sync moves on after 4 minutes
+    // and keeps the stock figures it already has.
+    const pipe = await Promise.race([
+      getInboundPipeline(180, onProgress),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('took over 4 minutes — skipped this time')), 4 * 60000)),
+    ]);
     const skuAsin = {};
     for (const sku in fba) if (fba[sku].asin) skuAsin[sku] = fba[sku].asin;
     const extra = await pool.query(`SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL
