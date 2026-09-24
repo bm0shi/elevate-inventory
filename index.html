@@ -989,7 +989,11 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
     .catch(()=>{});
 }).catch(()=>{});
 
-function loadProducts(){ return api('/api/products').then(d=>{ products=d; renderOnhand(); }); }
+function loadProducts(){ return api('/api/products').then(d=>{
+  // An error reply (server restarting, DB down) used to replace the product
+  // list and break every screen that reads it. Keep the last good list.
+  if(!Array.isArray(d)){ toast('Could not refresh products: '+((d&&(d.error||d.message))||'server error'),true); return; }
+  products=d; renderOnhand(); }); }
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
   if(t==='count'){ countInit(); }
@@ -5981,6 +5985,39 @@ function prepDuo(duoAsin, i, max){
     loadProducts();
   }).catch(()=>{ toast('NOT added — connection problem, try again',true); if(btn){ btn.disabled=false; btn.textContent='🔧 Prep'; } });
 }
+// Where this bottle is at Amazon, split by how it's listed: as a SINGLE
+// (its own ASIN) and inside each DUO it belongs to (the duo's ASIN). Amazon
+// counts each listing separately, so this is the split the app's own transit
+// figure (bottles only) can't give. Used to decide what the next shipment
+// needs: singles, duos, or both.
+function amazonSplit(p){
+  if(!p.fba_as_of) return '';
+  const byAsin=a=>(products||[]).find(x=>x.asin===a)||{};
+  const onh=x=>Math.max(x.fba_onhand||0, x.fba_fulfillable||0), inb=x=>x.fba_inbound||0;
+  const rows=[];
+  if(!p.is_bundle) rows.push({label:'Single', asin:p.asin, per:1, at:onh(p), way:inb(p)});
+  const seen=new Set();
+  for(const pt of (p.partners||[])){
+    if(!pt.bundle_asin || seen.has(pt.bundle_asin)) continue; seen.add(pt.bundle_asin);
+    const d=byAsin(pt.bundle_asin);
+    const comp=(_bundles||[]).find(b=>b.bundle_asin===pt.bundle_asin);
+    const per=comp ? ((comp.components.find(c=>c.asin===p.asin)||{}).qty||1) : 1;
+    rows.push({label:'Duo', asin:pt.bundle_asin, per, at:onh(d), way:inb(d), name:d.name});
+  }
+  if(p.is_bundle) rows.push({label:'Duo', asin:p.asin, per:1, at:onh(p), way:inb(p)});
+  if(!rows.length) return '';
+  const tAt=rows.reduce((n,r)=>n+r.at*r.per,0), tWay=rows.reduce((n,r)=>n+r.way*r.per,0);
+  const cell='padding:4px 8px;text-align:right;font-weight:800';
+  const tr=r=>'<tr style="border-top:1px solid #eef2f6"><td style="padding:4px 8px"><b style="color:'+(r.label==='Duo'?'#c0392b':'#1a2b4a')+'">'+r.label+'</b> <span style="font-family:monospace;font-size:11.5px;color:#5a6472">'+esc(r.asin)+'</span>'+(r.per>1?' <span class="hint">×'+r.per+' bottles</span>':'')+'</td>'
+    +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td></tr>';
+  const multi=rows.length>1;
+  return '<div style="margin-top:8px;background:#f7f9fb;border-radius:8px;padding:6px 4px">'
+    +'<div style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6;padding:0 8px 2px">AT AMAZON BY LISTING</div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td></tr>'
+    +rows.map(tr).join('')
+    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td></tr>':'')
+    +'</table></div>';
+}
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
   const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'onhand_desc';
@@ -6069,7 +6106,7 @@ function renderOnhand(){
         ${p.sellers!=null?`<div class="mk"><span class="v">${p.sellers}</span><span class="k">Sellers</span></div>`:''}
       </div>`;
     }
-    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700">'+t+' transit</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${mktRow}</div>`;
+    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700" title="Bottles that left the warehouse and Amazon has not checked in yet — singles and duo bottles together. The table below splits them.">'+t+' transit (bottles)</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${amazonSplit(p)}${mktRow}</div>`;
   }).join('')+'</div>';
   // Full breakdown totals across ALL products, not just the filtered view.
   //
