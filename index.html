@@ -5918,6 +5918,7 @@ function renderDuoBuilder(body, q){
       +'<div style="flex:1;min-width:230px">'
         +'<div style="font-weight:800;font-size:16px;line-height:1.3">'+esc(r.b.bundle_name||r.b.bundle_asin)+' <span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:800;vertical-align:middle">DUO</span></div>'
         +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">'+idBox('DUO ASIN',r.b.bundle_asin)+idBox('DUO FNSKU',fn)+'</div>'
+        +duoAmazonLine(r.prod)
         +act
       +'</div></div>'
       +'<div style="margin-top:10px;font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">GRAB PER DUO</div>'+grab
@@ -5928,6 +5929,26 @@ function renderDuoBuilder(body, q){
     +'Tap <b>Prep</b> to add it to Pending Prep — its bottles stop counting as available right away. ▸ marks the bottle that runs out first.</div>'
     + (ready.length ? ready.map((r,i)=>card(r,i)).join('') : '<div class="box hint" style="text-align:center">No duo can be built from free stock right now.</div>')
     + (notReady.length ? '<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;color:#5a6472">Can\'t build yet ('+notReady.length+')</summary><div style="margin-top:8px">'+notReady.map((r,i)=>card(r,ready.length+i)).join('')+'</div></details>' : '');
+}
+// What's already at Amazon for this duo and what's on its way there, so the
+// floor can see whether more are needed before building them. Figures are
+// Amazon's, from the last FBA inventory pull (On Hand → Sync FBA Check-ins,
+// or the Sunday refresh). Duos ship as their bottles in this app's own
+// transit count, so "on the way" is Amazon's inbound figure for the duo.
+function duoAmazonLine(p){
+  if(!p || !p.asin) return '';
+  if(!p.fba_as_of) return '<div class="hint" style="margin-top:8px">Amazon counts not loaded yet — tap “Sync FBA Check-ins” above.</div>';
+  const atFba=p.fba_fulfillable||0, inb=p.fba_inbound||0;
+  const perDay=(p.monthlySold||0)/30;
+  const cover=perDay>0 ? Math.round((atFba+inb)/perDay) : null;
+  const stat=(n,label,color)=>'<div style="flex:1;min-width:88px;background:#f7f9fb;border-radius:8px;padding:6px 8px;text-align:center"><div style="font-size:22px;font-weight:900;color:'+color+';line-height:1.1">'+n+'</div><div style="font-size:10.5px;font-weight:800;color:#5a6472;letter-spacing:0.4px">'+label+'</div></div>';
+  const asOf=new Date(p.fba_as_of).toLocaleDateString('en-US',{month:'short',day:'numeric'});
+  return '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">'
+    + stat(atFba,'AT AMAZON', atFba>0?'#127a7a':'#c0392b')
+    + stat(inb,'ON THE WAY','#2563a8')
+    + (p.monthlySold ? stat('~'+p.monthlySold,'SELLS / MO','#5a6472') : '')
+    + (cover!=null ? stat(cover+'d','COVERED', cover<30?'#c0392b':cover<60?'#b7791f':'#1e8449') : '')
+    + '</div><div class="hint" style="margin-top:3px">Amazon figures as of '+esc(asOf)+(cover!=null?' · “covered” = days the Amazon + on-the-way stock lasts at the current sales rate':'')+'</div>';
 }
 function prepDuo(duoAsin, i, max){
   const el=document.getElementById('duoQty_'+i);

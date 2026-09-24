@@ -1331,8 +1331,15 @@ app.get('/api/products', auth, async (req, res) => {
 
   const out = rows.map(p => {
     const m = mByAsin[p.asin] || {};
+    const f = fbaByAsin[p.asin] || {};
     return {
       ...p,
+      // Amazon's side, from the last FBA inventory pull. These were computed
+      // but never sent, so every On Hand card read "0 AT FBA".
+      fba_fulfillable: f.fulfillable || 0,
+      fba_inbound: f.inbound || 0,
+      fba_total: f.total || 0,
+      fba_as_of: fbaAsOf,
       partners: partnersByAsin[p.asin] || [],
       salesRank: m.salesRank != null ? m.salesRank : null,
       monthlySold: m.monthlySold != null ? m.monthlySold : null,
