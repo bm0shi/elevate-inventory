@@ -1,10 +1,11 @@
 {
   "name": "elevate-inventory",
   "version": "1.0.0",
-  "description": "Warehouse inventory tracking — scan receiving, on-hand, FBA deduction",
+  "description": "Warehouse inventory tracking \u2014 scan receiving, on-hand, FBA deduction",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "axios": "^1.6.0",
@@ -15,5 +16,8 @@
     "pdfjs-dist": "^4.0.379",
     "pg": "^8.11.3",
     "querystring": "^0.2.1"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }
