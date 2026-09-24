@@ -11,90 +11,15 @@ const { getInboundPipeline, getInboundFees, listSettlementReports, downloadRepor
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
+// Pure helpers (parsers, matching, cost blending, codes) live in lib/ so they
+// can be unit-tested; see test/.
+const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
+const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
+const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
+const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv } = require('./lib/homebase');
+const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
+const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, MAX_QTY, badQty } = require('./lib/codes');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
-
-// PURE parser — text in, orders map out. No database access, so it can be
-// reused by the read-only audit endpoint.
-// Shared: parse Cosmoprof invoice text (multi-order) into created invoices.
-//
-// IMPORTANT: Cosmoprof repeats "FOR ORDER NUMBER: xxx" on EVERY page of a
-// multi-page invoice, so splitting on that header yields one segment PER PAGE,
-// not per order. Each write begins with DELETE ... WHERE order_number, so
-// writing per-segment used to wipe the earlier pages — a 2-page invoice kept
-// only its last page, silently. We now merge every segment sharing an order
-// number BEFORE touching the database.
-// Invoice dates arrive in more than one shape. Screen captures of the order
-// confirmation use words ("Sep 18, 2026") rather than 9/18/26, which is why
-// those invoices were saved with no date. Always hand back M/D/YY.
-function findInvoiceDate(text) {
-  const t = String(text || '');
-  const mdy = t.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
-  if (mdy) return `${+mdy[1]}/${+mdy[2]}/${mdy[3].slice(-2)}`;
-  const MON = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,sept:9,oct:10,nov:11,dec:12 };
-  const w = t.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2}),?\s+(\d{4})\b/i);
-  if (w) return `${MON[w[1].toLowerCase()]}/${+w[2]}/${w[3].slice(-2)}`;
-  const w2 = t.match(/\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sept?|Oct|Nov|Dec)[a-z]*\.?,?\s+(\d{4})\b/i);
-  if (w2) return `${MON[w2[2].toLowerCase()]}/${+w2[1]}/${w2[3].slice(-2)}`;
-  const iso = t.match(/\b(20\d{2})-(\d{2})-(\d{2})\b/);
-  if (iso) return `${+iso[2]}/${+iso[3]}/${iso[1].slice(-2)}`;
-  const dash = t.match(/\b(\d{1,2})-(\d{1,2})-(20\d{2})\b/);
-  if (dash) return `${+dash[1]}/${+dash[2]}/${dash[3].slice(-2)}`;
-  return '';
-}
-
-function parseInvoiceText(text) {
-  // Cosmoprof has sent at least three layouts. Accept every header style seen:
-  //   "FOR ORDER NUMBER: 261642335"   (printed customer invoice)
-  //   "Order Number: 261975620"       (order-confirmation screen capture)
-  //   "Order #: 261964502"            (order-entry screen)
-  const parts = text.split(/(?:FOR\s+)?ORDER\s*(?:NUMBER|NO\.?|#)\s*:?\s*(\d{6,})/i);
-  const created = [], errors = [];
-
-  const orders = new Map();
-  for (let i = 1; i < parts.length; i += 2) {
-    const orderNumber = parts[i].trim();
-    const body = parts[i + 1] || '';
-    // The invoice date is printed in the page header immediately BEFORE this
-    // order's "FOR ORDER NUMBER" line ("8/25/26  Beauty Systems Group ...").
-    // Searching wider picked up neighbouring invoices' dates in multi-invoice PDFs.
-    const hdr = [...String(parts[i - 1] || '').matchAll(/(\d{1,2}\/\d{1,2}\/\d{2,4})\s+Beauty Systems/gi)];
-    const dateM = (parts[i - 1] + body).match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/g);
-    const date = hdr.length ? hdr[hdr.length - 1][1]
-               : (dateM ? dateM[dateM.length - 1] : findInvoiceDate(parts[i - 1] + body));
-
-    if (!orders.has(orderNumber)) orders.set(orderNumber, { date, items: [], pages: 0, rejected: [] });
-    const o = orders.get(orderNumber);
-    o.pages++;
-    if (!o.date && date) o.date = date;
-    // "SHP# 139766144 FS D07163227" — FS is the store (OMS) order this invoice
-    // bills. It links a store order receipt to its final invoice.
-    // Only this order's own header block — the line right after the order
-    // number. Looking back into the previous text borrowed the prior invoice's FS.
-    const fs = body.slice(0, 300).match(/\bFS\s+(D\d{7,})\b/i);
-    if (fs && !o.oms) o.oms = fs[1].toUpperCase();
-    const due = body.match(/TOTAL AMOUNT DUE\.*\s*\$\s*([\d,]+\.\d{2})/i);
-    if (due) o.totalDue = parseFloat(due[1].replace(/,/g, ''));
-    // Printed invoices have ORDERED and SHIPPED columns. A line with only
-    // ordered qty and price did not ship (backordered / cut).
-    const printed = /EXTENDED/i.test(body);
-
-    for (const line of body.split(/\r?\n/)) {
-      let m = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N\s*$/);
-      if (m) { o.items.push({ cosmo_num: m[1], description: m[2].trim(), qty_shipped: parseInt(m[5]), unit_cost: parseFloat(m[4]) }); continue; }
-      let m2 = line.match(/^\s*(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s*$/);
-      if (m2) {
-        o.items.push(printed
-          ? { cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: 0, qty_ordered: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), not_shipped: true }
-          : { cosmo_num: m2[1], description: m2[2].trim(), qty_shipped: parseInt(m2[3]), unit_cost: parseFloat(m2[4]), incomplete: true });
-        continue;
-      }
-      // Looked like an item row but did not parse — surface it, never drop it.
-      if (/^\s*\d{6}\s+\S/.test(line)) o.rejected.push(line.trim().slice(0, 90));
-    }
-  }
-
-  return orders;
-}
 
 // Parse + persist.
 // Write (or re-write) an invoice's lines. Shared by the PDF/paste importers.
@@ -118,11 +43,6 @@ async function pendingInvoiceOnly(req, res, next) {
   }
   next();
 }
-
-// Largest quantity one action may move. A barcode scanned into a qty box
-// (012345678905) used to be taken as the quantity; nothing real is this big.
-const MAX_QTY = 5000;
-function badQty(q) { return !Number.isInteger(q) || q < 1 || q > MAX_QTY; }
 
 // ---- Undo ----
 // A scanner action records how to reverse itself; the browser shows an Undo
@@ -386,39 +306,6 @@ function noteLoginFail(req) {
 
 function clearLoginFails(req) { loginHits.delete(loginKey(req)); }
 
-// Normalize a scanned/typed code so 12 vs 13 digit UPC/EAN variants of the SAME
-// barcode match. Strips leading zeros for numeric codes; leaves ASIN/SKU alone.
-function normCode(raw) {
-  if (raw == null) return '';
-  let c = String(raw).trim();
-  // numeric barcodes: strip leading zeros so 009531136929 == 9531136929 == 0009531136929
-  if (/^[0-9]+$/.test(c)) {
-    c = c.replace(/^0+/, '');
-  }
-  return c.toUpperCase();
-}
-
-// ============================================================
-// PALLET LOCATIONS
-// Fixed rack map: A-1..A-20 (duo-compatible) and B-1..B-20 (singles).
-// Extend LOC_ROWS to add more rows/positions later.
-// ============================================================
-const LOC_ROWS = { A: 20, B: 20 };
-const LOCATION_SLOTS = [];
-for (const row of Object.keys(LOC_ROWS)) {
-  for (let i = 1; i <= LOC_ROWS[row]; i++) LOCATION_SLOTS.push(row + '-' + i);
-}
-
-// Accepts a1, A1, a-1, "A - 1" -> "A-1". Returns null if outside the rack map.
-function normLoc(raw) {
-  if (raw == null) return null;
-  const s = String(raw).trim().toUpperCase().replace(/\s+/g, '');
-  if (!s) return null;
-  const m = s.match(/^([A-Z])-?(\d{1,3})$/);
-  if (!m) return null;
-  const slot = m[1] + '-' + parseInt(m[2], 10);
-  return LOCATION_SLOTS.includes(slot) ? slot : null;
-}
 
 // Build location context for a set of ASINs: what they have now, and what to
 // suggest if they have nothing. Suggestion rules:
@@ -510,184 +397,9 @@ async function buildLocationContext(asins) {
   return out;
 }
 
-// ============================================================
-// DESCRIPTION MATCHING
-// Cosmoprof invoice descriptions are abbreviated ("AWAPUHI MOIST
-// SHAMPOO 10.1"); our product names are full Amazon titles. Score by
-// token overlap with prefix matching so abbreviations still hit, and
-// weight numbers (sizes) heavily since they disambiguate variants.
-// ============================================================
-const MATCH_STOPWORDS = new Set(['OZ','FLOZ','FL','ML','THE','AND','BY','FOR','WITH','OF','A','AN','NEW','PACK','CT','EA','SIZE','INC','LLC']);
-
-// Cosmoprof descriptions truncate the product name and glue the size onto it:
-//   "PM TEA TREE COLORCARE CONDITIONLITER"   -> CONDITION + LITER
-//   "PM TEA TREE HAIR & BODY MOISTUR10.14 OZ" -> MOISTUR + 10.14 OZ
-//   "COLOR PROTECT SHAMPOO-33.8OZ-LI"         -> SHAMPOO + 33.8 OZ
-// Left glued, the word CONDITIONER never appears as a token — which is exactly
-// how a conditioner gets linked to a shampoo. Prise them apart, and translate
-// Paul Mitchell's "LITER" into the 33.8 fl oz that Amazon titles actually use,
-// so the size can do the job of separating variants.
-function normalizeSizeTerms(str) {
-  let s = String(str || '').toUpperCase();
-  s = s.replace(/LITERS?|LTR/g, ' LITER ');
-  s = s.replace(/([A-Z])(\d)/g, '$1 $2');
-  s = s.replace(/(\d)([A-Z])/g, '$1 $2');
-  s = s.replace(/\bLITER\b/g, ' 33.8 ');
-  return s;
-}
-
-function matchTokens(str) {
-  return normalizeSizeTerms(str)
-    .replace(/[^A-Z0-9.]+/g, ' ')
-    .split(/\s+/)
-    .filter(t => t && t.length > 1 && !MATCH_STOPWORDS.has(t));
-}
-
-// How well does one token list cover another?
-function coverage(from, against) {
-  if (!from.length || !against.length) return 0;
-  let hit = 0;
-  for (const ft of from) {
-    const isNum = /^[0-9.]+$/.test(ft);
-    let best = 0;
-    for (const at of against) {
-      if (at === ft) { best = isNum ? 1.6 : 1; break; }
-      if (!isNum && ft.length >= 3 && (at.startsWith(ft) || ft.startsWith(at))) best = Math.max(best, 0.7);
-    }
-    hit += best;
-  }
-  return hit / from.length;
-}
-
-// Amazon titles here are "<product name>, <marketing copy>, <size>". The part
-// before the first comma is the real product name, and it is what distinguishes
-// "Tea Tree Special Shampoo" from "Tea Tree Special COLOR Shampoo".
-function productHead(name) {
-  const s = String(name || '');
-  const head = s.split(',')[0];
-  return head.length >= 6 ? head : s;
-}
-
-// Score BOTH directions:
-//   forward — how much of the invoice description the product explains
-//   reverse — how much of the product's own name the description accounts for
-// Reverse is what punishes an extra discriminating word like COLOR. Combined
-// with an F1 so a candidate must satisfy both to win.
-function matchScore(desc, name) {
-  const d = matchTokens(desc);
-  const n = matchTokens(name);
-  const h = matchTokens(productHead(name));
-  if (!d.length || !n.length) return 0;
-  const fwd = coverage(d, n);
-  const rev = coverage(h, d);
-  if (fwd <= 0 || rev <= 0) return 0;
-  return (2 * fwd * rev) / (fwd + rev);
-}
-
-// Best candidate products for an unmapped invoice description.
-// ============================================================
-// SAFETY CROSS-CHECK
-// The UPC -> ASIN assignment is the one step where a human can be wrong and
-// nothing downstream disagrees — the resulting Cosmo link inherits the error
-// and gets stamped "barcode-verified", which is false confidence rather than
-// no confidence. So before accepting an assignment, compare the chosen product
-// against the invoice wording on two axes that actually distinguish Paul
-// Mitchell SKUs: product TYPE and SIZE.
-// ============================================================
-const PRODUCT_TYPES = ['CONDITIONER','SHAMPOO','TREATMENT','MOISTURIZER','POMADE','SERUM',
-  'HAIRSPRAY','CREAM','WAX','GEL','FOAM','CLAY','PASTE','OIL','MASQUE','DETANGLER',
-  'RINSE','LOTION','TONIC','PRIMER','BALM','SPRAY'];
-
-// Known Paul Mitchell / Cosmoprof pack sizes. Restricting to these keeps stray
-// numbers ("Pack of 1", "2-in-1") from being read as sizes.
-const KNOWN_SIZES = new Set(['1.8','2.5','3','3.4','4.2','5.1','6.7','8.5','9','10.1','10.14','12','16.9','24','32','33.8','64','128']);
-
-function detectTypes(str) {
-  const s = ' ' + normalizeSizeTerms(str).replace(/[^A-Z0-9.]+/g, ' ') + ' ';
-  const out = new Set();
-  for (const t of PRODUCT_TYPES) {
-    // Cosmoprof truncates: CONDITIONLITER -> CONDITION, MOISTUR10.14 -> MOISTUR
-    for (let len = t.length; len >= Math.min(6, t.length); len--) {
-      if (s.includes(' ' + t.slice(0, len))) { out.add(t); break; }
-    }
-  }
-  return out;
-}
-
-function detectSizes(str) {
-  const s = normalizeSizeTerms(str);
-  const out = new Set();
-  for (const raw of (s.match(/\d{1,3}(?:\.\d{1,2})?/g) || [])) {
-    const norm = String(parseFloat(raw));
-    if (KNOWN_SIZES.has(norm) || KNOWN_SIZES.has(raw)) out.add(KNOWN_SIZES.has(norm) ? norm : raw);
-  }
-  return out;
-}
-
-const inter = (a, b) => [...a].some(x => b.has(x));
-
-// Compare an invoice description against a product name. Returns the reasons
-// they look incompatible — empty array means nothing objectionable found.
-function crossCheck(description, productName) {
-  const warnings = [];
-  const dT = detectTypes(description), pT = detectTypes(productName);
-  if (dT.size && pT.size && !inter(dT, pT)) {
-    warnings.push({
-      kind: 'type',
-      message: `The invoice says ${[...dT].join(' / ')} but this product is a ${[...pT].join(' / ')}.`
-    });
-  }
-  const dS = detectSizes(description), pS = detectSizes(productName);
-  if (dS.size && pS.size && !inter(dS, pS)) {
-    warnings.push({
-      kind: 'size',
-      message: `The invoice says ${[...dS].join(' / ')} oz but this product is ${[...pS].join(' / ')} oz. (A "LITER" is 33.8 oz.)`
-    });
-  }
-  return warnings;
-}
-
-// Suggest a product for an unmapped invoice description.
-//
-// Deliberately ALL-OR-NOTHING. Measured against the real catalog, a correct
-// match scored 0.68 while a wrong one scored 0.67 — the score cannot separate
-// right from wrong in the middle of the range, so any "% match" shown to a
-// worker is a guess wearing a lab coat. We therefore return AT MOST ONE
-// suggestion, and only when it is both strong in absolute terms and clearly
-// ahead of second place. Everything else returns nothing, and the worker is
-// told to scan a bottle (definitive) or search by hand (deliberate).
-// Thresholds calibrated against the real catalog and real invoice text, not
-// picked by feel. Measured: correct matches landed at 0.97/0.97/0.97/0.73/0.71/
-// 0.64, while a WRONG match landed at 0.70 and an absent product at 0.43. A
-// correct 0.64 sitting below a wrong 0.70 means the middle of the range cannot
-// be trusted at all. Above 0.90 the sample was clean, so that is the bar.
-// Everything below suggests NOTHING — scanning a bottle is the accurate answer,
-// and a blank is far cheaper than a confident wrong guess on the floor.
-const SUGGEST_MIN_SCORE = 0.90;
-const SUGGEST_MIN_GAP   = 0.10;
-
-function suggestProducts(desc, catalog) {
-  const seen = new Set();
-  const ranked = catalog
-    .map(p => ({ asin: p.asin, name: p.name, sku: p.sku, image: p.image, location: p.location, score: matchScore(desc, p.name) }))
-    .filter(x => { if (!x.asin || seen.has(x.asin)) return false; seen.add(x.asin); return true; })
-    .sort((a, b) => b.score - a.score);
-
-  if (!ranked.length) return [];
-  const top = ranked[0];
-  const second = ranked[1] ? ranked[1].score : 0;
-
-  if (top.score < SUGGEST_MIN_SCORE) return [];
-  if (ranked.length > 1 && (top.score - second) < SUGGEST_MIN_GAP) return [];
-
-  // No percentage is returned on purpose — the number implies a precision this
-  // method does not have, and a worker will believe it.
-  return [{ asin: top.asin, name: top.name, sku: top.sku, image: top.image, location: top.location, strong: true }];
-}
-
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'plan-0924';
+const BUILD_ID = 'lib-tests-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1563,7 +1275,6 @@ app.post('/api/add-product', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-
 // ============================================================
 // SP-API AUTO-CLEAR: when Amazon checks in a shipment, clear
 // those units from in-transit. Matches by SKU.
@@ -1781,85 +1492,6 @@ app.post('/api/bundles/delete', auth, async (req, res) => {
 });
 
 // ---- RECONCILE / INVOICES ----
-
-// Parse pasted Cosmoprof invoice text into {orderNumber, date, items[]}
-function parseCosmoInvoice(text) {
-  // Order number: try "ORDER NUMBER: X" (old) or "OMS Order ID: DXXXX" / "Xstore Order ID" (new)
-  let orderNumber = null;
-  let m1 = text.match(/ORDER NUMBER:\s*(\d+)/i);
-  if (m1) orderNumber = m1[1];
-  if (!orderNumber) {
-    // new format: OMS Order ID: D 0 7 1 5 6 9 1 2  (spaces between digits)
-    let m2 = text.match(/OMS\s*Order\s*ID:\s*([D0-9\s]+)/i);
-    if (m2) orderNumber = m2[1].replace(/\s+/g,'').trim();
-  }
-  if (!orderNumber) {
-    let m3 = text.match(/Transaction:\s*(\d+)/i);
-    if (m3) orderNumber = 'T' + m3[1];
-  }
-  const dateMatch = text.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i) || text.match(/(\d{1,2}\/\d{1,2}\/\d{2,4})/);
-  const date = dateMatch ? dateMatch[1] : '';
-
-  const items = [];
-  const lines = text.split(/\r?\n/);
-
-  // FORMAT A (old): "ITEM# DESCRIPTION QTY PRICE QTY EXT N" all on one line
-  const reA = /(\d{6})\s+(.+?)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+([\d,]+\.\d{2})\s+N/;
-  // FORMAT B (new): a line "ITEM# QTY $price ..." with description on the previous non-empty line
-  const reB = /^\s*(\d{6,7})\s+(\d+)\s+\$/;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const a = line.match(reA);
-    if (a) {
-      items.push({ cosmo_num: a[1], description: a[2].trim(), qty_ordered: parseInt(a[3]), qty_shipped: parseInt(a[5]) });
-      continue;
-    }
-    const b = line.match(reB);
-    if (b) {
-      let cnum = b[1];
-      // normalize 7-digit (leading 1) to 6-digit
-      if (cnum.length === 7 && cnum[0] === '1') cnum = cnum.slice(1);
-      const qty = parseInt(b[2]);
-      // description = previous non-empty line that isn't a total/disc line
-      let desc = '';
-      for (let j = i - 1; j >= 0; j--) {
-        const t = lines[j].trim();
-        if (!t) continue;
-        if (/^(item ordered|disc|fp_|shipping|payment|subtotal|total|order deposit|tax|fee)/i.test(t)) continue;
-        desc = t; break;
-      }
-      items.push({ cosmo_num: cnum, description: desc, qty_ordered: qty, qty_shipped: qty });
-    }
-  }
-  // FORMAT C (fallback): copy-paste from PDF scrambles columns into separate
-  // groups (all item#s together, all descriptions together, all quantities together).
-  // If A and B found nothing, try zipping the groups back together.
-  if (items.length === 0) {
-    const itemNums = [];
-    const descs = [];
-    const qtys = [];
-    for (const raw of lines) {
-      const t = raw.trim();
-      if (/^\d{6}$/.test(t)) itemNums.push(t);
-      else if (/^\d{7}$/.test(t) && t[0]==='1') itemNums.push(t.slice(1));
-      else if (/^[A-Z]/.test(t) && /(PM |PAUL|COLOR|TEA TREE|AWAPUHI|MITCH|LAVENDER)/i.test(t)
-               && !/(TOTAL|MEMO|DISCOUNT|SHIPPED|ORDERED|CUSTOMER|BALANCE|PAYMENT|HANDLING)/i.test(t)) {
-        descs.push(t);
-      }
-      else if (/^\d{1,4}$/.test(t)) qtys.push(parseInt(t));
-    }
-    if (itemNums.length > 0 && itemNums.length === descs.length) {
-      // qtys usually contains ordered then shipped (duplicated). Use the first block.
-      for (let i = 0; i < itemNums.length; i++) {
-        const q = qtys[i] != null ? qtys[i] : 0;
-        items.push({ cosmo_num: itemNums[i], description: descs[i], qty_ordered: q, qty_shipped: q });
-      }
-    }
-  }
-
-  return { orderNumber, date, items };
-}
 
 // Multi-order: split pasted text by "FOR ORDER NUMBER:" and create each invoice
 // ============================================================
@@ -2315,48 +1947,7 @@ app.post('/api/upc-precheck', auth, async (req, res) => {
   });
 });
 
-// ============================================================
-// COST ENGINE
-// regular_cost = the price paid for the LARGEST share of units. Cosmoprof runs
-//                sales roughly twice a year, so the price behind most of the
-//                volume is the standing price, not the cheapest one seen.
-// avg_cost     = weighted average across every lot = what the stock actually
-//                cost. This is the number margin should be measured against.
-// A lot is "on sale" when it is meaningfully under the regular price.
-// ============================================================
-const SALE_THRESHOLD = 0.97;   // >3% under regular counts as a sale lot
-
-function blendCosts(lots) {
-  if (!lots.length) return null;
-  // regular = cost carrying the most units
-  const byCost = {};
-  for (const l of lots) {
-    const c = Number(l.unit_cost).toFixed(4);
-    byCost[c] = (byCost[c] || 0) + (l.qty || 0);
-  }
-  let regular = null, bestQty = -1;
-  for (const c of Object.keys(byCost)) {
-    if (byCost[c] > bestQty) { bestQty = byCost[c]; regular = parseFloat(c); }
-  }
-  let spend = 0, units = 0, saleUnits = 0, saleSpend = 0, regUnits = 0, regSpend = 0;
-  const priced = lots.map(l => {
-    const cost = Number(l.unit_cost), qty = l.qty || 0;
-    const onSale = cost < regular * SALE_THRESHOLD;
-    spend += cost * qty; units += qty;
-    if (onSale) { saleUnits += qty; saleSpend += cost * qty; }
-    else { regUnits += qty; regSpend += cost * qty; }
-    return { ...l, unit_cost: cost, onSale };
-  });
-  return {
-    regular,
-    avg: units ? spend / units : regular,
-    units, spend,
-    saleUnits, saleSpend, regUnits, regSpend,
-    lowestSale: saleUnits ? Math.min(...priced.filter(l => l.onSale).map(l => l.unit_cost)) : null,
-    saved: regUnits || saleUnits ? (regular * saleUnits - saleSpend) : 0,
-    lots: priced.sort((a, b) => String(b.invoice_date || '').localeCompare(String(a.invoice_date || '')))
-  };
-}
+   // >3% under regular counts as a sale lot
 
 // Recompute blended costs for every ASIN that has purchase history.
 async function recomputeCosts() {
@@ -2407,78 +1998,6 @@ async function recomputeCosts() {
   } catch (e) { console.error('[Costs] bundle costing failed:', e.message); }
   console.log(`[Costs] Reblended ${n} products from ${rows.length} purchase lots; ${bundles} bundle(s) costed from components${blanked ? ', ' + blanked + ' waiting on a component cost' : ''}.`);
   return n;
-}
-
-// Build cost history from invoice lines already in the database.
-// Lots are only captured when a check-in COMPLETES, so every invoice received
-// before that feature existed has its costs sitting unused in inv_invoice_items.
-// This backfills them. It never touches stock.
-// ============================================================
-// COSTS-ONLY INVOICE IMPORT
-// Reads prices out of invoice PDFs and writes NOTHING but cost history.
-// It never touches inv_stock, inv_invoices, inv_invoice_items, pending_prep,
-// shipments or locations — so old invoices can be mined for cost data without
-// disturbing quantities that are already correct.
-// The only tables it writes are inv_cost_history and (via recomputeCosts)
-// the blended cost fields on inv_products.
-// ============================================================
-// ------------------------------------------------------------
-// Cosmoprof Xstore ORDER receipts (store orders, "Customer Copy").
-// Different from invoices in three ways that matter for cost:
-//  - item numbers carry a leading 1 (1570941 = Cosmo# 570941)
-//  - the Price column is LIST; the Amount column is already net of the
-//    line discount, so true unit cost = Amount / Qty
-//  - quantities are ordered, not shipped
-// Returns the same Map shape as parseInvoiceText, plus a subtotal check.
-// ------------------------------------------------------------
-function parseXstoreOrder(text) {
-  const orders = new Map();
-  const raw = String(text || '');
-  const flat = raw.replace(/[ \t]+/g, ' ');
-  const squashed = raw.replace(/\s+/g, '');
-  const oms = (squashed.match(/OMSOrderID:([A-Z]?\d{6,})/i) || [])[1];
-  const xst = (squashed.match(/XstoreOrderID:(\d{8,})/i) || [])[1];
-  if (!oms && !xst) return { orders, check: null };
-  const orderNumber = oms || ('XS' + xst);
-  const date = (flat.match(/Date:\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/) || [])[1] || null;
-
-  const lines = raw.split(/\r?\n/);
-  const items = [];
-  const re = /(?:^|\s)1(\d{6})\s+(\d+)\s+\$([\d,]+\.\d{2})\s+\$([\d,]+\.\d{2})/;
-  let prevText = '';
-  for (const ln of lines) {
-    const m = ln.match(re);
-    if (m) {
-      const before = ln.slice(0, m.index).trim();
-      const qty = parseInt(m[2], 10);
-      const amount = parseFloat(m[4].replace(/,/g, ''));
-      items.push({
-        cosmo_num: m[1],
-        description: before || prevText,
-        qty_shipped: qty,
-        list_price: parseFloat(m[3].replace(/,/g, '')),
-        amount,
-        unit_cost: qty ? Math.round((amount / qty) * 10000) / 10000 : null
-      });
-      prevText = '';
-      continue;
-    }
-    const t = ln.trim();
-    if (!t) continue;
-    if (/^(DISC_|FP_)/.test(t)) {
-      // a page break can glue the next product's name onto a discount line
-      const tail = t.replace(/^.*?\(\$[\d,]+\.\d{2}\)/, '').trim();
-      if (tail) prevText = tail;
-      continue;
-    }
-    if (!/^Item Ordered$|^\(\$/.test(t)) prevText = t;
-  }
-  if (!items.length) return { orders, check: null };
-  orders.set(orderNumber, { date, items, source: 'xstore' });
-  const subtotal = parseFloat(((flat.match(/Subtotal:\s*\$([\d,]+\.\d{2})/) || [])[1] || '').replace(/,/g, '')) || null;
-  const tax = parseFloat(((flat.match(/Tax:\s*\$([\d,]+\.\d{2})/) || [])[1] || '').replace(/,/g, '')) || null;
-  const sum = Math.round(items.reduce((n, x) => n + x.amount, 0) * 100) / 100;
-  return { orders, check: { orderNumber, subtotal, sum, matches: subtotal != null && Math.abs(sum - subtotal) < 0.05, tax, lines: items.length } };
 }
 
 app.post('/api/costs/import-invoice', ownerAuth, upload.array('pdf', 20), async (req, res) => {
@@ -2716,180 +2235,6 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
     }
   });
 });
-
-// ============================================================
-// SETTLEMENT REPORTS — real fees, real refunds
-// Amazon's flat-file settlement is tab separated. Every row is one money
-// movement, classified by amount-type / amount-description:
-//   ItemPrice  + Principal                  -> gross revenue
-//   ItemFees   + Commission                 -> referral fee
-//   ItemFees   + FBAPerUnitFulfillmentFee   -> FBA pick & pack
-//   ItemPrice  + Principal (Refund)         -> money returned to the customer
-//   ItemFees   + RefundCommission           -> the bit Amazon keeps on a refund
-// Fees are reported as NEGATIVE numbers; they are stored exactly as reported.
-// ============================================================
-function parseSettlementFlatFile(text) {
-  const lines = String(text || '').split(/\r?\n/).filter(l => l.length);
-  if (!lines.length) return { header: null, rows: [] };
-
-  // Header names differ between variants and marketplaces: 'amount-type',
-  // 'Amount Type', 'amount_type'. Normalise both sides to letters+digits.
-  const rawCols = lines[0].split('\t').map(c => c.trim());
-  const cols = rawCols.map(c => c.toLowerCase().replace(/[^a-z0-9]/g, ''));
-  const at = (name) => cols.indexOf(String(name).toLowerCase().replace(/[^a-z0-9]/g, ''));
-
-  const iSet = at('settlement-id'), iStart = at('settlement-start-date'), iEnd = at('settlement-end-date');
-  const iDep = at('deposit-date'), iTotal = at('total-amount');
-  const iTxn = at('transaction-type'), iOrder = at('order-id'), iSku = at('sku');
-  const iShip = at('shipment-id');
-  const iQty = at('quantity-purchased'), iPosted = at('posted-date');
-  const iItem = at('order-item-code');
-
-  // TALL layout (V2): one amount per row.
-  const iType = at('amount-type'), iDesc = at('amount-description'), iAmt = at('amount');
-  // WIDE layout (V1): several typed amounts per row, each its own column pair.
-  const PAIRS = [
-    { type: at('price-type'),            amt: at('price-amount'),            kind: 'ItemPrice' },
-    { type: at('item-related-fee-type'), amt: at('item-related-fee-amount'), kind: 'ItemFees'  },
-    { type: at('shipment-fee-type'),     amt: at('shipment-fee-amount'),     kind: 'ItemFees'  },
-    { type: at('order-fee-type'),        amt: at('order-fee-amount'),        kind: 'ItemFees'  },
-    { type: at('promotion-type'),        amt: at('promotion-amount'),        kind: 'Promotion' },
-    { type: at('direct-payment-type'),   amt: at('direct-payment-amount'),   kind: 'other-transaction' },
-  ];
-  // Amounts with no type column of their own.
-  const iMisc = at('misc-fee-amount');
-  const iOtherFee = at('other-fee-amount'), iOtherReason = at('other-fee-reason-description');
-  const iOtherAmt = at('other-amount');
-
-  const isWide = PAIRS.some(p2 => p2.type >= 0 && p2.amt >= 0) || iOtherFee >= 0;
-  const isTall = iType >= 0 && iAmt >= 0;
-
-  console.log('[Settlement] columns:', JSON.stringify(rawCols));
-  console.log(`[Settlement] layout detected: ${isWide ? 'WIDE (flat file v1)' : (isTall ? 'TALL (v2)' : 'UNKNOWN')}`);
-  if (!isWide && !isTall) console.error('[Settlement] neither layout recognised — no amount columns found.');
-
-  const num = (v) => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
-  const date = (v) => {
-    const t = String(v || '').trim();
-    if (!t) return null;
-    const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/);         // 2026-08-29T13:34:05+00:00
-    if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
-    const m = t.match(/^(\d{1,2})[-\/.]([A-Za-z]{3}|\d{1,2})[-\/.](\d{4})/);
-    if (m) {
-      const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-      const mo = isNaN(+m[2]) ? MON[m[2].toLowerCase()] : (+m[2] - 1);
-      if (mo != null) return `${m[3]}-${String(mo+1).padStart(2,'0')}-${String(+m[1]).padStart(2,'0')}`;
-    }
-    const d = new Date(t);
-    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
-  };
-
-  let header = null;
-  const rows = [];
-
-  for (let i = 1; i < lines.length; i++) {
-    const f = lines[i].split('\t');
-    const settlementId = (f[iSet] || '').trim();
-    if (!settlementId) continue;
-
-    // The first row carries the settlement totals and no transaction detail.
-    if (!header && iTotal >= 0 && f[iTotal] && String(f[iTotal]).trim()) {
-      header = {
-        settlement_id: settlementId,
-        start_date: date(f[iStart]), end_date: date(f[iEnd]),
-        deposit_date: date(f[iDep]), total_amount: num(f[iTotal])
-      };
-    }
-
-    const base = {
-      settlement_id: settlementId,
-      posted_date: date(f[iPosted]) || (header && header.end_date) || null,
-      transaction_type: (f[iTxn] || '').trim() || null,
-      order_id: (f[iOrder] || '').trim() || null,
-      shipment_id: iShip >= 0 ? ((f[iShip] || '').trim() || null) : null,
-      sku: (f[iSku] || '').trim() || null,
-      item_code: iItem >= 0 ? ((f[iItem] || '').trim() || null) : null,
-      quantity: iQty >= 0 ? (parseInt(f[iQty], 10) || 0) : 0,
-      deposit_date: header ? header.deposit_date : null
-    };
-
-    if (isTall) {
-      const amt = num(f[iAmt]);
-      if (amt == null) continue;
-      rows.push({ ...base, row_idx: rows.length,
-        amount_type: (f[iType] || '').trim() || null,
-        amount_description: (f[iDesc] || '').trim() || null,
-        amount: amt });
-      continue;
-    }
-
-    // WIDE: emit one row per populated (type, amount) pair on this line.
-    let emitted = 0;
-    for (const pr of PAIRS) {
-      if (pr.amt < 0) continue;
-      const amt = num(f[pr.amt]);
-      if (amt == null || amt === 0) continue;
-      const desc = (pr.type >= 0 ? (f[pr.type] || '').trim() : '') || pr.kind;
-      rows.push({ ...base, row_idx: rows.length, amount_type: pr.kind, amount_description: desc, amount: amt });
-      emitted++;
-      // quantity belongs to the sale line only, never to a fee
-      if (pr.kind !== 'ItemPrice') rows[rows.length - 1].quantity = 0;
-    }
-    if (iMisc >= 0) {
-      const a = num(f[iMisc]);
-      if (a != null && a !== 0) { rows.push({ ...base, row_idx: rows.length, quantity: 0, amount_type: 'ItemFees', amount_description: 'MiscFee', amount: a }); emitted++; }
-    }
-    if (iOtherFee >= 0) {
-      const a = num(f[iOtherFee]);
-      if (a != null && a !== 0) {
-        const reason = (iOtherReason >= 0 ? (f[iOtherReason] || '').trim() : '') || 'OtherFee';
-        // Inbound transport / placement fees arrive here.
-        rows.push({ ...base, row_idx: rows.length, quantity: 0, amount_type: 'other-transaction', amount_description: reason, amount: a });
-        emitted++;
-      }
-    }
-    if (iOtherAmt >= 0) {
-      const a = num(f[iOtherAmt]);
-      if (a != null && a !== 0) {
-        rows.push({ ...base, row_idx: rows.length, quantity: 0, amount_type: 'other-transaction',
-                    amount_description: base.transaction_type || 'Other', amount: a });
-        emitted++;
-      }
-    }
-  }
-
-  // Quantity does not always sit on the same row as the Principal amount — it
-  // can be on another row of the same order item, or on a row with no amount
-  // at all (which is never emitted). Collect it per order item from every
-  // source line, then put it on that item's Principal row and nowhere else.
-  if (isWide) {
-    const qtyByItem = {};
-    for (let i = 1; i < lines.length; i++) {
-      const f = lines[i].split('\t');
-      const q = iQty >= 0 ? (parseInt(f[iQty], 10) || 0) : 0;
-      if (!q) continue;
-      const key = ((f[iOrder] || '').trim()) + '|' + (iItem >= 0 ? (f[iItem] || '').trim() : ((f[iSku] || '').trim()));
-      if (Math.abs(q) > Math.abs(qtyByItem[key] || 0)) qtyByItem[key] = q;
-    }
-    let fromItem = 0, estimated = 0;
-    const seen = new Set();
-    for (const r of rows) {
-      const isPrin = r.amount_type === 'ItemPrice' && /principal/i.test(r.amount_description || '');
-      if (!isPrin) { r.quantity = 0; continue; }
-      const key = (r.order_id || '') + '|' + (r.item_code || r.sku || '');
-      if (seen.has(key)) { r.quantity = 0; continue; }   // one unit count per item
-      seen.add(key);
-      const q = qtyByItem[key];
-      if (q) { r.quantity = Math.abs(q) * Math.sign(r.amount || 1); fromItem++; }
-      else if (r.amount) { r.quantity = Math.sign(r.amount); estimated++; }
-    }
-    console.log(`[Settlement] units: ${fromItem} item(s) from quantity-purchased, ${estimated} assumed 1 (no quantity found).`);
-  }
-
-  if (!header) header = { settlement_id: rows.length ? rows[0].settlement_id : null,
-                          start_date: null, end_date: null, deposit_date: null, total_amount: null };
-  return { header, rows };
-}
 
 let settleJob = { running:false, done:false, error:null, progress:'', reports:0, imported:0, lines:0 };
 
@@ -3206,18 +2551,6 @@ app.post('/api/sku-map', ownerAuth, async (req, res) => {
 
 app.get('/api/settlements/status', ownerAuth, (req, res) => res.json({ ...settleJob, build: BUILD_ID }));
 
-// Real, per-ASIN economics over a date range, straight from the settlements.
-// Sales tax Amazon collects as marketplace facilitator passes THROUGH the
-// settlement: in as a price-type of Tax/ShippingTax, out as a
-// MarketplaceFacilitatorTax fee. It is not revenue and not an Amazon fee —
-// counting it on both sides inflates Net Sales and Fees equally.
-function isPassThroughTax(amountType, desc) {
-  const d = String(desc || '');
-  if (amountType === 'ItemPrice') return /tax/i.test(d);
-  if (amountType === 'ItemFees' || amountType === 'other-transaction') return /MarketplaceFacilitator|TaxWithheld|Tax-?Withholding/i.test(d);
-  return false;
-}
-
 // Reconcile each settlement against the deposit Amazon itself reported.
 app.get('/api/settlements/reconcile', ownerAuth, async (req, res) => {
   try {
@@ -3349,115 +2682,6 @@ app.get('/api/settlements/summary', ownerAuth, async (req, res) => {
 // per pay period instead. Punches are what prep-job durations get clamped to,
 // which is how a job left open overnight stops reading as 17 hours.
 // ============================================================
-
-// Minimal RFC4180-ish CSV line splitter (handles quoted fields with commas).
-function splitCsvLine(line) {
-  const out = []; let cur = '', q = false;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q) {
-      if (c === '"' && line[i+1] === '"') { cur += '"'; i++; }
-      else if (c === '"') q = false;
-      else cur += c;
-    } else {
-      if (c === '"') q = true;
-      else if (c === ',') { out.push(cur); cur = ''; }
-      else cur += c;
-    }
-  }
-  out.push(cur);
-  return out.map(x => x.trim());
-}
-
-const HB_MONTHS = {january:0,february:1,march:2,april:3,may:4,june:5,july:6,
-                   august:7,september:8,october:9,november:10,december:11,
-                   jan:0,feb:1,mar:2,apr:3,jun:5,jul:6,aug:7,sep:8,sept:8,oct:9,nov:10,dec:11};
-
-// "August 31 2026" | "8/31/2026" | "2026-08-31"
-function hbDate(str) {
-  const t = String(str || '').trim();
-  if (!t || t === '-') return null;
-  let m = t.match(/^([A-Za-z]+)\s+(\d{1,2})\s*,?\s*(\d{4})$/);
-  if (m && HB_MONTHS[m[1].toLowerCase()] != null) return { y:+m[3], mo:HB_MONTHS[m[1].toLowerCase()], d:+m[2] };
-  m = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (m) return { y:+m[3], mo:+m[1]-1, d:+m[2] };
-  m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (m) return { y:+m[1], mo:+m[2]-1, d:+m[3] };
-  return null;
-}
-
-// "8:07am" | "8:07 AM" | "16:12"
-function hbMinutes(str) {
-  const t = String(str || '').trim().toLowerCase().replace(/\s+/g, '');
-  if (!t || t === '-') return null;
-  let m = t.match(/^(\d{1,2}):(\d{2})(am|pm)$/);
-  if (m) {
-    let h = +m[1];
-    if (m[3] === 'pm' && h !== 12) h += 12;
-    if (m[3] === 'am' && h === 12) h = 0;
-    return h * 60 + (+m[2]);
-  }
-  m = t.match(/^(\d{1,2}):(\d{2})$/);
-  if (m) return (+m[1]) * 60 + (+m[2]);
-  return null;
-}
-
-function mkTs(dt, mins) {
-  // Local wall-clock time as recorded by the time clock.
-  const d = new Date(dt.y, dt.mo, dt.d, Math.floor(mins/60), mins % 60, 0);
-  return d;
-}
-
-// Parse the Homebase CSV export into shift rows.
-function parseHomebaseCsv(text) {
-  const lines = String(text || '').split(/\r?\n/);
-  const rows = [], warnings = [];
-  let cols = null;
-
-  const idx = (name) => {
-    if (!cols) return -1;
-    const want = name.toLowerCase();
-    return cols.findIndex(c => c.toLowerCase() === want);
-  };
-
-  for (const raw of lines) {
-    if (!raw || !raw.trim()) continue;
-    const f = splitCsvLine(raw);
-    const first = (f[0] || '').trim();
-
-    // repeated header block before each employee
-    if (/^name$/i.test(first) && f.some(x => /clock in/i.test(x))) { cols = f; continue; }
-    if (!cols) continue;
-    if (!first || first === '-' || /^totals/i.test(first) || /^payroll period/i.test(first)) continue;
-
-    const ciD = hbDate(f[idx('Clock in date')]);
-    const ciT = hbMinutes(f[idx('Clock in time')]);
-    const coD = hbDate(f[idx('Clock out date')]);
-    const coT = hbMinutes(f[idx('Clock out time')]);
-    // employee heading rows have a name but no punch — skip quietly
-    if (!ciD || ciT == null || !coD || coT == null) continue;
-
-    const inTs = mkTs(ciD, ciT);
-    let outTs = mkTs(coD, coT);
-    if (outTs <= inTs) { outTs = new Date(outTs.getTime() + 24*3600*1000); } // crossed midnight
-
-    const num = (v) => { const n = parseFloat(String(v || '').replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n; };
-    const brk = num(f[idx('Break length')]) || 0;
-
-    rows.push({
-      homebase_name: first,
-      work_date: `${ciD.y}-${String(ciD.mo+1).padStart(2,'0')}-${String(ciD.d).padStart(2,'0')}`,
-      clock_in: inTs, clock_out: outTs,
-      break_minutes: Math.round(brk > 12 ? brk : brk * 60), // minutes or decimal hours
-      wage: num(f[idx('Wage rate')]),
-      actual_hours: num(f[idx('Actual hours')]),
-      paid_hours: num(f[idx('Total paid hours')]),
-      ot_hours: num(f[idx('OT hours')])
-    });
-  }
-  if (!cols) warnings.push('No Homebase header row found — is this the timesheets CSV export?');
-  return { rows, warnings };
-}
 
 // ---- Employees ----
 app.get('/api/employees', auth, async (req, res) => {
@@ -3791,10 +3015,6 @@ app.get('/api/pnl', ownerAuth, async (req, res) => {
     coverage: coverage.rows[0]
   });
 });
-
-// ---- Inbound shipment costs ----
-// Fee kinds Amazon uses for inbound charges, so settlement rows can be spotted.
-const INBOUND_FEE_PATTERNS = /inbound|placement|transportation|partnered.?carrier|convenience/i;
 
 // Enter (or correct) what a shipment cost. Manual entries are ESTIMATES and are
 // replaced automatically once the settlement reports the real figure.
@@ -4915,8 +4135,6 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
   res.json(out);
 });
 
-
-
 // RESTOCK PRIORITY — combines Keepa market data + velocity + FBA + on-hand
 // into a ranked "what to reorder" list.
 app.get('/api/restock-priority', ownerAuth, async (req, res) => {
@@ -5098,8 +4316,6 @@ app.get('/api/restock-priority', ownerAuth, async (req, res) => {
   await saveCache('restock_priority', rows);
   res.json({ items: rows, velDays, freshness });
 });
-
-
 
 // Keepa market data — pull for target ASINs, cross-reference with our on-hand
 // ---- Background market-data job (avoids Railway request timeouts) ----
@@ -5337,7 +4553,6 @@ async function runMarketDataPull(onProgress, opts = {}) {
     pulled, skippedCheap, skippedFresh, failed: r.failed || []
   };
 }
-
 
 // Direct (synchronous) pull — kept for small sets; may time out on large ones
 app.get('/api/market-data', ownerAuth, async (req, res) => {

@@ -6,7 +6,8 @@ bundles), and shipped to FBA. The owner side adds cost tracking, Amazon
 settlements, and a P&L.
 
 Node + Express 4 + Postgres (`pg`). No build step, no framework on the front
-end, no tests. Deployed on Railway (deploys from the GitHub repo).
+end. Unit tests for the pure helpers (`npm test`). Deployed on Railway (deploys
+from the GitHub repo).
 
 ## Files
 
@@ -18,6 +19,8 @@ end, no tests. Deployed on Railway (deploys from the GitHub repo).
 | `spapi.js` | Amazon Selling Partner API client: LWA tokens, reports, settlements, FBA inventory, sales velocity, prices, catalog, inbound shipments/fees, hazmat. |
 | `keepa.js` | Keepa API client (market data, tracked ASINs). |
 | `index.html` | The entire front end: one large file with inline CSS/JS, served at `/`. |
+| `lib/*.js` | Pure helpers moved out of `server.js` so they can be tested: `invoice-parse` (Cosmoprof/Xstore parsing, `findInvoiceDate`), `settlement-parse` (settlement flat files, `isPassThroughTax`, `INBOUND_FEE_PATTERNS`), `homebase` (timesheet CSV), `costs` (`blendCosts`), `matching` (invoice-line → product suggestions), `codes` (`normCode`, rack locations, `badQty`). Also `weekly-email` (Sunday summary email). No database access in the parsers. |
+| `test/*.test.js` | `node:test` unit tests for `lib/`. Run with `npm test`. |
 | `*.json` | Seed/reference data read at startup or by specific routes: `products.json` (catalog seed), `cosmo_map.json` (Cosmoprof item # → ASIN), `seed_costs.json`, `seed_fnskus.json`, `keepa_asins.json`, `smartscout_products.json` (products-to-add research). |
 
 `server.js` and `index.html` are very large. Find things with grep (route
@@ -90,14 +93,14 @@ These live in comments next to the code. Read the comment before changing the co
 
 ## Checking a change
 
-There's no test suite yet. At minimum:
-
 ```
+npm test                                   # unit tests for lib/ (no database needed)
 node --check server.js finance.js autorun.js spapi.js keepa.js
 ```
 
-Pure functions, like the invoice parser and `findInvoiceDate`, can be tested
-without a database. Prefer adding tests there when you touch them.
+When you change a parser or rule in `lib/`, add a test for the case that
+prompted it. Routes in `server.js` have no automated tests: check them against
+a local Postgres (`DATABASE_URL=... npm start`) and in the browser.
 
 ## Workflow with the owner
 
