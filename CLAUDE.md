@@ -98,3 +98,9 @@ node --check server.js finance.js autorun.js spapi.js keepa.js
 
 Pure functions, like the invoice parser and `findInvoiceDate`, can be tested
 without a database. Prefer adding tests there when you touch them.
+
+## Workflow with the owner
+
+- The owner has approved merging PRs without asking: once a change the owner asked for (or agreed to) is built and tested, merge its PR into `main` and say it's live. Railway deploys `main`.
+- Still ask first for anything the owner hasn't agreed to, and flag clearly when a change affects stock counts, money or logins.
+- After merging, start the next change from the latest `main`.
