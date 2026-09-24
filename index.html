@@ -6084,11 +6084,42 @@ function amazonSplit(p){
     +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td></tr>';
   const multi=rows.length>1;
   return '<div style="margin-top:8px;background:#f7f9fb;border-radius:8px;padding:6px 4px">'
-    +'<div style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6;padding:0 8px 2px">AT AMAZON BY LISTING</div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 2px"><span style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6">AT AMAZON BY LISTING</span>'
+    +'<a href="#" onclick="amazonCheck(\''+esc(p.asin)+'\');return false" style="font-size:11.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a></div>'
+    +(p.fba_amazon_asin?'<div class="hint" style="padding:0 8px 4px;color:#b7791f">Amazon files this SKU under ASIN <b>'+esc(p.fba_amazon_asin)+'</b>, not '+esc(p.asin)+' — numbers matched by SKU.</div>':'')
     +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td></tr>'
     +rows.map(tr).join('')
     +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td></tr>':'')
     +'</table></div>';
+}
+// Ask Amazon about one product's SKUs right now and show the raw answer next
+// to what the app saved — for when a card disagrees with Seller Central.
+function amazonCheck(asin){
+  const old=document.getElementById('chkModal'); if(old) old.remove();
+  const m=document.createElement('div'); m.id='chkModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:720px;width:100%"><b>Asking Amazon…</b></div>';
+  m.onclick=e=>{ if(e.target===m) m.remove(); };
+  document.body.appendChild(m);
+  api('/api/amazon-check/'+encodeURIComponent(asin)).then(d=>{
+    const td='padding:5px 8px;border-top:1px solid #eef2f6';
+    let h='<div style="background:#fff;border-radius:12px;padding:18px;max-width:720px;width:100%">'
+      +'<div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:16px">🔍 What Amazon says right now</b><div class="hint">'+esc(d.name||asin)+' · '+esc(asin)+'</div></div>'
+      +'<button class="action" onclick="document.getElementById(\'chkModal\').remove()" style="background:#5a6472">Close</button></div>';
+    if(!d.skus||!d.skus.length) h+='<div class="box" style="margin-top:10px;color:#c0392b">This product has no Seller SKU in the app, so Amazon can\'t be asked about it. Add the SKU (it\'s on the Seller Central inventory page).</div>';
+    else if(d.amazonError) h+='<div class="box" style="margin-top:10px;color:#c0392b">Amazon returned an error: '+esc(d.amazonError)+'</div>';
+    else {
+      h+='<table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:13px"><tr style="font-size:11px;color:#5a6472"><td style="padding:5px 8px">SKU</td><td style="padding:5px 8px">Amazon\'s ASIN</td><td style="padding:5px 8px;text-align:right">On hand</td><td style="padding:5px 8px;text-align:right">Available</td><td style="padding:5px 8px;text-align:right">Inbound</td></tr>'
+        +(d.amazon||[]).map(x=>'<tr><td style="'+td+';font-family:monospace">'+esc(x.sku)+'</td><td style="'+td+';font-family:monospace;'+(x.asin!==asin?'color:#b7791f;font-weight:800':'')+'">'+esc(x.asin)+'</td><td style="'+td+';text-align:right;font-weight:800">'+x.onHand+'</td><td style="'+td+';text-align:right">'+x.available+'</td><td style="'+td+';text-align:right">'+x.inbound+'</td></tr>').join('')
+        +'</table>';
+      const missing=d.skus.filter(k=>!(d.amazon||[]).some(x=>x.sku===k));
+      if(missing.length) h+='<div class="hint" style="margin-top:6px;color:#c0392b">Amazon has nothing under SKU '+missing.map(esc).join(', ')+'.</div>';
+    }
+    if(d.saved) h+='<div class="hint" style="margin-top:10px">App has saved for this ASIN: <b>'+(d.saved.fba_onhand||0)+'</b> on hand, '+(d.saved.fba_fulfillable||0)+' available, '+(d.saved.fba_inbound||0)+' on the way.</div>';
+    if(d.lastPull) h+='<div class="hint">Last full sync read <b>'+d.lastPull.skus+'</b> SKUs in '+d.lastPull.pages+' page(s) · '+d.lastPull.seen.map(x=>esc(x.sku)+(x.inLastPull?' was in it'+(x.asMsg&&x.asMsg!==asin?' (as '+esc(x.asMsg)+')':''):' was NOT in it')).join(' · ')+'</div>';
+    h+='<div class="hint" style="margin-top:8px">If this doesn\'t match Seller Central, screenshot this window and send it over.</div></div>';
+    m.innerHTML=h;
+  }).catch(e=>{ m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px">Could not reach the server: '+esc(e.message)+'</div>'; });
 }
 function renderOnhand(){
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
@@ -6247,7 +6278,7 @@ function renderSyncStatus(st){
   const last=st.last;
   box.innerHTML = last
     ? '<div class="hint">Last synced with Amazon: <b>'+esc(fmtAgo(last.at))+'</b>'+(last.trigger==='daily'?' · morning auto-sync':'')
-      +(last.result?' · '+last.result.products+' products'+(last.result.errors&&last.result.errors.length?' · <span style="color:#c0392b">'+esc(last.result.errors.join(' · '))+'</span>':''):'')
+      +(last.result?' · '+(last.result.amazonSkus!=null?last.result.amazonSkus+' Amazon SKUs in '+last.result.pages+' page'+(last.result.pages===1?'':'s'):last.result.products+' products')+(last.result.errors&&last.result.errors.length?' · <span style="color:#c0392b">'+esc(last.result.errors.join(' · '))+'</span>':''):'')
       +' · runs automatically every day at 6:30 AM</div>'
     : '<div class="hint">Not synced yet · runs automatically every day at 6:30 AM</div>';
 }
