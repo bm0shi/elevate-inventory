@@ -399,7 +399,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'lib-tests-0924';
+const BUILD_ID = 'orders-sort-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4937,6 +4937,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       atAmazon: Math.max(f.fba_onhand || 0, f.fba_fulfillable || 0), onTheWay: f.fba_inbound || 0,
       queued: (prepped[p.asin] || 0) + (pending[p.asin] || 0),
       keepaMonthly: m.monthlySold ?? null, amazonHasBuyBox: !!m.amazonHasBuyBox,
+      price: m.buyBoxPrice ?? null, pickPackFee: m.pickPackFee ?? null, referralPct: m.referralPct ?? null,
       ourSold, ourDays: velDays,
     });
     if (!isDuo) bottles.push({
