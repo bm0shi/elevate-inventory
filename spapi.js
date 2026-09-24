@@ -180,7 +180,8 @@ async function getInboundPipeline(sinceDays = 180, onProgress) {
 async function getShipmentReceivedItems(shipmentId) {
   const token = await getAccessToken();
   const items = [];
-  let nextToken = null;
+  const seenSku = new Set(), seenTokens = new Set();
+  let nextToken = null, pages = 0;
 
   do {
     const params = { MarketplaceId: MARKETPLACE_ID, QueryType: nextToken ? 'NEXT_TOKEN' : 'SHIPMENT' };
@@ -201,14 +202,26 @@ async function getShipmentReceivedItems(shipmentId) {
     }
 
     const data = resp.data.payload?.ItemData || [];
+    let fresh = 0;
     for (const it of data) {
+      // One row per SKU per shipment. A repeated SKU means Amazon sent the
+      // same page again — don't count it twice.
+      if (seenSku.has(it.SellerSKU)) continue;
+      seenSku.add(it.SellerSKU); fresh++;
       items.push({
         sku: it.SellerSKU,
         received: it.QuantityReceived || 0,
         shipped: it.QuantityShipped || 0,
       });
     }
-    nextToken = resp.data.payload?.NextToken || null;
+    // This endpoint can hand back a NextToken it then ignores, returning the
+    // first page for ever — a sync sat on "shipment 1 of 2" for minutes,
+    // calling Amazon every second. Stop on a repeated token, a page with
+    // nothing new, or after 20 pages.
+    const tok = resp.data.payload?.NextToken || null;
+    pages++;
+    nextToken = (tok && !seenTokens.has(tok) && fresh > 0 && pages < 20) ? tok : null;
+    if (tok) seenTokens.add(tok);
     await sleep(1200);
   } while (nextToken);
 
