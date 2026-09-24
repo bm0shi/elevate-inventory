@@ -256,7 +256,7 @@
         <option value="duoonly">Duo items only</option>
         <option value="duobuildable">🧴 Duos I can build now (one-tap prep)</option>
       </select>
-      <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync FBA Check-ins</button>
+      <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync with Amazon</button>
       <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
     </div>
     <div style="height:12px"></div>
@@ -5932,12 +5932,12 @@ function renderDuoBuilder(body, q){
 }
 // What's already at Amazon for this duo and what's on its way there, so the
 // floor can see whether more are needed before building them. Figures are
-// Amazon's, from the last FBA inventory pull (On Hand → Sync FBA Check-ins,
+// Amazon's, from the last FBA inventory pull (On Hand → Sync with Amazon,
 // or the Sunday refresh). Duos ship as their bottles in this app's own
 // transit count, so "on the way" is Amazon's inbound figure for the duo.
 function duoAmazonLine(p){
   if(!p || !p.asin) return '';
-  if(!p.fba_as_of) return '<div class="hint" style="margin-top:8px">Amazon counts not loaded yet — tap “Sync FBA Check-ins” above.</div>';
+  if(!p.fba_as_of) return '<div class="hint" style="margin-top:8px">Amazon counts not loaded yet — tap “Sync with Amazon” above.</div>';
   const atFba=p.fba_fulfillable||0, inb=p.fba_inbound||0;
   const perDay=(p.monthlySold||0)/30;
   const cover=perDay>0 ? Math.round((atFba+inb)/perDay) : null;
@@ -6084,13 +6084,22 @@ function pullImages(){
     loadProducts();
   }).catch(()=>{ btn.textContent='🖼️ Pull Images'; btn.disabled=false; toast('Image pull failed',true); });
 }
+// One button for everything Amazon knows about our stock: which shipments it
+// has checked in (clears In Transit) and how many units it holds per product
+// (the AT FBA / AT AMAZON / ON THE WAY figures). It used to do only the first.
 function syncFba(){
-  const btn=document.getElementById('syncBtn'); btn.textContent='Syncing...'; btn.disabled=true;
+  const btn=document.getElementById('syncBtn'); btn.textContent='Syncing with Amazon…'; btn.disabled=true;
+  const done=()=>{ btn.textContent='↻ Sync with Amazon'; btn.disabled=false; };
+  const msgs=[]; let failed=false;
   api('/api/sync-fba',{method:'POST'}).then(d=>{
-    btn.textContent='↻ Sync FBA Check-ins'; btn.disabled=false;
-    if(d.ok){ toast(`Synced: ${d.shipments} shipments, ${d.cleared} units cleared from transit`); loadProducts(); }
-    else { toast('Sync failed: '+(d.error||'check SP-API credentials'), true); }
-  }).catch(()=>{ btn.textContent='↻ Sync FBA Check-ins'; btn.disabled=false; toast('Sync error',true); });
+    if(d.ok) msgs.push(d.shipments+' shipment'+(d.shipments===1?'':'s')+' newly checked in');
+    else { failed=true; msgs.push('check-ins failed: '+(d.error||'check SP-API credentials')); }
+  }).catch(()=>{ failed=true; msgs.push('check-ins: connection error'); })
+  .then(()=>api('/api/fba-inventory')).then(d=>{
+    if(Array.isArray(d)) msgs.unshift('Amazon counts updated for '+d.length+' product'+(d.length===1?'':'s'));
+    else { failed=true; msgs.push('Amazon counts failed: '+((d&&d.error)||'unknown')); }
+  }).catch(()=>{ failed=true; msgs.push('Amazon counts: connection error'); })
+  .then(()=>{ done(); toast(msgs.join(' · '), failed); loadProducts(); });
 }
 function renderLog(){ api('/api/activity').then(rows=>{ const b=document.getElementById('logBody');
   if(!rows.length){b.innerHTML='<div class="hint">No activity yet.</div>';return;}
