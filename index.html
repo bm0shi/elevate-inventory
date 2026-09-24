@@ -494,6 +494,8 @@
         <div class="subgroup"><div class="subgroup-label">Plan &amp; buy</div><div class="subgroup-btns">
           <button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button>
           <button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button>
+          <button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button>
+          <button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button>
           <button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button>
           <button class="subtab" data-sub="market" onclick="showSubTab('market',event)">Market Data</button>
           <button class="subtab" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button>
@@ -662,6 +664,8 @@
 <div id="sub-dashboard" class="subpanel active">
     <div id="dashBody"><div class="hint">Loading dashboard...</div></div>
   </div>
+<div id="sub-sendnext" class="subpanel"><div id="sendNextBody"></div></div>
+<div id="sub-orders" class="subpanel"><div id="ordersBody"></div></div>
 <div id="sub-restock" class="subpanel">
     <div class="box">
       <div style="font-weight:700">Restock Priority Plan</div>
@@ -2399,6 +2403,7 @@ function showSubTab(name, ev){
   // load the data for that sub-tab
   if(name==='dashboard'){ loadDashboard(); }
   if(name==='restock'){ if(window._restockData) renderRestock(); else loadRestockCache(); }
+  if(name==='sendnext' || name==='orders') loadPlan(name);
   if(name==='toadd'){ if(window._toaddData) renderToAdd(); else loadToAdd(); }
   if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
@@ -2556,8 +2561,8 @@ function loadPendingPrep(){
 // edit the quantities, then send it to Pending Prep as work orders and/or
 // download a file for Amazon's Send to Amazon upload. Quantities are capped
 // at what is free on hand (not already prepped or on a work order).
-function openShipBuilder(){
-  const rows=(window._restockData||[]).filter(x=>(x.suggestedSend||0)>0)
+function openShipBuilder(source){
+  const rows=(source||window._restockData||[]).filter(x=>(x.suggestedSend||0)>0)
     .sort((a,b)=>b.score-a.score)
     .map(x=>{ const p=(products||[]).find(y=>y.asin===x.asin)||{};
       return { asin:x.asin, sku:x.sku||p.sku||'', name:x.name||p.name||x.asin, isBundle:!!x.isBundle, available:x.available||0, daysAtFba:x.daysAtFba, qty:x.suggestedSend, on:true }; });
@@ -2618,6 +2623,167 @@ function shipBuilderDownload(){
   const a=document.createElement('a');
   a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
   a.download='shipment-draft-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+}
+
+// ============================================================
+// PLANNING: Send Next + Suggested Orders (CosmoProf)
+// Both read /api/plan/data and do the arithmetic here, so the settings
+// (target days, lead times, demand basis) update the numbers instantly.
+// Settings are remembered on this device.
+// ============================================================
+let _plan=null;
+const PLAN_DEFAULTS={ basis:'ours', target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1 };
+function planSet(){ try{ return Object.assign({}, PLAN_DEFAULTS, JSON.parse(localStorage_get('planSettings')||'{}')); }catch(e){ return Object.assign({},PLAN_DEFAULTS); } }
+function planSave(k,v){ const st=planSet(); st[k]=v; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
+function loadPlan(view){
+  window._planView=view;
+  const box=document.getElementById(view==='orders'?'ordersBody':'sendNextBody');
+  box.innerHTML='<div class="box hint">Loading…</div>';
+  ownerApi('/api/plan/data').then(d=>{ if(!d||!d.ok){ box.innerHTML='<div class="box" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; } _plan=d; renderPlan(view); })
+    .catch(e=>{ box.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
+}
+// Units per day for one listing, on the chosen basis.
+//  ours  = our own sales over the last velocity window (falls back to Keepa when we sold none)
+//  keepa = Keepa "bought past month" for the listing, halved if Amazon holds the Buy Box
+//  max   = the higher of the two (useful when we were out of stock and our sales look low)
+function planDemand(l, basis){
+  const ours = l.ourSold!=null ? l.ourSold/(l.ourDays||30) : null;
+  const keepa = l.keepaMonthly!=null ? (l.keepaMonthly/30)*(l.amazonHasBuyBox?0.5:1) : null;
+  if(basis==='keepa') return {perDay:keepa||0, src:keepa!=null?'keepa':'—'};
+  if(basis==='max') return (ours||0)>=(keepa||0) ? {perDay:ours||0, src:ours!=null?'ours':'—'} : {perDay:keepa, src:'keepa'};
+  if(ours) return {perDay:ours, src:'ours'};
+  return {perDay:keepa||0, src:keepa!=null?'keepa':'—'};
+}
+function planAsOf(d){
+  const f=x=>x?new Date(x).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'never';
+  return 'Amazon stock: '+f(d.asOf.amazon)+' · Keepa: '+f(d.asOf.keepa)+' · Our sales ('+d.asOf.salesDays+' days): '+f(d.asOf.sales);
+}
+function planBasisPicker(st){
+  const o=(v,t)=>'<option value="'+v+'"'+(st.basis===v?' selected':'')+'>'+t+'</option>';
+  return '<label class="hint">Demand from <select onchange="planSave(\'basis\',this.value)" style="padding:6px">'+o('ours','Our sales (Keepa if none)')+o('keepa','Keepa market (½ if Amazon has Buy Box)')+o('max','Higher of the two')+'</select></label>';
+}
+function planNum(k,label,st,w){ return '<label class="hint">'+label+' <input type="number" min="0" value="'+st[k]+'" onchange="planSave(\''+k+'\',Math.max(0,parseInt(this.value)||0))" style="width:'+(w||60)+'px;padding:6px"></label>'; }
+function renderPlan(view){ if(!_plan) return; if(view==='orders') renderOrders(); else renderSendNext(); }
+
+// ---- SEND NEXT ----
+// Per listing (single or duo): coverage = at Amazon + on the way + already in
+// prep. Need = enough to reach the target days. Bottles are shared between a
+// single and the duos it's in, so free bottles are handed out most-urgent
+// listing first; a listing gets what's left.
+function renderSendNext(){
+  const st=planSet(), d=_plan, box=document.getElementById('sendNextBody');
+  const bottle={}; d.bottles.forEach(b=>bottle[b.asin]=b);
+  const pool={}; d.bottles.forEach(b=>pool[b.asin]=b.free);
+  const rows=d.listings.map(l=>{
+    const dm=planDemand(l, st.basis);
+    const have=l.atAmazon+l.onTheWay+l.queued;
+    const cover=dm.perDay>0 ? have/dm.perDay : null;
+    const need=dm.perDay>0 ? Math.max(0, Math.ceil(dm.perDay*st.target - have)) : 0;
+    return {l, dm, have, cover, need};
+  }).filter(r=>r.dm.perDay>0 || r.have>0);
+  rows.sort((a,b)=>(a.cover??1e9)-(b.cover??1e9));
+  for(const r of rows){
+    const can=Math.min(...r.l.components.map(c=>Math.floor((pool[c.asin]||0)/c.per)));
+    r.canMake=isFinite(can)?Math.max(0,can):0;
+    r.send=Math.min(r.need, r.canMake);
+    r.l.components.forEach(c=>{ pool[c.asin]=(pool[c.asin]||0)-r.send*c.per; });
+    r.short=r.need-r.send;
+  }
+  window._snRows=rows.filter(r=>r.send>0).map(r=>({asin:r.l.asin, sku:r.l.sku||'', name:r.l.name, isBundle:r.l.isDuo, qty:r.send, on:true, available:r.canMake+0, daysAtFba:r.cover!=null?Math.round(r.cover):null}));
+  const totalSend=rows.reduce((n,r)=>n+r.send,0), toSend=rows.filter(r=>r.send>0).length;
+  const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
+  let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b style="font-size:16px">📦 Send Next</b>'
+    +'<div class="hint">What each Amazon listing needs to reach '+st.target+' days of stock, singles and duos separately, from bottles you have free now. Most urgent first.</div></div>'
+    +(toSend?'<button class="action" onclick="snToBuilder()" style="background:#127a7a">Use these '+toSend+' ('+totalSend+' units) → draft shipment</button>':'')+'</div>'
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;align-items:center">'+planBasisPicker(st)+planNum('target','Target days at Amazon',st)+'</div>'
+    +'<div class="hint" style="margin-top:6px">'+esc(planAsOf(d))+'</div></div>';
+  h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
+    +'<td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Sells / mo</td><td style="padding:6px 8px;text-align:right">At Amazon</td><td style="padding:6px 8px;text-align:right">On the way</td><td style="padding:6px 8px;text-align:right">In prep</td><td style="padding:6px 8px;text-align:right">Days covered</td><td style="padding:6px 8px;text-align:right">Needs</td><td style="padding:6px 8px;text-align:right">Send</td></tr>'
+    +rows.filter(r=>r.dm.perDay>0).map(r=>{
+      const c=r.cover, cc=c==null?'#8a97a6':c<30?'#c0392b':c<st.target?'#b7791f':'#1e8449';
+      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6"><b style="color:'+(r.l.isDuo?'#c0392b':'#1a2b4a')+'">'+(r.l.isDuo?'DUO':'SINGLE')+'</b> '+esc(String(r.l.name||r.l.asin).slice(0,60))+'<div class="hint">'+esc(r.l.asin)+(r.l.sku?' · '+esc(r.l.sku):'')+'</div></td>'
+        +'<td style="'+td+'">'+(r.dm.perDay?Math.round(r.dm.perDay*30).toLocaleString():'—')+'<div class="hint">'+(r.dm.src==='ours'?'our sales':r.dm.src==='keepa'?'Keepa':'')+'</div></td>'
+        +'<td style="'+td+'">'+r.l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+r.l.onTheWay+'</td><td style="'+td+';color:#7a4fb5">'+(r.l.queued||'')+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(c==null?'—':Math.round(c)+'d')+'</td><td style="'+td+'">'+(r.need||'')+'</td>'
+        +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.send?'#127a7a':'#8a97a6')+'">'+(r.send||'—')+(r.short>0?'<div class="hint" style="color:#c0392b">short '+r.short+'</div>':'')+'</td></tr>';
+    }).join('')+'</table>';
+  const noDemand=rows.filter(r=>!(r.dm.perDay>0));
+  if(noDemand.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">No sales data yet ('+noDemand.length+') — stock is at Amazon or on the way, but there\'s nothing to plan from</summary><div class="hint" style="margin-top:4px">'
+    +noDemand.map(r=>esc(String(r.l.name||r.l.asin).slice(0,50))+' ('+r.l.atAmazon+' at Amazon, '+r.l.onTheWay+' on the way)').join(' · ')+'</div></details>';
+  h+='</div>';
+  h+='<div class="box hint"><b>How this is calculated.</b> Sells / mo: your own sales per listing over the last '+d.asOf.salesDays+' days (Admin → Velocity), or Keepa when you had none — change it above. '
+    +'Days covered = (at Amazon + on the way + already in prep) ÷ daily sales. Needs = what reaches '+st.target+' days. Send = Needs, limited by free bottles '
+    +'(on hand minus work orders and prepped); a bottle that\'s in a single and in duos goes to the most urgent listing first. "Short" = what you\'d need to buy. '
+    +'Refresh the inputs with Sync with Amazon (stock), Velocity (our sales) and Market Data (Keepa).</div>';
+  box.innerHTML=h;
+}
+function snToBuilder(){
+  // Hand the plan to the existing draft-shipment builder (edit, send to Pending Prep, or download).
+  openShipBuilder((window._snRows||[]).map(r=>({asin:r.asin, sku:r.sku, name:r.name, isBundle:r.isBundle, available:r.available, daysAtFba:r.daysAtFba, suggestedSend:r.qty, score:0})));
+}
+
+// ---- SUGGESTED ORDERS (COSMOPROF) ----
+// Per bottle: daily demand = sum over every listing it's sold in (a duo uses
+// one of each bottle). Bottles we have = warehouse on hand + at Amazon + on
+// the way (each duo counted as its bottles). Order enough to cover the whole
+// lead time (Cosmoprof delivery + prep + Amazon check-in) plus the target.
+function renderOrders(){
+  const st=planSet(), d=_plan, box=document.getElementById('ordersBody');
+  const lead=st.cosmoDays+st.prepDays+st.amazonDays, horizon=lead+st.target;
+  const b={}; d.bottles.forEach(x=>b[x.asin]=Object.assign({},x,{perDay:0, atAmz:0, way:0, via:[]}));
+  for(const l of d.listings){
+    const dm=planDemand(l, st.basis);
+    for(const c of l.components){
+      const t=b[c.asin]; if(!t) continue;
+      t.perDay+=dm.perDay*c.per; t.atAmz+=l.atAmazon*c.per; t.way+=l.onTheWay*c.per;
+      if(dm.perDay>0) t.via.push((l.isDuo?'duo ':'single ')+Math.round(dm.perDay*30*c.per)+'/mo');
+    }
+  }
+  const rows=Object.values(b).map(x=>{
+    const have=x.onhand+x.atAmz+x.way;
+    const cover=x.perDay>0?have/x.perDay:null;
+    let qty=x.perDay>0?Math.max(0,Math.ceil(x.perDay*horizon-have)):0;
+    if(qty && st.packOf>1) qty=Math.ceil(qty/st.packOf)*st.packOf;
+    return Object.assign(x,{have,cover,qty,cost:x.unitCost!=null?qty*x.unitCost:null});
+  }).filter(x=>x.perDay>0||x.have>0).sort((a,c)=>(a.cover??1e9)-(c.cover??1e9));
+  window._orderRows=rows.filter(r=>r.qty>0);
+  const total=rows.reduce((n,r)=>n+(r.cost||0),0), units=rows.reduce((n,r)=>n+r.qty,0), noCost=rows.filter(r=>r.qty>0&&r.cost==null).length;
+  const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
+  const money=v=>v==null?'—':'$'+v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b style="font-size:16px">🧾 Suggested Orders (CosmoProf)</b>'
+    +'<div class="hint">What to buy so every bottle lasts through the '+lead+'-day lead time plus '+st.target+' days. <b>'+units.toLocaleString()+'</b> bottles · <b>'+money(total)+'</b>'+(noCost?' (+'+noCost+' without a cost)':'')+'</div></div>'
+    +(units?'<button class="action" onclick="ordersCsv()" style="background:#1a2b4a">⬇ Download order list</button>':'')+'</div>'
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">'+planBasisPicker(st)+planNum('target','Target days',st)+planNum('cosmoDays','Cosmoprof delivery days',st)+planNum('prepDays','Prep days',st)+planNum('amazonDays','Amazon check-in days',st)+planNum('packOf','Round up to',st)+'</div>'
+    +'<div class="hint" style="margin-top:6px">'+esc(planAsOf(d))+'</div></div>';
+  h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
+    +'<td style="padding:6px 8px">Bottle</td><td style="padding:6px 8px;text-align:right">Sells / mo</td><td style="padding:6px 8px;text-align:right">Warehouse</td><td style="padding:6px 8px;text-align:right">At Amazon</td><td style="padding:6px 8px;text-align:right">On the way</td><td style="padding:6px 8px;text-align:right">Days covered</td><td style="padding:6px 8px;text-align:right">Order</td><td style="padding:6px 8px;text-align:right">Unit cost</td><td style="padding:6px 8px;text-align:right">Cost</td></tr>'
+    +rows.filter(r=>r.perDay>0).map(r=>{
+      const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
+      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6">'+esc(String(r.name||r.asin).slice(0,60))+'<div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+esc(r.asin)+(r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
+        +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td><td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':Math.round(r.cover)+'d')+'</td>'
+        +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td><td style="'+td+'">'+(r.qty?money(r.cost):'')+'</td></tr>';
+    }).join('')+'</table>';
+  const idle=rows.filter(r=>!(r.perDay>0));
+  if(idle.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">No sales data yet ('+idle.length+') — nothing to order from</summary><div class="hint" style="margin-top:4px">'
+    +idle.map(r=>esc(String(r.name||r.asin).slice(0,50))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
+  h+='</div>';
+  h+='<div class="box hint"><b>How this is calculated.</b><br>'
+    +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity), or Keepa where you had none — change it above.<br>'
+    +'• <b>Bottles you have</b> = warehouse on hand (including prepped and on work orders) + at Amazon + on the way to Amazon, counting each duo as its bottles. Your own "transit" count isn\'t added again — it\'s the same bottles as Amazon\'s "on the way".<br>'
+    +'• <b>Days covered</b> = bottles you have ÷ daily sales. Red = runs out before a new order could reach Amazon ('+lead+' days); amber = before '+horizon+' days.<br>'
+    +'• <b>Order</b> = daily sales × ('+st.cosmoDays+' Cosmoprof + '+st.prepDays+' prep + '+st.amazonDays+' Amazon check-in + '+st.target+' target days) − bottles you have'+(st.packOf>1?', rounded up to '+st.packOf:'')+'.<br>'
+    +'• <b>Unit cost</b> = your weighted average cost from invoices (regular cost if no average yet). It doesn\'t know about upcoming Cosmoprof sales — check the price before ordering.</div>';
+  box.innerHTML=h;
+}
+function ordersCsv(){
+  const q=v=>/[",\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
+  const lines=[['Cosmo #','Product','ASIN','Order qty','Unit cost','Line cost'].join(',')]
+    .concat((window._orderRows||[]).map(r=>[q(r.cosmo.join(' / ')),q(r.name||''),r.asin,r.qty,r.unitCost!=null?r.unitCost.toFixed(2):'',r.cost!=null?r.cost.toFixed(2):''].join(',')));
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([lines.join('\r\n')],{type:'text/csv'}));
+  a.download='cosmoprof-order-'+new Date().toISOString().slice(0,10)+'.csv';
   document.body.appendChild(a); a.click(); a.remove();
 }
 
@@ -6067,29 +6233,30 @@ function amazonSplit(p){
   const byAsin=a=>(products||[]).find(x=>x.asin===a)||{};
   const onh=x=>Math.max(x.fba_onhand||0, x.fba_fulfillable||0), inb=x=>x.fba_inbound||0;
   const rows=[];
-  if(!p.is_bundle) rows.push({label:'Single', asin:p.asin, per:1, at:onh(p), way:inb(p)});
+  if(!p.is_bundle) rows.push({label:'Single', asin:p.asin, per:1, at:onh(p), way:inb(p), sold:p.monthlySold});
   const seen=new Set();
   for(const pt of (p.partners||[])){
     if(!pt.bundle_asin || seen.has(pt.bundle_asin)) continue; seen.add(pt.bundle_asin);
     const d=byAsin(pt.bundle_asin);
     const comp=(_bundles||[]).find(b=>b.bundle_asin===pt.bundle_asin);
     const per=comp ? ((comp.components.find(c=>c.asin===p.asin)||{}).qty||1) : 1;
-    rows.push({label:'Duo', asin:pt.bundle_asin, per, at:onh(d), way:inb(d), name:d.name});
+    rows.push({label:'Duo', asin:pt.bundle_asin, per, at:onh(d), way:inb(d), name:d.name, sold:d.monthlySold});
   }
-  if(p.is_bundle) rows.push({label:'Duo', asin:p.asin, per:1, at:onh(p), way:inb(p)});
+  if(p.is_bundle) rows.push({label:'Duo', asin:p.asin, per:1, at:onh(p), way:inb(p), sold:p.monthlySold});
   if(!rows.length) return '';
   const tAt=rows.reduce((n,r)=>n+r.at*r.per,0), tWay=rows.reduce((n,r)=>n+r.way*r.per,0);
   const cell='padding:4px 8px;text-align:right;font-weight:800';
   const tr=r=>'<tr style="border-top:1px solid #eef2f6"><td style="padding:4px 8px"><b style="color:'+(r.label==='Duo'?'#c0392b':'#1a2b4a')+'">'+r.label+'</b> <span style="font-family:monospace;font-size:11.5px;color:#5a6472">'+esc(r.asin)+'</span>'+(r.per>1?' <span class="hint">×'+r.per+' bottles</span>':'')+'</td>'
+    +'<td style="'+cell+';color:#5a6472">'+(r.sold!=null?'~'+Number(r.sold).toLocaleString():'—')+'</td>'
     +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td></tr>';
   const multi=rows.length>1;
   return '<div style="margin-top:8px;background:#f7f9fb;border-radius:8px;padding:6px 4px">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 2px"><span style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6">AT AMAZON BY LISTING</span>'
     +'<a href="#" onclick="amazonCheck(\''+esc(p.asin)+'\');return false" style="font-size:11.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a></div>'
     +(p.fba_amazon_asin?'<div class="hint" style="padding:0 8px 4px;color:#b7791f">Amazon files this SKU under ASIN <b>'+esc(p.fba_amazon_asin)+'</b>, not '+esc(p.asin)+' — numbers matched by SKU.</div>':'')
-    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td></tr>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td><td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td></tr>'
     +rows.map(tr).join('')
-    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td></tr>':'')
+    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td></td><td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td></tr>':'')
     +'</table></div>';
 }
 // Ask Amazon about one product's SKUs right now and show the raw answer next

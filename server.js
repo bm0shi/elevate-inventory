@@ -687,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'no-loop-0924';
+const BUILD_ID = 'plan-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5671,6 +5671,67 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
   let last = null;
   try { const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='amazon_sync_last'"); last = r.rows[0] ? r.rows[0].data : null; } catch (e) {}
   res.json({ ...amazonSync, last });
+});
+
+// ============================================================
+// PLANNING DATA — feeds Admin → Send Next and Suggested Orders (CosmoProf).
+// Owner only: includes our sales and costs. The screens do the arithmetic
+// (so the settings can be changed live); this returns the inputs:
+//   listings: every sellable listing (singles and duos) with its stock at
+//             Amazon, on the way, queued in prep, and demand from both our
+//             own sales (velocity) and Keepa's market figure;
+//   bottles:  every physical bottle with warehouse stock, what's free, its
+//             cost and its Cosmoprof item number(s).
+// ============================================================
+app.get('/api/plan/data', ownerAuth, async (req, res) => {
+  const cache = async (k) => { const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [k]); return r.rows[0] || null; };
+  const [fbaC, mktC, velC] = await Promise.all([cache('fba_inventory'), cache('market_data'), cache('velocity')]);
+  const fba = {}; for (const f of ((fbaC && fbaC.data) || [])) fba[f.asin] = f;
+  const mkt = {}; for (const m of ((mktC && mktC.data) || [])) mkt[m.asin] = m;
+  const velDays = (velC && velC.data && velC.data.days) || 30;
+  const velBySku = {}, velByAsin = {};
+  for (const v of ((velC && velC.data && velC.data.items) || [])) {
+    if (v.sku) velBySku[v.sku] = v;
+    if (v.asin) velByAsin[v.asin] = (velByAsin[v.asin] || 0) + (v.sold || 0);
+  }
+  const prods = (await pool.query(`
+    SELECT p.asin, p.sku, p.name, p.image, p.location, p.fnsku,
+           COALESCE(p.avg_cost, p.regular_cost, p.unit_cost) AS unit_cost,
+           COALESCE(s.onhand,0)::int AS onhand, COALESCE(s.transit,0)::int AS transit
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`)).rows;
+  const bundles = (await pool.query('SELECT bundle_asin, component_asin, COALESCE(qty,1)::int AS qty FROM inv_bundles')).rows;
+  const comps = {}; for (const b of bundles) (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push({ asin: b.component_asin, per: b.qty });
+  const prepped = {}; for (const r of (await pool.query('SELECT asin, qty FROM inv_prepped')).rows) prepped[r.asin] = r.qty;
+  const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep GROUP BY asin')).rows) pending[r.asin] = r.q;
+  const cosmo = {}; for (const r of (await pool.query('SELECT cosmo_num, asin FROM inv_cosmo_map WHERE asin IS NOT NULL')).rows) (cosmo[r.asin] = cosmo[r.asin] || []).push(r.cosmo_num);
+
+  // Bottles committed to prep (single work orders + prepped, and duos × per)
+  const committed = {};
+  const addC = (a, n) => { committed[a] = (committed[a] || 0) + n; };
+  for (const a in prepped) { if (comps[a]) comps[a].forEach(c => addC(c.asin, prepped[a] * c.per)); else addC(a, prepped[a]); }
+  for (const a in pending) { if (comps[a]) comps[a].forEach(c => addC(c.asin, pending[a] * c.per)); else addC(a, pending[a]); }
+
+  const listings = [], bottles = [];
+  for (const p of prods) {
+    const f = fba[p.asin] || {}, m = mkt[p.asin] || {};
+    const isDuo = !!comps[p.asin];
+    const ourSold = (p.sku && velBySku[p.sku] ? velBySku[p.sku].sold : null) ?? (velByAsin[p.asin] ?? null);
+    listings.push({
+      asin: p.asin, sku: p.sku, name: p.name, image: p.image, fnsku: p.fnsku, isDuo,
+      components: comps[p.asin] || [{ asin: p.asin, per: 1 }],
+      atAmazon: Math.max(f.fba_onhand || 0, f.fba_fulfillable || 0), onTheWay: f.fba_inbound || 0,
+      queued: (prepped[p.asin] || 0) + (pending[p.asin] || 0),
+      keepaMonthly: m.monthlySold ?? null, amazonHasBuyBox: !!m.amazonHasBuyBox,
+      ourSold, ourDays: velDays,
+    });
+    if (!isDuo) bottles.push({
+      asin: p.asin, name: p.name, image: p.image, location: p.location, onhand: p.onhand, transit: p.transit,
+      free: Math.max(0, p.onhand - (committed[p.asin] || 0)),
+      unitCost: p.unit_cost != null ? Number(p.unit_cost) : null, cosmo: cosmo[p.asin] || [],
+    });
+  }
+  res.json({ ok: true, listings, bottles,
+    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
 });
 
 // "Check with Amazon" for one product: ask Amazon about its SKUs right now
