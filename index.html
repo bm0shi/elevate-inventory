@@ -5883,18 +5883,45 @@ function renderDuoBuilder(body, q){
     .map(b=>({ b, ...duoBuildInfo(b), prod:(products||[]).find(x=>x.asin===b.bundle_asin)||{} }));
   const ready=rows.filter(r=>r.buildable>0).sort((a,b)=>b.buildable-a.buildable);
   const notReady=rows.filter(r=>r.buildable<=0);
+  // Big, simple card for the floor: the duo's photo, ASIN, FNSKU and how
+  // many to make, then the bottles to grab.
+  const idBox=(label,val)=>val
+    ? '<div onclick="copyText(\''+esc(val)+'\',this)" title="Tap to copy" style="cursor:pointer;background:#f4f6f9;border:1.5px solid #d8dee6;border-radius:8px;padding:6px 10px;min-width:0">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">'+label+'</div>'
+      +'<div style="font-family:monospace;font-size:17px;font-weight:800;color:#1f2733;word-break:break-all">'+esc(val)+'</div></div>'
+    : '<div style="background:#fdeceb;border:1.5px solid #f3c1bb;border-radius:8px;padding:6px 10px"><div style="font-size:10px;font-weight:800;letter-spacing:0.6px;color:#c0392b">'+label+'</div><div style="font-size:13px;font-weight:700;color:#c0392b">not on file</div></div>';
   const card=(r,i)=>{
-    const img=r.prod.image?'<img src="'+esc(r.prod.image)+'" onerror="this.style.display=\'none\'" style="width:64px;height:64px;object-fit:contain;border-radius:8px;background:#f4f6f9">':'<div style="width:64px;height:64px;border-radius:8px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;font-size:26px">🧴</div>';
-    const comps=r.comps.map(c=>'<div style="font-size:12.5px;color:#5a6472;margin-top:3px">'+(c.can===r.buildable&&r.buildable>0?'<b style="color:#b7791f" title="this bottle limits how many you can build">▸</b> ':'• ')
-      +esc(String(c.name||c.asin).slice(0,60))+(c.per>1?' ×'+c.per:'')+' — <b>'+c.free+'</b> free'+(c.location?' · 📍'+esc(c.location):'')+'</div>').join('');
+    const img=r.prod.image
+      ? '<img src="'+esc(r.prod.image)+'" onerror="this.style.display=\'none\'" style="width:150px;height:150px;object-fit:contain;border-radius:10px;background:#fff;border:1px solid #eef2f6;flex-shrink:0">'
+      : '<div style="width:150px;height:150px;border-radius:10px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;font-size:54px;flex-shrink:0">🧴</div>';
+    const grab=r.comps.map(c=>{
+      const cp=(products||[]).find(x=>x.asin===c.asin)||{};
+      const th=cp.image?'<img src="'+esc(cp.image)+'" onerror="this.style.display=\'none\'" style="width:38px;height:38px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0">':'<div style="width:38px;height:38px;border-radius:6px;background:#eef2f6;flex-shrink:0"></div>';
+      const limit=c.can===r.buildable&&r.buildable>0;
+      return '<div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;background:'+(limit?'#fff8e8':'#f9fafb')+';margin-top:5px">'+th
+        +'<div style="flex:1;min-width:0;font-size:13px">'+esc(String(c.name||c.asin).slice(0,70))+(c.per>1?' <b>×'+c.per+'</b>':'')
+        +'<div style="font-size:11.5px;color:#5a6472"><b style="color:'+(c.free>0?'#1e8449':'#c0392b')+'">'+c.free+'</b> free'+(limit?' · <b style="color:#b7791f">runs out first</b>':'')+'</div></div>'
+        +(c.location?'<span style="background:#1a2b4a;color:#fff;padding:4px 9px;border-radius:6px;font-size:13px;font-weight:800;white-space:nowrap">📍 '+esc(c.location)+'</span>':'<span style="background:#fdeceb;color:#c0392b;padding:4px 9px;border-radius:6px;font-size:12px;font-weight:800">📍 none</span>')
+        +'</div>';
+    }).join('');
+    const fn=r.prod.fnsku||'';
     const act = r.buildable>0
-      ? '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;min-width:130px">'
-        +'<div style="text-align:right"><div style="font-size:28px;font-weight:800;color:#7a4fb5;line-height:1">'+r.buildable+'</div><div style="font-size:11px;color:#5a6472">can build</div></div>'
-        +'<div style="display:flex;gap:6px"><input type="number" id="duoQty_'+i+'" min="1" max="'+r.buildable+'" value="'+r.buildable+'" style="width:70px;padding:8px;text-align:right;border:2px solid #e2e8f0;border-radius:6px">'
-        +'<button onclick="prepDuo(\''+r.b.bundle_asin+'\','+i+','+r.buildable+')" style="padding:8px 14px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:6px;cursor:pointer">🔧 Prep</button></div></div>'
-      : '<div style="text-align:right;min-width:110px;color:#c0392b;font-size:12px;font-weight:700">short — '+esc(String((r.comps.find(c=>c.can===0)||{}).name||'a bottle').slice(0,30))+'</div>';
-    return '<div class="box" style="display:flex;gap:12px;align-items:center;margin-bottom:8px;'+(r.buildable>0?'':'opacity:0.6')+'">'+img
-      +'<div style="flex:1;min-width:0"><div style="font-weight:700">'+esc(r.b.bundle_name||r.b.bundle_asin)+' <span style="background:#fdeceb;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span></div>'+comps+'</div>'+act+'</div>';
+      ? '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px">'
+        +'<div style="text-align:center;min-width:90px"><div style="font-size:40px;font-weight:900;color:#7a4fb5;line-height:1">'+r.buildable+'</div><div style="font-size:11px;font-weight:800;color:#5a6472;letter-spacing:0.5px">CAN BUILD</div></div>'
+        +'<input type="number" id="duoQty_'+i+'" min="1" max="'+r.buildable+'" value="'+r.buildable+'" style="width:90px;padding:12px;font-size:20px;font-weight:800;text-align:center;border:2px solid #cfd8e3;border-radius:8px">'
+        +'<button onclick="prepDuo(\''+r.b.bundle_asin+'\','+i+','+r.buildable+')" style="flex:1;min-width:140px;padding:14px 18px;font-size:17px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer">🔧 PREP</button>'
+        +(fn?'<button onclick="printLabels(\''+esc(fn)+'\',\''+esc(String(r.b.bundle_name||'').replace(/'/g,"\\'").replace(/"/g,''))+'\',parseInt(document.getElementById(\'duoQty_'+i+'\').value)||'+r.buildable+')" title="Print FNSKU labels" style="padding:14px 16px;font-size:17px;background:#eef2f6;border:none;border-radius:8px;cursor:pointer">🖨️</button>':'')
+        +'</div>'
+      : '<div style="margin-top:10px;color:#c0392b;font-weight:800">Can\'t build — '+esc(String((r.comps.find(c=>c.can===0)||{}).name||'a bottle').slice(0,40))+' is out</div>';
+    return '<div class="box" style="margin-bottom:12px;padding:14px;'+(r.buildable>0?'border:2px solid #d9cdf0':'opacity:0.6')+'">'
+      +'<div style="display:flex;gap:14px;flex-wrap:wrap">'+img
+      +'<div style="flex:1;min-width:230px">'
+        +'<div style="font-weight:800;font-size:16px;line-height:1.3">'+esc(r.b.bundle_name||r.b.bundle_asin)+' <span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:800;vertical-align:middle">DUO</span></div>'
+        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px">'+idBox('DUO ASIN',r.b.bundle_asin)+idBox('DUO FNSKU',fn)+'</div>'
+        +act
+      +'</div></div>'
+      +'<div style="margin-top:10px;font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">GRAB PER DUO</div>'+grab
+      +'</div>';
   };
   window._duoRows=ready.concat(notReady);
   body.innerHTML='<div class="hint" style="margin-bottom:10px"><b>'+ready.length+'</b> duo'+(ready.length===1?'':'s')+' can be built from free stock ('+ready.reduce((n,r)=>n+r.buildable,0)+' total). '
@@ -5969,6 +5996,8 @@ function renderOnhand(){
               <span style="flex:1;border-top:2px dashed #1e8449;margin:0 3px;min-width:10px"></span>
               <span style="color:#1e8449;font-size:11px;font-weight:800;text-transform:uppercase;white-space:nowrap">▶ THE DUO</span>
             </div>
+            ${(()=>{ const dp=(products||[]).find(x=>x.asin===pt.bundle_asin)||{}; return (dp.image||dp.fnsku)
+              ? `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">${dp.image?`<img src="${esc(dp.image)}" onerror="this.style.display='none'" style="width:48px;height:48px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid #e2e8f0">`:''}${dp.fnsku?`<span style="font-size:10px;font-weight:800;color:#8a97a6">FNSKU</span><span onclick="copyText('${esc(dp.fnsku)}',this)" title="Tap to copy" style="cursor:pointer;font-family:monospace;font-weight:800;font-size:13px">${esc(dp.fnsku)}</span>`:''}</div>` : ''; })()}
           </div>`;
         }).join('');
       }
