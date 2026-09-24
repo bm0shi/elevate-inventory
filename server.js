@@ -687,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sync-bg-0924';
+const BUILD_ID = 'amazon-check-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1324,6 +1324,15 @@ app.get('/api/products', auth, async (req, res) => {
     }
   } catch(e) {}
 
+  // Amazon's per-SKU figures, for products whose SKU Amazon files under a
+  // different ASIN than ours (see pullFbaInventory).
+  let fbaSku = {};
+  try {
+    const fs2 = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_by_sku'");
+    if (fs2.rows.length) fbaSku = (fs2.rows[0].data && fs2.rows[0].data.bySku) || {};
+  } catch(e) {}
+  const catalogAsins = new Set(rows.map(r => r.asin));
+
   // layer in cached Keepa market data (sales rank + monthly sold) for prioritization
   let mByAsin = {};
   try {
@@ -1333,7 +1342,14 @@ app.get('/api/products', auth, async (req, res) => {
 
   const out = rows.map(p => {
     const m = mByAsin[p.asin] || {};
-    const f = fbaByAsin[p.asin] || {};
+    let f = fbaByAsin[p.asin] || {};
+    const viaSku = p.sku && fbaSku[p.sku];
+    let fbaAsinNote = null;
+    if (viaSku && viaSku.asin && viaSku.asin !== p.asin && !catalogAsins.has(viaSku.asin)
+        && !(f.total || f.fulfillable || f.inbound)) {
+      f = { fulfillable: viaSku.fulfillable, inbound: viaSku.inbound, total: viaSku.total, onhand: viaSku.onHand, shipments: [] };
+      fbaAsinNote = viaSku.asin;
+    }
     return {
       ...p,
       // Amazon's side, from the last FBA inventory pull. These were computed
@@ -1343,6 +1359,7 @@ app.get('/api/products', auth, async (req, res) => {
       fba_total: f.total || 0,
       fba_inbound_shipments: f.shipments || [],
       fba_onhand: f.onhand || 0,
+      fba_amazon_asin: fbaAsinNote,   // set when Amazon files our SKU under another ASIN
       fba_as_of: fbaAsOf,
       partners: partnersByAsin[p.asin] || [],
       salesRank: m.salesRank != null ? m.salesRank : null,
@@ -5402,6 +5419,7 @@ app.post('/api/set-cost', ownerAuth, async (req, res) => {
 async function pullFbaInventory(onProgress) {
   let fba;
   fba = await getFbaInventory(onProgress);
+  const fbaPages = fba._pages || 0, fbaSkuCount = Object.keys(fba).length;
   // join with our warehouse on-hand by ASIN, including committed (pending prep + prepped)
   const ours = await pool.query(`
     SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
@@ -5430,9 +5448,21 @@ async function pullFbaInventory(onProgress) {
   // and transit are taken ONCE.
   const fbaByAsin = {};
   let fnskusSaved = 0;
+  // Amazon can file one of our SKUs under a different ASIN than the catalog
+  // has (merged or replaced listings). Count those units on the catalog
+  // product that owns the SKU, so every screen — not just On Hand — sees them.
+  const catalog = await pool.query('SELECT asin, sku FROM inv_products');
+  const catalogAsin = new Set(catalog.rows.map(r => r.asin));
+  const skuOwner = {};
+  for (const r of catalog.rows) if (r.sku) skuOwner[r.sku] = r.asin;
   for (const sku in fba) {
     const f = fba[sku];
     if (!f.asin) continue;
+    if (!catalogAsin.has(f.asin) && skuOwner[sku]) {
+      console.log(`[FBA] SKU ${sku}: Amazon lists it under ${f.asin}; counting it on ${skuOwner[sku]}.`);
+      f.amazonAsin = f.asin;
+      f.asin = skuOwner[sku];
+    }
     if (!fbaByAsin[f.asin]) fbaByAsin[f.asin] = { total:0, fulfillable:0, inbound:0, onHand:0, skus:[] };
     const a = fbaByAsin[f.asin];
     a.total       += f.total || 0;
@@ -5534,6 +5564,21 @@ async function pullFbaInventory(onProgress) {
   }
   out.sort((a,b)=>b.grand_total-a.grand_total);
 
+  // Amazon's figures per SELLER SKU, with the ASIN Amazon files each under.
+  // Amazon sometimes lists a SKU under a different ASIN than our catalog has
+  // (merged or replaced listings); /api/products falls back to the SKU so
+  // those units still show on the right card.
+  try {
+    const bySku = {};
+    for (const sku in fba) {
+      const f = fba[sku];
+      bySku[sku] = { asin: f.asin, onHand: f.onHand || 0, fulfillable: f.fulfillable || 0, inbound: f.inbound || 0, total: f.total || 0 };
+    }
+    await saveCache('fba_by_sku', { pages: fbaPages, skus: fbaSkuCount, bySku });
+  } catch (e) { console.error('[FBA] per-SKU cache save failed (non-fatal):', e.message); }
+  console.log(`[FBA] Read ${fbaSkuCount} SKUs from Amazon in ${fbaPages} page(s).`);
+  out._meta = { pages: fbaPages, skus: fbaSkuCount };
+
   // PERSIST — products-to-add and the restock plan read this cache. Nothing
   // wrote it before, so both were treating FBA stock as zero.
   try {
@@ -5583,6 +5628,7 @@ function startAmazonSync(trigger) {
       if (r && r.ok === false) result.errors.push('check-ins: ' + r.error); else result.checkedIn = (r && r.shipments) || 0;
       const out = await pullFbaInventory(t => { amazonSync.step = t; });
       result.products = out.length;
+      if (out._meta) { result.amazonSkus = out._meta.skus; result.pages = out._meta.pages; }
     } catch (e) {
       result.errors.push(e.message);
     }
@@ -5603,6 +5649,32 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
   let last = null;
   try { const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='amazon_sync_last'"); last = r.rows[0] ? r.rows[0].data : null; } catch (e) {}
   res.json({ ...amazonSync, last });
+});
+
+// "Check with Amazon" for one product: ask Amazon about its SKUs right now
+// and show the raw answer next to what the app has saved. For tracking down
+// a card that disagrees with Seller Central.
+app.get('/api/amazon-check/:asin', auth, async (req, res) => {
+  const asin = String(req.params.asin || '').trim();
+  const p = await pool.query('SELECT asin, sku, name FROM inv_products WHERE asin=$1', [asin]);
+  const m = await pool.query('SELECT sku FROM inv_sku_map WHERE asin=$1', [asin]);
+  const skus = [...new Set([...(p.rows[0] && p.rows[0].sku ? [p.rows[0].sku] : []), ...m.rows.map(r => r.sku)].filter(Boolean))];
+  let amazon = null, amazonError = null;
+  if (skus.length) {
+    try {
+      const r = await getFbaInventory(null, skus);
+      amazon = Object.values(r).map(x => ({ sku: x.sku, asin: x.asin, fnsku: x.fnSku, onHand: x.onHand, available: x.fulfillable, inbound: x.inbound, total: x.total }));
+    } catch (e) { amazonError = e.message; }
+  }
+  let saved = null, lastPull = null;
+  try {
+    const c = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='fba_inventory'");
+    if (c.rows.length) saved = (c.rows[0].data || []).find(x => x.asin === asin) || null;
+    const s = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='fba_by_sku'");
+    if (s.rows.length) lastPull = { at: s.rows[0].updated_at, pages: s.rows[0].data.pages, skus: s.rows[0].data.skus,
+      seen: skus.map(k => ({ sku: k, inLastPull: !!(s.rows[0].data.bySku || {})[k], asMsg: ((s.rows[0].data.bySku || {})[k] || {}).asin || null })) };
+  } catch (e) {}
+  res.json({ ok: true, asin, name: p.rows[0] ? p.rows[0].name : null, skus, amazon, amazonError, saved, lastPull });
 });
 
 // Every morning at 6:30 Arizona time (UTC-7, no daylight saving), so the

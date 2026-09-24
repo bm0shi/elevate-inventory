@@ -216,10 +216,10 @@ async function getShipmentReceivedItems(shipmentId) {
 }
 
 // Get current FBA inventory (what Amazon holds) via FBA Inventory API
-async function getFbaInventory(onProgress) {
+async function getFbaInventory(onProgress, sellerSkus) {
   const token = await getAccessToken();
   const results = {};
-  let nextToken = null;
+  let nextToken = null, pages = 0;
   do {
     const params = {
       granularityType: 'Marketplace',
@@ -227,6 +227,8 @@ async function getFbaInventory(onProgress) {
       marketplaceIds: MARKETPLACE_ID,
       details: true,
     };
+    // Look up specific SKUs only (the "Check with Amazon" button); max 50.
+    if (sellerSkus && sellerSkus.length) params.sellerSkus = sellerSkus.slice(0, 50).join(',');
     if (nextToken) params.nextToken = nextToken;
     let resp;
     try {
@@ -238,6 +240,7 @@ async function getFbaInventory(onProgress) {
       throw new Error(`FBA inventory ${err.response?.status}: ${body}`);
     }
     const sums = resp.data.payload?.inventorySummaries || [];
+    pages++;
     if (onProgress) onProgress(`Reading Amazon stock — ${Object.keys(results).length + sums.length} SKUs so far…`);
     for (const s of sums) {
       results[s.sellerSku] = {
@@ -259,6 +262,8 @@ async function getFbaInventory(onProgress) {
     nextToken = resp.data.pagination?.nextToken || resp.data.payload?.nextToken || null;
     await sleep(1000);
   } while (nextToken);
+  // Not enumerable, so callers looping over SKUs never see it.
+  Object.defineProperty(results, '_pages', { value: pages, enumerable: false });
   return results;
 }
 
