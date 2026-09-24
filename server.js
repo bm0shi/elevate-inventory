@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -687,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fixes-0923';
+const BUILD_ID = 'fba-counts-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1316,7 +1316,9 @@ app.get('/api/products', auth, async (req, res) => {
         fbaByAsin[f.asin] = {
           fulfillable: f.fba_fulfillable||0,
           inbound: f.fba_inbound||0,
-          total: f.fba_total||0
+          total: f.fba_total||0,
+          onhand: f.fba_onhand != null ? f.fba_onhand : (f.fba_fulfillable||0),
+          shipments: f.fba_inbound_shipments || []
         };
       }
     }
@@ -1339,6 +1341,8 @@ app.get('/api/products', auth, async (req, res) => {
       fba_fulfillable: f.fulfillable || 0,
       fba_inbound: f.inbound || 0,
       fba_total: f.total || 0,
+      fba_inbound_shipments: f.shipments || [],
+      fba_onhand: f.onhand || 0,
       fba_as_of: fbaAsOf,
       partners: partnersByAsin[p.asin] || [],
       salesRank: m.salesRank != null ? m.salesRank : null,
@@ -5427,9 +5431,10 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   for (const sku in fba) {
     const f = fba[sku];
     if (!f.asin) continue;
-    if (!fbaByAsin[f.asin]) fbaByAsin[f.asin] = { total:0, fulfillable:0, inbound:0, skus:[] };
+    if (!fbaByAsin[f.asin]) fbaByAsin[f.asin] = { total:0, fulfillable:0, inbound:0, onHand:0, skus:[] };
     const a = fbaByAsin[f.asin];
     a.total       += f.total || 0;
+    a.onHand      += f.onHand || 0;
     a.fulfillable += f.fulfillable || 0;
     a.inbound     += f.inbound || 0;
     a.skus.push(sku);
@@ -5442,6 +5447,41 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     }
   }
   console.log(`[FBA] Captured/updated ${fnskusSaved} FNSKUs. ${Object.keys(fba).length} SKUs collapsed to ${Object.keys(fbaByAsin).length} ASINs.`);
+
+  // ---- ON THE WAY, from the open shipments themselves ----
+  // The summary's inbound figure missed shipments at "Receiving" (a duo read
+  // 0 while 288 were on their way). Count shipped − received per SKU across
+  // every open shipment and use whichever is larger. If this part fails, the
+  // summary figures still stand.
+  let pipelineNote = null;
+  try {
+    const pipe = await getInboundPipeline(180);
+    const skuAsin = {};
+    for (const sku in fba) if (fba[sku].asin) skuAsin[sku] = fba[sku].asin;
+    const extra = await pool.query(`SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL
+                                    UNION ALL SELECT sku, asin FROM inv_products WHERE sku IS NOT NULL`);
+    for (const r of extra.rows) if (!skuAsin[r.sku]) skuAsin[r.sku] = r.asin;
+    const pipeByAsin = {};
+    let unmapped = 0;
+    for (const sku in pipe.bySku) {
+      const asin = skuAsin[sku];
+      if (!asin) { unmapped++; continue; }
+      const p = pipeByAsin[asin] = pipeByAsin[asin] || { qty: 0, shipments: [] };
+      p.qty += pipe.bySku[sku].qty;
+      p.shipments.push(...pipe.bySku[sku].shipments);
+    }
+    for (const asin in pipeByAsin) {
+      if (!fbaByAsin[asin]) fbaByAsin[asin] = { total:0, fulfillable:0, inbound:0, skus:[] };
+      const a = fbaByAsin[asin];
+      a.inbound = Math.max(a.inbound, pipeByAsin[asin].qty);
+      a.inboundShipments = pipeByAsin[asin].shipments;
+    }
+    pipelineNote = `${pipe.shipmentCount} open shipment(s), ${Object.keys(pipeByAsin).length} product(s) on the way` + (unmapped ? `, ${unmapped} SKU(s) not matched` : '');
+    console.log('[FBA] On the way from open shipments: ' + pipelineNote);
+  } catch (e) {
+    pipelineNote = 'open shipments not read: ' + e.message;
+    console.error('[FBA] ' + pipelineNote);
+  }
 
   // ---- DUO EXPLOSION ----
   // A duo at Amazon is ONE sellable unit but TWO physical bottles. FBA reports
@@ -5479,6 +5519,8 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
       available: Math.max(0, warehouse - (o.pending_prep||0) - (o.prepped||0)),
       // fba_total stays THIS ASIN's own units so page totals never double-count
       fba_total: a.total, fba_fulfillable: a.fulfillable, fba_inbound: a.inbound,
+      fba_inbound_shipments: a.inboundShipments || [],
+      fba_onhand: a.onHand || 0,
       // …and the effective figures include bottles held inside duos. Reorder
       // maths must use these, display totals must not.
       fba_via_duo: fbaViaDuo,
