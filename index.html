@@ -2702,7 +2702,7 @@ function renderSendNext(){
     +'<td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Sells / mo</td><td style="padding:6px 8px;text-align:right">At Amazon</td><td style="padding:6px 8px;text-align:right">On the way</td><td style="padding:6px 8px;text-align:right">In prep</td><td style="padding:6px 8px;text-align:right">Days covered</td><td style="padding:6px 8px;text-align:right">Needs</td><td style="padding:6px 8px;text-align:right">Send</td></tr>'
     +rows.filter(r=>r.dm.perDay>0).map(r=>{
       const c=r.cover, cc=c==null?'#8a97a6':c<30?'#c0392b':c<st.target?'#b7791f':'#1e8449';
-      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6"><b style="color:'+(r.l.isDuo?'#c0392b':'#1a2b4a')+'">'+(r.l.isDuo?'DUO':'SINGLE')+'</b> '+esc(String(r.l.name||r.l.asin).slice(0,60))+'<div class="hint">'+esc(r.l.asin)+(r.l.sku?' · '+esc(r.l.sku):'')+'</div></td>'
+      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b style="color:'+(r.l.isDuo?'#c0392b':'#1a2b4a')+'">'+(r.l.isDuo?'DUO':'SINGLE')+'</b> '+esc(String(r.l.name||r.l.asin))+'<div class="hint">'+esc(r.l.asin)+(r.l.sku?' · '+esc(r.l.sku):'')+'</div></td>'
         +'<td style="'+td+'">'+(r.dm.perDay?Math.round(r.dm.perDay*30).toLocaleString():'—')+'<div class="hint">'+(r.dm.src==='ours'?'our sales':r.dm.src==='keepa'?'Keepa':'')+'</div></td>'
         +'<td style="'+td+'">'+r.l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+r.l.onTheWay+'</td><td style="'+td+';color:#7a4fb5">'+(r.l.queued||'')+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(c==null?'—':Math.round(c)+'d')+'</td><td style="'+td+'">'+(r.need||'')+'</td>'
@@ -2710,7 +2710,7 @@ function renderSendNext(){
     }).join('')+'</table>';
   const noDemand=rows.filter(r=>!(r.dm.perDay>0));
   if(noDemand.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">No sales data yet ('+noDemand.length+') — stock is at Amazon or on the way, but there\'s nothing to plan from</summary><div class="hint" style="margin-top:4px">'
-    +noDemand.map(r=>esc(String(r.l.name||r.l.asin).slice(0,50))+' ('+r.l.atAmazon+' at Amazon, '+r.l.onTheWay+' on the way)').join(' · ')+'</div></details>';
+    +noDemand.map(r=>esc(String(r.l.name||r.l.asin))+' ('+r.l.atAmazon+' at Amazon, '+r.l.onTheWay+' on the way)').join(' · ')+'</div></details>';
   h+='</div>';
   h+='<div class="box hint"><b>How this is calculated.</b> Sells / mo: your own sales per listing over the last '+d.asOf.salesDays+' days (Admin → Velocity), or Keepa when you had none — change it above. '
     +'Days covered = (at Amazon + on the way + already in prep) ÷ daily sales. Needs = what reaches '+st.target+' days. Send = Needs, limited by free bottles '
@@ -2791,7 +2791,7 @@ function renderOrders(){
       .map(([k,t,right])=>'<td onclick="ordersSort(\''+k+'\')" title="Sort" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(key===k?'color:#1a2b4a;font-weight:900':'')+'">'+t+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
     +shown.filter(r=>r.perDay>0).map(r=>{
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
-      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6">'+esc(String(r.name||r.asin).slice(0,60))+'<div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+esc(r.asin)+(r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
+      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+esc(String(r.name||r.asin))+'<div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+esc(r.asin)+(r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
         +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td><td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':Math.round(r.cover)+'d')+'</td>'
         +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td>'
@@ -2799,10 +2799,10 @@ function renderOrders(){
         +'<td style="'+td+'">'+(r.qty?money(r.cost):'')+'</td></tr>';
     }).join('')+'</table>';
   if(hidden.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer;color:#b7791f">Hidden by filters ('+hidden.length+')</summary><div class="hint" style="margin-top:4px">'
-    +hidden.map(r=>esc(String(r.name||r.asin).slice(0,50))+' ('+money(r.unitCost)+(r.profit!=null?', profit '+money(r.profit):'')+(r.qty?', would order '+r.qty:'')+')').join(' · ')+'</div></details>';
+    +hidden.map(r=>esc(String(r.name||r.asin))+' ('+money(r.unitCost)+(r.profit!=null?', profit '+money(r.profit):'')+(r.qty?', would order '+r.qty:'')+')').join(' · ')+'</div></details>';
   const idle=rowsAll.filter(r=>!(r.perDay>0));
   if(idle.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">No sales data yet ('+idle.length+') — nothing to order from</summary><div class="hint" style="margin-top:4px">'
-    +idle.map(r=>esc(String(r.name||r.asin).slice(0,50))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
+    +idle.map(r=>esc(String(r.name||r.asin))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
   h+='</div>';
   h+='<div class="box hint"><b>How this is calculated.</b><br>'
     +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity), or Keepa where you had none — change it above.<br>'
@@ -6113,7 +6113,7 @@ function bigOhCard(p, v){
     const can=Math.min(v.available, pt.onhand||0);
     duos.push('<div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;background:#f9fafb;margin-top:5px">'
       +(d.image?'<img src="'+esc(d.image)+'" onerror="this.style.display=\'none\'" style="width:42px!important;height:42px!important;object-fit:contain;border-radius:6px;background:#fff">':'<div style="width:42px;height:42px;border-radius:6px;background:#eef2f6;display:flex;align-items:center;justify-content:center">🧴</div>')
-      +'<div style="flex:1;min-width:0;font-size:13px"><b style="color:#c0392b">DUO</b> '+esc(String(d.name||pt.bundle_asin).slice(0,70))
+      +'<div style="flex:1;min-width:0;font-size:13px"><b style="color:#c0392b">DUO</b> '+esc(String(d.name||pt.bundle_asin))
       +'<div style="font-size:11.5px;color:#5a6472">'+esc(pt.bundle_asin)+(d.fnsku?' · FNSKU <b>'+esc(d.fnsku)+'</b>':'')+' · with '+esc(pt.asin)+' ('+(pt.onhand||0)+' free)</div></div>'
       +'<div style="text-align:right"><div style="font-size:22px;font-weight:900;color:'+(can>0?'#7a4fb5':'#c0392b')+';line-height:1">'+can+'</div><div style="font-size:10px;font-weight:800;color:#5a6472">CAN BUILD</div></div></div>');
   }
@@ -6184,7 +6184,7 @@ function renderDuoBuilder(body, q){
       const th=cp.image?'<img src="'+esc(cp.image)+'" onerror="this.style.display=\'none\'" style="width:38px;height:38px;object-fit:contain;border-radius:6px;background:#fff;flex-shrink:0">':'<div style="width:38px;height:38px;border-radius:6px;background:#eef2f6;flex-shrink:0"></div>';
       const limit=c.can===r.buildable&&r.buildable>0;
       return '<div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;background:'+(limit?'#fff8e8':'#f9fafb')+';margin-top:5px">'+th
-        +'<div style="flex:1;min-width:0;font-size:13px">'+esc(String(c.name||c.asin).slice(0,70))+(c.per>1?' <b>×'+c.per+'</b>':'')
+        +'<div style="flex:1;min-width:0;font-size:13px">'+esc(String(c.name||c.asin))+(c.per>1?' <b>×'+c.per+'</b>':'')
         +'<div style="font-size:11.5px;color:#5a6472"><b style="color:'+(c.free>0?'#1e8449':'#c0392b')+'">'+c.free+'</b> free'+(limit?' · <b style="color:#b7791f">runs out first</b>':'')+'</div></div>'
         +(c.location?'<span style="background:#1a2b4a;color:#fff;padding:4px 9px;border-radius:6px;font-size:13px;font-weight:800;white-space:nowrap">📍 '+esc(c.location)+'</span>':'<span style="background:#fdeceb;color:#c0392b;padding:4px 9px;border-radius:6px;font-size:12px;font-weight:800">📍 none</span>')
         +'</div>';
