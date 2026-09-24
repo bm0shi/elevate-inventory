@@ -157,10 +157,13 @@ async function listInboundShipments(sinceDays, statuses) {
 // summary's inbound figures can lag or miss a shipment at that stage (a duo
 // read 0 on the way while 288 were receiving), so this is the figure to trust.
 const OPEN_SHIPMENT_STATUSES = ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'];
-async function getInboundPipeline(sinceDays = 180) {
+async function getInboundPipeline(sinceDays = 180, onProgress) {
   const shipments = await listInboundShipments(sinceDays, OPEN_SHIPMENT_STATUSES);
   const bySku = {};
+  let n = 0;
   for (const sh of shipments) {
+    n++;
+    if (onProgress) onProgress(`Checking open shipment ${n} of ${shipments.length} (${sh.ShipmentId})…`);
     const items = await getShipmentReceivedItems(sh.ShipmentId);
     for (const it of items) {
       const left = Math.max(0, (it.shipped || 0) - (it.received || 0));
@@ -213,7 +216,7 @@ async function getShipmentReceivedItems(shipmentId) {
 }
 
 // Get current FBA inventory (what Amazon holds) via FBA Inventory API
-async function getFbaInventory() {
+async function getFbaInventory(onProgress) {
   const token = await getAccessToken();
   const results = {};
   let nextToken = null;
@@ -235,6 +238,7 @@ async function getFbaInventory() {
       throw new Error(`FBA inventory ${err.response?.status}: ${body}`);
     }
     const sums = resp.data.payload?.inventorySummaries || [];
+    if (onProgress) onProgress(`Reading Amazon stock — ${Object.keys(results).length + sums.length} SKUs so far…`);
     for (const s of sums) {
       results[s.sellerSku] = {
         sku: s.sellerSku, asin: s.asin, fnSku: s.fnSku,
