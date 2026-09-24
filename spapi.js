@@ -96,6 +96,10 @@ function requeue(list, asin) {
 
 // List inbound shipments updated recently, filtered to RECEIVED/CLOSED
 async function getReceivedShipments(sinceDays = 45) {
+  return listInboundShipments(sinceDays, ['RECEIVING', 'CLOSED']);
+}
+
+async function listInboundShipments(sinceDays, statuses) {
   const token = await getAccessToken();
   const after = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
   const before = new Date().toISOString();
@@ -113,7 +117,7 @@ async function getReceivedShipments(sinceDays = 45) {
       params.LastUpdatedAfter = after;
       params.LastUpdatedBefore = before;
       // ShipmentStatusList must be repeated params: ?ShipmentStatusList=WORKING&ShipmentStatusList=...
-      params.ShipmentStatusList = ['RECEIVING', 'CLOSED'];
+      params.ShipmentStatusList = statuses;
     }
 
     let resp;
@@ -145,6 +149,28 @@ async function getReceivedShipments(sinceDays = 45) {
   } while (nextToken);
 
   return results;
+}
+
+// Units on their way to Amazon, per seller SKU, straight from the open
+// shipments: shipped minus received for every shipment not yet closed. This
+// is what Seller Central shows as "Receiving… 288 / 0". The inventory
+// summary's inbound figures can lag or miss a shipment at that stage (a duo
+// read 0 on the way while 288 were receiving), so this is the figure to trust.
+const OPEN_SHIPMENT_STATUSES = ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'];
+async function getInboundPipeline(sinceDays = 180) {
+  const shipments = await listInboundShipments(sinceDays, OPEN_SHIPMENT_STATUSES);
+  const bySku = {};
+  for (const sh of shipments) {
+    const items = await getShipmentReceivedItems(sh.ShipmentId);
+    for (const it of items) {
+      const left = Math.max(0, (it.shipped || 0) - (it.received || 0));
+      if (!it.sku || !left) continue;
+      const r = bySku[it.sku] = bySku[it.sku] || { qty: 0, shipments: [] };
+      r.qty += left;
+      r.shipments.push({ id: sh.ShipmentId, name: sh.ShipmentName || '', status: sh.ShipmentStatus || '', qty: left });
+    }
+  }
+  return { bySku, shipmentCount: shipments.length };
 }
 
 // For one shipment, get the per-SKU RECEIVED quantities
@@ -215,9 +241,18 @@ async function getFbaInventory() {
         total: s.totalQuantity || 0,
         fulfillable: s.inventoryDetails?.fulfillableQuantity || 0,
         inbound: (s.inventoryDetails?.inboundWorkingQuantity||0) + (s.inventoryDetails?.inboundShippedQuantity||0) + (s.inventoryDetails?.inboundReceivingQuantity||0),
+        // What Seller Central calls "On-hand (FBA)": everything physically at
+        // Amazon — available plus reserved/being processed. totalQuantity also
+        // counts units still in shipments, so those come off.
+        onHand: Math.max(s.inventoryDetails?.fulfillableQuantity || 0,
+          (s.totalQuantity || 0) - (s.inventoryDetails?.inboundShippedQuantity || 0) - (s.inventoryDetails?.inboundReceivingQuantity || 0)),
       };
     }
-    nextToken = resp.data.payload?.nextToken || null;
+    // Amazon puts the next-page token in a top-level "pagination" object, not
+    // in payload. Reading only payload.nextToken stopped after the first page
+    // (50 SKUs), so every product past it — many of the duos — showed 0 at
+    // Amazon and never had its FNSKU picked up.
+    nextToken = resp.data.pagination?.nextToken || resp.data.payload?.nextToken || null;
     await sleep(1000);
   } while (nextToken);
   return results;
@@ -737,4 +772,4 @@ async function getInboundFees(sinceDays = 180, onProgress) {
   return out;
 }
 
-module.exports = { getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
+module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
