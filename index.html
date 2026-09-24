@@ -104,6 +104,14 @@
   .ppcard .pc-name { font-size:16px !important; }
   #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)) !important; gap:16px; }
   #onhandBody .pcards { grid-template-columns: repeat(auto-fill, minmax(580px, 1fr)) !important; }
+  /* Big view (per-device switch): one wide, easy-to-read card per row. */
+  #onhandBody .pcards.bigcards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 760px), 1fr)) !important; }
+  #pendingPrepBody.big .pcards { grid-template-columns: 1fr !important; }
+  #pendingPrepBody.big .ppcard { zoom: 1.22; }
+  .viewtoggle { display:inline-flex; background:#eef2f6; border-radius:8px; padding:3px; gap:3px; }
+  .viewtoggle button { border:none; background:transparent; padding:9px 14px; font-size:13px; font-weight:800; color:#5a6472; border-radius:6px; cursor:pointer; }
+  .viewtoggle button.on { background:#1a2b4a; color:#fff; }
+  @media (max-width:640px){ #pendingPrepBody.big .ppcard { zoom: 1; } }
   #onhandBody .pcard img { width:140px; height:140px; }
   #onhandBody .noimg { width:140px; height:140px; font-size:52px; }
   .ohcard .mktrow { margin-top:12px; width:100%; justify-content:space-around; padding:9px 12px; }
@@ -256,6 +264,7 @@
         <option value="duoonly">Duo items only</option>
         <option value="duobuildable">🧴 Duos I can build now (one-tap prep)</option>
       </select>
+      <span class="viewtoggle" id="vt_onhand"><button onclick="setView('onhand',false)">Compact</button><button onclick="setView('onhand',true)">Big</button></span>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync with Amazon</button>
       <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
     </div>
@@ -354,6 +363,7 @@
         <option value="notinplan">Not in shipment plan yet</option>
         <option value="inplan">Already in shipment plan</option>
       </select>
+      <span class="viewtoggle" id="vt_pp"><button onclick="setView('pp',false)">Compact</button><button onclick="setView('pp',true)">Big</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
     <button class="action full" onclick="showPickList()" style="margin-bottom:12px;background:#1a2b4a">🗺 Pick list — walk the racks in order</button>
@@ -2768,6 +2778,7 @@ function ppFiltered(all){
   });
 }
 function renderPendingPrep(){
+  paintViewToggles();
   const d=window._pendingPrepData; if(!d)return;
   const b=document.getElementById('pendingPrepBody');
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
@@ -5858,6 +5869,65 @@ function duosBuildable(p){
   }
   return best;
 }
+// ---- BIG / COMPACT VIEW ----
+// Per device (the floor tablet can stay on Big, a laptop on Compact).
+function viewBig(which){ return localStorage_get('viewBig_'+which)==='1'; }
+function setView(which, big){
+  localStorage_set('viewBig_'+which, big?'1':'0'); paintViewToggles();
+  if(which==='onhand') renderOnhand(); else renderPendingPrep();
+}
+function paintViewToggles(){
+  for(const w of ['onhand','pp']){
+    const el=document.getElementById('vt_'+w); if(!el) continue;
+    const b=viewBig(w); el.children[0].classList.toggle('on',!b); el.children[1].classList.toggle('on',b);
+  }
+  const pb=document.getElementById('pendingPrepBody'); if(pb) pb.classList.toggle('big', viewBig('pp'));
+}
+
+// Big On Hand card, in the style of the duo cards: photo, location, the IDs
+// in tap-to-copy boxes, the counts as big numbers, what duos it makes, and
+// Amazon stock by listing. Same data and buttons as the compact card.
+function bigOhCard(p, v){
+  const big=(n,label,color,title)=>'<div title="'+esc(title||'')+'" style="flex:1;min-width:92px;background:#f7f9fb;border-radius:8px;padding:8px;text-align:center"><div style="font-size:28px;font-weight:900;color:'+color+';line-height:1.05">'+n+'</div><div style="font-size:10.5px;font-weight:800;color:#5a6472;letter-spacing:0.4px">'+label+'</div></div>';
+  const box=(label,val,addAsin)=>val
+    ? '<div onclick="copyText(\''+esc(val)+'\',this)" title="Tap to copy" style="cursor:pointer;background:#f4f6f9;border:1.5px solid #d8dee6;border-radius:8px;padding:6px 10px;min-width:0"><div style="font-size:10px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">'+label+'</div><div style="font-family:monospace;font-size:16px;font-weight:800;color:#1f2733;word-break:break-all">'+esc(val)+'</div></div>'
+    : (addAsin ? '<div onclick="setDuoFnsku(\''+esc(addAsin)+'\')" title="Tap to add" style="cursor:pointer;background:#fdeceb;border:1.5px dashed #c0392b;border-radius:8px;padding:6px 10px"><div style="font-size:10px;font-weight:800;letter-spacing:0.6px;color:#c0392b">'+label+'</div><div style="font-size:13px;font-weight:800;color:#c0392b">not on file — tap to add</div></div>' : '');
+  const img=p.image
+    ? '<img src="'+esc(p.image)+'" onerror="this.style.display=\'none\'" style="width:150px!important;height:150px!important;object-fit:contain;border-radius:10px;background:#fff;border:1px solid #eef2f6;flex-shrink:0">'
+    : '<div class="noimg" style="width:150px;height:150px;font-size:54px">📦</div>';
+  const loc='<span onclick="editLocation(\''+esc(p.asin)+'\')" title="Change location" style="cursor:pointer;display:inline-block;margin-top:6px;background:'+(p.location?'#1a2b4a':'#fdeceb')+';color:'+(p.location?'#fff':'#c0392b')+';padding:6px 12px;border-radius:8px;font-size:16px;font-weight:900">📍 '+esc(p.location||'SET LOCATION')+'</span>';
+  // duos this bottle goes into, with how many could be built now
+  const seen=new Set(), duos=[];
+  for(const pt of (p.partners||[])){
+    if(!pt.bundle_asin || seen.has(pt.bundle_asin)) continue; seen.add(pt.bundle_asin);
+    const d=(products||[]).find(x=>x.asin===pt.bundle_asin)||{};
+    const can=Math.min(v.available, pt.onhand||0);
+    duos.push('<div style="display:flex;align-items:center;gap:9px;padding:6px 8px;border-radius:8px;background:#f9fafb;margin-top:5px">'
+      +(d.image?'<img src="'+esc(d.image)+'" onerror="this.style.display=\'none\'" style="width:42px!important;height:42px!important;object-fit:contain;border-radius:6px;background:#fff">':'<div style="width:42px;height:42px;border-radius:6px;background:#eef2f6;display:flex;align-items:center;justify-content:center">🧴</div>')
+      +'<div style="flex:1;min-width:0;font-size:13px"><b style="color:#c0392b">DUO</b> '+esc(String(d.name||pt.bundle_asin).slice(0,70))
+      +'<div style="font-size:11.5px;color:#5a6472">'+esc(pt.bundle_asin)+(d.fnsku?' · FNSKU <b>'+esc(d.fnsku)+'</b>':'')+' · with '+esc(pt.asin)+' ('+(pt.onhand||0)+' free)</div></div>'
+      +'<div style="text-align:right"><div style="font-size:22px;font-weight:900;color:'+(can>0?'#7a4fb5':'#c0392b')+';line-height:1">'+can+'</div><div style="font-size:10px;font-weight:800;color:#5a6472">CAN BUILD</div></div></div>');
+  }
+  return '<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0;padding:14px">'
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap">'+img
+    +'<div style="flex:1;min-width:240px">'
+      +'<div style="font-weight:800;font-size:16px;line-height:1.3"><a href="https://www.amazon.com/dp/'+esc(p.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(p.name)+'</a>'+(p.is_bundle?' <span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:800;vertical-align:middle">DUO</span>':'')+'</div>'
+      +loc
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px">'+box('ASIN',p.asin)+box('SKU',p.sku)+box('FNSKU',p.fnsku,p.asin)+'</div>'
+    +'</div></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'
+      +big(v.available,'AVAILABLE',v.available>0?'#1e8449':'#c0392b','On hand minus work orders and prepped')
+      +(v.pend?big(v.pend,'PENDING PREP','#7a4fb5'):'')
+      +(v.prep?big(v.prep,'PREPPED','#b7791f'):'')
+      +(v.t?big(v.t,'TRANSIT (BOTTLES)','#2563a8','Left the warehouse, not checked in at Amazon yet'):'')
+      +big(v.o,'IN WAREHOUSE','#5a6472')
+      +'<button onclick="requestPrep(\''+esc(p.asin)+'\','+((p.is_component||p.is_bundle)?'true':'false')+')" style="flex:1;min-width:120px;padding:12px;font-size:17px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer">🔧 PREP</button>'
+    +'</div>'
+    +(duos.length?'<div style="margin-top:10px;font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">MAKES THESE DUOS</div>'+duos.join(''):'')
+    +amazonSplit(p)+(v.mktRow||'')
+    +'</div>';
+}
+
 // ---- DUO BUILDER ----
 // One card per duo, with how many can be made from FREE stock (on hand minus
 // what's already on a work order or prepped). "Prep" adds a duo work order;
@@ -6049,7 +6119,8 @@ function renderOnhand(){
       default: return a.name.localeCompare(b.name);
     }
   });
-  body.innerHTML = '<div class="pcards">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
+  paintViewToggles();
+  body.innerHTML = '<div class="pcards'+(viewBig('onhand')?' bigcards':'')+'">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
     const img=p.image?`<img src="${p.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
     const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(p.name)}</a>`:p.name;
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
@@ -6106,6 +6177,7 @@ function renderOnhand(){
         ${p.sellers!=null?`<div class="mk"><span class="v">${p.sellers}</span><span class="k">Sellers</span></div>`:''}
       </div>`;
     }
+    if(viewBig('onhand')) return bigOhCard(p, {available, pend, prep, t, o, mktRow});
     return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700" title="Bottles that left the warehouse and Amazon has not checked in yet — singles and duo bottles together. The table below splits them.">'+t+' transit (bottles)</div>':''}${fbaF>0?'<div style="color:#127a7a;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${amazonSplit(p)}${mktRow}</div>`;
   }).join('')+'</div>';
   // Full breakdown totals across ALL products, not just the filtered view.
