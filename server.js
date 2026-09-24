@@ -687,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'amazon-check-0924';
+const BUILD_ID = 'sku-safety-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5419,7 +5419,24 @@ app.post('/api/set-cost', ownerAuth, async (req, res) => {
 async function pullFbaInventory(onProgress) {
   let fba;
   fba = await getFbaInventory(onProgress);
-  const fbaPages = fba._pages || 0, fbaSkuCount = Object.keys(fba).length;
+  const fbaPages = fba._pages || 0;
+
+  // SAFETY NET: ask Amazon directly about any of our SKUs the full list
+  // didn't include (50 per call). The full list left some SKUs out — one
+  // product read 0 while a direct lookup showed 434 available + 588 inbound.
+  let recovered = 0;
+  try {
+    const ours = await pool.query(`SELECT DISTINCT sku FROM (SELECT sku FROM inv_products WHERE sku IS NOT NULL AND sku <> ''
+                                   UNION SELECT sku FROM inv_sku_map WHERE sku IS NOT NULL AND sku <> '') x`);
+    const missing = ours.rows.map(r => r.sku).filter(k => !fba[k]);
+    for (let i = 0; i < missing.length; i += 50) {
+      if (onProgress) onProgress(`Double-checking ${Math.min(i + 50, missing.length)} of ${missing.length} SKUs the full list left out…`);
+      const more = await getFbaInventory(null, missing.slice(i, i + 50));
+      for (const k in more) if (!fba[k]) { fba[k] = more[k]; recovered++; }
+    }
+    if (missing.length) console.log(`[FBA] ${missing.length} of our SKUs weren't in the full list; ${recovered} found by direct lookup.`);
+  } catch (e) { console.error('[FBA] direct SKU lookup failed (non-fatal):', e.message); }
+  const fbaSkuCount = Object.keys(fba).length;
   // join with our warehouse on-hand by ASIN, including committed (pending prep + prepped)
   const ours = await pool.query(`
     SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
@@ -5577,7 +5594,7 @@ async function pullFbaInventory(onProgress) {
     await saveCache('fba_by_sku', { pages: fbaPages, skus: fbaSkuCount, bySku });
   } catch (e) { console.error('[FBA] per-SKU cache save failed (non-fatal):', e.message); }
   console.log(`[FBA] Read ${fbaSkuCount} SKUs from Amazon in ${fbaPages} page(s).`);
-  out._meta = { pages: fbaPages, skus: fbaSkuCount };
+  out._meta = { pages: fbaPages, skus: fbaSkuCount, recovered };
 
   // PERSIST — products-to-add and the restock plan read this cache. Nothing
   // wrote it before, so both were treating FBA stock as zero.
@@ -5628,7 +5645,7 @@ function startAmazonSync(trigger) {
       if (r && r.ok === false) result.errors.push('check-ins: ' + r.error); else result.checkedIn = (r && r.shipments) || 0;
       const out = await pullFbaInventory(t => { amazonSync.step = t; });
       result.products = out.length;
-      if (out._meta) { result.amazonSkus = out._meta.skus; result.pages = out._meta.pages; }
+      if (out._meta) { result.amazonSkus = out._meta.skus; result.pages = out._meta.pages; result.recovered = out._meta.recovered; }
     } catch (e) {
       result.errors.push(e.message);
     }

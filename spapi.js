@@ -250,9 +250,12 @@ async function getFbaInventory(onProgress, sellerSkus) {
         inbound: (s.inventoryDetails?.inboundWorkingQuantity||0) + (s.inventoryDetails?.inboundShippedQuantity||0) + (s.inventoryDetails?.inboundReceivingQuantity||0),
         // What Seller Central calls "On-hand (FBA)": everything physically at
         // Amazon — available plus reserved/being processed. totalQuantity also
-        // counts units still in shipments, so those come off.
+        // counts units in shipments (working, shipped and receiving), so all
+        // of those come off. Leaving 'working' in showed 1078 for a product
+        // with 434 available and 588 on the way.
         onHand: Math.max(s.inventoryDetails?.fulfillableQuantity || 0,
-          (s.totalQuantity || 0) - (s.inventoryDetails?.inboundShippedQuantity || 0) - (s.inventoryDetails?.inboundReceivingQuantity || 0)),
+          (s.totalQuantity || 0) - (s.inventoryDetails?.inboundWorkingQuantity || 0)
+            - (s.inventoryDetails?.inboundShippedQuantity || 0) - (s.inventoryDetails?.inboundReceivingQuantity || 0)),
       };
     }
     // Amazon puts the next-page token in a top-level "pagination" object, not

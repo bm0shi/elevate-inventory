@@ -6278,7 +6278,7 @@ function renderSyncStatus(st){
   const last=st.last;
   box.innerHTML = last
     ? '<div class="hint">Last synced with Amazon: <b>'+esc(fmtAgo(last.at))+'</b>'+(last.trigger==='daily'?' · morning auto-sync':'')
-      +(last.result?' · '+(last.result.amazonSkus!=null?last.result.amazonSkus+' Amazon SKUs in '+last.result.pages+' page'+(last.result.pages===1?'':'s'):last.result.products+' products')+(last.result.errors&&last.result.errors.length?' · <span style="color:#c0392b">'+esc(last.result.errors.join(' · '))+'</span>':''):'')
+      +(last.result?' · '+(last.result.amazonSkus!=null?last.result.amazonSkus+' Amazon SKUs in '+last.result.pages+' page'+(last.result.pages===1?'':'s')+(last.result.recovered?' (+'+last.result.recovered+' found by direct lookup)':''):last.result.products+' products')+(last.result.errors&&last.result.errors.length?' · <span style="color:#c0392b">'+esc(last.result.errors.join(' · '))+'</span>':''):'')
       +' · runs automatically every day at 6:30 AM</div>'
     : '<div class="hint">Not synced yet · runs automatically every day at 6:30 AM</div>';
 }
