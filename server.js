@@ -687,7 +687,7 @@ function suggestProducts(desc, catalog) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-counts-0924';
+const BUILD_ID = 'sync-bg-0924';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5396,10 +5396,12 @@ app.post('/api/set-cost', ownerAuth, async (req, res) => {
 });
 
 // FBA inventory (what Amazon holds) — combined with our warehouse on-hand
-app.get('/api/fba-inventory', auth, async (req, res) => {
+// Pull Amazon's stock picture: every page of FBA inventory, plus what's on
+// the way in open shipments. Saves the 'fba_inventory' cache the On Hand
+// cards, restock plan and products-to-add read. onProgress(text) is optional.
+async function pullFbaInventory(onProgress) {
   let fba;
-  try { fba = await getFbaInventory(); }
-  catch(err){ return res.status(400).json({ error: err.message }); }
+  fba = await getFbaInventory(onProgress);
   // join with our warehouse on-hand by ASIN, including committed (pending prep + prepped)
   const ours = await pool.query(`
     SELECT p.asin, p.sku, p.name, s.onhand, s.transit,
@@ -5455,7 +5457,7 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
   // summary figures still stand.
   let pipelineNote = null;
   try {
-    const pipe = await getInboundPipeline(180);
+    const pipe = await getInboundPipeline(180, onProgress);
     const skuAsin = {};
     for (const sku in fba) if (fba[sku].asin) skuAsin[sku] = fba[sku].asin;
     const extra = await pool.query(`SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL
@@ -5556,8 +5558,74 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
     if (mapped) console.log(`[FBA] Recorded ${mapped} seller SKU -> ASIN mapping(s).`);
   } catch(e) { console.error('[FBA] sku map save failed (non-fatal):', e.message); }
 
-  res.json(out);
+  return out;
+}
+app.get('/api/fba-inventory', auth, async (req, res) => {
+  try { res.json(await pullFbaInventory()); }
+  catch (err) { res.status(400).json({ error: err.message }); }
 });
+
+// ============================================================
+// SYNC WITH AMAZON — background job with progress
+// Check-ins, then stock at Amazon and on the way. Runs in the background so
+// a long pull can't be cut off by the browser or a proxy timeout; the screen
+// polls /api/amazon-sync/status for progress. Also runs every morning (below).
+// ============================================================
+let amazonSync = { running: false, step: '', done: false, error: null, result: null, startedAt: null, finishedAt: null, trigger: null };
+function startAmazonSync(trigger) {
+  if (amazonSync.running) return false;
+  amazonSync = { running: true, step: 'Starting…', done: false, error: null, result: null, startedAt: new Date().toISOString(), finishedAt: null, trigger };
+  (async () => {
+    const result = { products: 0, checkedIn: 0, errors: [] };
+    try {
+      amazonSync.step = 'Checking which shipments Amazon has received…';
+      const r = await reconcileInTransit();
+      if (r && r.ok === false) result.errors.push('check-ins: ' + r.error); else result.checkedIn = (r && r.shipments) || 0;
+      const out = await pullFbaInventory(t => { amazonSync.step = t; });
+      result.products = out.length;
+    } catch (e) {
+      result.errors.push(e.message);
+    }
+    amazonSync.result = result;
+    amazonSync.error = result.errors.length ? result.errors.join(' · ') : null;
+    amazonSync.running = false; amazonSync.done = true; amazonSync.finishedAt = new Date().toISOString();
+    amazonSync.step = amazonSync.error ? 'Finished with problems' : 'Done';
+    console.log(`[Sync] ${trigger} sync finished: ${result.products} products, ${result.checkedIn} checked in${amazonSync.error ? ' — ' + amazonSync.error : ''}.`);
+    try { await saveCache('amazon_sync_last', { at: amazonSync.finishedAt, trigger, result }); } catch (e) {}
+  })().catch(e => { amazonSync.running = false; amazonSync.error = e.message; });
+  return true;
+}
+app.post('/api/amazon-sync/start', auth, (req, res) => {
+  const started = startAmazonSync('manual');
+  res.json({ ok: true, started, already: !started });
+});
+app.get('/api/amazon-sync/status', auth, async (req, res) => {
+  let last = null;
+  try { const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='amazon_sync_last'"); last = r.rows[0] ? r.rows[0].data : null; } catch (e) {}
+  res.json({ ...amazonSync, last });
+});
+
+// Every morning at 6:30 Arizona time (UTC-7, no daylight saving), so the
+// numbers are fresh when the floor starts at 7. If the server was down at
+// 6:30 it catches up any time before noon. The date is claimed atomically so
+// two copies of the server can't both run it.
+const DAILY_SYNC_PHX = { hour: 6, minute: 30 };
+setInterval(async () => {
+  try {
+    const phx = new Date(Date.now() - 7 * 3600 * 1000);
+    const mins = phx.getUTCHours() * 60 + phx.getUTCMinutes();
+    const due = DAILY_SYNC_PHX.hour * 60 + DAILY_SYNC_PHX.minute;
+    if (mins < due || mins >= 12 * 60 || amazonSync.running) return;
+    const day = phx.toISOString().slice(0, 10);
+    const claim = await pool.query(
+      `INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('daily_sync_day', to_jsonb($1::text), now())
+       ON CONFLICT (cache_key) DO UPDATE SET data = to_jsonb($1::text), updated_at = now()
+       WHERE inv_cache.data IS DISTINCT FROM to_jsonb($1::text) RETURNING 1`, [day]);
+    if (!claim.rowCount) return;
+    console.log(`[Sync] daily morning sync starting (${day}).`);
+    startAmazonSync('daily');
+  } catch (e) { console.error('[Sync] daily check failed:', e.message); }
+}, 60 * 1000).unref();
 
 // Sales velocity (OWNER only) — units sold per SKU + days of stock left
 app.get('/api/velocity', ownerAuth, async (req, res) => {
