@@ -401,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ss-sellers-0925';
+const BUILD_ID = 'ss-order-sellers-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4968,6 +4968,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep GROUP BY asin')).rows) pending[r.asin] = r.q;
   const cosmo = {}; for (const r of (await pool.query('SELECT cosmo_num, asin FROM inv_cosmo_map WHERE asin IS NOT NULL')).rows) (cosmo[r.asin] = cosmo[r.asin] || []).push(r.cosmo_num);
   const ssBrand = await ssBrandRows();
+  const ssSellers = await ssSellerFiles();
 
   // Bottles committed to prep (single work orders + prepped, and duos × per)
   const committed = {};
@@ -4995,6 +4996,12 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       shareMeasured: measuredShare(ourSold != null ? ourSold * 30 / velDays : null, m.monthlySold),
       amazonOOS: m.amazonOOS ?? null,
       ss: ssListing(ssBrand[p.asin], m),
+      // Each seller's units / month on this listing, by short label (US, Hyp…).
+      ssSellers: ssSellers.reduce((o, sl) => {
+        const r = sl.by[p.asin];
+        if (r) o[sl.abbr] = smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, r);
+        return o;
+      }, {}),
     });
     if (!isDuo) bottles.push({
       asin: p.asin, name: p.name, image: p.image, location: p.location, onhand: p.onhand, transit: p.transit,
@@ -5003,7 +5010,8 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
     });
   }
   res.json({ ok: true, listings, bottles,
-    sellerId, asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
+    sellerId, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
+    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
 });
 
 // ============================================================
@@ -5061,6 +5069,25 @@ app.post('/api/smartscout/upload', ownerAuth, upload.array('file', 20), async (r
   }
   res.json({ ok: results.every(r => r.ok), results });
 });
+
+// Latest seller file per seller (names compared loosely), us first, each
+// with a short label for table columns and its rows by ASIN.
+async function ssSellerFiles() {
+  const sel = await pool.query("SELECT seller, filename, uploaded_at, rows FROM inv_ss_uploads WHERE kind='seller' ORDER BY uploaded_at, id");
+  const usKey = smartscout.sellerKey(await ssUsName());
+  const by = {};
+  for (const u of sel.rows) by[smartscout.sellerKey(u.seller)] = u;
+  const list = Object.entries(by).map(([k, u]) => {
+    const isUs = k === usKey, rows = {};
+    for (const r of (u.rows || [])) rows[r.asin] = r;
+    return { seller: u.seller, isUs, abbr: smartscout.sellerAbbr(u.seller, isUs), filename: u.filename, uploadedAt: u.uploaded_at, by: rows };
+  });
+  list.sort((a, b) => (b.isUs - a.isUs) || a.abbr.localeCompare(b.abbr));
+  // Two sellers with the same initials: number the later ones.
+  const seen = {};
+  for (const sl of list) { seen[sl.abbr] = (seen[sl.abbr] || 0) + 1; if (seen[sl.abbr] > 1) sl.abbr += seen[sl.abbr]; }
+  return list;
+}
 
 // Mark which seller is us (from the Sellers table).
 app.post('/api/smartscout/us', ownerAuth, async (req, res) => {

@@ -2804,7 +2804,10 @@ function snToBuilder(){
 function renderOrders(boxId, mode){
   const st=planSet(), d=_plan, box=document.getElementById(boxId||'ordersBody'), isSS=mode==='ss';
   const lead=st.cosmoDays+st.prepDays+st.amazonDays, horizon=lead+st.target;
-  const b={}; d.bottles.forEach(x=>b[x.asin]=Object.assign({},x,{perDay:0, atAmz:0, way:0, via:[], profit:null, price:null}));
+  const b={}; d.bottles.forEach(x=>b[x.asin]=Object.assign({},x,{perDay:0, atAmz:0, way:0, via:[], profit:null, price:null, sel:{}}));
+  // Smart Scout Orders: a column per seller file (US, Hyp, SD, SB…) with
+  // what each sells of the bottle per month, singles and duos counted as bottles.
+  const selCols=isSS?(d.ssSellers||[]):[];
   // Profit per bottle, from its own (single) listing: Amazon price − referral
   // fee − FBA fee − our cost. Bottles only sold inside duos have no single
   // price, so they show "—" and aren't hidden by the profit filter.
@@ -2825,6 +2828,7 @@ function renderOrders(boxId, mode){
     for(const c of l.components){
       const t=b[c.asin]; if(!t) continue;
       t.perDay+=perDay*c.per; t.atAmz+=l.atAmazon*c.per; t.way+=l.onTheWay*c.per;
+      for(const a in (l.ssSellers||{})) if(l.ssSellers[a]!=null) t.sel[a]=(t.sel[a]||0)+l.ssSellers[a]*c.per;
       if(perDay>0) t.via.push((l.isDuo?'duo ':'single ')+Math.round(perDay*30*c.per)+'/mo ('+planSrcNote(l,dm)+')');
     }
   }
@@ -2844,7 +2848,8 @@ function renderOrders(boxId, mode){
   const hidden=rows.filter(r=>r.perDay>0 && hiddenBy(r)); 
   const shown=rows.filter(r=>!hiddenBy(r));
   // Sort by any column; nulls always last.
-  const SORTS={ name:r=>String(r.name||'').toLowerCase(), sold:r=>r.perDay, wh:r=>r.onhand, amz:r=>r.atAmz, way:r=>r.way, cover:r=>r.cover,
+  const SORTS={ name:r=>String(r.name||'').toLowerCase(), sold:r=>r.perDay,
+                ...Object.fromEntries(selCols.map(c=>['sel_'+c.abbr, r=>r.sel[c.abbr]??null])), wh:r=>r.onhand, amz:r=>r.atAmz, way:r=>r.way, cover:r=>r.cover,
                 qty:r=>r.qty, lasts:r=>r.lasts, unit:r=>r.unitCost, profit:r=>r.profit, cost:r=>r.cost };
   const key=SORTS[st.ordSort]?st.ordSort:'cover', dir=st.ordDir===-1?-1:1, get=SORTS[key];
   shown.sort((a,c)=>{ const x=get(a), y=get(c); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*dir; });
@@ -2863,13 +2868,17 @@ function renderOrders(boxId, mode){
       +(hidden.length?'<span class="hint" style="color:#b7791f"><b>'+hidden.length+'</b> hidden by filters</span>':'')
     +'</div>'
     +'<div class="hint" style="margin-top:6px">'+esc(planAsOf(d))+'</div></div>';
-  h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
-    +[['name','Bottle',0],['sold','Sells / mo',1],['wh','Warehouse',1],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1],['qty','Order',1],['lasts','Lasts',1],['unit','Unit cost',1],['profit','Profit / bottle',1],['cost','Cost',1]]
-      .map(([k,t,right])=>'<td onclick="ordersSort(\''+k+'\')" title="Sort" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(key===k?'color:#1a2b4a;font-weight:900':'')+'">'+t+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
+  h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:'+(900+selCols.length*60)+'px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
+    +[['name','Bottle',0],['sold','Sells / mo',1]].concat(selCols.map(c=>['sel_'+c.abbr,c.abbr,1,c.name+' — sells / mo (SmartScout)'+(c.isUs?' · this is you':'')]),[['wh','Warehouse',1],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1],['qty','Order',1],['lasts','Lasts',1],['unit','Unit cost',1],['profit','Profit / bottle',1],['cost','Cost',1]])
+      .map(([k,t,right,tip])=>'<td onclick="ordersSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
     +shown.filter(r=>r.perDay>0).map(r=>{
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+esc(String(r.name||r.asin))+'<div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+esc(r.asin)+(r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
-        +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td><td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
+        +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td>'
+        +(()=>{ const top=Math.max(0,...selCols.map(c=>r.sel[c.abbr]||0));
+            return selCols.map(c=>{ const v=r.sel[c.abbr];
+              return '<td style="'+td+';'+(c.isUs?'color:#127a7a;background:#f0f8f8;':'')+(v&&v===top?'font-weight:800':'')+'" title="'+esc(c.name)+'">'+(v==null?'<span class="hint">—</span>':Math.round(v).toLocaleString())+'</td>'; }).join(''); })()
+        +'<td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':r.cover>=365?(r.cover/365).toFixed(1)+' yr':Math.round(r.cover)+'d')+'</td>'
         +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td>'
         +'<td style="'+td+'" title="How long what you have plus this order lasts at this rate">'+(r.lasts==null?'—':r.lasts>=60?(r.lasts/30).toFixed(1)+' mo':Math.round(r.lasts)+'d')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td>'
@@ -2883,7 +2892,8 @@ function renderOrders(boxId, mode){
     +idle.map(r=>esc(String(r.name||r.asin))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
   h+='</div>';
   h+='<div class="box hint"><b>How this is calculated.</b><br>'
-    +(isSS?'• <b>Smart Scout demand</b> per listing = the pie Amazon leaves (SmartScout monthly units × (1 − Amazon\'s Buy Box share)) × the share you picked above. <b>Your current share</b> = your own sales; where you sold none it plans on half a fair share. <b>Fair share</b> = pie ÷ the third-party FBA sellers. Listings SmartScout doesn\'t cover fall back to your sales / Keepa. Upload fresh files in Admin → Smart Scout.<br>':'')
+    +(isSS?'• <b>Smart Scout demand</b> per listing = the pie Amazon leaves (SmartScout monthly units × (1 − Amazon\'s Buy Box share)) × the share you picked above. <b>Your current share</b> = your own sales; where you sold none it plans on half a fair share. <b>Fair share</b> = pie ÷ the third-party FBA sellers. Listings SmartScout doesn\'t cover fall back to your sales / Keepa. Upload fresh files in Admin → Smart Scout.<br>'
+      +(selCols.length?'• <b>'+selCols.map(c=>esc(c.abbr)).join(', ')+'</b> = what each seller sells of the bottle per month (listing sales × their Buy Box %, singles and duos counted as bottles; '+selCols.map(c=>esc(c.abbr)+' = '+esc(c.name)).join(', ')+'). The biggest seller on each row is bold; "—" = that seller\'s file doesn\'t list it.<br>':'• Upload the sellers\' "Offers" files in Admin → Smart Scout to compare what each seller sells here.<br>'):'')
     +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity). Where you had none, Keepa\'s monthly sales for the whole listing × <b>your share</b>: measured from your sales when possible; otherwise <b>your own Buy Box %</b> over the last 90 days (Keepa, matched to your seller id); if you won none, the Buy Box Amazon doesn\'t win split between the third-party sellers who won it, you included (e.g. Amazon 95%, 3 others + you → ~1.25%). The small print under each bottle shows the share used.<br>'
     +'• Orders plan on <b>'+(Math.round(pf*100))+'%</b> of those expected sales, to stay conservative — change it above.<br>'
     +'• <b>Bottles you have</b> = warehouse on hand (including prepped and on work orders) + at Amazon + on the way to Amazon, counting each duo as its bottles. Your own "transit" count isn\'t added again — it\'s the same bottles as Amazon\'s "on the way".<br>'
