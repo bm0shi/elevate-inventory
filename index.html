@@ -3348,9 +3348,9 @@ function renderItemLocs(){
       +'<button class="action" onclick="ilClearAll()" style="background:#c0392b">Clear all locations</button></div></div>'
     // layout editor
     +'<details style="margin-top:10px"'+(Object.keys(d.rows).join()==='A,B'&&d.slots.length===40?' open':'')+'><summary style="cursor:pointer;font-weight:700">Rack layout (new warehouse? set your rows here)</summary>'
-      +'<div class="hint" style="margin:6px 0">One letter per row of pallet spots, and how many spots in that row. Spots are named row-number: A-1, A-2 … Duo partners are kept next to each other in the same row.</div>'
+      +'<div class="hint" style="margin:6px 0">One letter per row of pallet spots, and how many spots in that row. Spots are named row-number: A-1, A-2 … Duo partners are kept next to each other in the same row. <b>L turn</b>: for an L-shaped row, how many spots go up the side before it turns right — e.g. row A with L turn 4 = A-1…A-4 up the left side, then A-5, A-6… along the top. Leave 0 for a straight row.</div>'
       +'<div id="ilRows" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-      +Object.entries(d.rows).map(([r,n])=>'<span class="ilRow" style="display:inline-flex;gap:4px;align-items:center;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px"><input value="'+esc(r)+'" maxlength="1" style="width:30px;padding:5px;text-transform:uppercase;font-weight:800;text-align:center"> × <input type="number" min="1" max="200" value="'+n+'" style="width:64px;padding:5px"> <button onclick="this.parentNode.remove()" title="Remove row" style="background:none;border:0;color:#c0392b;cursor:pointer;font-size:16px">✕</button></span>').join('')
+      +Object.entries(d.rows).map(([r,n])=>'<span class="ilRow" style="display:inline-flex;gap:4px;align-items:center;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px"><input value="'+esc(r)+'" maxlength="1" style="width:30px;padding:5px;text-transform:uppercase;font-weight:800;text-align:center"> × <input type="number" min="1" max="200" value="'+n+'" style="width:64px;padding:5px"> <span class="hint" title="L-shaped row: how many spots go up the side before it turns right (0 = straight)">L turn</span> <input type="number" min="0" max="199" value="'+((d.bends||{})[r]||0)+'" style="width:52px;padding:5px"> <button onclick="this.parentNode.remove()" title="Remove row" style="background:none;border:0;color:#c0392b;cursor:pointer;font-size:16px">✕</button></span>').join('')
       +'</div><div style="margin-top:8px;display:flex;gap:8px"><button class="action" onclick="ilAddRow()" style="background:#5a6472;padding:6px 12px">+ Add row</button><button class="action" onclick="ilSaveLayout()" style="background:#127a7a;padding:6px 12px">Save layout</button></div></details>'
     // controls
     +'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center">'
@@ -3398,22 +3398,40 @@ function ilList(rows, locOf, sug){
         +'<td style="'+td+';font-size:12px">'+(parts||'<span class="hint">single</span>')+'</td></tr>';
     }).join('')+'</table><div class="hint" style="margin-top:6px">✓ = duo partner right next to it · ⚠ = partner is elsewhere. Type a spot to change it (saved right away); clear it to remove.</div></div>';
 }
+// Rack map drawn the way the rows stand. A row with a bend of K is an L:
+// spots 1..K go up the left side (1 at the bottom, K at the top, facing
+// right), then K+1… run to the right from the corner, facing you — the
+// owner's row A: A-1..A-4 up the side, A-5, A-6, A-7… along the top.
+function ilSpot(k, its, sug, face){
+  const isSug=its.some(it=>sug[it.asin]&&sug[it.asin].on!==false);
+  return '<div style="border:1px solid '+(its.length?'#cfd8e3':'#e6ebf1')+';border-radius:8px;padding:6px;min-height:58px;font-size:11px;background:'+(isSug?'#fff9d6':its.length?'#fff':'#f7f9fb')+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">'+k+'</b>'+(face?'<span class="hint" title="Faces this way" style="font-size:14px">'+face+'</span>':'')+'</div>'
+    +its.map(it=>'<div title="'+esc(it.name)+'" style="margin-top:4px;line-height:1.2;text-align:center">'+ilImg(it,96)+'<div style="text-align:left;margin-top:3px">'+(it.partners.length?'<span style="color:#c0392b;font-weight:800">◆</span> ':'')+esc(String(it.name).slice(0,40))+'<div class="hint" style="font-size:10px">'+esc(it.asin)+' · '+it.onhand+' on hand</div></div></div>').join('')
+    +'</div>';
+}
 function ilMap(d, locOf, sug){
   const at={}; d.items.forEach(it=>{ const L=locOf(it.asin); if(L) (at[L]=at[L]||[]).push(it); });
+  const W=150;
   let h='<div class="box" style="overflow-x:auto">';
   for(const [r,n] of Object.entries(d.rows)){
-    h+='<div style="font-weight:900;margin:10px 0 4px">Row '+esc(r)+'</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px">';
-    for(let i=1;i<=n;i++){ const k=r+'-'+i, its=at[k]||[];
-      const isSug=its.some(it=>sug[it.asin]&&sug[it.asin].on!==false);
-      h+='<div style="border:1px solid '+(its.length?'#cfd8e3':'#eef2f6')+';border-radius:8px;padding:6px;min-height:58px;font-size:11px;background:'+(isSug?'#fff9d6':its.length?'#fff':'#f7f9fb')+'"><b style="font-size:13px">'+k+'</b>'
-        +its.map(it=>'<div title="'+esc(it.name)+'" style="margin-top:4px;line-height:1.2;text-align:center">'+ilImg(it,96)+'<div style="text-align:left;margin-top:3px">'+(it.partners.length?'<span style="color:#c0392b;font-weight:800">◆</span> ':'')+esc(String(it.name).slice(0,40))+'<div class="hint" style="font-size:10px">'+esc(it.asin)+' · '+it.onhand+' on hand</div></div></div>').join('')
-        +'</div>';
+    const k=(d.bends||{})[r]||0, spot=i=>ilSpot(r+'-'+i, at[r+'-'+i]||[], sug, k?(i<=k?'→':'↓'):'');
+    h+='<div style="font-weight:900;margin:12px 0 4px">Row '+esc(r)+(k?' <span class="hint" style="font-weight:400">— '+r+'-1…'+r+'-'+k+' up the side, then '+r+'-'+(k+1)+'…'+r+'-'+n+' to the right</span>':'')+'</div>';
+    if(!k){
+      h+='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax('+W+'px,1fr));gap:6px">';
+      for(let i=1;i<=n;i++) h+=spot(i);
+      h+='</div>'; continue;
     }
+    // L: column 1 holds 1..k (k on top); the top line holds k+1..n.
+    const across=n-k;
+    h+='<div style="display:grid;grid-template-columns:'+W+'px 18px repeat('+across+','+W+'px);grid-auto-rows:auto;gap:6px;width:max-content">';
+    for(let i=k;i>=1;i--) h+='<div style="grid-column:1;grid-row:'+(k-i+1)+'">'+spot(i)+'</div>';
+    for(let j=1;j<=across;j++) h+='<div style="grid-column:'+(j+2)+';grid-row:1">'+spot(k+j)+'</div>';
+    if(k>1) h+='<div style="grid-column:3 / span '+across+';grid-row:2 / span '+(k-1)+';border:2px dashed #e2e8f0;border-radius:10px;display:flex;align-items:center;justify-content:center;color:#b8c2cf;font-weight:700;min-height:60px">floor / aisle — you stand here facing '+r+'-'+(k+1)+'</div>';
     h+='</div>';
   }
   const off=d.items.filter(it=>it.location&&!it.onRack);
   if(off.length) h+='<div class="hint" style="margin-top:10px;color:#c0392b">Not on the rack map ('+off.length+'): '+off.map(it=>esc(it.location)+' '+esc(String(it.name).slice(0,30))).join(' · ')+'</div>';
-  return h+'<div class="hint" style="margin-top:8px"><span style="color:#c0392b;font-weight:800">◆</span> = part of a duo · yellow = suggested, not saved yet.</div></div>';
+  return h+'<div class="hint" style="margin-top:8px"><span style="color:#c0392b;font-weight:800">◆</span> = part of a duo · yellow = suggested, not saved yet · → ↓ = which way the spot faces. Set a row\'s L turn in Rack layout.</div></div>';
 }
 function ilSetLoc(asin, el){
   const v=el.value.trim();
@@ -3451,13 +3469,13 @@ function ilAddRow(){
   const used=[...document.querySelectorAll('#ilRows .ilRow input:first-child')].map(i=>i.value.toUpperCase());
   const next=[...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(c=>!used.includes(c))||'';
   const sp=document.createElement('span'); sp.className='ilRow'; sp.style.cssText='display:inline-flex;gap:4px;align-items:center;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px';
-  sp.innerHTML='<input value="'+next+'" maxlength="1" style="width:30px;padding:5px;text-transform:uppercase;font-weight:800;text-align:center"> × <input type="number" min="1" max="200" value="20" style="width:64px;padding:5px"> <button onclick="this.parentNode.remove()" title="Remove row" style="background:none;border:0;color:#c0392b;cursor:pointer;font-size:16px">✕</button>';
+  sp.innerHTML='<input value="'+next+'" maxlength="1" style="width:30px;padding:5px;text-transform:uppercase;font-weight:800;text-align:center"> × <input type="number" min="1" max="200" value="20" style="width:64px;padding:5px"> <span class="hint" title="L-shaped row: how many spots go up the side before it turns right (0 = straight)">L turn</span> <input type="number" min="0" max="199" value="0" style="width:52px;padding:5px"> <button onclick="this.parentNode.remove()" title="Remove row" style="background:none;border:0;color:#c0392b;cursor:pointer;font-size:16px">✕</button>';
   document.getElementById('ilRows').appendChild(sp);
 }
 function ilSaveLayout(){
-  const rows={};
-  for(const sp of document.querySelectorAll('#ilRows .ilRow')){ const [a,b]=sp.querySelectorAll('input'); const r=a.value.trim().toUpperCase(); if(r) rows[r]=parseInt(b.value,10); }
-  ownerApi('/api/rack-layout',{method:'POST',body:JSON.stringify({rows})}).then(d=>{
+  const rows={}, bends={};
+  for(const sp of document.querySelectorAll('#ilRows .ilRow')){ const [a,b,c]=sp.querySelectorAll('input'); const r=a.value.trim().toUpperCase(); if(r){ rows[r]=parseInt(b.value,10); const k=parseInt(c&&c.value,10); if(k>0) bends[r]=k; } }
+  ownerApi('/api/rack-layout',{method:'POST',body:JSON.stringify({rows, bends})}).then(d=>{
     if(!d||d.ok===false){ toast('Could not save: '+((d&&d.error)||'server error'),true); return; }
     toast('Rack saved: '+d.slots+' spots'+(d.offMap?' · '+d.offMap+' bottles are on spots that no longer exist':''));
     if(d.offMap) alert(d.offMap+' bottles have spots that aren\'t on the new rack map. They\'re listed with a red border — give them new spots, or use Clear all locations and Suggest.');

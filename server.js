@@ -402,7 +402,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'item-locations-photos-0926';
+const BUILD_ID = 'rack-map-L-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1747,7 +1747,10 @@ app.get('/api/item-locations', auth, async (req, res) => {
   const list = items.map(it => ({ asin: it.asin, sku: it.sku, name: it.name, image: it.image, location: it.location,
     onRack: !it.location || slotSet.has(it.location), onhand: it.onhand, transit: it.transit, partners: partners[it.asin] || [] }));
   list.sort((a, b) => slotKey(a.location) - slotKey(b.location) || String(a.name).localeCompare(String(b.name)));
-  res.json({ ok: true, rows: { ...LOC_ROWS }, slots: LOCATION_SLOTS, items: list });
+  // bends: how the rows stand in the warehouse, for drawing the rack map —
+  // { A: 4 } = A-1..A-4 go up the left side, then A-5… run to the right (an L).
+  const sh = await pool.query("SELECT data FROM inv_cache WHERE cache_key='rack_shape'");
+  res.json({ ok: true, rows: { ...LOC_ROWS }, bends: (sh.rows[0] && sh.rows[0].data) || {}, slots: LOCATION_SLOTS, items: list });
 });
 
 // Suggested spots for bottles without one. Nothing is saved here.
@@ -1787,8 +1790,15 @@ app.post('/api/rack-layout', ownerAuth, async (req, res) => {
   try { rows = setRackLayout(req.body && req.body.rows); }
   catch (e) { return res.status(400).json({ ok: false, error: e.message }); }
   await saveCache('rack_layout', rows);
+  // Row shapes for the map only (spot names don't change).
+  const bends = {};
+  for (const [r, v] of Object.entries((req.body && req.body.bends) || {})) {
+    const k = parseInt(v, 10);
+    if (rows[r] && k > 0 && k < rows[r]) bends[r] = k;
+  }
+  await saveCache('rack_shape', bends);
   const off = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products WHERE location IS NOT NULL AND NOT (location = ANY($1::text[]))', [LOCATION_SLOTS]);
-  res.json({ ok: true, rows, slots: LOCATION_SLOTS.length, offMap: off.rows[0].n });
+  res.json({ ok: true, rows, bends, slots: LOCATION_SLOTS.length, offMap: off.rows[0].n });
 });
 
 // Scan an item against an open invoice -> increment received for that line
