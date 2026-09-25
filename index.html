@@ -2657,7 +2657,7 @@ function shipBuilderDownload(){
 // Settings are remembered on this device.
 // ============================================================
 let _plan=null;
-const PLAN_DEFAULTS={ basis:'ours', ssTarget:'current', ssPct:25, planPct:80, target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1, minUnitCost:0, minProfit:'', ordSort:'cover', ordDir:1 };
+const PLAN_DEFAULTS={ basis:'ours', ssMode:'fair', ssPct:25, planPct:80, target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1, minUnitCost:0, minProfit:'', ordSort:'cover', ordDir:1 };
 function planSet(){ try{ return Object.assign({}, PLAN_DEFAULTS, JSON.parse(localStorage_get('planSettings')||'{}')); }catch(e){ return Object.assign({},PLAN_DEFAULTS); } }
 function planSave(k,v){ const st=planSet(); st[k]=v; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
 function loadPlan(view){
@@ -2712,19 +2712,24 @@ function planSrcNote(l, dm){
 }
 // Smart Scout demand for one listing: the pie Amazon leaves × the share the
 // owner picked. Listings SmartScout doesn't cover use the normal basis.
+// Defaults to a fair share: planning on our current pace showed Tea Tree
+// Lemon Sage as 8.8 years covered while two sellers sold 1,356/mo of it —
+// our 342 bottles would last weeks once we win our share. The days-covered
+// cell still shows our current pace underneath.
 function ssDemand(l, st){
   if(!l.ss) { const dm=planDemand(l,'ours'); return Object.assign(dm,{ssNote:'not in SmartScout'}); }
   const ours=l.ourSold!=null ? l.ourSold/(l.ourDays||30) : 0, pie=l.ss.pie/30, fair=l.ss.fair/30, n=l.ss.sellers3P;
   const pieTxt='pie '+Math.round(l.ss.pie).toLocaleString()+'/mo';
-  if(st.ssTarget==='fair') return {perDay:fair, src:'ss', ssNote:'fair share: '+pieTxt+' ÷ '+n+' sellers'};
-  if(st.ssTarget==='custom'){ const p=Math.min(100,Math.max(0,Number(st.ssPct)||0)); return {perDay:pie*p/100, src:'ss', ssNote:p+'% of '+pieTxt}; }
+  if(st.ssMode==='fair') return {perDay:fair, src:'ss', ssNote:'fair share: '+pieTxt+' ÷ '+n+' sellers'};
+  if(st.ssMode==='custom'){ const p=Math.min(100,Math.max(0,Number(st.ssPct)||0)); return {perDay:pie*p/100, src:'ss', ssNote:p+'% of '+pieTxt}; }
   if(ours>0) return {perDay:ours, src:'ss', ssNote:'your sales = '+(pie>0?Math.round(ours/pie*100):0)+'% of '+pieTxt+' (fair '+Math.round(100/n)+'%)'};
   return {perDay:fair/2, src:'ss', ssNote:'no sales yet: half a fair share of '+pieTxt};
 }
+function fmtDays(v){ return v==null||!isFinite(v)?'—':v>=365?(v/365).toFixed(1)+' yr':Math.round(v)+'d'; }
 function ssTargetPicker(st){
-  const o=(v,t)=>'<option value="'+v+'"'+(st.ssTarget===v?' selected':'')+'>'+t+'</option>';
-  return '<label class="hint">Plan on <select onchange="planSave(\'ssTarget\',this.value)" style="padding:6px">'+o('current','Your current share of the pie')+o('fair','A fair share (pie ÷ sellers)')+o('custom','A custom % of the pie')+'</select></label>'
-    +(st.ssTarget==='custom'?planNum('ssPct','% of pie',st):'');
+  const o=(v,t)=>'<option value="'+v+'"'+(st.ssMode===v?' selected':'')+'>'+t+'</option>';
+  return '<label class="hint">Plan on <select onchange="planSave(\'ssMode\',this.value)" style="padding:6px">'+o('fair','A fair share (pie ÷ sellers)')+o('current','Your current share of the pie')+o('custom','A custom % of the pie')+'</select></label>'
+    +(st.ssMode==='custom'?planNum('ssPct','% of pie',st):'');
 }
 function planAsOf(d){
   const f=x=>x?new Date(x).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'never';
@@ -2829,6 +2834,7 @@ function renderOrders(boxId, mode){
       const t=b[c.asin]; if(!t) continue;
       t.perDay+=perDay*c.per; t.atAmz+=l.atAmazon*c.per; t.way+=l.onTheWay*c.per;
       for(const a in (l.ssSellers||{})) if(l.ssSellers[a]!=null) t.sel[a]=(t.sel[a]||0)+l.ssSellers[a]*c.per;
+      if(isSS && l.ourSold!=null) t.pace=(t.pace||0)+l.ourSold/(l.ourDays||30)*c.per;
       if(perDay>0) t.via.push((l.isDuo?'duo ':'single ')+Math.round(perDay*30*c.per)+'/mo ('+planSrcNote(l,dm)+')');
     }
   }
@@ -2879,7 +2885,8 @@ function renderOrders(boxId, mode){
             return selCols.map(c=>{ const v=r.sel[c.abbr];
               return '<td style="'+td+';'+(c.isUs?'color:#127a7a;background:#f0f8f8;':'')+(v&&v===top?'font-weight:800':'')+'" title="'+esc(c.name)+'">'+(v==null?'<span class="hint">—</span>':Math.round(v).toLocaleString())+'</td>'; }).join(''); })()
         +'<td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
-        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':r.cover>=365?(r.cover/365).toFixed(1)+' yr':Math.round(r.cover)+'d')+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+fmtDays(r.cover)
+          +(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400;white-space:nowrap" title="At the rate you actually sell it now">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>'
         +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td>'
         +'<td style="'+td+'" title="How long what you have plus this order lasts at this rate">'+(r.lasts==null?'—':r.lasts>=60?(r.lasts/30).toFixed(1)+' mo':Math.round(r.lasts)+'d')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td>'
         +'<td style="'+td+';font-weight:700;color:'+(r.profit==null?'#8a97a6':r.profit<0?'#c0392b':r.profit<3?'#b7791f':'#1e8449')+'" title="'+(r.price!=null?'Amazon price $'+r.price.toFixed(2)+(r.profitEst?' · fees estimated (15% referral)':''):'Sold only in duos — no single price')+'">'+(r.profit==null?'—':money(r.profit))+'</td>'
@@ -2892,7 +2899,7 @@ function renderOrders(boxId, mode){
     +idle.map(r=>esc(String(r.name||r.asin))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
   h+='</div>';
   h+='<div class="box hint"><b>How this is calculated.</b><br>'
-    +(isSS?'• <b>Smart Scout demand</b> per listing = the pie Amazon leaves (SmartScout monthly units × (1 − Amazon\'s Buy Box share)) × the share you picked above. <b>Your current share</b> = your own sales; where you sold none it plans on half a fair share. <b>Fair share</b> = pie ÷ the third-party FBA sellers. Listings SmartScout doesn\'t cover fall back to your sales / Keepa. Upload fresh files in Admin → Smart Scout.<br>'
+    +(isSS?'• <b>Smart Scout demand</b> per listing = the pie Amazon leaves (SmartScout monthly units × (1 − Amazon\'s Buy Box share)) × the share you picked above. <b>Fair share</b> (default) = pie ÷ the third-party FBA sellers — what you can sell once you win your piece; "at your pace" under Days covered shows how long the stock lasts at what you sell now. <b>Your current share</b> = your own sales; where you sold none it plans on half a fair share. Amazon\'s share is capped by the sellers\' own Buy Box %: Amazon can\'t hold more than they leave. Listings SmartScout doesn\'t cover fall back to your sales / Keepa. Upload fresh files in Admin → Smart Scout.<br>'
       +(selCols.length?'• <b>'+selCols.map(c=>esc(c.abbr)).join(', ')+'</b> = what each seller sells of the bottle per month (listing sales × their Buy Box %, singles and duos counted as bottles; '+selCols.map(c=>esc(c.abbr)+' = '+esc(c.name)).join(', ')+'). The biggest seller on each row is bold; "—" = that seller\'s file doesn\'t list it.<br>':'• Upload the sellers\' "Offers" files in Admin → Smart Scout to compare what each seller sells here.<br>'):'')
     +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity). Where you had none, Keepa\'s monthly sales for the whole listing × <b>your share</b>: measured from your sales when possible; otherwise <b>your own Buy Box %</b> over the last 90 days (Keepa, matched to your seller id); if you won none, the Buy Box Amazon doesn\'t win split between the third-party sellers who won it, you included (e.g. Amazon 95%, 3 others + you → ~1.25%). The small print under each bottle shows the share used.<br>'
     +'• Orders plan on <b>'+(Math.round(pf*100))+'%</b> of those expected sales, to stay conservative — change it above.<br>'
@@ -3066,7 +3073,7 @@ function renderSmartScout(){
       const fairPct=1/r.pie.sellers3P, sc=r.share==null?'#8a97a6':r.share>=fairPct?'#1e8449':r.share>=fairPct/2?'#b7791f':'#c0392b';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+esc(r.title||r.asin)+'<div class="hint">'+esc(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
         +'<td style="'+td+'">'+n(r.pie.units)+'</td>'
-        +'<td style="'+td+'" title="'+(r.pie.amazonSrc==='keepa'?'Keepa 90-day Buy Box %':'Estimated: SmartScout Amazon in-stock rate × 95%')+'">'+Math.round(r.pie.amazonPct)+'%<div class="hint">'+(r.pie.amazonSrc==='keepa'?'Keepa 90d':'est.')+'</div></td>'
+        +'<td style="'+td+'" title="'+(r.pie.amazonSrc==='keepa'?'Keepa 90-day Buy Box %':r.pie.amazonSrc==='sellers'?'What the sellers\' Buy Box % leave (seller files)':'Estimated: SmartScout Amazon in-stock rate × 95%')+'">'+Math.round(r.pie.amazonPct)+'%<div class="hint">'+(r.pie.amazonSrc==='keepa'?'Keepa 90d':r.pie.amazonSrc==='sellers'?'from sellers':'est.')+'</div></td>'
         +'<td style="'+td+';font-weight:700">'+n(r.pie.pie)+'</td><td style="'+td+'">'+r.pie.sellers3P+'</td><td style="'+td+'">'+n(r.pie.fair)+'</td>'
         +'<td style="'+td+';color:#127a7a;font-weight:700">'+(r.ourMonthly==null?'—':n(r.ours))+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+sc+'">'+pct(r.share)+'<div class="hint">fair '+pct(fairPct)+'</div></td>'
