@@ -367,7 +367,7 @@
         <option value="notinplan">Not in shipment plan yet</option>
         <option value="inplan">Already in shipment plan</option>
       </select>
-      <span class="viewtoggle" id="vt_pp"><button onclick="setView('pp',false)">Compact</button><button onclick="setView('pp',true)">Big</button></span>
+      <span class="viewtoggle" id="vt_pp"><button onclick="setPpList(false);setView('pp',false)">Compact</button><button onclick="setPpList(false);setView('pp',true)">Big</button><button onclick="setPpList(true)" title="One tight row per item — best on small screens like the Surface">List</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
     <button class="action full" onclick="showPickList()" style="margin-bottom:12px;background:#1a2b4a">🗺 Pick list — walk the racks in order</button>
@@ -3739,6 +3739,7 @@ function renderPendingPrep(){
     }
   });
   let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
+  if(ppList()){ b.innerHTML=h+ppListRows(items); updateElapsed(); return; }
   // Default view only: divider after the last in-progress card.
   const showDivider=(ppSort==='active_first') && items.some(x=>x.claimed_by) && items.some(x=>!x.claimed_by);
   const lastActiveIdx=showDivider ? items.map(x=>!!x.claimed_by).lastIndexOf(true) : -1;
@@ -3801,6 +3802,34 @@ function renderPendingPrep(){
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
   b.innerHTML=h;
   updateElapsed();
+}
+// List view rows: photo, name, spot, ASIN/FNSKU, qty, In plan, and the same
+// Start / Finish / Release / edit / print actions as the cards.
+function ppListRows(items){
+  const td='padding:6px 8px;border-top:1px solid #eef2f6;vertical-align:middle';
+  const copy=(v,label)=>v?'<span onclick="copyText(\''+esc(v)+'\',this)" title="Copy '+label+'" style="cursor:pointer;font-family:monospace;font-weight:700;color:#2563a8;background:#eef4fb;border-radius:4px;padding:1px 5px">'+esc(v)+'</span>':'';
+  return '<div class="box" style="padding:6px 8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+    +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td><td style="padding:4px 8px">Item</td><td style="padding:4px 8px;text-align:right">Qty</td><td style="padding:4px 8px">Plan</td><td style="padding:4px 8px">Status</td></tr>'
+    +items.map(x=>{
+      const claimed=!!x.claimed_by;
+      const crew=(x.crew&&x.crew.length)?x.crew:(x.claimed_by?[{employee:x.claimed_by,since:x.claimed_at}]:[]);
+      const safeName=String(x.name).replace(/'/g,"\\'").replace(/"/g,'');
+      const img=x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'" style="width:46px;height:46px;object-fit:contain;border-radius:6px;background:#f4f6f9">':'<div style="width:46px;height:46px;border-radius:6px;background:#f4f6f9;display:flex;align-items:center;justify-content:center">📦</div>';
+      const loc=x.is_duo?'':'<span style="background:'+(x.location?'#1a2b4a':'#fdeceb')+';color:'+(x.location?'#fff':'#c0392b')+';border-radius:4px;padding:1px 6px;font-weight:800;font-size:12px">📍 '+esc(x.location||'none')+'</span>';
+      const comps=(x.is_duo&&x.components&&x.components.length)?'<div style="font-size:11.5px;margin-top:3px;color:#c0392b"><b>Grab '+x.qty+' each:</b> '
+        +x.components.map(c=>'<span style="white-space:nowrap;color:#1f2733">📍<b>'+esc(c.location||'none')+'</b> '+esc(String(c.name||c.asin).slice(0,34))+' <b style="color:'+(c.onhand>=x.qty?'#1e8449':'#c0392b')+'">('+c.onhand+')</b></span>').join(' · ')+'</div>':'';
+      const status=claimed
+        ? '<div style="font-size:12px;color:#1e8449;font-weight:800;white-space:nowrap">🔨 '+esc(crew.map(c=>c.employee).join(' + '))+' · <b class="elapsed" data-since="'+(x.claimed_at||'')+'">—</b></div>'
+          +'<div style="display:flex;gap:6px;margin-top:4px"><button onclick="finishPrepJob('+x.id+',\''+esc(safeName)+'\','+x.qty+','+(!!x.is_duo)+')" style="padding:6px 10px;font-size:12px;font-weight:800;background:#127a7a;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">✅ Finished</button>'
+          +'<button onclick="releasePrepJob('+x.id+')" style="padding:6px 10px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Release</button></div>'
+        : '<button onclick="claimPrepJob('+x.id+')" style="padding:7px 12px;font-size:12px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">▶ Start prep</button>';
+      return '<tr style="'+(claimed?'background:#f0faf4':'')+'"><td style="'+td+';width:54px">'+img+'</td>'
+        +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
+          +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
+        +'<td style="'+td+';text-align:right;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
+        +'<td style="'+td+'"><input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer"></td>'
+        +'<td style="'+td+'">'+status+'</td></tr>';
+    }).join('')+'</table></div>';
 }
 // live "elapsed" counters on claimed prep jobs
 function updateElapsed(){
@@ -6820,10 +6849,17 @@ function setView(which, big){
   localStorage_set('viewBig_'+which, big?'1':'0'); paintViewToggles();
   if(which==='onhand') renderOnhand(); else renderPendingPrep();
 }
+// Pending Prep "List" view: one tight row per work order, for small
+// screens (the owner's Surface, where both card views ran one card per row).
+// Per device, like Compact/Big.
+function ppList(){ return localStorage_get('ppList')==='1'; }
+function setPpList(on){ localStorage_set('ppList', on?'1':'0'); paintViewToggles(); renderPendingPrep(); }
 function paintViewToggles(){
   for(const w of ['onhand','pp']){
     const el=document.getElementById('vt_'+w); if(!el) continue;
-    const b=viewBig(w); el.children[0].classList.toggle('on',!b); el.children[1].classList.toggle('on',b);
+    const b=viewBig(w), L=w==='pp'&&ppList();
+    el.children[0].classList.toggle('on',!b&&!L); el.children[1].classList.toggle('on',b&&!L);
+    if(el.children[2]) el.children[2].classList.toggle('on',L);
   }
   const pb=document.getElementById('pendingPrepBody'); if(pb) pb.classList.toggle('big', viewBig('pp'));
 }
