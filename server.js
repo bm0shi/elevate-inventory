@@ -401,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'orders-listings-0925';
+const BUILD_ID = 'ss-picks-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -577,6 +577,12 @@ async function initDb() {
       mapped JSONB,
       rows JSONB,
       uploaded_at TIMESTAMPTZ DEFAULT now()
+    );
+    -- Products the owner ticked on Smart Scout Orders, so On Hand can filter
+    -- to them ("Smart Scout selections") for prepping. Just a list of ASINs.
+    CREATE TABLE IF NOT EXISTS inv_ss_picks (
+      asin TEXT PRIMARY KEY,
+      picked_at TIMESTAMPTZ DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
@@ -5097,6 +5103,26 @@ async function ssSellerFiles() {
   for (const sl of list) { seen[sl.abbr] = (seen[sl.abbr] || 0) + 1; if (seen[sl.abbr] > 1) sl.abbr += seen[sl.abbr]; }
   return list;
 }
+
+// Smart Scout selections: ticked on Smart Scout Orders (owner), read by the
+// On Hand filter (warehouse). Only ASINs — no sales or cost data — so the
+// warehouse login is enough, and clearing them from On Hand works for staff.
+app.get('/api/ss-picks', auth, async (req, res) => {
+  const r = await pool.query('SELECT asin FROM inv_ss_picks ORDER BY picked_at');
+  res.json({ ok: true, asins: r.rows.map(x => x.asin) });
+});
+app.post('/api/ss-picks', auth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{10}$/.test(asin)) return res.status(400).json({ ok: false, error: 'Bad ASIN' });
+  if (req.body.on === false) await pool.query('DELETE FROM inv_ss_picks WHERE asin=$1', [asin]);
+  else await pool.query('INSERT INTO inv_ss_picks(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [asin]);
+  const r = await pool.query('SELECT asin FROM inv_ss_picks ORDER BY picked_at');
+  res.json({ ok: true, asins: r.rows.map(x => x.asin) });
+});
+app.delete('/api/ss-picks', auth, async (req, res) => {
+  const r = await pool.query('DELETE FROM inv_ss_picks');
+  res.json({ ok: true, cleared: r.rowCount, asins: [] });
+});
 
 // Mark which seller is us (from the Sellers table).
 app.post('/api/smartscout/us', ownerAuth, async (req, res) => {
