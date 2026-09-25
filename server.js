@@ -20,7 +20,8 @@ const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv } = r
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
-const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, MAX_QTY, badQty } = require('./lib/codes');
+const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
+const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 // Parse + persist.
@@ -401,7 +402,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'value-fix-0926';
+const BUILD_ID = 'item-locations-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -939,6 +940,11 @@ async function initDb() {
     console.log('[Inventory] Cosmo-map verification columns ready.');
   } catch(e) { console.error('cosmo verification migration skipped:', e.message); }
 
+  // The owner's rack layout (Admin → Item Locations), if one was saved.
+  try {
+    const rl = await pool.query("SELECT data FROM inv_cache WHERE cache_key='rack_layout'");
+    if (rl.rows.length && rl.rows[0].data) console.log('[Inventory] rack layout:', JSON.stringify(setRackLayout(rl.rows[0].data)));
+  } catch (e) { console.error('[Inventory] rack layout load failed (using default):', e.message); }
   console.log('[Inventory] DB ready.');
 }
 
@@ -1703,9 +1709,86 @@ app.post('/api/location', auth, async (req, res) => {
     return res.json({ ok: true, location: null });
   }
   const loc = normLoc(location);
-  if (!loc) return res.status(400).json({ error: 'Invalid location — use A-1..A-20 or B-1..B-20.' });
+  if (!loc) return res.status(400).json({ error: 'Invalid location — not on the rack map (' + Object.entries(LOC_ROWS).map(([r, n]) => r + '-1..' + r + '-' + n).join(', ') + ').' });
   await pool.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [loc, asin]);
   res.json({ ok: true, location: loc });
+});
+
+// ============================================================
+// ITEM LOCATIONS (Admin → Item Locations): every bottle with its pallet
+// spot, the rack layout, and suggested spots that keep duo partners side by
+// side (lib/locations.js). Locations aren't money data, so viewing works
+// with the warehouse login; changing the layout, applying a batch of
+// suggestions or clearing everything is owner-only.
+// ============================================================
+async function locationItems() {
+  // Physical bottles: everything that isn't a duo listing, plus duo listings
+  // that hold stock of their own (bought as a set).
+  const r = await pool.query(`
+    SELECT p.asin, p.sku, p.name, p.image, p.location,
+           COALESCE(s.onhand,0)::int AS onhand, COALESCE(s.transit,0)::int AS transit,
+           EXISTS (SELECT 1 FROM inv_bundles b WHERE b.bundle_asin = p.asin) AS is_bundle
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin`);
+  const items = r.rows.filter(x => !x.is_bundle || x.onhand > 0);
+  const b = await pool.query(`SELECT b.bundle_asin, b.component_asin, p.name AS bundle_name
+    FROM inv_bundles b LEFT JOIN inv_products p ON p.asin = b.bundle_asin`);
+  const duos = {};
+  for (const x of b.rows) (duos[x.bundle_asin] = duos[x.bundle_asin] || { bundle: x.bundle_asin, name: x.bundle_name, components: [] }).components.push(x.component_asin);
+  return { items, duos: Object.values(duos) };
+}
+
+app.get('/api/item-locations', auth, async (req, res) => {
+  const { items, duos } = await locationItems();
+  const by = {}; for (const it of items) by[it.asin] = it;
+  const partners = {};
+  for (const d of duos) for (const a of d.components) for (const o of d.components) if (a !== o && by[o])
+    (partners[a] = partners[a] || []).push({ asin: o, name: by[o].name, location: by[o].location, duo: d.bundle, duoName: d.name });
+  const slotSet = new Set(LOCATION_SLOTS);
+  const list = items.map(it => ({ asin: it.asin, sku: it.sku, name: it.name, image: it.image, location: it.location,
+    onRack: !it.location || slotSet.has(it.location), onhand: it.onhand, transit: it.transit, partners: partners[it.asin] || [] }));
+  list.sort((a, b) => slotKey(a.location) - slotKey(b.location) || String(a.name).localeCompare(String(b.name)));
+  res.json({ ok: true, rows: { ...LOC_ROWS }, slots: LOCATION_SLOTS, items: list });
+});
+
+// Suggested spots for bottles without one. Nothing is saved here.
+app.post('/api/item-locations/suggest', auth, async (req, res) => {
+  const onlyStocked = !(req.body && req.body.onlyStocked === false);
+  const { items, duos } = await locationItems();
+  const slotSet = new Set(LOCATION_SLOTS);
+  // Keep existing spots (even if off the new map they stay as they are);
+  // only bottles without a spot on the map get a suggestion.
+  const pool_ = items.filter(it => (it.location && slotSet.has(it.location)) || !onlyStocked || it.onhand > 0 || it.transit > 0)
+    .map(it => ({ asin: it.asin, name: it.name, location: it.location && slotSet.has(it.location) ? it.location : null }));
+  const plan = planLocations(pool_, duos, LOCATION_SLOTS);
+  const by = {}; for (const it of items) by[it.asin] = it;
+  res.json({ ok: true, ...plan, unplacedNames: plan.unplaced.map(a => (by[a] && by[a].name) || a) });
+});
+
+app.post('/api/item-locations/apply', ownerAuth, async (req, res) => {
+  const list = Array.isArray(req.body && req.body.assignments) ? req.body.assignments : [];
+  if (!list.length) return res.status(400).json({ ok: false, error: 'Nothing to apply.' });
+  const bad = list.filter(x => !x || !x.asin || !normLoc(x.location));
+  if (bad.length) return res.status(400).json({ ok: false, error: bad.length + ' location(s) aren\'t on the rack map.' });
+  const n = await withTx(async (db) => {
+    let c = 0;
+    for (const x of list) { const u = await db.query('UPDATE inv_products SET location=$1 WHERE asin=$2', [normLoc(x.location), String(x.asin)]); c += u.rowCount; }
+    return c;
+  });
+  res.json({ ok: true, applied: n });
+});
+
+app.post('/api/item-locations/clear', ownerAuth, async (req, res) => {
+  const r = await pool.query('UPDATE inv_products SET location=NULL WHERE location IS NOT NULL');
+  res.json({ ok: true, cleared: r.rowCount });
+});
+
+app.post('/api/rack-layout', ownerAuth, async (req, res) => {
+  let rows;
+  try { rows = setRackLayout(req.body && req.body.rows); }
+  catch (e) { return res.status(400).json({ ok: false, error: e.message }); }
+  await saveCache('rack_layout', rows);
+  const off = await pool.query('SELECT COUNT(*)::int AS n FROM inv_products WHERE location IS NOT NULL AND NOT (location = ANY($1::text[]))', [LOCATION_SLOTS]);
+  res.json({ ok: true, rows, slots: LOCATION_SLOTS.length, offMap: off.rows[0].n });
 });
 
 // Scan an item against an open invoice -> increment received for that line
