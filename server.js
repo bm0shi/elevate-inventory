@@ -19,6 +19,7 @@ const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = requ
 const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare } = require('./lib/demand');
+const smartscout = require('./lib/smartscout');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, MAX_QTY, badQty } = require('./lib/codes');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -400,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'our-buybox-0925';
+const BUILD_ID = 'smartscout-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -562,6 +563,20 @@ async function initDb() {
       counted_by TEXT,
       lines JSONB,
       created_at TIMESTAMPTZ DEFAULT now()
+    );
+    -- SmartScout CSV exports uploaded in Admin → Smart Scout (lib/smartscout.js).
+    -- kind 'brand' = a brand's product list; 'seller' = one seller's (is_us
+    -- marks our own). Parsed rows are kept, so the latest upload per ASIN wins.
+    CREATE TABLE IF NOT EXISTS inv_ss_uploads (
+      id SERIAL PRIMARY KEY,
+      kind TEXT NOT NULL,
+      seller TEXT,
+      is_us BOOLEAN DEFAULT false,
+      filename TEXT,
+      row_count INTEGER,
+      mapped JSONB,
+      rows JSONB,
+      uploaded_at TIMESTAMPTZ DEFAULT now()
     );
     CREATE TABLE IF NOT EXISTS inv_processed_shipments (
       shipment_id TEXT PRIMARY KEY,
@@ -4952,6 +4967,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   const prepped = {}; for (const r of (await pool.query('SELECT asin, qty FROM inv_prepped')).rows) prepped[r.asin] = r.qty;
   const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep GROUP BY asin')).rows) pending[r.asin] = r.q;
   const cosmo = {}; for (const r of (await pool.query('SELECT cosmo_num, asin FROM inv_cosmo_map WHERE asin IS NOT NULL')).rows) (cosmo[r.asin] = cosmo[r.asin] || []).push(r.cosmo_num);
+  const ssBrand = await ssBrandRows();
 
   // Bottles committed to prep (single work orders + prepped, and duos × per)
   const committed = {};
@@ -4978,6 +4994,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       shareEst: est.share, shareSrc: est.src, amazonBuyBoxPct: est.amazonPct, sellers3P: est.sellers3P, ourBuyBoxPct: est.ourPct,
       shareMeasured: measuredShare(ourSold != null ? ourSold * 30 / velDays : null, m.monthlySold),
       amazonOOS: m.amazonOOS ?? null,
+      ss: ssListing(ssBrand[p.asin], m),
     });
     if (!isDuo) bottles.push({
       asin: p.asin, name: p.name, image: p.image, location: p.location, onhand: p.onhand, transit: p.transit,
@@ -4987,6 +5004,97 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   }
   res.json({ ok: true, listings, bottles,
     sellerId, asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
+});
+
+// ============================================================
+// SMART SCOUT — owner uploads SmartScout CSV exports (brand and seller), and
+// the Smart Scout screens show the pie Amazon leaves and our slice of it.
+// Parsing and the pie math live in lib/smartscout.js. Owner only: it's
+// sales data, ours and our competitors'.
+// ============================================================
+async function ssBrandRows() {
+  const r = await pool.query("SELECT id, uploaded_at, rows FROM inv_ss_uploads WHERE kind='brand' ORDER BY uploaded_at, id");
+  return smartscout.mergeRows(r.rows);
+}
+function ssListing(ss, m) {
+  if (!ss) return null;
+  const pie = smartscout.pieFor(ss, m);
+  if (!pie) return null;
+  return Object.assign(pie, { price: ss.price, fbaSellers: ss.fbaSellers, amazonInStock: ss.amazonInStock,
+    newSellerShare: ss.newSellerShare, growth1m: ss.growth1m, refreshed: ss.refreshed, uploadedAt: ss.uploadedAt });
+}
+
+app.post('/api/smartscout/upload', ownerAuth, upload.array('file', 20), async (req, res) => {
+  const kind = String(req.body.kind || '');
+  if (kind !== 'brand' && kind !== 'seller') return res.status(400).json({ ok: false, error: 'Pick brand or seller.' });
+  const seller = String(req.body.seller || '').trim().slice(0, 80);
+  const isUs = String(req.body.isUs) === 'true';
+  if (kind === 'seller' && !seller) return res.status(400).json({ ok: false, error: 'Type the seller name for a seller file.' });
+  if (!req.files || !req.files.length) return res.status(400).json({ ok: false, error: 'No file attached.' });
+  const results = [];
+  for (const f of req.files) {
+    try {
+      const p = smartscout.parseSmartScout(f.buffer.toString('utf8'));
+      if (!p.rows.length) throw new Error('No product rows found.');
+      const ins = await pool.query(
+        'INSERT INTO inv_ss_uploads(kind, seller, is_us, filename, row_count, mapped, rows) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+        [kind, kind === 'seller' ? seller : null, kind === 'seller' && isUs, f.originalname, p.rows.length, JSON.stringify(p.mapped), JSON.stringify(p.rows)]);
+      const brands = [...new Set(p.rows.map(r => r.brand).filter(Boolean))];
+      results.push({ file: f.originalname, ok: true, id: ins.rows[0].id, rows: p.rows.length, skipped: p.skipped, brands, columns: Object.keys(p.mapped) });
+    } catch (e) {
+      results.push({ file: f.originalname, ok: false, error: e.message });
+    }
+  }
+  res.json({ ok: results.every(r => r.ok), results });
+});
+
+app.get('/api/smartscout/uploads', ownerAuth, async (req, res) => {
+  const r = await pool.query(`SELECT id, kind, seller, is_us, filename, row_count, mapped, uploaded_at,
+      (SELECT array_agg(DISTINCT x->>'brand') FROM jsonb_array_elements(rows) x) AS brands
+    FROM inv_ss_uploads ORDER BY uploaded_at DESC, id DESC`);
+  res.json({ ok: true, uploads: r.rows });
+});
+
+app.delete('/api/smartscout/uploads/:id', ownerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!(id > 0)) return res.status(400).json({ ok: false, error: 'Bad id' });
+  const r = await pool.query('DELETE FROM inv_ss_uploads WHERE id=$1', [id]);
+  res.json({ ok: r.rowCount === 1 });
+});
+
+// Everything the pie screen needs: every brand listing with its pie, which
+// ones we carry, our sales per listing, and each seller file's listings.
+app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
+  const cache = async (k) => { const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [k]); return r.rows[0] || null; };
+  const [mktC, velC] = await Promise.all([cache('market_data'), cache('velocity')]);
+  const mkt = {}; for (const m of ((mktC && mktC.data) || [])) mkt[m.asin] = m;
+  const velDays = (velC && velC.data && velC.data.days) || 30;
+  const velBySku = {}, velByAsin = {};
+  for (const v of ((velC && velC.data && velC.data.items) || [])) {
+    if (v.sku) velBySku[v.sku] = v;
+    if (v.asin) velByAsin[v.asin] = (velByAsin[v.asin] || 0) + (v.sold || 0);
+  }
+  const prods = (await pool.query('SELECT asin, sku, name, image FROM inv_products')).rows;
+  const ours = {};
+  for (const p of prods) {
+    const sold = (p.sku && velBySku[p.sku] ? velBySku[p.sku].sold : null) ?? (velByAsin[p.asin] ?? null);
+    ours[p.asin] = { name: p.name, image: p.image, monthly: sold != null ? sold * 30 / velDays : null };
+  }
+  const brand = await ssBrandRows();
+  const listings = Object.values(brand).map(ss => ({
+    asin: ss.asin, title: ss.title, brand: ss.brand, subcategory: ss.subcategory, parentAsin: ss.parentAsin,
+    carried: !!ours[ss.asin], ourMonthly: ours[ss.asin] ? ours[ss.asin].monthly : null,
+    pie: ssListing(ss, mkt[ss.asin]),
+  }));
+  const sel = await pool.query("SELECT id, seller, is_us, filename, uploaded_at, rows FROM inv_ss_uploads WHERE kind='seller' ORDER BY uploaded_at, id");
+  const sellers = {};
+  for (const u of sel.rows) {
+    // Latest file per seller wins.
+    sellers[u.seller] = { seller: u.seller, isUs: u.is_us, filename: u.filename, uploadedAt: u.uploaded_at,
+      rows: (u.rows || []).map(r => ({ asin: r.asin, units: r.sellerUnits ?? null, revenue: r.sellerRevenue ?? null, buyBoxPct: r.buyBoxPct ?? null, listingUnits: r.units ?? null })) };
+  }
+  res.json({ ok: true, listings, sellers: Object.values(sellers), salesDays: velDays,
+    asOf: { keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at } });
 });
 
 // "Check with Amazon" for one product: ask Amazon about its SKUs right now
