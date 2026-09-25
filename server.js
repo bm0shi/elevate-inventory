@@ -401,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'net-breakdown-0925';
+const BUILD_ID = 'simple-net-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5003,6 +5003,8 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       amazonOOS: m.amazonOOS ?? null,
       ss: ssListing(ssBrand[p.asin], m, ssSellers, true),
       // Each seller's units / month on this listing, by short label (US, Hyp…).
+      // Our own offer price from our latest SmartScout seller file.
+      ourPrice: (() => { const us = ssSellers.find(sl => sl.isUs); const r = us && us.by[p.asin]; return r && r.price != null ? r.price : null; })(),
       ssSellers: ssSellers.reduce((o, sl) => {
         const r = sl.by[p.asin];
         if (r) o[sl.abbr] = smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, r);
