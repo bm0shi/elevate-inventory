@@ -2633,7 +2633,7 @@ function shipBuilderDownload(){
 // Settings are remembered on this device.
 // ============================================================
 let _plan=null;
-const PLAN_DEFAULTS={ basis:'ours', target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1, minUnitCost:0, minProfit:'', ordSort:'cover', ordDir:1 };
+const PLAN_DEFAULTS={ basis:'ours', planPct:80, target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1, minUnitCost:0, minProfit:'', ordSort:'cover', ordDir:1 };
 function planSet(){ try{ return Object.assign({}, PLAN_DEFAULTS, JSON.parse(localStorage_get('planSettings')||'{}')); }catch(e){ return Object.assign({},PLAN_DEFAULTS); } }
 function planSave(k,v){ const st=planSet(); st[k]=v; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
 function loadPlan(view){
@@ -2645,15 +2645,44 @@ function loadPlan(view){
 }
 // Units per day for one listing, on the chosen basis.
 //  ours  = our own sales over the last velocity window (falls back to Keepa when we sold none)
-//  keepa = Keepa "bought past month" for the listing, halved if Amazon holds the Buy Box
+//  keepa = Keepa "bought past month" for the WHOLE listing × our share of it
 //  max   = the higher of the two (useful when we were out of stock and our sales look low)
+// Keepa counts every seller's sales, Amazon's included, so it is always cut
+// down to our share: measured (our sales ÷ Keepa) when we have it, else the
+// Buy Box Amazon doesn't win split between the third-party sellers
+// (lib/demand.js). Halving it when Amazon held the Buy Box suggested 8,000+
+// Tea Tree shampoo on a listing where Amazon wins ~95%.
+const PLAN_UNKNOWN_SHARE=0.1;
+function planShare(l){
+  if(l.shareMeasured!=null) return {share:l.shareMeasured, how:'measured'};
+  if(l.shareEst!=null) return {share:l.shareEst, how:l.shareSrc==='buybox'?'buybox':'guess'};
+  return {share:PLAN_UNKNOWN_SHARE, how:'unknown'};
+}
 function planDemand(l, basis){
   const ours = l.ourSold!=null ? l.ourSold/(l.ourDays||30) : null;
-  const keepa = l.keepaMonthly!=null ? (l.keepaMonthly/30)*(l.amazonHasBuyBox?0.5:1) : null;
-  if(basis==='keepa') return {perDay:keepa||0, src:keepa!=null?'keepa':'—'};
-  if(basis==='max') return (ours||0)>=(keepa||0) ? {perDay:ours||0, src:ours!=null?'ours':'—'} : {perDay:keepa, src:'keepa'};
+  const sh = planShare(l);
+  const keepa = l.keepaMonthly!=null ? (l.keepaMonthly/30)*sh.share : null;
+  const K={perDay:keepa||0, src:keepa!=null?'keepa':'—', share:sh.share, how:sh.how};
+  if(basis==='keepa') return K;
+  if(basis==='max') return (ours||0)>=(keepa||0) ? {perDay:ours||0, src:ours!=null?'ours':'—'} : K;
   if(ours) return {perDay:ours, src:'ours'};
-  return {perDay:keepa||0, src:keepa!=null?'keepa':'—'};
+  return K;
+}
+// One-line "where this number came from", for the hint under Sells / mo.
+function planSrcNote(l, dm){
+  const pct=v=>(v*100<10?+(v*100).toFixed(2):Math.round(v*100))+'%';
+  if(dm.src==='ours'){
+    let t='our sales';
+    if(l.shareMeasured!=null) t+=' · '+pct(l.shareMeasured)+' of listing';
+    if(l.amazonOOS!=null && l.amazonOOS>=20) t+=' · ⚠ Amazon out of stock '+Math.round(l.amazonOOS)+'% of 90d, may run high';
+    return t;
+  }
+  if(dm.src!=='keepa') return '';
+  const mk=(l.keepaMonthly||0).toLocaleString();
+  if(dm.how==='measured') return pct(dm.share)+' of '+mk+' (your measured share)';
+  if(dm.how==='buybox') return 'est. '+pct(dm.share)+' of '+mk+' · Amazon wins '+Math.round(l.amazonBuyBoxPct)+'% BB, '+l.sellers3P+' 3P sellers';
+  if(dm.how==='guess') return 'est. '+pct(dm.share)+' of '+mk+' · '+(l.amazonBuyBoxPct?'Amazon has BB (~'+l.amazonBuyBoxPct+'% assumed), ':'')+l.sellers3P+' 3P sellers · refresh Market Data for real BB %';
+  return 'est. '+pct(dm.share)+' of '+mk+' · no seller data';
 }
 function planAsOf(d){
   const f=x=>x?new Date(x).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'never';
@@ -2661,7 +2690,7 @@ function planAsOf(d){
 }
 function planBasisPicker(st){
   const o=(v,t)=>'<option value="'+v+'"'+(st.basis===v?' selected':'')+'>'+t+'</option>';
-  return '<label class="hint">Demand from <select onchange="planSave(\'basis\',this.value)" style="padding:6px">'+o('ours','Our sales (Keepa if none)')+o('keepa','Keepa market (½ if Amazon has Buy Box)')+o('max','Higher of the two')+'</select></label>';
+  return '<label class="hint">Demand from <select onchange="planSave(\'basis\',this.value)" style="padding:6px">'+o('ours','Our sales (Keepa if none)')+o('keepa','Keepa market × our share')+o('max','Higher of the two')+'</select></label>';
 }
 function planNum(k,label,st,w){ return '<label class="hint">'+label+' <input type="number" min="0" value="'+st[k]+'" onchange="planSave(\''+k+'\',Math.max(0,parseInt(this.value)||0))" style="width:'+(w||60)+'px;padding:6px"></label>'; }
 function renderPlan(view){ if(!_plan) return; if(view==='orders') renderOrders(); else renderSendNext(); }
@@ -2703,7 +2732,7 @@ function renderSendNext(){
     +rows.filter(r=>r.dm.perDay>0).map(r=>{
       const c=r.cover, cc=c==null?'#8a97a6':c<30?'#c0392b':c<st.target?'#b7791f':'#1e8449';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b style="color:'+(r.l.isDuo?'#c0392b':'#1a2b4a')+'">'+(r.l.isDuo?'DUO':'SINGLE')+'</b> '+esc(String(r.l.name||r.l.asin))+'<div class="hint">'+esc(r.l.asin)+(r.l.sku?' · '+esc(r.l.sku):'')+'</div></td>'
-        +'<td style="'+td+'">'+(r.dm.perDay?Math.round(r.dm.perDay*30).toLocaleString():'—')+'<div class="hint">'+(r.dm.src==='ours'?'our sales':r.dm.src==='keepa'?'Keepa':'')+'</div></td>'
+        +'<td style="'+td+'">'+(r.dm.perDay?Math.round(r.dm.perDay*30).toLocaleString():'—')+'<div class="hint" style="max-width:220px;margin-left:auto">'+esc(planSrcNote(r.l,r.dm))+'</div></td>'
         +'<td style="'+td+'">'+r.l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+r.l.onTheWay+'</td><td style="'+td+';color:#7a4fb5">'+(r.l.queued||'')+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(c==null?'—':Math.round(c)+'d')+'</td><td style="'+td+'">'+(r.need||'')+'</td>'
         +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.send?'#127a7a':'#8a97a6')+'">'+(r.send||'—')+(r.short>0?'<div class="hint" style="color:#c0392b">short '+r.short+'</div>':'')+'</td></tr>';
@@ -2712,7 +2741,7 @@ function renderSendNext(){
   if(noDemand.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">No sales data yet ('+noDemand.length+') — stock is at Amazon or on the way, but there\'s nothing to plan from</summary><div class="hint" style="margin-top:4px">'
     +noDemand.map(r=>esc(String(r.l.name||r.l.asin))+' ('+r.l.atAmazon+' at Amazon, '+r.l.onTheWay+' on the way)').join(' · ')+'</div></details>';
   h+='</div>';
-  h+='<div class="box hint"><b>How this is calculated.</b> Sells / mo: your own sales per listing over the last '+d.asOf.salesDays+' days (Admin → Velocity), or Keepa when you had none — change it above. '
+  h+='<div class="box hint"><b>How this is calculated.</b> Sells / mo: your own sales per listing over the last '+d.asOf.salesDays+' days (Admin → Velocity), or, when you had none, Keepa\'s sales for the whole listing × your share of the Buy Box (what Amazon doesn\'t win, split between the third-party sellers) — the note under each number shows the share used. '
     +'Days covered = (at Amazon + on the way + already in prep) ÷ daily sales. Needs = what reaches '+st.target+' days. Send = Needs, limited by free bottles '
     +'(on hand minus work orders and prepped); a bottle that\'s in a single and in duos goes to the most urgent listing first. "Short" = what you\'d need to buy. '
     +'Refresh the inputs with Sync with Amazon (stock), Velocity (our sales) and Market Data (Keepa).</div>';
@@ -2744,12 +2773,15 @@ function renderOrders(){
       t.profitEst=l.referralPct==null||l.pickPackFee==null;
     }
   }
+  // Buying is where over-estimating costs money, so orders plan on only
+  // planPct of expected sales (default 80%).
+  const pf=Math.min(100,Math.max(1,Number(st.planPct)||100))/100;
   for(const l of d.listings){
-    const dm=planDemand(l, st.basis);
+    const dm=planDemand(l, st.basis), perDay=dm.perDay*pf;
     for(const c of l.components){
       const t=b[c.asin]; if(!t) continue;
-      t.perDay+=dm.perDay*c.per; t.atAmz+=l.atAmazon*c.per; t.way+=l.onTheWay*c.per;
-      if(dm.perDay>0) t.via.push((l.isDuo?'duo ':'single ')+Math.round(dm.perDay*30*c.per)+'/mo');
+      t.perDay+=perDay*c.per; t.atAmz+=l.atAmazon*c.per; t.way+=l.onTheWay*c.per;
+      if(perDay>0) t.via.push((l.isDuo?'duo ':'single ')+Math.round(perDay*30*c.per)+'/mo ('+planSrcNote(l,dm)+')');
     }
   }
   const rows=Object.values(b).map(x=>{
@@ -2757,7 +2789,8 @@ function renderOrders(){
     const cover=x.perDay>0?have/x.perDay:null;
     let qty=x.perDay>0?Math.max(0,Math.ceil(x.perDay*horizon-have)):0;
     if(qty && st.packOf>1) qty=Math.ceil(qty/st.packOf)*st.packOf;
-    return Object.assign(x,{have,cover,qty,cost:x.unitCost!=null?qty*x.unitCost:null});
+    const lasts=x.perDay>0?(have+qty)/x.perDay:null;
+    return Object.assign(x,{have,cover,qty,lasts,cost:x.unitCost!=null?qty*x.unitCost:null});
   }).filter(x=>x.perDay>0||x.have>0);
   // Filters: hide cheap or unprofitable bottles. Hidden rows leave the total
   // and the download too.
@@ -2768,7 +2801,7 @@ function renderOrders(){
   const shown=rows.filter(r=>!hiddenBy(r));
   // Sort by any column; nulls always last.
   const SORTS={ name:r=>String(r.name||'').toLowerCase(), sold:r=>r.perDay, wh:r=>r.onhand, amz:r=>r.atAmz, way:r=>r.way, cover:r=>r.cover,
-                qty:r=>r.qty, unit:r=>r.unitCost, profit:r=>r.profit, cost:r=>r.cost };
+                qty:r=>r.qty, lasts:r=>r.lasts, unit:r=>r.unitCost, profit:r=>r.profit, cost:r=>r.cost };
   const key=SORTS[st.ordSort]?st.ordSort:'cover', dir=st.ordDir===-1?-1:1, get=SORTS[key];
   shown.sort((a,c)=>{ const x=get(a), y=get(c); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*dir; });
   const rowsAll=rows; 
@@ -2779,22 +2812,23 @@ function renderOrders(){
   let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b style="font-size:16px">🧾 Suggested Orders (CosmoProf)</b>'
     +'<div class="hint">What to buy so every bottle lasts through the '+lead+'-day lead time plus '+st.target+' days. <b>'+units.toLocaleString()+'</b> bottles · <b>'+money(total)+'</b>'+(noCost?' (+'+noCost+' without a cost)':'')+'</div></div>'
     +(units?'<button class="action" onclick="ordersCsv()" style="background:#1a2b4a">⬇ Download order list</button>':'')+'</div>'
-    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">'+planBasisPicker(st)+planNum('target','Target days',st)+planNum('cosmoDays','Cosmoprof delivery days',st)+planNum('prepDays','Prep days',st)+planNum('amazonDays','Amazon check-in days',st)+planNum('packOf','Round up to',st)+'</div>'
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">'+planBasisPicker(st)+planNum('planPct','Plan on % of expected sales',st)+planNum('target','Target days',st)+planNum('cosmoDays','Cosmoprof delivery days',st)+planNum('prepDays','Prep days',st)+planNum('amazonDays','Amazon check-in days',st)+planNum('packOf','Round up to',st)+'</div>'
     +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center;background:#f7f9fb;border-radius:8px;padding:8px 10px"><b class="hint" style="color:#1a2b4a">FILTER</b>'
       +'<label class="hint">Hide unit cost under $<input type="number" min="0" step="0.5" value="'+(st.minUnitCost||'')+'" placeholder="0" onchange="planSave(\'minUnitCost\',Math.max(0,parseFloat(this.value)||0))" style="width:70px;padding:6px"></label>'
       +'<label class="hint">Hide profit / bottle under $<input type="number" step="0.5" value="'+(st.minProfit===''||st.minProfit==null?'':st.minProfit)+'" placeholder="off" onchange="planSave(\'minProfit\',this.value===\'\'?\'\':parseFloat(this.value))" style="width:70px;padding:6px"></label>'
       +(hidden.length?'<span class="hint" style="color:#b7791f"><b>'+hidden.length+'</b> hidden by filters</span>':'')
     +'</div>'
     +'<div class="hint" style="margin-top:6px">'+esc(planAsOf(d))+'</div></div>';
-  h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
-    +[['name','Bottle',0],['sold','Sells / mo',1],['wh','Warehouse',1],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1],['qty','Order',1],['unit','Unit cost',1],['profit','Profit / bottle',1],['cost','Cost',1]]
+  h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
+    +[['name','Bottle',0],['sold','Sells / mo',1],['wh','Warehouse',1],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1],['qty','Order',1],['lasts','Lasts',1],['unit','Unit cost',1],['profit','Profit / bottle',1],['cost','Cost',1]]
       .map(([k,t,right])=>'<td onclick="ordersSort(\''+k+'\')" title="Sort" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(key===k?'color:#1a2b4a;font-weight:900':'')+'">'+t+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
     +shown.filter(r=>r.perDay>0).map(r=>{
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+esc(String(r.name||r.asin))+'<div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+esc(r.asin)+(r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
         +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td><td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':Math.round(r.cover)+'d')+'</td>'
-        +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td>'
+        +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td>'
+        +'<td style="'+td+'" title="How long what you have plus this order lasts at this rate">'+(r.lasts==null?'—':r.lasts>=60?(r.lasts/30).toFixed(1)+' mo':Math.round(r.lasts)+'d')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td>'
         +'<td style="'+td+';font-weight:700;color:'+(r.profit==null?'#8a97a6':r.profit<0?'#c0392b':r.profit<3?'#b7791f':'#1e8449')+'" title="'+(r.price!=null?'Amazon price $'+r.price.toFixed(2)+(r.profitEst?' · fees estimated (15% referral)':''):'Sold only in duos — no single price')+'">'+(r.profit==null?'—':money(r.profit))+'</td>'
         +'<td style="'+td+'">'+(r.qty?money(r.cost):'')+'</td></tr>';
     }).join('')+'</table>';
@@ -2805,10 +2839,12 @@ function renderOrders(){
     +idle.map(r=>esc(String(r.name||r.asin))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
   h+='</div>';
   h+='<div class="box hint"><b>How this is calculated.</b><br>'
-    +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity), or Keepa where you had none — change it above.<br>'
+    +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity). Where you had none, Keepa\'s monthly sales for the whole listing × <b>your share</b>: measured from your sales when possible, otherwise the Buy Box Amazon doesn\'t win (Keepa, last 90 days) split evenly between the third-party sellers, you included. Example: Amazon wins 95%, 4 third-party sellers → you get ~1.25%. The small print under each bottle shows the share used.<br>'
+    +'• Orders plan on <b>'+(Math.round(pf*100))+'%</b> of those expected sales, to stay conservative — change it above.<br>'
     +'• <b>Bottles you have</b> = warehouse on hand (including prepped and on work orders) + at Amazon + on the way to Amazon, counting each duo as its bottles. Your own "transit" count isn\'t added again — it\'s the same bottles as Amazon\'s "on the way".<br>'
     +'• <b>Days covered</b> = bottles you have ÷ daily sales. Red = runs out before a new order could reach Amazon ('+lead+' days); amber = before '+horizon+' days.<br>'
     +'• <b>Order</b> = daily sales × ('+st.cosmoDays+' Cosmoprof + '+st.prepDays+' prep + '+st.amazonDays+' Amazon check-in + '+st.target+' target days) − bottles you have'+(st.packOf>1?', rounded up to '+st.packOf:'')+'.<br>'
+    +'• <b>Lasts</b> = how long what you have plus this order lasts at that rate.<br>'
     +'• <b>Profit / bottle</b> = Amazon price of the single listing (Keepa Buy Box) − Amazon referral fee − FBA fee − unit cost. Bottles sold only inside duos show "—". Hover a figure to see the price used.<br>'
     +'• <b>Unit cost</b> = your weighted average cost from invoices (regular cost if no average yet). It doesn\'t know about upcoming Cosmoprof sales — check the price before ordering.</div>';
   box.innerHTML=h;

@@ -134,6 +134,19 @@ function simplify(p) {
     amazonOOS = stats.outOfStockPercentage[IDX.AMAZON];
   }
 
+  // Buy Box share over the 90-day stats window (needs buybox=1). buyBoxStats
+  // is keyed by seller id: { percentageWon, isFBA, ... }. Used to work out how
+  // much of a listing's sales can actually be ours (lib/demand.js).
+  let amazonBuyBoxPct = null, buyBoxWinners3P = null;
+  if (stats.buyBoxStats && typeof stats.buyBoxStats === 'object') {
+    amazonBuyBoxPct = 0; buyBoxWinners3P = 0;
+    for (const [sid, v] of Object.entries(stats.buyBoxStats)) {
+      const pct = v && v.percentageWon != null ? Number(v.percentageWon) : 0;
+      if (sid === AMAZON_SELLER_ID) amazonBuyBoxPct = pct;
+      else if (pct > 0) buyBoxWinners3P++;
+    }
+  }
+
   // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
   const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
 
@@ -177,7 +190,7 @@ function simplify(p) {
     productType: p.productType,
     salesRank, salesRankAvg30,
     buyBoxPrice, amazonPrice,
-    amazonHasBuyBox, amazonOOS,
+    amazonHasBuyBox, amazonOOS, amazonBuyBoxPct, buyBoxWinners3P,
     offerCount, monthlySold,
     pickPackFee, referralPct,
     availabilityAmazon: availAmz, amazonSelling, amazonOutOfStock,

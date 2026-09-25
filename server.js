@@ -18,6 +18,7 @@ const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead,
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
 const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
+const { estimateShare, measuredShare } = require('./lib/demand');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, MAX_QTY, badQty } = require('./lib/codes');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
@@ -399,7 +400,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'full-names-0924';
+const BUILD_ID = 'buybox-share-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4521,6 +4522,9 @@ async function runMarketDataPull(onProgress, opts = {}) {
         buyBoxPrice: p.buyBoxPrice,
         amazonHasBuyBox: p.amazonHasBuyBox,
         amazonOOS: p.amazonOOS,
+        amazonBuyBoxPct: p.amazonBuyBoxPct,
+        buyBoxWinners3P: p.buyBoxWinners3P,
+        amazonSelling: p.amazonSelling,
         offerCount: p.offerCount,
         pickPackFee: p.pickPackFee,
         referralPct: p.referralPct,
@@ -4931,6 +4935,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
     const f = fba[p.asin] || {}, m = mkt[p.asin] || {};
     const isDuo = !!comps[p.asin];
     const ourSold = (p.sku && velBySku[p.sku] ? velBySku[p.sku].sold : null) ?? (velByAsin[p.asin] ?? null);
+    const est = estimateShare(m);
     listings.push({
       asin: p.asin, sku: p.sku, name: p.name, image: p.image, fnsku: p.fnsku, isDuo,
       components: comps[p.asin] || [{ asin: p.asin, per: 1 }],
@@ -4939,6 +4944,11 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       keepaMonthly: m.monthlySold ?? null, amazonHasBuyBox: !!m.amazonHasBuyBox,
       price: m.buyBoxPrice ?? null, pickPackFee: m.pickPackFee ?? null, referralPct: m.referralPct ?? null,
       ourSold, ourDays: velDays,
+      // Our slice of the listing (lib/demand.js): measured from our sales when
+      // we have them, else estimated from the Buy Box split.
+      shareEst: est.share, shareSrc: est.src, amazonBuyBoxPct: est.amazonPct, sellers3P: est.sellers3P,
+      shareMeasured: measuredShare(ourSold != null ? ourSold * 30 / velDays : null, m.monthlySold),
+      amazonOOS: m.amazonOOS ?? null,
     });
     if (!isDuo) bottles.push({
       asin: p.asin, name: p.name, image: p.image, location: p.location, onhand: p.onhand, transit: p.transit,
