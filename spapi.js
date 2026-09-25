@@ -430,6 +430,8 @@ async function getLiveOffers(asins, onProgress) {
       // Who currently holds the buy box?
       const bbOffer = offers.find(o => o.IsBuyBoxWinner === true);
       const bbSeller = bbOffer ? bbOffer.SellerId : null;
+      // Our own offer is flagged MyOffer — that's how we learn our seller id.
+      const mine = offers.find(o => o.MyOffer === true);
 
       out[asin] = {
         amazonSelling: !!amazonOffer,                       // LIVE: Amazon has an offer
@@ -439,6 +441,7 @@ async function getLiveOffers(asins, onProgress) {
         buyBoxIsFba: bbOffer?.IsFulfilledByAmazon ?? null,
         totalOffers: summary.TotalOfferCount ?? offers.length,
         lowestPrice: summary.LowestPrices?.[0]?.ListingPrice?.Amount ?? null,
+        mySellerId: mine ? mine.SellerId : null,
         checkedAt: new Date().toISOString(),
       };
     } catch (err) {

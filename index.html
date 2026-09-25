@@ -2655,7 +2655,7 @@ function loadPlan(view){
 const PLAN_UNKNOWN_SHARE=0.1;
 function planShare(l){
   if(l.shareMeasured!=null) return {share:l.shareMeasured, how:'measured'};
-  if(l.shareEst!=null) return {share:l.shareEst, how:l.shareSrc==='buybox'?'buybox':'guess'};
+  if(l.shareEst!=null) return {share:l.shareEst, how:l.shareSrc||'guess'};
   return {share:PLAN_UNKNOWN_SHARE, how:'unknown'};
 }
 function planDemand(l, basis){
@@ -2680,8 +2680,9 @@ function planSrcNote(l, dm){
   if(dm.src!=='keepa') return '';
   const mk=(l.keepaMonthly||0).toLocaleString();
   if(dm.how==='measured') return pct(dm.share)+' of '+mk+' (your measured share)';
-  if(dm.how==='buybox') return 'est. '+pct(dm.share)+' of '+mk+' · Amazon wins '+Math.round(l.amazonBuyBoxPct)+'% BB, '+l.sellers3P+' 3P sellers';
-  if(dm.how==='guess') return 'est. '+pct(dm.share)+' of '+mk+' · '+(l.amazonBuyBoxPct?'Amazon has BB (~'+l.amazonBuyBoxPct+'% assumed), ':'')+l.sellers3P+' 3P sellers · refresh Market Data for real BB %';
+  if(dm.how==='ourbb') return 'your Buy Box '+pct(dm.share)+' (90 days) × '+mk+'/mo listing';
+  if(dm.how==='buybox') return 'est. '+pct(dm.share)+' of '+mk+' · Amazon wins '+Math.round(l.amazonBuyBoxPct)+'% BB, split '+l.sellers3P+' ways'+(l.ourBuyBoxPct===0?' (you won 0% in 90 days)':'');
+  if(dm.how==='guess') return 'est. '+pct(dm.share)+' of '+mk+' · '+(l.amazonBuyBoxPct?'Amazon has BB (~'+l.amazonBuyBoxPct+'% assumed), ':'')+'split '+l.sellers3P+' ways · refresh Market Data for real BB %';
   return 'est. '+pct(dm.share)+' of '+mk+' · no seller data';
 }
 function planAsOf(d){
@@ -2741,7 +2742,7 @@ function renderSendNext(){
   if(noDemand.length) h+='<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">No sales data yet ('+noDemand.length+') — stock is at Amazon or on the way, but there\'s nothing to plan from</summary><div class="hint" style="margin-top:4px">'
     +noDemand.map(r=>esc(String(r.l.name||r.l.asin))+' ('+r.l.atAmazon+' at Amazon, '+r.l.onTheWay+' on the way)').join(' · ')+'</div></details>';
   h+='</div>';
-  h+='<div class="box hint"><b>How this is calculated.</b> Sells / mo: your own sales per listing over the last '+d.asOf.salesDays+' days (Admin → Velocity), or, when you had none, Keepa\'s sales for the whole listing × your share of the Buy Box (what Amazon doesn\'t win, split between the third-party sellers) — the note under each number shows the share used. '
+  h+='<div class="box hint"><b>How this is calculated.</b> Sells / mo: your own sales per listing over the last '+d.asOf.salesDays+' days (Admin → Velocity), or, when you had none, Keepa\'s sales for the whole listing × your Buy Box % over the last 90 days (or, if you won none, what Amazon doesn\'t win split between the sellers who did) — the note under each number shows the share used. '
     +'Days covered = (at Amazon + on the way + already in prep) ÷ daily sales. Needs = what reaches '+st.target+' days. Send = Needs, limited by free bottles '
     +'(on hand minus work orders and prepped); a bottle that\'s in a single and in duos goes to the most urgent listing first. "Short" = what you\'d need to buy. '
     +'Refresh the inputs with Sync with Amazon (stock), Velocity (our sales) and Market Data (Keepa).</div>';
@@ -2826,7 +2827,7 @@ function renderOrders(){
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+esc(String(r.name||r.asin))+'<div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+esc(r.asin)+(r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
         +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td><td style="'+td+'">'+r.onhand+'</td><td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>'
-        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':Math.round(r.cover)+'d')+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+(r.cover==null?'—':r.cover>=365?(r.cover/365).toFixed(1)+' yr':Math.round(r.cover)+'d')+'</td>'
         +'<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#127a7a':'#8a97a6')+'">'+(r.qty||'—')+'</td>'
         +'<td style="'+td+'" title="How long what you have plus this order lasts at this rate">'+(r.lasts==null?'—':r.lasts>=60?(r.lasts/30).toFixed(1)+' mo':Math.round(r.lasts)+'d')+'</td><td style="'+td+'">'+money(r.unitCost)+'</td>'
         +'<td style="'+td+';font-weight:700;color:'+(r.profit==null?'#8a97a6':r.profit<0?'#c0392b':r.profit<3?'#b7791f':'#1e8449')+'" title="'+(r.price!=null?'Amazon price $'+r.price.toFixed(2)+(r.profitEst?' · fees estimated (15% referral)':''):'Sold only in duos — no single price')+'">'+(r.profit==null?'—':money(r.profit))+'</td>'
@@ -2839,7 +2840,7 @@ function renderOrders(){
     +idle.map(r=>esc(String(r.name||r.asin))+' ('+r.onhand+' in warehouse)').join(' · ')+'</div></details>';
   h+='</div>';
   h+='<div class="box hint"><b>How this is calculated.</b><br>'
-    +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity). Where you had none, Keepa\'s monthly sales for the whole listing × <b>your share</b>: measured from your sales when possible, otherwise the Buy Box Amazon doesn\'t win (Keepa, last 90 days) split evenly between the third-party sellers, you included. Example: Amazon wins 95%, 4 third-party sellers → you get ~1.25%. The small print under each bottle shows the share used.<br>'
+    +'• <b>Sells / mo</b> per bottle = its sales as a single plus its sales inside every duo (a duo uses one of each bottle). Source: your own sales over the last '+d.asOf.salesDays+' days per listing (Admin → Velocity). Where you had none, Keepa\'s monthly sales for the whole listing × <b>your share</b>: measured from your sales when possible; otherwise <b>your own Buy Box %</b> over the last 90 days (Keepa, matched to your seller id); if you won none, the Buy Box Amazon doesn\'t win split between the third-party sellers who won it, you included (e.g. Amazon 95%, 3 others + you → ~1.25%). The small print under each bottle shows the share used.<br>'
     +'• Orders plan on <b>'+(Math.round(pf*100))+'%</b> of those expected sales, to stay conservative — change it above.<br>'
     +'• <b>Bottles you have</b> = warehouse on hand (including prepped and on work orders) + at Amazon + on the way to Amazon, counting each duo as its bottles. Your own "transit" count isn\'t added again — it\'s the same bottles as Amazon\'s "on the way".<br>'
     +'• <b>Days covered</b> = bottles you have ÷ daily sales. Red = runs out before a new order could reach Amazon ('+lead+' days); amber = before '+horizon+' days.<br>'

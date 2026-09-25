@@ -400,7 +400,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'buybox-share-0925';
+const BUILD_ID = 'our-buybox-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4050,6 +4050,29 @@ async function saveCache(key, data) {
   await pool.query('INSERT INTO inv_cache(cache_key, data, updated_at) VALUES($1,$2,now()) ON CONFLICT (cache_key) DO UPDATE SET data=$2, updated_at=now()', [key, JSON.stringify(data)]);
 }
 
+// Our Amazon seller id, so Keepa's per-seller Buy Box % can be read as OUR
+// share of each listing (lib/demand.js). SELLER_ID wins if set; otherwise
+// it's learned once from Amazon's offers API (our offer is flagged MyOffer)
+// on a few listings we have stock at, and cached.
+async function ourSellerId() {
+  if (process.env.SELLER_ID) return process.env.SELLER_ID.trim();
+  const c = await pool.query("SELECT data FROM inv_cache WHERE cache_key='our_seller_id'");
+  const hit = c.rows.length ? c.rows[0].data : null;
+  if (hit && hit.id) return hit.id;
+  // A failed lookup costs ~7s of offer calls; don't repeat it on every load.
+  if (hit && hit.triedAt && Date.now() - new Date(hit.triedAt).getTime() < 6 * 3600 * 1000) return null;
+  const f = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'");
+  const asins = ((f.rows[0] && f.rows[0].data) || [])
+    .filter(x => (x.fba_fulfillable || 0) > 0).sort((a, b) => (b.fba_fulfillable || 0) - (a.fba_fulfillable || 0))
+    .slice(0, 3).map(x => x.asin);
+  if (!asins.length) return null;
+  const offers = await getLiveOffers(asins);
+  const id = Object.values(offers).map(o => o && o.mySellerId).find(Boolean) || null;
+  await saveCache('our_seller_id', id ? { id, foundAt: new Date().toISOString() } : { id: null, triedAt: new Date().toISOString() });
+  if (!id) console.log('[Market] could not find our seller id in offers for', asins.join(','), Object.values(offers).map(o => o.error).filter(Boolean).join('; '));
+  return id;
+}
+
 // ---- OWNER-ONLY endpoints ----
 
 // PRODUCTS TO ADD — driven by LIVE KEEPA data (refreshes with Market Data).
@@ -4524,6 +4547,7 @@ async function runMarketDataPull(onProgress, opts = {}) {
         amazonOOS: p.amazonOOS,
         amazonBuyBoxPct: p.amazonBuyBoxPct,
         buyBoxWinners3P: p.buyBoxWinners3P,
+        bbShares: p.bbShares,
         amazonSelling: p.amazonSelling,
         offerCount: p.offerCount,
         pickPackFee: p.pickPackFee,
@@ -4549,6 +4573,9 @@ async function runMarketDataPull(onProgress, opts = {}) {
   };
 
   const r = await keepa.getProducts(target, onProgress, persistBatch);
+  // Learn our seller id now if we don't have it, so the planning screens can
+  // use our own Buy Box %. Failure only costs the better estimate.
+  try { await ourSellerId(); } catch (e) { console.error('[Market] seller id lookup failed:', e.message); }
 
   const items = Object.values(merged);
   console.log(`[Market] Done. pulled ${pulled}, images ${imgsSaved}, failed batches ${(r.failed||[]).length}.`);
@@ -4908,6 +4935,8 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   const fba = {}; for (const f of ((fbaC && fbaC.data) || [])) fba[f.asin] = f;
   const mkt = {}; for (const m of ((mktC && mktC.data) || [])) mkt[m.asin] = m;
   const velDays = (velC && velC.data && velC.data.days) || 30;
+  let sellerId = null;
+  try { sellerId = await ourSellerId(); } catch (e) { console.error('[Plan] seller id lookup failed:', e.message); }
   const velBySku = {}, velByAsin = {};
   for (const v of ((velC && velC.data && velC.data.items) || [])) {
     if (v.sku) velBySku[v.sku] = v;
@@ -4935,7 +4964,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
     const f = fba[p.asin] || {}, m = mkt[p.asin] || {};
     const isDuo = !!comps[p.asin];
     const ourSold = (p.sku && velBySku[p.sku] ? velBySku[p.sku].sold : null) ?? (velByAsin[p.asin] ?? null);
-    const est = estimateShare(m);
+    const est = estimateShare(m, sellerId);
     listings.push({
       asin: p.asin, sku: p.sku, name: p.name, image: p.image, fnsku: p.fnsku, isDuo,
       components: comps[p.asin] || [{ asin: p.asin, per: 1 }],
@@ -4946,7 +4975,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       ourSold, ourDays: velDays,
       // Our slice of the listing (lib/demand.js): measured from our sales when
       // we have them, else estimated from the Buy Box split.
-      shareEst: est.share, shareSrc: est.src, amazonBuyBoxPct: est.amazonPct, sellers3P: est.sellers3P,
+      shareEst: est.share, shareSrc: est.src, amazonBuyBoxPct: est.amazonPct, sellers3P: est.sellers3P, ourBuyBoxPct: est.ourPct,
       shareMeasured: measuredShare(ourSold != null ? ourSold * 30 / velDays : null, m.monthlySold),
       amazonOOS: m.amazonOOS ?? null,
     });
@@ -4957,7 +4986,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
     });
   }
   res.json({ ok: true, listings, bottles,
-    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
+    sellerId, asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
 });
 
 // "Check with Amazon" for one product: ask Amazon about its SKUs right now
