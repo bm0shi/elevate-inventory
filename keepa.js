@@ -137,11 +137,14 @@ function simplify(p) {
   // Buy Box share over the 90-day stats window (needs buybox=1). buyBoxStats
   // is keyed by seller id: { percentageWon, isFBA, ... }. Used to work out how
   // much of a listing's sales can actually be ours (lib/demand.js).
-  let amazonBuyBoxPct = null, buyBoxWinners3P = null;
+  // bbShares keeps every seller's % so our own share can be read once we
+  // know our seller id.
+  let amazonBuyBoxPct = null, buyBoxWinners3P = null, bbShares = null;
   if (stats.buyBoxStats && typeof stats.buyBoxStats === 'object') {
-    amazonBuyBoxPct = 0; buyBoxWinners3P = 0;
+    amazonBuyBoxPct = 0; buyBoxWinners3P = 0; bbShares = {};
     for (const [sid, v] of Object.entries(stats.buyBoxStats)) {
       const pct = v && v.percentageWon != null ? Number(v.percentageWon) : 0;
+      if (pct > 0) bbShares[sid] = Math.round(pct * 10) / 10;
       if (sid === AMAZON_SELLER_ID) amazonBuyBoxPct = pct;
       else if (pct > 0) buyBoxWinners3P++;
     }
@@ -190,7 +193,7 @@ function simplify(p) {
     productType: p.productType,
     salesRank, salesRankAvg30,
     buyBoxPrice, amazonPrice,
-    amazonHasBuyBox, amazonOOS, amazonBuyBoxPct, buyBoxWinners3P,
+    amazonHasBuyBox, amazonOOS, amazonBuyBoxPct, buyBoxWinners3P, bbShares,
     offerCount, monthlySold,
     pickPackFee, referralPct,
     availabilityAmazon: availAmz, amazonSelling, amazonOutOfStock,
