@@ -85,3 +85,15 @@ test('seller name from the export file name', () => {
   assert.strictEqual(sellerFromFilename('export.csv'), null);
   assert.strictEqual(sellerKey('Beauty is... Urban Bliss Salon'), sellerKey('Beauty is...Urban Bliss Salon'));
 });
+
+test('seller column labels: the owner\'s names for the other sellers, US for us', () => {
+  const { sellerAbbr, sellerUnitsOn } = require('../lib/smartscout');
+  assert.strictEqual(sellerAbbr('Beauty is...Urban Bliss Salon', true), 'US');
+  assert.strictEqual(sellerAbbr('Hypnotic Hair Co', false), 'Hyp');
+  assert.strictEqual(sellerAbbr('SD School Supply', false), 'SD');
+  assert.strictEqual(sellerAbbr('Salon Blissful', false), 'SB');
+  assert.strictEqual(sellerAbbr('Rival Beauty Co', false), 'RBC');
+  // Units: listing sales × Buy Box % when both are known, else revenue ÷ price.
+  assert.strictEqual(sellerUnitsOn(9454, { buyBoxPct: 10, sellerUnits: 5 }), 945.4);
+  assert.strictEqual(sellerUnitsOn(null, { buyBoxPct: 10, sellerUnits: 5 }), 5);
+});
