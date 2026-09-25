@@ -401,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ss-order-sellers-0925';
+const BUILD_ID = 'ss-fair-share-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4995,7 +4995,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       shareEst: est.share, shareSrc: est.src, amazonBuyBoxPct: est.amazonPct, sellers3P: est.sellers3P, ourBuyBoxPct: est.ourPct,
       shareMeasured: measuredShare(ourSold != null ? ourSold * 30 / velDays : null, m.monthlySold),
       amazonOOS: m.amazonOOS ?? null,
-      ss: ssListing(ssBrand[p.asin], m),
+      ss: ssListing(ssBrand[p.asin], m, ssSellers, true),
       // Each seller's units / month on this listing, by short label (US, Hyp…).
       ssSellers: ssSellers.reduce((o, sl) => {
         const r = sl.by[p.asin];
@@ -5024,9 +5024,18 @@ async function ssBrandRows() {
   const r = await pool.query("SELECT id, uploaded_at, rows FROM inv_ss_uploads WHERE kind='brand' ORDER BY uploaded_at, id");
   return smartscout.mergeRows(r.rows);
 }
-function ssListing(ss, m) {
+// sellerFiles (from ssSellerFiles) correct Amazon's share and the seller
+// count on the listing; carried = we sell it, so we're one of the sellers.
+function ssListing(ss, m, sellerFiles, carried) {
   if (!ss) return null;
-  const pie = smartscout.pieFor(ss, m);
+  let bbSum = 0, seen = 0, usSeen = false;
+  for (const sl of (sellerFiles || [])) {
+    const r = sl.by[ss.asin]; if (!r) continue;
+    seen++; if (sl.isUs) usSeen = true;
+    if (r.buyBoxPct != null) bbSum += r.buyBoxPct;
+  }
+  if (carried && !usSeen && seen) seen++;
+  const pie = smartscout.pieFor(ss, m, { bbSum, sellersSeen: seen });
   if (!pie) return null;
   return Object.assign(pie, { price: ss.price, fbaSellers: ss.fbaSellers, amazonInStock: ss.amazonInStock,
     newSellerShare: ss.newSellerShare, growth1m: ss.growth1m, refreshed: ss.refreshed, uploadedAt: ss.uploadedAt });
@@ -5132,10 +5141,11 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
     ours[p.asin] = { name: p.name, image: p.image, monthly: sold != null ? sold * 30 / velDays : null };
   }
   const brand = await ssBrandRows();
+  const sellerFiles = await ssSellerFiles();
   const listings = Object.values(brand).map(ss => ({
     asin: ss.asin, title: ss.title, brand: ss.brand, subcategory: ss.subcategory, parentAsin: ss.parentAsin,
     carried: !!ours[ss.asin], ourMonthly: ours[ss.asin] ? ours[ss.asin].monthly : null,
-    pie: ssListing(ss, mkt[ss.asin]),
+    pie: ssListing(ss, mkt[ss.asin], sellerFiles, !!ours[ss.asin]),
   }));
   const sel = await pool.query("SELECT id, seller, filename, uploaded_at, rows FROM inv_ss_uploads WHERE kind='seller' ORDER BY uploaded_at, id");
   const usKey = smartscout.sellerKey(await ssUsName());

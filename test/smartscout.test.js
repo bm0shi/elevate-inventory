@@ -97,3 +97,15 @@ test('seller column labels: the owner\'s names for the other sellers, US for us'
   assert.strictEqual(sellerUnitsOn(9454, { buyBoxPct: 10, sellerUnits: 5 }), 945.4);
   assert.strictEqual(sellerUnitsOn(null, { buyBoxPct: 10, sellerUnits: 5 }), 5);
 });
+
+test('pie: sellers\' Buy Box % caps Amazon\'s share (Tea Tree Lemon Sage)', () => {
+  // Estimate says Amazon ~95%, but SB and SOA together hold 90% of the Buy Box.
+  const p = pieFor({ units: 1500, fbaSellers: 3, amazonInStock: 1 }, {}, { bbSum: 90, sellersSeen: 3 });
+  assert.strictEqual(p.amazonSrc, 'sellers');
+  assert.ok(Math.abs(p.amazonPct - 10) < 1e-9);
+  assert.ok(Math.abs(p.pie - 1350) < 1e-9);
+  assert.strictEqual(p.sellers3P, 3);
+  assert.ok(Math.abs(p.fair - 450) < 1e-9);
+  // A low Keepa figure isn't raised by the cap.
+  assert.strictEqual(pieFor({ units: 100, fbaSellers: 3 }, { amazonBuyBoxPct: 5 }, { bbSum: 50 }).amazonPct, 5);
+});
