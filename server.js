@@ -402,7 +402,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'rack-map-L-0926';
+const BUILD_ID = 'idle-spots-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -581,6 +581,14 @@ async function initDb() {
     );
     -- Products the owner ticked on Smart Scout Orders, so On Hand can filter
     -- to them ("Smart Scout selections") for prepping. Just a list of ASINs.
+    -- When each pallet spot went empty / last held stock, for "this spot has
+    -- been empty 30 days" on Admin → Item Locations (trackLocationUsage).
+    CREATE TABLE IF NOT EXISTS inv_location_usage (
+      location TEXT PRIMARY KEY,
+      empty_since TIMESTAMPTZ,
+      last_stocked_at TIMESTAMPTZ,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS inv_ss_picks (
       asin TEXT PRIMARY KEY,
       picked_at TIMESTAMPTZ DEFAULT now()
@@ -945,6 +953,7 @@ async function initDb() {
     const rl = await pool.query("SELECT data FROM inv_cache WHERE cache_key='rack_layout'");
     if (rl.rows.length && rl.rows[0].data) console.log('[Inventory] rack layout:', JSON.stringify(setRackLayout(rl.rows[0].data)));
   } catch (e) { console.error('[Inventory] rack layout load failed (using default):', e.message); }
+  try { await trackLocationUsage(); } catch (e) { console.error('[Locations] usage tracking failed:', e.message); }
   console.log('[Inventory] DB ready.');
 }
 
@@ -1737,7 +1746,31 @@ async function locationItems() {
   return { items, duos: Object.values(duos) };
 }
 
+// Record, for every spot on the rack, whether it holds stock right now. A
+// spot is empty when nothing is assigned to it or everything assigned has 0
+// in the warehouse. empty_since keeps the first time it was seen empty and
+// resets once stock is back. Runs hourly and whenever the screen opens; the
+// history starts the first time it runs (earlier emptiness isn't known).
+async function trackLocationUsage() {
+  if (!LOCATION_SLOTS.length) return;
+  const r = await pool.query(`SELECT p.location, SUM(COALESCE(s.onhand,0))::int AS onhand
+    FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
+    WHERE p.location IS NOT NULL GROUP BY p.location`);
+  const stocked = new Set(r.rows.filter(x => x.onhand > 0).map(x => x.location));
+  await pool.query(`
+    INSERT INTO inv_location_usage(location, empty_since, last_stocked_at, updated_at)
+    SELECT l, CASE WHEN s THEN NULL ELSE now() END, CASE WHEN s THEN now() END, now()
+    FROM unnest($1::text[], $2::bool[]) AS t(l, s)
+    ON CONFLICT (location) DO UPDATE SET
+      empty_since = CASE WHEN EXCLUDED.last_stocked_at IS NOT NULL THEN NULL
+                         ELSE COALESCE(inv_location_usage.empty_since, now()) END,
+      last_stocked_at = COALESCE(EXCLUDED.last_stocked_at, inv_location_usage.last_stocked_at),
+      updated_at = now()`, [LOCATION_SLOTS, LOCATION_SLOTS.map(l => stocked.has(l))]);
+}
+setInterval(() => { trackLocationUsage().catch(e => console.error('[Locations] usage tracking failed:', e.message)); }, 60 * 60 * 1000).unref();
+
 app.get('/api/item-locations', auth, async (req, res) => {
+  try { await trackLocationUsage(); } catch (e) { console.error('[Locations] usage tracking failed:', e.message); }
   const { items, duos } = await locationItems();
   const by = {}; for (const it of items) by[it.asin] = it;
   const partners = {};
@@ -1750,7 +1783,52 @@ app.get('/api/item-locations', auth, async (req, res) => {
   // bends: how the rows stand in the warehouse, for drawing the rack map —
   // { A: 4 } = A-1..A-4 go up the left side, then A-5… run to the right (an L).
   const sh = await pool.query("SELECT data FROM inv_cache WHERE cache_key='rack_shape'");
-  res.json({ ok: true, rows: { ...LOC_ROWS }, bends: (sh.rows[0] && sh.rows[0].data) || {}, slots: LOCATION_SLOTS, items: list });
+  const us = await pool.query('SELECT location, empty_since, last_stocked_at FROM inv_location_usage WHERE location = ANY($1::text[])', [LOCATION_SLOTS]);
+  const usage = {}; for (const u of us.rows) usage[u.location] = { emptySince: u.empty_since, lastStocked: u.last_stocked_at };
+  res.json({ ok: true, rows: { ...LOC_ROWS }, bends: (sh.rows[0] && sh.rows[0].data) || {}, slots: LOCATION_SLOTS, items: list, usage });
+});
+
+// Spots empty for `days`+ days, each with replacements: bottles with stock
+// and no spot yet first (the owner's preference), then fast sellers that
+// could move there; a candidate whose duo partner sits right beside the spot
+// goes first. Owner only: ranked by sales.
+app.get('/api/item-locations/idle', ownerAuth, async (req, res) => {
+  const days = Math.max(1, Math.min(365, parseInt(req.query.days, 10) || 30));
+  try { await trackLocationUsage(); } catch (e) {}
+  const idle = (await pool.query(`SELECT location, empty_since, last_stocked_at FROM inv_location_usage
+    WHERE empty_since IS NOT NULL AND empty_since <= now() - ($1 || ' days')::interval AND location = ANY($2::text[])`, [String(days), LOCATION_SLOTS])).rows;
+  if (!idle.length) return res.json({ ok: true, days, spots: [] });
+  const { items, duos } = await locationItems();
+  // monthly sales per ASIN from the velocity cache (same basis as planning)
+  const vc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'");
+  const vdays = (vc.rows[0] && vc.rows[0].data && vc.rows[0].data.days) || 30;
+  const velBySku = {}, velByAsin = {};
+  for (const v of ((vc.rows[0] && vc.rows[0].data && vc.rows[0].data.items) || [])) {
+    if (v.sku) velBySku[v.sku] = v.sold || 0;
+    if (v.asin) velByAsin[v.asin] = (velByAsin[v.asin] || 0) + (v.sold || 0);
+  }
+  const monthly = (it) => { const s = (it.sku && velBySku[it.sku] != null) ? velBySku[it.sku] : (velByAsin[it.asin] || 0); return Math.round(s * 30 / vdays); };
+  const partners = {};
+  for (const d of duos) for (const a of d.components) for (const o of d.components) if (a !== o) (partners[a] = partners[a] || new Set()).add(o);
+  const byAsin = {}; for (const it of items) byAsin[it.asin] = it;
+  const idleSet = new Set(idle.map(x => x.location));
+  const near = (loc, asin) => {
+    const m = loc.match(/^([A-Z])-(\d+)$/); if (!m) return false;
+    return [...(partners[asin] || [])].some(p => byAsin[p] && [m[1] + '-' + (+m[2] - 1), m[1] + '-' + (+m[2] + 1)].includes(byAsin[p].location));
+  };
+  const noSpot = items.filter(it => !it.location && it.onhand > 0);
+  const fast = items.filter(it => it.location && !idleSet.has(it.location) && it.onhand > 0).map(it => ({ it, m: monthly(it) }))
+    .filter(x => x.m > 0).sort((a, b) => b.m - a.m).slice(0, 15);
+  const spots = idle.map(u => {
+    const occ = items.filter(it => it.location === u.location).map(it => ({ asin: it.asin, name: it.name, onhand: it.onhand }));
+    const a = noSpot.map(it => ({ asin: it.asin, name: it.name, image: it.image, onhand: it.onhand, perMonth: monthly(it), kind: 'nospot', besidePartner: near(u.location, it.asin) }));
+    const b = fast.map(({ it, m }) => ({ asin: it.asin, name: it.name, image: it.image, onhand: it.onhand, perMonth: m, kind: 'fast', from: it.location, besidePartner: near(u.location, it.asin) }));
+    const rank = (x, y) => (y.besidePartner - x.besidePartner) || (y.perMonth - x.perMonth);
+    return { location: u.location, emptySince: u.empty_since, lastStocked: u.last_stocked_at,
+      days: Math.floor((Date.now() - new Date(u.empty_since).getTime()) / 86400000), occupants: occ,
+      candidates: [...a.sort(rank).slice(0, 4), ...b.sort(rank).slice(0, 2)] };
+  }).sort((x, y) => y.days - x.days);
+  res.json({ ok: true, days, spots });
 });
 
 // Suggested spots for bottles without one. Nothing is saved here.

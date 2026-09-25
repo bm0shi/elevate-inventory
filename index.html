@@ -3319,11 +3319,11 @@ function renderSmartScout(){
 // the server). Suggestions are only saved when you apply them.
 // ============================================================
 let _il=null, _ilSug=null;
-function ilState(){ try{ return Object.assign({view:'list',filter:'all',q:'',stocked:true}, JSON.parse(localStorage_get('itemLocs')||'{}')); }catch(e){ return {view:'list',filter:'all',q:'',stocked:true}; } }
+function ilState(){ const D={view:'list',filter:'all',q:'',stocked:true,idleDays:30}; try{ return Object.assign(D, JSON.parse(localStorage_get('itemLocs')||'{}')); }catch(e){ return D; } }
 function ilSet(k,v){ const st=ilState(); st[k]=v; localStorage_set('itemLocs', JSON.stringify(st)); renderItemLocs(); }
 function loadItemLocs(){
   const box=document.getElementById('itemLocsBody'); box.innerHTML='<div class="box hint">Loading…</div>';
-  api('/api/item-locations').then(d=>{ if(!d||!d.ok){ box.innerHTML='<div class="box" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; } _il=d; renderItemLocs(); loadLocations(); })
+  api('/api/item-locations').then(d=>{ if(!d||!d.ok){ box.innerHTML='<div class="box" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; } _il=d; renderItemLocs(); loadLocations(); ilLoadIdle(); })
     .catch(e=>{ box.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
 }
 // Product photo for the location screens; a box when there's no image yet.
@@ -3331,6 +3331,39 @@ function ilImg(it, size){
   return it.image
     ? '<img src="'+esc(it.image)+'" loading="lazy" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'div\'),{textContent:\'📦\',style:\'font-size:'+Math.round(size/2)+'px\'}))" style="width:'+size+'px;height:'+size+'px;object-fit:contain;background:#fff;border:1px solid #e2e8f0;border-radius:8px">'
     : '<div style="width:'+size+'px;height:'+size+'px;display:flex;align-items:center;justify-content:center;font-size:'+Math.round(size/2.5)+'px;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px">📦</div>';
+}
+// Spots empty for N+ days, with replacements (owner only — ranked by sales).
+function ilLoadIdle(){
+  const days=ilState().idleDays||30;
+  ownerApi('/api/item-locations/idle?days='+days).then(d=>{ window._ilIdle=(d&&d.ok)?d:null; renderItemLocs(); }).catch(()=>{ window._ilIdle=null; });
+}
+function ilIdleDays(loc){ const u=_il&&_il.usage&&_il.usage[loc]; return u&&u.emptySince?Math.floor((Date.now()-new Date(u.emptySince).getTime())/86400000):null; }
+function ilIdleBox(){
+  const d=window._ilIdle, st=ilState(); if(!d) return '';
+  const inp='<label class="hint">Alert after <input type="number" min="1" max="365" value="'+(st.idleDays||30)+'" onchange="ilSet(\'idleDays\',Math.max(1,parseInt(this.value)||30));ilLoadIdle()" style="width:56px;padding:4px"> days empty</label>';
+  if(!d.spots.length) return '<div class="box" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><span class="hint">⏳ No spot has been empty for '+d.days+'+ days. (Tracking started when this feature went live.)</span>'+inp+'</div>';
+  return '<div class="box" style="background:#fff4e5;border:1px solid #e0a33a"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><b style="font-size:15px">⏳ '+d.spots.length+' spot'+(d.spots.length>1?'s have':' has')+' been empty '+d.days+'+ days — put something that sells there?</b>'+inp+'</div>'
+    +d.spots.map(sp=>'<div style="border-top:1px solid #f0d9b5;margin-top:8px;padding-top:8px"><b style="font-size:15px">'+esc(sp.location)+'</b> <span class="hint">empty '+sp.days+' days'
+      +(sp.occupants.length?' · assigned to '+sp.occupants.map(o=>esc(String(o.name).slice(0,40))+' ('+o.onhand+' on hand)').join(', '):' · nothing assigned')+'</span>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+      +(sp.candidates.length?sp.candidates.map(c=>'<button onclick="ilPutHere(\''+esc(sp.location)+'\',\''+esc(c.asin)+'\')" title="'+esc(c.name)+'" style="display:flex;gap:8px;align-items:center;text-align:left;border:1px solid '+(c.kind==='nospot'?'#127a7a':'#cfd8e3')+';background:#fff;border-radius:8px;padding:6px 8px;cursor:pointer;max-width:320px">'
+          +ilImg(c,44)+'<span style="font-size:12px;line-height:1.25"><b>'+esc(String(c.name).slice(0,44))+'</b><br>'
+          +'<span style="color:'+(c.kind==='nospot'?'#127a7a':'#5a6472')+'">'+(c.kind==='nospot'?'no spot yet · '+c.onhand+' on hand':'fast seller · now at '+esc(c.from))+'</span>'
+          +(c.perMonth?' · <b>'+c.perMonth+'/mo</b>':'')+(c.besidePartner?' · <b style="color:#c0392b">◆ beside its duo partner</b>':'')+'</span></button>').join('')
+        :'<span class="hint">No bottles with stock are waiting for a spot.</span>')
+      +'</div></div>').join('')
+    +'<div class="hint" style="margin-top:8px">Tap one to put it on that spot. Bottles still assigned there with 0 on hand lose the spot. Bottles without a spot come first (best sellers first); a bottle whose duo partner sits right beside the spot goes to the top.</div></div>';
+}
+function ilPutHere(loc, asin){
+  const d=window._ilIdle, sp=d&&d.spots.find(x=>x.location===loc); if(!sp) return;
+  const c=sp.candidates.find(x=>x.asin===asin)||{name:asin};
+  const out=sp.occupants.filter(o=>o.asin!==asin);
+  if(!confirm('Put '+c.name+' on '+loc+'?'+(c.kind==='fast'&&c.from?'\nIt moves from '+c.from+'.':'')+(out.length?'\n'+out.map(o=>o.name).join(', ')+' ('+out.map(o=>o.onhand).join(', ')+' on hand) will lose this spot.':''))) return;
+  const setLoc=(a,l)=>api('/api/location',{method:'POST',body:JSON.stringify({asin:a, location:l})}).then(r=>{ if(!r||r.ok===false||r.error) throw new Error((r&&r.error)||'Could not save'); return r; });
+  out.reduce((p,o)=>p.then(()=>setLoc(o.asin,'')), Promise.resolve())
+    .then(()=>setLoc(asin, loc))
+    .then(()=>{ toast('Saved: '+loc); loadItemLocs(); })
+    .catch(e=>{ toast('Could not save: '+e.message,true); loadItemLocs(); });
 }
 const ilPos=l=>{ const m=String(l||'').match(/^([A-Z])-(\d+)$/); return m?{r:m[1],n:+m[2]}:null; };
 const ilNext=(a,b)=>{ const x=ilPos(a), y=ilPos(b); return x&&y&&x.r===y.r&&Math.abs(x.n-y.n)===1; };
@@ -3359,6 +3392,7 @@ function renderItemLocs(){
       +'<label class="hint"><input type="checkbox" '+(st.stocked?'checked':'')+' onchange="ilSet(\'stocked\',this.checked)"> Only bottles with stock (on hand or on the way)</label>'
       +'<input placeholder="Search name, ASIN, spot" value="'+esc(st.q)+'" oninput="window._ilQ=this.value;clearTimeout(window._ilT);window._ilT=setTimeout(()=>ilSet(\'q\',window._ilQ),300)" style="padding:6px;min-width:220px">'
     +'</div></div>';
+  h+=ilIdleBox();
   // suggestions bar
   if(_ilSug){
     const on=_ilSug.assignments.filter(a=>a.on!==false);
@@ -3392,7 +3426,8 @@ function ilList(rows, locOf, sug){
         :'<input list="ilSlots" value="'+esc(it.location||'')+'" placeholder="—" onchange="ilSetLoc(\''+esc(it.asin)+'\',this)" style="width:78px;padding:5px;font-weight:800;'+(it.location&&!it.onRack?'border-color:#c0392b':'')+'" title="'+(it.location&&!it.onRack?'Not on the rack map any more':'Type a spot like A-6, or clear it')+'">';
       const parts=it.partners.map(p=>{ const pl=locOf(p.asin), ok=L&&pl&&ilNext(L,pl);
         return '<div style="white-space:nowrap"><b style="color:'+(ok?'#1e8449':pl?'#b7791f':'#8a97a6')+'">'+(pl?esc(pl):'no spot')+(ok?' ✓':pl&&L?' ⚠':'')+'</b> '+esc(String(p.name||p.asin).slice(0,48))+'<span class="hint"> · '+esc(String(p.duoName||'duo').slice(0,30))+'</span></div>'; }).join('');
-      return '<tr style="'+(s&&s.on!==false?'background:#fff9d6':'')+'"><td style="'+td+';vertical-align:middle">'+cell+'</td><td style="'+td+';width:128px">'+ilImg(it,120)+'</td>'
+      const idle=L?ilIdleDays(L):null, thr=ilState().idleDays||30;
+      return '<tr style="'+(s&&s.on!==false?'background:#fff9d6':'')+'"><td style="'+td+';vertical-align:middle">'+cell+(idle!=null&&idle>=1?'<div style="font-size:10px;font-weight:700;color:'+(idle>=thr?'#c0392b':'#b7791f')+'">empty '+idle+'d</div>':'')+'</td><td style="'+td+';width:128px">'+ilImg(it,120)+'</td>'
         +'<td style="'+td+';min-width:260px"><b>'+amzLink(it.asin,it.name)+'</b><div class="hint">'+asinChip(it.asin)+'</div></td>'
         +'<td style="'+td+';text-align:right;font-weight:700">'+it.onhand+(it.transit?'<div class="hint" style="font-weight:400">+'+it.transit+' on the way</div>':'')+'</td>'
         +'<td style="'+td+';font-size:12px">'+(parts||'<span class="hint">single</span>')+'</td></tr>';
@@ -3405,7 +3440,7 @@ function ilList(rows, locOf, sug){
 function ilSpot(k, its, sug, face){
   const isSug=its.some(it=>sug[it.asin]&&sug[it.asin].on!==false);
   return '<div style="border:1px solid '+(its.length?'#cfd8e3':'#e6ebf1')+';border-radius:8px;padding:6px;min-height:58px;font-size:11px;background:'+(isSug?'#fff9d6':its.length?'#fff':'#f7f9fb')+'">'
-    +'<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">'+k+'</b>'+(face?'<span class="hint" title="Faces this way" style="font-size:14px">'+face+'</span>':'')+'</div>'
+    +'<div style="display:flex;justify-content:space-between;align-items:center"><b style="font-size:13px">'+k+'</b>'+((()=>{ const n=ilIdleDays(k), thr=ilState().idleDays||30; return n!=null&&n>=1?'<span style="font-size:10px;font-weight:800;color:'+(n>=thr?'#c0392b':'#b7791f')+'">empty '+n+'d</span>':''; })())+(face?'<span class="hint" title="Faces this way" style="font-size:14px">'+face+'</span>':'')+'</div>'
     +its.map(it=>'<div title="'+esc(it.name)+'" style="margin-top:4px;line-height:1.2;text-align:center">'+ilImg(it,96)+'<div style="text-align:left;margin-top:3px">'+(it.partners.length?'<span style="color:#c0392b;font-weight:800">◆</span> ':'')+esc(String(it.name).slice(0,40))+'<div class="hint" style="font-size:10px">'+esc(it.asin)+' · '+it.onhand+' on hand</div></div></div>').join('')
     +'</div>';
 }
