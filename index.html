@@ -1088,9 +1088,46 @@ function netBadge(l){
   const col=n.v<0?'#c0392b':n.v<3?'#b7791f':'#1e8449';
   const tip=n.actual?'Actual, last 90 days: '+n.units+' sold (settlements: sales − Amazon fees − cost − supplies − labor − freight)'+(n.missing.length?' · not included: '+n.missing.join(', '):'')
                     :'Estimate: $'+n.price.toFixed(2)+' price − referral fee − '+(n.noFba?'(FBA fee unknown) ':'FBA fee ')+'− bottle cost'+(l.isDuo?' (both bottles)':'');
-  return '<span title="'+esc(tip)+'" style="white-space:nowrap;text-align:right;display:inline-block;line-height:1.2">'
+  return '<span title="'+esc(tip)+' — click for the breakdown" onclick="netBreakdown(\''+esc(l.asin)+'\')" style="cursor:pointer;white-space:nowrap;text-align:right;display:inline-block;line-height:1.2">'
     +'<b style="color:'+col+';font-size:14px">'+(n.v<0?'−':'')+'$'+Math.abs(n.v).toFixed(2)+'</b><span class="hint" style="font-size:11px"> /unit'+(n.pct!=null?' · '+Math.round(n.pct)+'%':'')+'</span>'
     +'<div class="hint" style="font-size:10px">'+(n.actual?'net · actual 90d ('+n.units+' sold)':'net · est.'+(n.noFba?' no FBA fee':''))+'</div></span>';
+}
+// Per-unit breakdown behind a net figure, so a surprising number can be
+// traced to the line causing it (e.g. labor spread over too few units).
+function netBreakdown(asin){
+  const l=((_plan&&_plan.listings)||[]).find(x=>x.asin===asin); if(!l) return;
+  const a=(window._netByAsin||{})[asin], n=listingNet(l);
+  const old=document.getElementById('netModal'); if(old) old.remove();
+  const m=document.createElement('div'); m.id='netModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  m.onclick=e=>{ if(e.target===m) m.remove(); };
+  const $=v=>v==null?'—':(v<0?'−':'')+'$'+Math.abs(v).toFixed(2);
+  const row=(k,v,note,bold)=>'<tr><td style="padding:5px 8px;border-top:1px solid #eef2f6'+(bold?';font-weight:800':'')+'">'+k+(note?'<div class="hint" style="font-size:11px">'+note+'</div>':'')+'</td><td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right;white-space:nowrap'+(bold?';font-weight:800;font-size:15px':'')+'">'+v+'</td></tr>';
+  let h='<div style="background:#fff;border-radius:12px;padding:18px;max-width:560px;width:100%"><div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:16px">Net profit per unit</b><div class="hint">'+esc(l.name||asin)+' · '+esc(asin)+'</div></div>'
+    +'<button class="action" onclick="document.getElementById(\'netModal\').remove()" style="background:#5a6472">Close</button></div><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px">';
+  if(n && n.actual){
+    const u=a.netUnits, per=v=>v==null?null:v/u;
+    h+=row('Units sold (last 90 days)', u+(a.unitsRefunded?' <span class="hint">('+a.units+' sold − '+a.unitsRefunded+' refunded)</span>':''));
+    h+=row('Sales', $(per(a.sales)), 'per unit sold — '+$(a.sales)+' total');
+    if(a.refunds) h+=row('Refunds', $(per(a.refunds)), $(a.refunds)+' total');
+    if(a.promotions) h+=row('Promotions / coupons', $(per(a.promotions)), $(a.promotions)+' total');
+    h+=row('Amazon fees', $(per(a.fees)), Object.entries(a.feeDetail||{}).sort((x,y)=>x[1]-y[1]).map(([k,v])=>esc(k)+' '+$(v/u)).join(' · '));
+    h+=row('Product cost', a.unitCost!=null?$(-a.unitCost):'—', 'your average cost from invoices');
+    h+=row('Supplies', a.suppliesPerUnit!=null?$(-a.suppliesPerUnit):'not set', 'Admin → Data Sources → supplies per unit');
+    const li=window._laborInfo;
+    h+=row('Labor', a.laborPerUnit!=null?$(-a.laborPerUnit):'not set', 'timecard wages ÷ units shipped to Amazon through the app, last '+((li&&li.days)||90)+' days'+(li&&li.dollars!=null?': '+$(li.dollars)+' ÷ '+(li.units||0).toLocaleString()+' units':'')+'. Shipments made outside the app aren\'t counted, which makes this too high.');
+    h+=row('Freight + placement', a.freightPerUnit!=null?$(-a.freightPerUnit):'not set', 'inbound shipment costs ÷ units on those shipments');
+    h+=row('Net per unit', $(a.profitPerUnit), a.marginPct!=null?Math.round(a.marginPct)+'% of sales':'', true);
+  } else if(n){
+    const ref=n.price*((l.referralPct!=null?l.referralPct:15)/100);
+    h+=row('Price', $(n.price), l.price!=null?'Keepa Buy Box':'SmartScout Buy Box');
+    h+=row('Referral fee', $(-ref), (l.referralPct!=null?l.referralPct:15)+'%'+(l.referralPct==null?' (assumed)':''));
+    h+=row('FBA fee', l.pickPackFee!=null?$(-l.pickPackFee):'unknown', l.pickPackFee==null?'not included — Keepa has no FBA fee for this listing':'Keepa');
+    h+=row('Bottle cost', $(-(n.price-ref-(l.pickPackFee||0)-n.v)), l.isDuo?'both bottles':'');
+    h+=row('Net per unit (estimate)', $(n.v), 'no supplies, labor or freight — you haven\'t sold it in the last 90 days', true);
+  } else h+=row('No figure', '—', 'No price or a bottle has no cost yet');
+  h+='</table></div>';
+  m.innerHTML=h; document.body.appendChild(m);
 }
 function ssListingOnhand(l){
   const bot={}; ((_plan&&_plan.bottles)||[]).forEach(b=>bot[b.asin]=b);
@@ -2735,7 +2772,7 @@ function loadPlan(view){
   const box=document.getElementById(view==='orders'?'ordersBody':view==='ssorders'?'ssOrdersBody':'sendNextBody');
   box.innerHTML='<div class="box hint">Loading…</div>';
   const from90=new Date(Date.now()-90*86400000).toISOString().slice(0,10);
-  const fin=ownerApi('/api/finance/products?from='+from90).then(f=>{ const m={}; ((f&&f.items)||[]).forEach(x=>{ if(x.asin) m[x.asin]=x; }); window._netByAsin=m; }).catch(()=>{ window._netByAsin={}; });
+  const fin=ownerApi('/api/finance/products?from='+from90).then(f=>{ const m={}; ((f&&f.items)||[]).forEach(x=>{ if(x.asin) m[x.asin]=x; }); window._netByAsin=m; window._laborInfo=(f&&f.laborInfo)||null; }).catch(()=>{ window._netByAsin={}; });
   Promise.all([ownerApi('/api/plan/data'), loadSsPicks(), fin]).then(([d])=>{ if(!d||!d.ok){ box.innerHTML='<div class="box" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; } _plan=d; renderPlan(view); })
     .catch(e=>{ box.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
 }
