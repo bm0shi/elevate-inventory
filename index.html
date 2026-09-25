@@ -1073,18 +1073,21 @@ function ssPickCell(asin, qtyHtml, style){
 // Product Profit screens. The settlement-based figure showed $0.76 on Tea
 // Tree Special 33.8 oz (a $50 item netting ~$13) because two refunds landed
 // on a 30-unit sample; that's not what "can I make money on this" means.
-//   price:  our own offer price (our SmartScout seller file), else Keepa's
-//           Buy Box, else SmartScout's.
-//   cost:   average cost from invoices (a duo = its bottles).
+//   price:  from Amazon — the Buy Box price from our Seller API (Inventory
+//           Value pull), else Keepa's current Buy Box. Never SmartScout's:
+//           its prices are often captured during a sale.
+//   cost:   NON-SALE price (the owner's own figure, else the highest price
+//           paid in the last 12 months) — a duo = its bottles.
 //   fees:   referral % (Keepa, else 15%) + FBA fee (Keepa, else what the
 //           settlements charged per unit).
 //   supplies / labor: once entered (Admin → Data Sources / Labor).
 function listingNet(l){
-  const price=l.ourPrice!=null?l.ourPrice:l.price!=null?l.price:(l.ss&&l.ss.price!=null?l.ss.price:null);
-  const priceSrc=l.ourPrice!=null?'your offer price (SmartScout)':l.price!=null?'Keepa Buy Box':'SmartScout Buy Box';
+  const price=l.amazonPrice!=null?l.amazonPrice:l.price;
+  const at=_plan&&_plan.amazonPriceAt?' · '+new Date(_plan.amazonPriceAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'';
+  const priceSrc=l.amazonPrice!=null?'Amazon Buy Box (Seller API'+at+')':'Amazon Buy Box (Keepa)';
   if(price==null) return null;
   const bot={}; ((_plan&&_plan.bottles)||[]).forEach(b=>bot[b.asin]=b);
-  let cost=0; for(const c of l.components){ const u=(bot[c.asin]||{}).unitCost; if(u==null) return null; cost+=u*c.per; }
+  let cost=0, avgPaid=0, manual=false; for(const c of l.components){ const b=bot[c.asin]||{}; if(b.unitCost==null) return null; cost+=b.unitCost*c.per; avgPaid+=(b.avgCost!=null?b.avgCost:b.unitCost)*c.per; if(b.costManual) manual=true; }
   const a=(window._netByAsin||{})[l.asin];
   const refPct=l.referralPct!=null?l.referralPct:15, referral=price*refPct/100;
   let fba=l.pickPackFee, fbaSrc='Keepa';
@@ -1095,17 +1098,31 @@ function listingNet(l){
   const supplies=a&&a.suppliesPerUnit!=null?a.suppliesPerUnit:null;
   const labor=window._laborInfo&&window._laborInfo.rate!=null?window._laborInfo.rate:null;
   const v=price-cost-referral-(fba||0)-(supplies||0)-(labor||0);
-  return {v, pct:v/price*100, price, priceSrc, cost, referral, refPct, refAssumed:l.referralPct==null, fba, fbaSrc, supplies, labor};
+  return {v, pct:v/price*100, price, priceSrc, cost, avgPaid, manual, referral, refPct, refAssumed:l.referralPct==null, fba, fbaSrc, supplies, labor};
 }
 function netBadge(l){
   const n=listingNet(l);
-  if(!n) return '<span class="hint" style="font-size:11px;white-space:nowrap" title="No price or no bottle cost yet">net —</span>';
+  if(!n) return '<span class="hint" style="font-size:11px;white-space:nowrap" title="No Amazon price yet (run Inventory Value or Market Data), or a bottle has no cost">net —</span>';
   const col=n.v<0?'#c0392b':n.v<3?'#b7791f':'#1e8449';
   const missing=[n.fba==null&&'FBA fee', n.supplies==null&&'supplies', n.labor==null&&'labor'].filter(Boolean);
-  const tip='$'+n.price.toFixed(2)+' price − $'+n.cost.toFixed(2)+' cost − Amazon fees'+(missing.length?' · not included yet: '+missing.join(', '):'');
+  const tip='$'+n.price.toFixed(2)+' price − $'+n.cost.toFixed(2)+' cost (non-sale price) − Amazon fees'+(missing.length?' · not included yet: '+missing.join(', '):'');
   return '<span title="'+esc(tip)+' — click for the breakdown" onclick="netBreakdown(\''+esc(l.asin)+'\')" style="cursor:pointer;white-space:nowrap;text-align:right;display:inline-block;line-height:1.2">'
     +'<b style="color:'+col+';font-size:14px">'+(n.v<0?'−':'')+'$'+Math.abs(n.v).toFixed(2)+'</b><span class="hint" style="font-size:11px"> /unit · '+Math.round(n.pct)+'%</span>'
     +'<div class="hint" style="font-size:10px">net'+(missing.length?' · no '+missing.join(', '):'')+'</div></span>';
+}
+// Owner types the non-sale price for a bottle (blank = back to automatic).
+function setRegularCost(asin){
+  const b=((_plan&&_plan.bottles)||[]).find(x=>x.asin===asin)||{};
+  const v=prompt('Non-sale price you pay Cosmoprof for this bottle ($). Leave blank to go back to automatic (highest price in the last 12 months).', b.costManual&&b.unitCost!=null?b.unitCost.toFixed(2):'');
+  if(v===null) return;
+  const cost=v.trim()===''?null:parseFloat(v.replace(/[$,]/g,''));
+  if(cost!==null && !(cost>0)){ alert('Enter a price above $0, or leave it blank.'); return; }
+  ownerApi('/api/products/'+encodeURIComponent(asin)+'/regular-cost',{method:'POST',body:JSON.stringify({cost})}).then(d=>{
+    if(!d||d.ok===false){ alert('Could not save: '+((d&&d.error)||'server error')); return; }
+    toast(cost===null?'Back to automatic non-sale price':'Non-sale price saved: $'+cost.toFixed(2));
+    const m=document.getElementById('netModal'); if(m) m.remove();
+    loadPlan(window._planView);
+  }).catch(e=>alert('Could not save: '+e.message));
 }
 // Per-unit breakdown behind a net figure.
 function netBreakdown(asin){
@@ -1121,14 +1138,16 @@ function netBreakdown(asin){
     +'<button class="action" onclick="document.getElementById(\'netModal\').remove()" style="background:#5a6472">Close</button></div><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px">';
   if(n){
     h+=row('Item price', $(n.price), n.priceSrc);
-    h+=row('Product cost (COGS)', $(-n.cost), 'your average cost from invoices'+(l.isDuo?' — both bottles':''));
+    h+=row('Product cost (COGS)', $(-n.cost), '<b style="color:#b7791f">non-sale price</b> — '+(n.manual?'your own figure':'highest price paid in the last 12 months')+(l.isDuo?', both bottles':'')
+      +(Math.abs(n.avgPaid-n.cost)>0.005?' · average paid incl. sales: $'+n.avgPaid.toFixed(2):'')
+      +(l.isDuo?'':' · <a href="#" onclick="event.preventDefault();setRegularCost(\''+esc(asin)+'\')">'+(n.manual?'change':'set your own')+'</a>'));
     h+=row('Amazon referral fee', $(-n.referral), n.refPct+'%'+(n.refAssumed?' (assumed)':''));
     h+=row('Amazon FBA fee', n.fba!=null?$(-n.fba):'not known', n.fba!=null?'from '+n.fbaSrc:'Keepa has no FBA fee for this listing and it hasn\'t sold recently');
     h+=row('Supplies per piece', n.supplies!=null?$(-n.supplies):'not entered yet', 'Admin → Data Sources');
     h+=row('Labor per piece', n.labor!=null?$(-n.labor):'not entered yet', 'Admin → Labor (timecards)');
     h+=row('Net per unit', $(n.v), Math.round(n.pct)+'% of price', true);
     h+='</table><div class="hint" style="margin-top:8px">Refunds, freight and placement aren\'t in this number — see Admin → Product Profit and the P&amp;L for those.</div>';
-  } else h+=row('No figure', '—', 'No price yet, or a bottle has no cost')+'</table>';
+  } else h+=row('No figure', '—', 'No Amazon price yet (run Admin → Inventory Value or Market Data), or a bottle has no cost')+'</table>';
   h+='</div>';
   m.innerHTML=h; document.body.appendChild(m);
 }
@@ -3011,7 +3030,7 @@ function renderOrders(boxId, mode){
   if(byListing){ box.innerHTML=h+ordersByListing(d, st, isSS, selCols, pf, lead, horizon); return; }
   h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:'+(900+selCols.length*60)+'px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
     +[['name','Bottle',0],['sold','Sells / mo',1]].concat(selCols.map(c=>['sel_'+c.abbr,c.abbr,1,c.name+' — sells / mo (SmartScout)'+(c.isUs?' · this is you':'')]),[['wh',isSS?'On hand':'Warehouse',1,isSS?'Bottles in the warehouse. Tick a row to list it under On Hand → ⭐ Smart Scout selections':''],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1],['qty','Order',1],['lasts','Lasts',1],['unit','Unit cost',1],['profit','Profit / bottle',1],['cost','Cost',1]])
-      .map(([k,t,right,tip])=>'<td onclick="ordersSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(isSS&&k==='wh'?'background:#ffe066;color:#1a2b4a;font-weight:900;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
+      .map(([k,t,right,tip])=>'<td onclick="ordersSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(isSS&&k==='wh'?'background:#ffe066;color:#1a2b4a;font-weight:900;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+(k==='unit'?'<div style="font-size:9px;text-transform:none;font-weight:700;color:#b7791f">non-sale price</div>':'')+'</td>').join('')+'</tr>'
     +shown.filter(r=>r.perDay>0).map(r=>{
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const showLines=st.showLines!==false && r.lines.length;
@@ -3047,7 +3066,7 @@ function renderOrders(boxId, mode){
     +(isSS?'• <b style="background:#ffe066;padding:0 4px">On hand</b> = bottles in your warehouse ("free" = not already on a work order or prepped); on a duo line, how many duos you can build. Tick a row to list it under <b>On Hand → ⭐ Smart Scout selections</b>, where you can prep it; clear them all here or there.<br>':'')
     +'• <b>Lasts</b> = how long what you have plus this order lasts at that rate.<br>'
     +'• <b>Profit / bottle</b> = Amazon price of the single listing (Keepa Buy Box) − Amazon referral fee − FBA fee − unit cost. Bottles sold only inside duos show "—". Hover a figure to see the price used.<br>'
-    +'• <b>Unit cost</b> = your weighted average cost from invoices (regular cost if no average yet). It doesn\'t know about upcoming Cosmoprof sales — check the price before ordering.</div>';
+    +'• <b>Unit cost</b> = the <b>non-sale price</b>: your own figure if you set one (click a Net / unit figure → set your own), otherwise the highest price you paid in the last 12 months. Order cost and profit use it, so a Cosmoprof sale only makes things better than shown. Your P&amp;L and Product Profit still use the average you actually paid.</div>';
   box.innerHTML=h;
 }
 // Sub-rows under a bottle: each listing it's sold in. Sells / mo and the

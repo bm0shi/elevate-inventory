@@ -401,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'simple-net-0926';
+const BUILD_ID = 'non-sale-cost-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -685,8 +685,20 @@ async function initDb() {
       CREATE INDEX IF NOT EXISTS idx_cost_hist_asin ON inv_cost_history(asin);
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS avg_cost NUMERIC;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS regular_cost NUMERIC;
+      -- The owner's own non-sale price for a product; beats regular_cost.
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS regular_cost_manual NUMERIC;
     `);
     console.log('[Inventory] Cost history ready.');
+    // regular_cost changed meaning (highest price in 12 months, not the price
+    // with the most units): re-blend once so stored values follow the new rule.
+    try {
+      const done = await pool.query("SELECT 1 FROM inv_cache WHERE cache_key='regular_cost_rule_v2'");
+      if (!done.rows.length) {
+        const n = await recomputeCosts();
+        await pool.query("INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('regular_cost_rule_v2', 'true'::jsonb, now()) ON CONFLICT (cache_key) DO NOTHING");
+        console.log(`[Costs] regular cost re-blended under the non-sale rule (${n} products).`);
+      }
+    } catch (e) { console.error('[Costs] regular cost re-blend failed (non-fatal):', e.message); }
   } catch(e) { console.error('cost history migration skipped:', e.message); }
 
   // ---- Per-shipment inbound costs (idempotent) ----
@@ -1995,7 +2007,7 @@ async function recomputeCosts() {
     const bm = await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles');
     const comps = {};
     for (const r of bm.rows) (comps[r.bundle_asin] = comps[r.bundle_asin] || []).push(r);
-    const pc = await pool.query('SELECT asin, avg_cost, regular_cost FROM inv_products');
+    const pc = await pool.query('SELECT asin, avg_cost, COALESCE(regular_cost_manual, regular_cost) AS regular_cost FROM inv_products');
     const cost = {}; for (const r of pc.rows) cost[r.asin] = r;
     const ownLots = new Set(rows.filter(r => r.order_number !== 'MANUAL').map(r => r.asin));
     for (const b of Object.keys(comps)) {
@@ -4965,7 +4977,10 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   }
   const prods = (await pool.query(`
     SELECT p.asin, p.sku, p.name, p.image, p.location, p.fnsku,
-           COALESCE(p.avg_cost, p.regular_cost, p.unit_cost) AS unit_cost,
+           -- Order screens plan at the NON-SALE price: the owner's own figure,
+           -- else the highest price in the last 12 months, else the average.
+           COALESCE(p.regular_cost_manual, p.regular_cost, p.avg_cost, p.unit_cost) AS unit_cost,
+           p.avg_cost, p.regular_cost_manual,
            COALESCE(s.onhand,0)::int AS onhand, COALESCE(s.transit,0)::int AS transit
     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin`)).rows;
   const bundles = (await pool.query('SELECT bundle_asin, component_asin, COALESCE(qty,1)::int AS qty FROM inv_bundles')).rows;
@@ -4975,6 +4990,11 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   const cosmo = {}; for (const r of (await pool.query('SELECT cosmo_num, asin FROM inv_cosmo_map WHERE asin IS NOT NULL')).rows) (cosmo[r.asin] = cosmo[r.asin] || []).push(r.cosmo_num);
   const ssBrand = await ssBrandRows();
   const ssSellers = await ssSellerFiles();
+  // Live Amazon prices from the last Inventory Value pull (SP-API). SmartScout
+  // prices aren't used for profit: they're often captured during a sale.
+  const amzPrice = {};
+  const valC = await cache('inventory_value');
+  for (const v of ((valC && valC.data) || [])) if (v.asin && v.amazon_price != null) amzPrice[v.asin] = Number(v.amazon_price);
 
   // Bottles committed to prep (single work orders + prepped, and duos × per)
   const committed = {};
@@ -5003,8 +5023,8 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       amazonOOS: m.amazonOOS ?? null,
       ss: ssListing(ssBrand[p.asin], m, ssSellers, true),
       // Each seller's units / month on this listing, by short label (US, Hyp…).
-      // Our own offer price from our latest SmartScout seller file.
-      ourPrice: (() => { const us = ssSellers.find(sl => sl.isUs); const r = us && us.by[p.asin]; return r && r.price != null ? r.price : null; })(),
+      // Amazon's Buy Box price from our Seller API (Inventory Value pull).
+      amazonPrice: amzPrice[p.asin] ?? null,
       ssSellers: ssSellers.reduce((o, sl) => {
         const r = sl.by[p.asin];
         if (r) o[sl.abbr] = smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, r);
@@ -5015,10 +5035,11 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       asin: p.asin, name: p.name, image: p.image, location: p.location, onhand: p.onhand, transit: p.transit,
       free: Math.max(0, p.onhand - (committed[p.asin] || 0)),
       unitCost: p.unit_cost != null ? Number(p.unit_cost) : null, cosmo: cosmo[p.asin] || [],
+      avgCost: p.avg_cost != null ? Number(p.avg_cost) : null, costManual: p.regular_cost_manual != null,
     });
   }
   res.json({ ok: true, listings, bottles,
-    sellerId, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
+    sellerId, amazonPriceAt: valC && valC.updated_at, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
     asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
 });
 
@@ -5105,6 +5126,19 @@ async function ssSellerFiles() {
   for (const sl of list) { seen[sl.abbr] = (seen[sl.abbr] || 0) + 1; if (seen[sl.abbr] > 1) sl.abbr += seen[sl.abbr]; }
   return list;
 }
+
+// The owner's non-sale price for one product (null clears it). Duos made of
+// it are re-costed from their bottles.
+app.post('/api/products/:asin/regular-cost', ownerAuth, async (req, res) => {
+  const asin = String(req.params.asin || '').trim().toUpperCase();
+  const raw = req.body ? req.body.cost : undefined;
+  const cost = raw === null || raw === '' ? null : Number(raw);
+  if (cost !== null && !(cost > 0 && cost < 10000)) return res.status(400).json({ ok: false, error: 'Enter a price above $0.' });
+  const r = await pool.query('UPDATE inv_products SET regular_cost_manual=$1 WHERE asin=$2', [cost, asin]);
+  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Product not found' });
+  try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend after manual regular cost failed:', e.message); }
+  res.json({ ok: true, asin, cost });
+});
 
 // Smart Scout selections: ticked on Smart Scout Orders (owner), read by the
 // On Hand filter (warehouse). Only ASINs — no sales or cost data — so the
