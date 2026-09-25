@@ -1863,6 +1863,9 @@ function valSort(col){
 function renderValue(){
   let d=window._valData||[]; const s=window._valSort||(window._valSort={col:'_retailVal',dir:-1});
   const seen=new Set(); d=d.filter(x=>{ if(seen.has(x.asin))return false; seen.add(x.asin); return true; });
+  // Count before any filtering, for "Showing N of M". It was only defined in
+  // the FBA Inventory screen, so this screen threw "allCount is not defined".
+  const allCount=d.length;
   // merge LIVE stock (cached price data carries stale quantities)
   const liveByAsin={};
   for(const p of (products||[])){
@@ -4103,6 +4106,10 @@ function deleteInvoiceByNumber(order, status, received){
   }).catch(()=>toast('Delete failed',true));
 }
 
+// The invoice open on the check-in screen. Never declared before, so deleting
+// an invoice before opening one threw after the delete had gone through and
+// showed "Delete failed".
+let currentInvoice=null;
 function loadInvoice(){
   const order=document.getElementById('invoicePick').value;
   currentInvoice=order;
