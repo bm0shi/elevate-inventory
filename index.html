@@ -161,6 +161,7 @@
     <h1>📦 Elevate Inventory</h1>
     <div class="sub">Scan receiving · live on-hand · FBA deduction <span id="refreshStamp" style="color:#1e8449;margin-left:10px;font-size:11px"></span>
       <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="margin-left:10px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#1e8449;color:#fff;cursor:pointer;font-weight:700">🔄 Live: ON</button>
+      <button id="uiScaleBtn" onclick="cycleUiScale()" title="Display size on THIS device only (e.g. smaller on the Surface). Other computers keep their own." style="margin-left:6px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#1a2b4a;color:#fff;cursor:pointer;font-weight:700">🔍 Size: 100%</button>
     </div>
   </header>
   <div class="tabs">
@@ -3743,7 +3744,7 @@ function renderPendingPrep(){
   const lastActiveIdx=showDivider ? items.map(x=>!!x.claimed_by).lastIndexOf(true) : -1;
   h+='<div class="pcards">';
   h+=items.map((x,idx)=>{
-    const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
     const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`;
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
@@ -3961,6 +3962,26 @@ function releasePrepJob(id){
   api('/api/pending-prep/release',{method:'POST',body:JSON.stringify({id})}).then(()=>{ toast('Released'); loadPendingPrep(); });
 }
 // tiny helpers (localStorage not available in artifacts but fine in the real app)
+// ---- DISPLAY SIZE (per device) ----
+// The Surface's small screen showed Pending Prep far too big. A size picked
+// here is stored in this browser only, so the desktop keeps 100%.
+const UI_SCALES=[100,90,80,70];
+function uiScale(){ try{ const v=parseInt(window.localStorage.getItem('uiScale'),10); return UI_SCALES.includes(v)?v:100; }catch(e){ return 100; } }
+function applyUiScale(){
+  const v=uiScale();
+  document.documentElement.style.zoom = v===100 ? '' : String(v/100);
+  // 100vh is measured before zoom, so stretch the page to still fill the window.
+  const app=document.getElementById('mainApp'); if(app) app.style.minHeight = v===100 ? '' : (10000/v)+'vh';
+  const b=document.getElementById('uiScaleBtn'); if(b) b.textContent='🔍 Size: '+v+'%';
+}
+function cycleUiScale(){
+  const next=UI_SCALES[(UI_SCALES.indexOf(uiScale())+1)%UI_SCALES.length];
+  try{ window.localStorage.setItem('uiScale', String(next)); }catch(e){}
+  applyUiScale();
+  toast('Display size '+next+'% on this device');
+}
+applyUiScale();
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', applyUiScale);
 function localStorage_get(k){ try { return window.localStorage.getItem(k); } catch(e){ return window['_mem_'+k]||''; } }
 function localStorage_set(k,v){ try { window.localStorage.setItem(k,v); } catch(e){ window['_mem_'+k]=v; } }
 function editPendingPrep(id, current){
@@ -4135,7 +4156,7 @@ function renderPrepList(){
   let h='<div class="cards"><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(anyDuo?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+bottlesPrepped.toLocaleString()+' bottles</div>':'')+'</div><div class="card"><div class="n">'+d.items.length+'</div><div class="l">SKUs Staged</div></div></div>';
   h+='<div class="pcards">';
   h+=items.map(x=>{
-    const img=x.image?`<img src="${x.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
     const nameLink=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`:x.name;
     const badge=x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span>':'';
     // labeled pill rows for ASIN + FNSKU (like the reference app)
@@ -4393,7 +4414,7 @@ function candBtn(cosmoNum, asin, name, conf, image){
     ? '<span style="display:inline-block;font-weight:800;font-size:11px;padding:2px 8px;border-radius:4px;margin-right:7px;background:#eafaf1;color:#1e8449;letter-spacing:0.3px">LIKELY MATCH</span>'
     : '';
   const img = image
-    ? '<img src="'+image+'" onerror="this.style.display=\'none\'" style="width:52px;height:52px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">'
+    ? '<img src="'+esc(image)+'" onerror="this.style.display=\'none\'" style="width:52px;height:52px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">'
     : '<div style="width:52px;height:52px;border-radius:5px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
   // Row, not a button — so the Amazon link inside is independently clickable.
   return '<div style="display:flex;gap:10px;align-items:center;margin-top:7px;padding:10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;font-size:13px;line-height:1.4">'
@@ -4550,7 +4571,7 @@ function searchNewUpc(inp){
   if(!hits.length){ box.innerHTML='<div class="hint" style="padding:6px 2px">No match — add the product on the Receiving (Manual) page first.</div>'; return; }
   box.innerHTML=hits.map(p=>{
     const safe=String(p.name||'').replace(/\\/g,'').replace(/'/g,"\\'").replace(/"/g,'');
-    const img=p.image?'<img src="'+p.image+'" onerror="this.style.display=\'none\'" style="width:46px;height:46px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:46px;height:46px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+    const img=p.image?'<img src="'+esc(p.image)+'" onerror="this.style.display=\'none\'" style="width:46px;height:46px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:46px;height:46px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
     return '<div style="display:flex;gap:10px;align-items:center;margin-top:7px;padding:10px;border:1.5px solid #d8dee6;border-radius:6px;background:#fff;font-size:13px;line-height:1.4">'
       +img+'<div style="flex:1;min-width:0"><div style="font-weight:600">'+esc(p.name)+'</div>'
       +'<div style="margin-top:4px"><a href="https://www.amazon.com/dp/'+p.asin+'" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8">'+p.asin+' ↗</a></div></div>'
@@ -4626,7 +4647,7 @@ function pollNameRefresh(){
       +'<div style="font-weight:800;color:#b7791f;font-size:15px">'+j.changes.length+' name'+(j.changes.length===1?'':'s')+' differ from Amazon</div>'
       +'<div class="hint" style="margin-bottom:8px">Review, then apply. Nothing has changed yet.</div>';
     for(const c of j.changes){
-      const img=c.image?'<img src="'+c.image+'" onerror="this.style.display=\'none\'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:42px;height:42px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+      const img=c.image?'<img src="'+esc(c.image)+'" onerror="this.style.display=\'none\'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:42px;height:42px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
       h+='<div style="display:flex;gap:10px;padding:9px 0;border-bottom:1px solid #f0ead9">'+img
         +'<div style="flex:1;min-width:0;font-size:12.5px;line-height:1.4">'
         +'<div style="color:#c0392b;text-decoration:line-through">'+c.oldName+'</div>'
@@ -6264,7 +6285,7 @@ function loadMappingHealth(){
         +'<div style="font-weight:800;color:#c0392b;font-size:16px">⚠ '+d.collisions.length+' collision'+(d.collisions.length===1?'':'s')+' — at least one link in each pair is WRONG</div>'
         +'<div class="hint" style="margin-bottom:10px">Cosmoprof issues a separate item number for every size and variant. Two numbers on one ASIN means a liter is booked as a 10.1oz — or a conditioner as a shampoo. Unlink the wrong one, then re-link it during check-in.</div>';
       for(const c of d.collisions){
-        const img=c.image?'<img src="'+c.image+'" onerror="this.style.display=\'none\'" style="width:44px;height:44px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:44px;height:44px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+        const img=c.image?'<img src="'+esc(c.image)+'" onerror="this.style.display=\'none\'" style="width:44px;height:44px;object-fit:contain;border-radius:5px;background:#fff;flex-shrink:0">':'<div style="width:44px;height:44px;background:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
         h+='<div style="background:#fff;border:1px solid #f3d9d6;border-radius:7px;padding:10px;margin-bottom:8px">'
           +'<div style="display:flex;gap:10px;align-items:center;margin-bottom:7px">'+img
           +'<div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px;line-height:1.3">'+(esc(c.name)||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
@@ -6293,7 +6314,7 @@ function loadMappingHealth(){
         +'<div class="hint" style="margin-bottom:8px">Scan one bottle of each in <b>Receiving (Manual)</b> to assign it. After that the barcode identifies it everywhere — and links its Cosmoprof number automatically on the next invoice.'
         +(inStock.length?' <b>'+inStock.length+' of these are in stock right now</b>, so the bottles are on your floor today.':'')+'</div>';
       for(const m of d.missingUpc.slice(0,40)){
-        const img=m.image?'<img src="'+m.image+'" onerror="this.style.display=\'none\'" style="width:38px;height:38px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:38px;height:38px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+        const img=m.image?'<img src="'+esc(m.image)+'" onerror="this.style.display=\'none\'" style="width:38px;height:38px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:38px;height:38px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
         h+='<div style="display:flex;gap:9px;align-items:center;padding:7px 0;border-bottom:1px solid #eef2f6">'+img
           +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:12.5px;line-height:1.3">'+esc(m.name)+'</div>'
           +'<div style="font-size:11px;color:#8a97a6;margin-top:2px"><span style="font-family:monospace;color:#2563a8">'+m.asin+'</span>'
@@ -6309,7 +6330,7 @@ function loadMappingHealth(){
     const ver=d.rows.filter(r=>r.verified);
 
     const row=(r)=>{
-      const img=r.image?'<img src="'+r.image+'" onerror="this.style.display=\'none\'" style="width:40px;height:40px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:40px;height:40px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
+      const img=r.image?'<img src="'+esc(r.image)+'" onerror="this.style.display=\'none\'" style="width:40px;height:40px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0">':'<div style="width:40px;height:40px;background:#f4f6f9;border-radius:5px;display:flex;align-items:center;justify-content:center;flex-shrink:0">📦</div>';
       return '<div style="display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6">'
         +img
         +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;line-height:1.3">'+(esc(r.name)||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
@@ -6706,7 +6727,7 @@ function drawShipments(list,b){
           : `${it.qty} sent`;
         const idPill=(icon,label,val,color)=>val?`<span style="display:inline-flex;align-items:center;gap:3px;margin-right:10px"><span style="font-size:9px;font-weight:800;color:#5a6472;text-transform:uppercase">${icon} ${esc(label)}</span><span style="font-family:monospace;font-size:12px;font-weight:700;color:#1a2b4a;background:${color};padding:2px 7px;border-radius:4px;cursor:pointer" onclick="copyText('${val}',this)" title="click to copy">${val}</span></span>`:'';
         const ids=`<div style="margin-top:4px">${idPill('🏷️','ASIN',it.asin,'#eef4fb')}${idPill('📦','FNSKU',it.fnsku,'#fdf3e6')}${it.sku?idPill('🔖','SKU',it.sku,'#f0f4ef'):''}</div>`;
-        const img=it.image?`<img src="${it.image}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0;margin-right:10px">`:'';
+        const img=it.image?`<img src="${esc(it.image)}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:5px;background:#f4f6f9;flex-shrink:0;margin-right:10px">`:'';
         return `<div class="ship-item-row ${isShort?'short':''}" style="align-items:flex-start"><span style="flex:1;display:flex;align-items:flex-start">${img}<span><a href="https://www.amazon.com/dp/${it.asin}" target="_blank" style="color:#1f2733;text-decoration:none;font-weight:600">${esc(it.name)}</a>${ids}</span></span><span class="qty-cmp" style="white-space:nowrap;font-weight:700;padding-left:10px">${recTxt}</span></div>`;
       }).join('');
       return `<div class="ship-card">
@@ -7083,7 +7104,7 @@ function renderOnhand(){
       +(list.length?'':'<div class="box hint">Nothing selected yet. Tick products in the yellow On hand column on Admin → Smart Scout Orders.</div>')
     : '';
   body.innerHTML = pickBar+'<div class="pcards'+(viewBig('onhand')?' bigcards':'')+'">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
-    const img=p.image?`<img src="${p.image}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const img=p.image?`<img src="${esc(p.image)}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
     const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(p.name)}</a>`:p.name;
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     let duoNote='';
