@@ -3326,6 +3326,12 @@ function loadItemLocs(){
   api('/api/item-locations').then(d=>{ if(!d||!d.ok){ box.innerHTML='<div class="box" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; } _il=d; renderItemLocs(); loadLocations(); })
     .catch(e=>{ box.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
 }
+// Product photo for the location screens; a box when there's no image yet.
+function ilImg(it, size){
+  return it.image
+    ? '<img src="'+esc(it.image)+'" loading="lazy" alt="" onerror="this.replaceWith(Object.assign(document.createElement(\'div\'),{textContent:\'📦\',style:\'font-size:'+Math.round(size/2)+'px\'}))" style="width:'+size+'px;height:'+size+'px;object-fit:contain;background:#fff;border:1px solid #e2e8f0;border-radius:8px">'
+    : '<div style="width:'+size+'px;height:'+size+'px;display:flex;align-items:center;justify-content:center;font-size:'+Math.round(size/2.5)+'px;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px">📦</div>';
+}
 const ilPos=l=>{ const m=String(l||'').match(/^([A-Z])-(\d+)$/); return m?{r:m[1],n:+m[2]}:null; };
 const ilNext=(a,b)=>{ const x=ilPos(a), y=ilPos(b); return x&&y&&x.r===y.r&&Math.abs(x.n-y.n)===1; };
 function renderItemLocs(){
@@ -3351,7 +3357,7 @@ function renderItemLocs(){
       +'<span style="display:inline-flex;border:1px solid #cfd8e3;border-radius:8px;overflow:hidden">'+['list','map'].map(v=>'<button onclick="ilSet(\'view\',\''+v+'\')" style="border:0;padding:6px 12px;cursor:pointer;font-weight:700;'+(st.view===v?'background:#1a2b4a;color:#fff':'background:#fff;color:#1a2b4a')+'">'+(v==='list'?'List':'Rack map')+'</button>').join('')+'</span>'
       +'<select onchange="ilSet(\'filter\',this.value)" style="padding:6px">'+[['all','All bottles'],['none','No spot yet'],['has','Has a spot'],['duo','Duo bottles only']].map(([v,t])=>'<option value="'+v+'"'+(st.filter===v?' selected':'')+'>'+t+'</option>').join('')+'</select>'
       +'<label class="hint"><input type="checkbox" '+(st.stocked?'checked':'')+' onchange="ilSet(\'stocked\',this.checked)"> Only bottles with stock (on hand or on the way)</label>'
-      +'<input placeholder="Search name, SKU, ASIN, spot" value="'+esc(st.q)+'" oninput="window._ilQ=this.value;clearTimeout(window._ilT);window._ilT=setTimeout(()=>ilSet(\'q\',window._ilQ),300)" style="padding:6px;min-width:220px">'
+      +'<input placeholder="Search name, ASIN, spot" value="'+esc(st.q)+'" oninput="window._ilQ=this.value;clearTimeout(window._ilT);window._ilT=setTimeout(()=>ilSet(\'q\',window._ilQ),300)" style="padding:6px;min-width:220px">'
     +'</div></div>';
   // suggestions bar
   if(_ilSug){
@@ -3379,14 +3385,14 @@ function renderItemLocs(){
 }
 function ilList(rows, locOf, sug){
   const td='padding:6px 8px;border-top:1px solid #eef2f6';
-  return '<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px"><tr class="hint" style="font-size:11px;text-transform:uppercase"><td style="padding:6px 8px">Spot</td><td style="padding:6px 8px">SKU</td><td style="padding:6px 8px">Product</td><td style="padding:6px 8px;text-align:right">On hand</td><td style="padding:6px 8px">Duo partner(s)</td></tr>'
+  return '<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px"><tr class="hint" style="font-size:11px;text-transform:uppercase"><td style="padding:6px 8px">Spot</td><td style="padding:6px 8px">Photo</td><td style="padding:6px 8px">Product</td><td style="padding:6px 8px;text-align:right">On hand</td><td style="padding:6px 8px">Duo partner(s)</td></tr>'
     +rows.map(it=>{
       const s=sug[it.asin], L=locOf(it.asin);
       const cell=s?'<label style="display:flex;gap:6px;align-items:center;cursor:pointer" title="'+esc(s.reason||'')+'"><input type="checkbox" '+(s.on!==false?'checked':'')+' onchange="_ilSug.assignments.find(x=>x.asin===\''+esc(it.asin)+'\').on=this.checked;renderItemLocs()"><b style="font-size:15px">'+esc(s.location)+'</b><span class="hint" style="font-size:10px">suggested</span></label>'
         :'<input list="ilSlots" value="'+esc(it.location||'')+'" placeholder="—" onchange="ilSetLoc(\''+esc(it.asin)+'\',this)" style="width:78px;padding:5px;font-weight:800;'+(it.location&&!it.onRack?'border-color:#c0392b':'')+'" title="'+(it.location&&!it.onRack?'Not on the rack map any more':'Type a spot like A-6, or clear it')+'">';
       const parts=it.partners.map(p=>{ const pl=locOf(p.asin), ok=L&&pl&&ilNext(L,pl);
         return '<div style="white-space:nowrap"><b style="color:'+(ok?'#1e8449':pl?'#b7791f':'#8a97a6')+'">'+(pl?esc(pl):'no spot')+(ok?' ✓':pl&&L?' ⚠':'')+'</b> '+esc(String(p.name||p.asin).slice(0,48))+'<span class="hint"> · '+esc(String(p.duoName||'duo').slice(0,30))+'</span></div>'; }).join('');
-      return '<tr style="'+(s&&s.on!==false?'background:#fff9d6':'')+'"><td style="'+td+'">'+cell+'</td><td style="'+td+';font-family:monospace;font-size:12px">'+esc(it.sku||'—')+'</td>'
+      return '<tr style="'+(s&&s.on!==false?'background:#fff9d6':'')+'"><td style="'+td+';vertical-align:middle">'+cell+'</td><td style="'+td+';width:128px">'+ilImg(it,120)+'</td>'
         +'<td style="'+td+';min-width:260px"><b>'+amzLink(it.asin,it.name)+'</b><div class="hint">'+asinChip(it.asin)+'</div></td>'
         +'<td style="'+td+';text-align:right;font-weight:700">'+it.onhand+(it.transit?'<div class="hint" style="font-weight:400">+'+it.transit+' on the way</div>':'')+'</td>'
         +'<td style="'+td+';font-size:12px">'+(parts||'<span class="hint">single</span>')+'</td></tr>';
@@ -3396,11 +3402,11 @@ function ilMap(d, locOf, sug){
   const at={}; d.items.forEach(it=>{ const L=locOf(it.asin); if(L) (at[L]=at[L]||[]).push(it); });
   let h='<div class="box" style="overflow-x:auto">';
   for(const [r,n] of Object.entries(d.rows)){
-    h+='<div style="font-weight:900;margin:10px 0 4px">Row '+esc(r)+'</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">';
+    h+='<div style="font-weight:900;margin:10px 0 4px">Row '+esc(r)+'</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px">';
     for(let i=1;i<=n;i++){ const k=r+'-'+i, its=at[k]||[];
       const isSug=its.some(it=>sug[it.asin]&&sug[it.asin].on!==false);
       h+='<div style="border:1px solid '+(its.length?'#cfd8e3':'#eef2f6')+';border-radius:8px;padding:6px;min-height:58px;font-size:11px;background:'+(isSug?'#fff9d6':its.length?'#fff':'#f7f9fb')+'"><b style="font-size:13px">'+k+'</b>'
-        +its.map(it=>'<div title="'+esc(it.name)+'" style="margin-top:2px;line-height:1.2">'+(it.partners.length?'<span style="color:#c0392b;font-weight:800">◆</span> ':'')+esc(String(it.name).slice(0,40))+'<div class="hint" style="font-size:10px">'+esc(it.sku||it.asin)+' · '+it.onhand+'</div></div>').join('')
+        +its.map(it=>'<div title="'+esc(it.name)+'" style="margin-top:4px;line-height:1.2;text-align:center">'+ilImg(it,96)+'<div style="text-align:left;margin-top:3px">'+(it.partners.length?'<span style="color:#c0392b;font-weight:800">◆</span> ':'')+esc(String(it.name).slice(0,40))+'<div class="hint" style="font-size:10px">'+esc(it.asin)+' · '+it.onhand+' on hand</div></div></div>').join('')
         +'</div>';
     }
     h+='</div>';
@@ -3462,10 +3468,12 @@ function ilPrint(){
   const d=_il; if(!d) return;
   const rows=d.items.filter(it=>it.location).sort((a,b)=>{ const x=ilPos(a.location)||{r:'~',n:0}, y=ilPos(b.location)||{r:'~',n:0}; return x.r.localeCompare(y.r)||x.n-y.n; });
   const w=window.open('','_blank'); if(!w){ alert('Allow pop-ups to print.'); return; }
-  w.document.write('<html><head><title>Item Locations</title><style>body{font-family:Arial,sans-serif;font-size:12px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:4px 6px;text-align:left}th{background:#eee}.loc{font-weight:bold;font-size:14px;white-space:nowrap}</style></head><body><h2>Item Locations — '+new Date().toLocaleDateString()+'</h2><table><tr><th>Spot</th><th>SKU</th><th>Product</th><th>ASIN</th><th>On hand</th><th>Duo partner</th></tr>'
-    +rows.map(it=>'<tr><td class="loc">'+esc(it.location)+'</td><td>'+esc(it.sku||'')+'</td><td>'+esc(it.name||'')+'</td><td>'+esc(it.asin)+'</td><td>'+it.onhand+'</td><td>'+it.partners.map(p=>esc((p.location||'—')+' '+String(p.name||'').slice(0,30))).join('<br>')+'</td></tr>').join('')
+  w.document.write('<html><head><title>Item Locations</title><style>body{font-family:Arial,sans-serif;font-size:12px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:4px 6px;text-align:left}th{background:#eee}.loc{font-weight:bold;font-size:14px;white-space:nowrap}</style></head><body><h2>Item Locations — '+new Date().toLocaleDateString()+'</h2><table><tr><th>Spot</th><th>Photo</th><th>Product</th><th>ASIN</th><th>On hand</th><th>Duo partner</th></tr>'
+    +rows.map(it=>'<tr><td class="loc">'+esc(it.location)+'</td><td>'+(it.image?'<img src="'+esc(it.image)+'" style="width:70px;height:70px;object-fit:contain">':'')+'</td><td>'+esc(it.name||'')+'</td><td>'+esc(it.asin)+'</td><td>'+it.onhand+'</td><td>'+it.partners.map(p=>esc((p.location||'—')+' '+String(p.name||'').slice(0,30))).join('<br>')+'</td></tr>').join('')
     +'</table></body></html>');
-  w.document.close(); w.focus(); w.print();
+  w.document.close(); w.focus();
+  // wait for the photos before printing
+  const imgs=[...w.document.images]; Promise.all(imgs.map(i=>i.complete?1:new Promise(r=>{i.onload=i.onerror=r;}))).then(()=>w.print());
 }
 function ordersCsv(){
   const q=v=>/[",\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
