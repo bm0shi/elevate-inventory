@@ -510,6 +510,7 @@
           <button class="subtab" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button>
           <button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button>
           <button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button>
+          <button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button>
         </div></div>
         <div class="subgroup"><div class="subgroup-label">Checks</div><div class="subgroup-btns">
           <button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button>
@@ -670,6 +671,7 @@
 <div id="sub-sendnext" class="subpanel"><div id="sendNextBody"></div></div>
 <div id="sub-orders" class="subpanel"><div id="ordersBody"></div></div>
 <div id="sub-ssorders" class="subpanel"><div id="ssOrdersBody"></div></div>
+<div id="sub-itemlocs" class="subpanel"><div id="itemLocsBody"></div></div>
 <div id="sub-smartscout" class="subpanel">
   <div class="box">
     <b style="font-size:16px">🥧 Smart Scout</b>
@@ -2560,6 +2562,7 @@ function showSubTab(name, ev){
   if(name==='restock'){ if(window._restockData) renderRestock(); else loadRestockCache(); }
   if(name==='sendnext' || name==='orders' || name==='ssorders') loadPlan(name);
   if(name==='smartscout') loadSmartScout();
+  if(name==='itemlocs') loadItemLocs();
   if(name==='toadd'){ if(window._toaddData) renderToAdd(); else loadToAdd(); }
   if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
@@ -3309,6 +3312,160 @@ function renderSmartScout(){
     +opp.map(l=>'<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+amzLink(l.asin, l.title)+'<div class="hint">'+asinChip(l.asin)+(l.brand?' · '+esc(l.brand):'')+'</div></td><td style="'+td+'">'+n(l.pie.units)+'</td><td style="'+td+'">'+Math.round(l.pie.amazonPct)+'%</td><td style="'+td+'">'+n(l.pie.pie)+'</td><td style="'+td+'">'+l.pie.sellers3P+'</td><td style="'+td+';font-weight:700">'+n(l.pie.fair)+'</td><td style="'+td+'">'+(l.pie.price!=null?'$'+Number(l.pie.price).toFixed(2):'—')+'</td></tr>').join('')
     +'</table></div>';
   box.innerHTML=h;
+}
+// ============================================================
+// ITEM LOCATIONS: every bottle and its pallet spot, the rack layout, and
+// suggested spots that keep duo partners side by side (lib/locations.js on
+// the server). Suggestions are only saved when you apply them.
+// ============================================================
+let _il=null, _ilSug=null;
+function ilState(){ try{ return Object.assign({view:'list',filter:'all',q:'',stocked:true}, JSON.parse(localStorage_get('itemLocs')||'{}')); }catch(e){ return {view:'list',filter:'all',q:'',stocked:true}; } }
+function ilSet(k,v){ const st=ilState(); st[k]=v; localStorage_set('itemLocs', JSON.stringify(st)); renderItemLocs(); }
+function loadItemLocs(){
+  const box=document.getElementById('itemLocsBody'); box.innerHTML='<div class="box hint">Loading…</div>';
+  api('/api/item-locations').then(d=>{ if(!d||!d.ok){ box.innerHTML='<div class="box" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; } _il=d; renderItemLocs(); loadLocations(); })
+    .catch(e=>{ box.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
+}
+const ilPos=l=>{ const m=String(l||'').match(/^([A-Z])-(\d+)$/); return m?{r:m[1],n:+m[2]}:null; };
+const ilNext=(a,b)=>{ const x=ilPos(a), y=ilPos(b); return x&&y&&x.r===y.r&&Math.abs(x.n-y.n)===1; };
+function renderItemLocs(){
+  const d=_il, st=ilState(), box=document.getElementById('itemLocsBody'); if(!d) return;
+  const sug={}; (_ilSug&&_ilSug.assignments||[]).forEach(a=>sug[a.asin]=a);
+  const locOf=a=>{ const it=d.items.find(x=>x.asin===a); return (sug[a]&&sug[a].on!==false&&sug[a].location)||(it&&it.location)||null; };
+  const assigned=d.items.filter(x=>x.location).length, stocked=d.items.filter(x=>x.onhand>0||x.transit>0), stockedNo=stocked.filter(x=>!x.location).length;
+  const rowsTxt=Object.entries(d.rows).map(([r,n])=>r+'-1…'+r+'-'+n).join(' · ');
+  let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-start"><div><b style="font-size:16px">📍 Item Locations</b>'
+    +'<div class="hint">Every bottle and its pallet spot. <b>'+assigned+'</b> of '+d.items.length+' have a spot'+(stockedNo?' · <b style="color:#c0392b">'+stockedNo+'</b> with stock have none':'')+'. Rack: '+esc(rowsTxt)+' ('+d.slots.length+' spots).</div></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      +'<button class="action" onclick="ilSuggest()" style="background:#127a7a">💡 Suggest locations</button>'
+      +'<button class="action" onclick="ilPrint()" style="background:#1a2b4a">🖨 Print list</button>'
+      +'<button class="action" onclick="ilClearAll()" style="background:#c0392b">Clear all locations</button></div></div>'
+    // layout editor
+    +'<details style="margin-top:10px"'+(Object.keys(d.rows).join()==='A,B'&&d.slots.length===40?' open':'')+'><summary style="cursor:pointer;font-weight:700">Rack layout (new warehouse? set your rows here)</summary>'
+      +'<div class="hint" style="margin:6px 0">One letter per row of pallet spots, and how many spots in that row. Spots are named row-number: A-1, A-2 … Duo partners are kept next to each other in the same row.</div>'
+      +'<div id="ilRows" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      +Object.entries(d.rows).map(([r,n])=>'<span class="ilRow" style="display:inline-flex;gap:4px;align-items:center;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px"><input value="'+esc(r)+'" maxlength="1" style="width:30px;padding:5px;text-transform:uppercase;font-weight:800;text-align:center"> × <input type="number" min="1" max="200" value="'+n+'" style="width:64px;padding:5px"> <button onclick="this.parentNode.remove()" title="Remove row" style="background:none;border:0;color:#c0392b;cursor:pointer;font-size:16px">✕</button></span>').join('')
+      +'</div><div style="margin-top:8px;display:flex;gap:8px"><button class="action" onclick="ilAddRow()" style="background:#5a6472;padding:6px 12px">+ Add row</button><button class="action" onclick="ilSaveLayout()" style="background:#127a7a;padding:6px 12px">Save layout</button></div></details>'
+    // controls
+    +'<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;align-items:center">'
+      +'<span style="display:inline-flex;border:1px solid #cfd8e3;border-radius:8px;overflow:hidden">'+['list','map'].map(v=>'<button onclick="ilSet(\'view\',\''+v+'\')" style="border:0;padding:6px 12px;cursor:pointer;font-weight:700;'+(st.view===v?'background:#1a2b4a;color:#fff':'background:#fff;color:#1a2b4a')+'">'+(v==='list'?'List':'Rack map')+'</button>').join('')+'</span>'
+      +'<select onchange="ilSet(\'filter\',this.value)" style="padding:6px">'+[['all','All bottles'],['none','No spot yet'],['has','Has a spot'],['duo','Duo bottles only']].map(([v,t])=>'<option value="'+v+'"'+(st.filter===v?' selected':'')+'>'+t+'</option>').join('')+'</select>'
+      +'<label class="hint"><input type="checkbox" '+(st.stocked?'checked':'')+' onchange="ilSet(\'stocked\',this.checked)"> Only bottles with stock (on hand or on the way)</label>'
+      +'<input placeholder="Search name, SKU, ASIN, spot" value="'+esc(st.q)+'" oninput="window._ilQ=this.value;clearTimeout(window._ilT);window._ilT=setTimeout(()=>ilSet(\'q\',window._ilQ),300)" style="padding:6px;min-width:220px">'
+    +'</div></div>';
+  // suggestions bar
+  if(_ilSug){
+    const on=_ilSug.assignments.filter(a=>a.on!==false);
+    h+='<div class="box" style="background:#fff6bf;border:1px solid #d4a500"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b>💡 '+_ilSug.assignments.length+' suggested spots</b> — yellow below. Untick any you don\'t want, or type your own spot instead.'
+      +(_ilSug.unplaced.length?'<div style="color:#c0392b;margin-top:4px">'+_ilSug.unplaced.length+' didn\'t fit — add spots or a row to the rack layout: '+esc(_ilSug.unplacedNames.slice(0,6).join(', '))+(_ilSug.unplaced.length>6?'…':'')+'</div>':'')+'</div>'
+      +'<div style="display:flex;gap:8px"><button class="action" onclick="ilApply()" style="background:#127a7a">✓ Apply '+on.length+'</button><button class="action" onclick="_ilSug=null;renderItemLocs()" style="background:#5a6472">Discard</button></div></div></div>';
+  }
+  // filter rows
+  const q=(st.q||'').toLowerCase();
+  let rows=d.items.filter(it=>{
+    if(st.stocked && !(it.onhand>0||it.transit>0) && !it.location && !sug[it.asin]) return false;
+    const L=locOf(it.asin);
+    if(st.filter==='none' && L) return false;
+    if(st.filter==='has' && !L) return false;
+    if(st.filter==='duo' && !it.partners.length) return false;
+    if(q && !((it.name||'').toLowerCase().includes(q)||(it.sku||'').toLowerCase().includes(q)||it.asin.toLowerCase().includes(q)||String(L||'').toLowerCase().includes(q))) return false;
+    return true;
+  });
+  const key=l=>{ const p=ilPos(l); return p?p.r.charCodeAt(0)*1000+p.n:1e9; };
+  rows.sort((a,b)=>key(locOf(a.asin))-key(locOf(b.asin))||String(a.name).localeCompare(String(b.name)));
+  h+='<datalist id="ilSlots">'+d.slots.map(x=>'<option value="'+x+'">').join('')+'</datalist>';
+  h+=st.view==='map'?ilMap(d, locOf, sug):ilList(rows, locOf, sug);
+  box.innerHTML=h;
+}
+function ilList(rows, locOf, sug){
+  const td='padding:6px 8px;border-top:1px solid #eef2f6';
+  return '<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:820px"><tr class="hint" style="font-size:11px;text-transform:uppercase"><td style="padding:6px 8px">Spot</td><td style="padding:6px 8px">SKU</td><td style="padding:6px 8px">Product</td><td style="padding:6px 8px;text-align:right">On hand</td><td style="padding:6px 8px">Duo partner(s)</td></tr>'
+    +rows.map(it=>{
+      const s=sug[it.asin], L=locOf(it.asin);
+      const cell=s?'<label style="display:flex;gap:6px;align-items:center;cursor:pointer" title="'+esc(s.reason||'')+'"><input type="checkbox" '+(s.on!==false?'checked':'')+' onchange="_ilSug.assignments.find(x=>x.asin===\''+esc(it.asin)+'\').on=this.checked;renderItemLocs()"><b style="font-size:15px">'+esc(s.location)+'</b><span class="hint" style="font-size:10px">suggested</span></label>'
+        :'<input list="ilSlots" value="'+esc(it.location||'')+'" placeholder="—" onchange="ilSetLoc(\''+esc(it.asin)+'\',this)" style="width:78px;padding:5px;font-weight:800;'+(it.location&&!it.onRack?'border-color:#c0392b':'')+'" title="'+(it.location&&!it.onRack?'Not on the rack map any more':'Type a spot like A-6, or clear it')+'">';
+      const parts=it.partners.map(p=>{ const pl=locOf(p.asin), ok=L&&pl&&ilNext(L,pl);
+        return '<div style="white-space:nowrap"><b style="color:'+(ok?'#1e8449':pl?'#b7791f':'#8a97a6')+'">'+(pl?esc(pl):'no spot')+(ok?' ✓':pl&&L?' ⚠':'')+'</b> '+esc(String(p.name||p.asin).slice(0,48))+'<span class="hint"> · '+esc(String(p.duoName||'duo').slice(0,30))+'</span></div>'; }).join('');
+      return '<tr style="'+(s&&s.on!==false?'background:#fff9d6':'')+'"><td style="'+td+'">'+cell+'</td><td style="'+td+';font-family:monospace;font-size:12px">'+esc(it.sku||'—')+'</td>'
+        +'<td style="'+td+';min-width:260px"><b>'+amzLink(it.asin,it.name)+'</b><div class="hint">'+asinChip(it.asin)+'</div></td>'
+        +'<td style="'+td+';text-align:right;font-weight:700">'+it.onhand+(it.transit?'<div class="hint" style="font-weight:400">+'+it.transit+' on the way</div>':'')+'</td>'
+        +'<td style="'+td+';font-size:12px">'+(parts||'<span class="hint">single</span>')+'</td></tr>';
+    }).join('')+'</table><div class="hint" style="margin-top:6px">✓ = duo partner right next to it · ⚠ = partner is elsewhere. Type a spot to change it (saved right away); clear it to remove.</div></div>';
+}
+function ilMap(d, locOf, sug){
+  const at={}; d.items.forEach(it=>{ const L=locOf(it.asin); if(L) (at[L]=at[L]||[]).push(it); });
+  let h='<div class="box" style="overflow-x:auto">';
+  for(const [r,n] of Object.entries(d.rows)){
+    h+='<div style="font-weight:900;margin:10px 0 4px">Row '+esc(r)+'</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px">';
+    for(let i=1;i<=n;i++){ const k=r+'-'+i, its=at[k]||[];
+      const isSug=its.some(it=>sug[it.asin]&&sug[it.asin].on!==false);
+      h+='<div style="border:1px solid '+(its.length?'#cfd8e3':'#eef2f6')+';border-radius:8px;padding:6px;min-height:58px;font-size:11px;background:'+(isSug?'#fff9d6':its.length?'#fff':'#f7f9fb')+'"><b style="font-size:13px">'+k+'</b>'
+        +its.map(it=>'<div title="'+esc(it.name)+'" style="margin-top:2px;line-height:1.2">'+(it.partners.length?'<span style="color:#c0392b;font-weight:800">◆</span> ':'')+esc(String(it.name).slice(0,40))+'<div class="hint" style="font-size:10px">'+esc(it.sku||it.asin)+' · '+it.onhand+'</div></div>').join('')
+        +'</div>';
+    }
+    h+='</div>';
+  }
+  const off=d.items.filter(it=>it.location&&!it.onRack);
+  if(off.length) h+='<div class="hint" style="margin-top:10px;color:#c0392b">Not on the rack map ('+off.length+'): '+off.map(it=>esc(it.location)+' '+esc(String(it.name).slice(0,30))).join(' · ')+'</div>';
+  return h+'<div class="hint" style="margin-top:8px"><span style="color:#c0392b;font-weight:800">◆</span> = part of a duo · yellow = suggested, not saved yet.</div></div>';
+}
+function ilSetLoc(asin, el){
+  const v=el.value.trim();
+  api('/api/location',{method:'POST',body:JSON.stringify({asin, location:v})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast(esc((d&&d.error)||'Could not save'),true); el.style.borderColor='#c0392b'; return; }
+    const it=_il.items.find(x=>x.asin===asin); if(it){ it.location=d.location; it.onRack=true; }
+    toast(d.location?'Saved: '+d.location:'Spot cleared'); renderItemLocs();
+  }).catch(e=>toast('Could not save: '+e.message,true));
+}
+function ilSuggest(){
+  const st=ilState();
+  api('/api/item-locations/suggest',{method:'POST',body:JSON.stringify({onlyStocked:st.stocked})}).then(d=>{
+    if(!d||!d.ok){ toast('Could not suggest: '+((d&&d.error)||'server error'),true); return; }
+    if(!d.assignments.length && !d.unplaced.length){ toast('Everything already has a spot'); return; }
+    _ilSug=d; renderItemLocs();
+  }).catch(e=>toast('Could not suggest: '+e.message,true));
+}
+function ilApply(){
+  const on=_ilSug.assignments.filter(a=>a.on!==false).map(a=>({asin:a.asin, location:a.location}));
+  if(!on.length){ toast('Nothing ticked'); return; }
+  if(!confirm('Save '+on.length+' spots?')) return;
+  ownerApi('/api/item-locations/apply',{method:'POST',body:JSON.stringify({assignments:on})}).then(d=>{
+    if(!d||d.ok===false){ toast('Could not apply: '+((d&&d.error)||'server error'),true); return; }
+    toast('Saved '+d.applied+' spots'); _ilSug=null; loadItemLocs();
+  }).catch(e=>toast('Could not apply: '+e.message,true));
+}
+function ilClearAll(){
+  if(!confirm('Remove EVERY bottle\'s spot? Use this when moving to a new warehouse. It can\'t be undone.')) return;
+  ownerApi('/api/item-locations/clear',{method:'POST'}).then(d=>{
+    if(!d||d.ok===false){ toast('Could not clear: '+((d&&d.error)||'server error'),true); return; }
+    toast('Cleared '+d.cleared+' spots'); _ilSug=null; loadItemLocs();
+  }).catch(e=>toast('Could not clear: '+e.message,true));
+}
+function ilAddRow(){
+  const used=[...document.querySelectorAll('#ilRows .ilRow input:first-child')].map(i=>i.value.toUpperCase());
+  const next=[...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'].find(c=>!used.includes(c))||'';
+  const sp=document.createElement('span'); sp.className='ilRow'; sp.style.cssText='display:inline-flex;gap:4px;align-items:center;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px';
+  sp.innerHTML='<input value="'+next+'" maxlength="1" style="width:30px;padding:5px;text-transform:uppercase;font-weight:800;text-align:center"> × <input type="number" min="1" max="200" value="20" style="width:64px;padding:5px"> <button onclick="this.parentNode.remove()" title="Remove row" style="background:none;border:0;color:#c0392b;cursor:pointer;font-size:16px">✕</button>';
+  document.getElementById('ilRows').appendChild(sp);
+}
+function ilSaveLayout(){
+  const rows={};
+  for(const sp of document.querySelectorAll('#ilRows .ilRow')){ const [a,b]=sp.querySelectorAll('input'); const r=a.value.trim().toUpperCase(); if(r) rows[r]=parseInt(b.value,10); }
+  ownerApi('/api/rack-layout',{method:'POST',body:JSON.stringify({rows})}).then(d=>{
+    if(!d||d.ok===false){ toast('Could not save: '+((d&&d.error)||'server error'),true); return; }
+    toast('Rack saved: '+d.slots+' spots'+(d.offMap?' · '+d.offMap+' bottles are on spots that no longer exist':''));
+    if(d.offMap) alert(d.offMap+' bottles have spots that aren\'t on the new rack map. They\'re listed with a red border — give them new spots, or use Clear all locations and Suggest.');
+    loadLocations(); loadItemLocs();
+  }).catch(e=>toast('Could not save: '+e.message,true));
+}
+function ilPrint(){
+  const d=_il; if(!d) return;
+  const rows=d.items.filter(it=>it.location).sort((a,b)=>{ const x=ilPos(a.location)||{r:'~',n:0}, y=ilPos(b.location)||{r:'~',n:0}; return x.r.localeCompare(y.r)||x.n-y.n; });
+  const w=window.open('','_blank'); if(!w){ alert('Allow pop-ups to print.'); return; }
+  w.document.write('<html><head><title>Item Locations</title><style>body{font-family:Arial,sans-serif;font-size:12px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:4px 6px;text-align:left}th{background:#eee}.loc{font-weight:bold;font-size:14px;white-space:nowrap}</style></head><body><h2>Item Locations — '+new Date().toLocaleDateString()+'</h2><table><tr><th>Spot</th><th>SKU</th><th>Product</th><th>ASIN</th><th>On hand</th><th>Duo partner</th></tr>'
+    +rows.map(it=>'<tr><td class="loc">'+esc(it.location)+'</td><td>'+esc(it.sku||'')+'</td><td>'+esc(it.name||'')+'</td><td>'+esc(it.asin)+'</td><td>'+it.onhand+'</td><td>'+it.partners.map(p=>esc((p.location||'—')+' '+String(p.name||'').slice(0,30))).join('<br>')+'</td></tr>').join('')
+    +'</table></body></html>');
+  w.document.close(); w.focus(); w.print();
 }
 function ordersCsv(){
   const q=v=>/[",\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
@@ -4119,7 +4276,7 @@ function loadInvoice(){
   setTimeout(()=>document.getElementById('scanRecon').focus(),100);
 }
 // ==================== PALLET LOCATIONS ====================
-// Fixed rack map from the server: A-1..A-20 (duo-compatible), B-1..B-20 (singles).
+// Rack map from the server (set in Admin → Item Locations).
 let LOC = { slots: [], occupants: {} };
 function loadLocations(){ return api('/api/locations').then(d=>{ if(d && d.slots) LOC=d; }).catch(()=>{}); }
 
@@ -4153,7 +4310,7 @@ function locChip(loc){
 function editLocation(asin){
   const prod=(products||[]).find(x=>x.asin===asin);
   const cur=(prod && prod.location)?prod.location:'';
-  const v=prompt('Pallet location for:\n'+(prod?prod.name:asin)+'\n\nRow A = duo-compatible · Row B = singles\nA-1 to A-20, B-1 to B-20. Leave blank to clear.', cur);
+  const v=prompt('Pallet location for:\n'+(prod?prod.name:asin)+'\n\nSpots like A-6 (rack: '+((LOC.slots||[]).length?LOC.slots[0]+' … '+LOC.slots[LOC.slots.length-1]:'see Admin → Item Locations')+'). Keep duo partners next to each other. Leave blank to clear.', cur);
   if(v===null)return;
   api('/api/location',{method:'POST',body:JSON.stringify({asin:asin,location:v.trim()})}).then(d=>{
     if(d && d.error){ toast(d.error,true); return; }
