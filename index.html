@@ -672,15 +672,16 @@
 <div id="sub-smartscout" class="subpanel">
   <div class="box">
     <b style="font-size:16px">🥧 Smart Scout</b>
-    <div class="hint">Upload SmartScout CSV exports. <b>Brand</b> = a brand's product list (Paul Mitchell, Tea Tree, MITCH…). <b>Seller</b> = one seller's product list, yours or a competitor's. Upload new files whenever you like; the newest file wins for each product.</div>
+    <div class="hint">Upload SmartScout CSV exports. <b>Brand</b> = a brand's "Products" export (Paul Mitchell, Tea Tree, MITCH…). <b>Seller</b> = a seller's "Offers" export, yours or a competitor's — their Buy Box % per product. The type and the seller's name are read from the file; you can override them. Upload new files whenever you like; the newest file wins.</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-top:10px">
-      <label class="hint"><input type="radio" name="ssKind" value="brand" checked onchange="ssKindChange()"> Brand file</label>
+      <label class="hint"><input type="radio" name="ssKind" value="auto" checked onchange="ssKindChange()"> Detect</label>
+      <label class="hint"><input type="radio" name="ssKind" value="brand" onchange="ssKindChange()"> Brand file</label>
       <label class="hint"><input type="radio" name="ssKind" value="seller" onchange="ssKindChange()"> Seller file</label>
-      <span id="ssSellerBox" style="display:none;gap:10px;align-items:center">
-        <input id="ssSeller" list="ssSellerList" placeholder="Seller name" style="padding:6px;width:180px"><datalist id="ssSellerList"></datalist>
+      <span id="ssSellerBox" style="display:inline-flex;gap:10px;align-items:center">
+        <input id="ssSeller" list="ssSellerList" placeholder="Seller name (from file name if blank)" style="padding:6px;width:230px"><datalist id="ssSellerList"></datalist>
         <label class="hint"><input type="checkbox" id="ssIsUs"> This is us</label>
       </span>
-      <input type="file" id="ssFiles" accept=".csv,text/csv" multiple>
+      <input type="file" id="ssFiles" multiple>
       <button class="action" onclick="ssUpload()" style="background:#127a7a">⬆ Upload</button>
     </div>
     <div id="ssUploadMsg" style="margin-top:8px"></div>
@@ -2906,7 +2907,7 @@ function ordersSort(k){
 // ============================================================
 function ssKindChange(){
   const seller=document.querySelector('input[name=ssKind]:checked').value==='seller';
-  document.getElementById('ssSellerBox').style.display=seller?'inline-flex':'none';
+  document.getElementById('ssSellerBox').style.display=document.querySelector('input[name=ssKind]:checked').value==='brand'?'none':'inline-flex';
 }
 function loadSmartScout(){
   loadSsUploads();
@@ -2936,16 +2937,15 @@ function ssUpload(){
   const files=document.getElementById('ssFiles').files, msg=document.getElementById('ssUploadMsg');
   const seller=document.getElementById('ssSeller').value.trim();
   if(!files.length){ msg.innerHTML='<span style="color:#c0392b">Choose one or more CSV files first.</span>'; return; }
-  if(kind==='seller' && !seller){ msg.innerHTML='<span style="color:#c0392b">Type the seller\'s name for a seller file.</span>'; return; }
   const fd=new FormData(); fd.append('kind',kind); fd.append('seller',seller); fd.append('isUs',document.getElementById('ssIsUs').checked?'true':'false');
   for(const f of files) fd.append('file',f);
   msg.innerHTML='<span class="hint">Uploading…</span>';
   ownerApi('/api/smartscout/upload',{method:'POST',body:fd}).then(d=>{
     if(!d || (d.ok===false && !d.results)){ msg.innerHTML='<span style="color:#c0392b">'+esc((d&&d.error)||'Upload failed')+'</span>'; return; }
     msg.innerHTML=d.results.map(r=>r.ok
-      ? '<div style="color:#1e8449">✓ '+esc(r.file)+': '+r.rows+' products'+(r.brands&&r.brands.length?' ('+esc(r.brands.join(', '))+')':'')+(r.skipped?' · '+r.skipped+' rows skipped':'')+'</div>'
+      ? '<div style="color:#1e8449">✓ '+esc(r.file)+': '+(r.kind==='seller'?'seller file for <b>'+esc(r.seller)+'</b>, ':'brand file, ')+r.rows+' products'+(r.brands&&r.brands.length?' ('+esc(r.brands.join(', '))+')':'')+(r.skipped?' · '+r.skipped+' rows skipped':'')+'</div>'
       : '<div style="color:#c0392b">✗ '+esc(r.file)+': '+esc(r.error)+'</div>').join('');
-    document.getElementById('ssFiles').value='';
+    document.getElementById('ssFiles').value=''; document.getElementById('ssSeller').value=''; document.getElementById('ssIsUs').checked=false;
     loadSmartScout();
   }).catch(e=>{ msg.innerHTML='<span style="color:#c0392b">Upload failed: '+esc(e.message)+'</span>'; });
 }
@@ -2954,6 +2954,19 @@ function ssDelete(id){
   ownerApi('/api/smartscout/uploads/'+id,{method:'DELETE'}).then(d=>{ if(!d||!d.ok){ alert('Could not delete: '+((d&&d.error)||'unknown error')); return; } loadSmartScout(); })
     .catch(e=>alert('Could not delete: '+e.message));
 }
+function ssMarkUs(name){
+  if(!confirm('Mark "'+name+'" as your store?')) return;
+  ownerApi('/api/smartscout/us',{method:'POST',body:JSON.stringify({seller:name})}).then(d=>{ if(!d||!d.ok){ alert('Could not save: '+((d&&d.error)||'unknown error')); return; } loadSmartScout(); })
+    .catch(e=>alert('Could not save: '+e.message));
+}
+// A seller's units on a listing: listing units × their Buy Box % (so every
+// seller is measured against the same listing total), else their revenue ÷
+// offer price.
+function ssSellerUnits(listing, row){
+  if(row.buyBoxPct!=null && listing && listing.pie) return listing.pie.units*row.buyBoxPct/100;
+  return row.units;
+}
+const SS_COLORS=['#127a7a','#e0a33a','#7a4fb5','#c0392b','#2563a8','#1e8449'];
 // Donut chart: parts = [{v, color, label}]
 function ssDonut(parts){
   const tot=parts.reduce((n,p)=>n+Math.max(0,p.v),0)||1, R=70, r=42, C=90;
@@ -2967,6 +2980,13 @@ function ssDonut(parts){
   }
   return '<svg viewBox="0 0 180 180" width="180" height="180" role="img">'+paths+'</svg>';
 }
+// Each seller's Buy Box % on one listing, biggest first, with their price.
+function ssSplit(l, sellers){
+  const xs=sellers.map(sl=>({sl, r:sl.by[l.asin]})).filter(x=>x.r).sort((a,b)=>(b.r.buyBoxPct||0)-(a.r.buyBoxPct||0));
+  if(!xs.length) return '<span class="hint">no seller files on this listing</span>';
+  return xs.map(x=>'<div style="white-space:nowrap'+(x.sl.isUs?';font-weight:800;color:#127a7a':'')+'"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+x.sl.color+'"></span> '
+    +(x.r.buyBoxPct!=null?x.r.buyBoxPct.toFixed(1)+'%':'—')+' '+esc(x.sl.isUs?'You':x.sl.seller.slice(0,18))+(x.r.price!=null?' <span class="hint">$'+Number(x.r.price).toFixed(2)+'</span>':'')+'</div>').join('');
+}
 function renderSmartScout(){
   const d=window._ss, box=document.getElementById('ssBody');
   if(!d.listings.length){ box.innerHTML='<div class="box hint">No brand files yet. Upload the SmartScout "Products" export for each brand above.</div>'; return; }
@@ -2975,36 +2995,51 @@ function renderSmartScout(){
   const sum=(arr,f)=>arr.reduce((t,x)=>t+(f(x)||0),0);
   const T={ units:sum(mine,l=>l.pie.units), amz:sum(mine,l=>l.pie.amazonUnits), pie:sum(mine,l=>l.pie.pie), fair:sum(mine,l=>l.pie.fair),
             ours:sum(mine,l=>Math.min(l.ourMonthly||0, l.pie.pie)) };
-  const others=Math.max(0,T.pie-T.ours), keepaN=mine.filter(l=>l.pie.amazonSrc==='keepa').length;
-  const sw=(c,t)=>'<div style="display:flex;align-items:center;gap:6px;margin:3px 0"><span style="width:12px;height:12px;border-radius:3px;background:'+c+';display:inline-block"></span>'+t+'</div>';
+  const keepaN=mine.filter(l=>l.pie.amazonSrc==='keepa').length;
+  // Sellers, us first. Each gets a colour, used in the donut and the tables.
+  const sellers=[...d.sellers].sort((a,b)=>(b.isUs-a.isUs)||a.seller.localeCompare(b.seller));
+  sellers.forEach((sl,i)=>{ sl.color=sl.isUs?SS_COLORS[0]:SS_COLORS[1+((i-(sellers[0]&&sellers[0].isUs?1:0))%(SS_COLORS.length-1))]; sl.by={}; sl.rows.forEach(r=>sl.by[r.asin]=r); });
+  const byAsin={}; mine.forEach(l=>byAsin[l.asin]=l);
+  sellers.forEach(sl=>{ sl.onOurs=sl.rows.filter(r=>byAsin[r.asin]); sl.u=sum(sl.onOurs,r=>ssSellerUnits(byAsin[r.asin],r)); sl.p=sum(sl.onOurs,r=>byAsin[r.asin].pie.pie); });
+  const us=sellers.find(x=>x.isUs); window._ssSellers=sellers;
+  const sw=(c,t)=>'<div style="display:flex;align-items:center;gap:6px;margin:3px 0"><span style="width:12px;height:12px;border-radius:3px;background:'+c+';display:inline-block;flex:none"></span>'+t+'</div>';
+  let parts, legend;
+  if(sellers.length){
+    // Every seller file's units on our listings; whatever's left of the pie
+    // belongs to sellers we have no file for.
+    const known=sum(sellers,x=>x.u), rest=Math.max(0,T.pie-known);
+    parts=[{v:T.amz,color:'#9aa5b1',label:'Amazon'}].concat(sellers.map(x=>({v:x.u,color:x.color,label:x.seller})),[{v:rest,color:'#d9dee5',label:'Sellers without a file'}]);
+    legend=sw('#9aa5b1','Amazon: <b>'+n(T.amz)+'</b>/mo ('+pct(T.amz/T.units)+' of all sales)')
+      +sellers.map(x=>sw(x.color,(x.isUs?'<b>You</b> ('+esc(x.seller)+')':esc(x.seller))+': <b>'+n(x.u)+'</b>/mo · '+pct(T.pie?x.u/T.pie:null)+' of the pie')).join('')
+      +(rest>0?sw('#d9dee5','Sellers without a file: '+n(rest)+'/mo'):'');
+  } else {
+    const others=Math.max(0,T.pie-T.ours);
+    parts=[{v:T.amz,color:'#9aa5b1',label:'Amazon'},{v:others,color:'#e0a33a',label:'Other sellers'},{v:T.ours,color:'#127a7a',label:'You'}];
+    legend=sw('#9aa5b1','Amazon: <b>'+n(T.amz)+'</b>/mo ('+pct(T.amz/T.units)+' of all sales)')+sw('#e0a33a','Other sellers: <b>'+n(others)+'</b>/mo')+sw('#127a7a','You: <b>'+n(T.ours)+'</b>/mo');
+  }
   let h='<div class="box"><b style="font-size:16px">The pie on your '+mine.length+' listings</b>'
-    +'<div class="hint">Monthly units on the listings you carry, from SmartScout. Amazon\'s piece uses Keepa\'s 90-day Buy Box % per product where Market Data has it ('+keepaN+' of '+mine.length+'), otherwise SmartScout\'s Amazon in-stock rate × 95%.</div>'
-    +'<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;margin-top:10px">'
-    +ssDonut([{v:T.amz,color:'#9aa5b1',label:'Amazon'},{v:others,color:'#e0a33a',label:'Other sellers'},{v:T.ours,color:'#127a7a',label:'You'}])
-    +'<div style="font-size:14px">'
-      +sw('#9aa5b1','Amazon: <b>'+n(T.amz)+'</b>/mo ('+pct(T.amz/T.units)+' of all sales)')
-      +sw('#e0a33a','Other sellers: <b>'+n(others)+'</b>/mo')
-      +sw('#127a7a','You: <b>'+n(T.ours)+'</b>/mo')
-      +'<div style="margin-top:8px">The pie Amazon leaves: <b>'+n(T.pie)+'</b>/mo. You get <b style="color:#127a7a">'+pct(T.ours/T.pie)+'</b> of it.</div>'
+    +'<div class="hint">Monthly units on the listings you carry, from SmartScout. Amazon\'s piece uses Keepa\'s 90-day Buy Box % per product where Market Data has it ('+keepaN+' of '+mine.length+'), otherwise SmartScout\'s Amazon in-stock rate × 95%.'+(sellers.length?' Each seller\'s piece = listing sales × their Buy Box % (seller files).':'')+'</div>'
+    +'<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center;margin-top:10px">'+ssDonut(parts)
+    +'<div style="font-size:14px">'+legend
+      +'<div style="margin-top:8px">The pie Amazon leaves: <b>'+n(T.pie)+'</b>/mo. '+(us?'SmartScout puts you at <b style="color:#127a7a">'+n(us.u)+'</b>/mo, '+pct(us.u/T.pie)+'. ':'')+'Your actual sales there: <b style="color:#127a7a">'+n(T.ours)+'</b>/mo ('+pct(T.ours/T.pie)+').</div>'
       +'<div>A fair share (pie ÷ sellers on each listing) would be <b>'+n(T.fair)+'</b>/mo, <b>'+pct(T.fair/T.pie)+'</b>. '
       +(T.fair>T.ours?'You\'re <b style="color:#c0392b">'+n(T.fair-T.ours)+'</b>/mo short of it.':'You\'re above it.')+'</div>'
     +'</div></div>'
-    +'<div class="hint" style="margin-top:6px">Your sales: last '+d.salesDays+' days (Admin → Velocity). Brand files cover '+d.listings.length+' listings in total; '+d.listings.filter(l=>l.carried).length+' of them are in your catalog.</div></div>';
+    +'<div class="hint" style="margin-top:6px">Your sales: last '+d.salesDays+' days (Admin → Velocity). Brand files cover '+d.listings.length+' listings in total; '+d.listings.filter(l=>l.carried).length+' of them are in your catalog.'+(sellers.length&&!us?' <b style="color:#c0392b">None of the seller files is marked as you</b> — use "This is you" in the Sellers table.':'')+'</div></div>';
 
   // Seller files
-  if(d.sellers.length){
-    const mineSet=new Set(mine.map(l=>l.asin)), pieBy={}; mine.forEach(l=>pieBy[l.asin]=l.pie.pie);
-    h+='<div class="box"><b>Sellers</b><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><tr class="hint" style="text-transform:uppercase;font-size:11px"><td style="padding:5px 8px">Seller</td><td style="padding:5px 8px;text-align:right">Products in file</td><td style="padding:5px 8px;text-align:right">On your listings</td><td style="padding:5px 8px;text-align:right">Units / mo there</td><td style="padding:5px 8px;text-align:right">Share of pie</td><td style="padding:5px 8px;text-align:right">They sell, you don\'t carry</td></tr>'
-      +d.sellers.map(sl=>{
-        const shared=sl.rows.filter(r=>mineSet.has(r.asin)), hasUnits=sl.rows.some(r=>r.units!=null);
-        const u=sum(shared,r=>r.units), p=sum(shared,r=>pieBy[r.asin]);
-        const notOurs=sl.rows.filter(r=>!d.listings.find(l=>l.asin===r.asin&&l.carried)).length;
-        return '<tr><td style="padding:5px 8px;border-top:1px solid #eef2f6"><b>'+esc(sl.seller)+'</b>'+(sl.isUs?' <span class="hint">(us)</span>':'')+'<div class="hint">'+esc(sl.filename||'')+'</div></td>'
-          +'<td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right">'+sl.rows.length+'</td><td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right">'+shared.length+'</td>'
-          +'<td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right">'+(hasUnits?n(u):'<span class="hint">not in file</span>')+'</td>'
-          +'<td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right;font-weight:700">'+(hasUnits&&p?pct(u/p):'—')+'</td>'
-          +'<td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right">'+notOurs+'</td></tr>';
-      }).join('')+'</table><div class="hint" style="margin-top:6px">If a seller file has no per-seller units, it still shows which of your listings that seller is on.</div></div>';
+  if(sellers.length){
+    h+='<div class="box" style="overflow-x:auto"><b>Sellers</b><div class="hint">From each seller\'s latest "Offers" file, on the listings you carry.</div><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px;min-width:760px"><tr class="hint" style="text-transform:uppercase;font-size:11px"><td style="padding:5px 8px">Seller</td><td style="padding:5px 8px;text-align:right">Products</td><td style="padding:5px 8px;text-align:right">On your listings</td><td style="padding:5px 8px;text-align:right">Units / mo there</td><td style="padding:5px 8px;text-align:right">Share of pie</td><td style="padding:5px 8px;text-align:right">Avg Buy Box %</td><td style="padding:5px 8px;text-align:right">On listings you don\'t carry</td><td></td></tr>'
+      +sellers.map(sl=>{
+        const bb=sl.onOurs.filter(r=>r.buyBoxPct!=null), avgBB=bb.length?sum(bb,r=>r.buyBoxPct)/bb.length:null;
+        const notOurs=sl.rows.filter(r=>!byAsin[r.asin]).length;
+        const tdr='padding:5px 8px;border-top:1px solid #eef2f6;text-align:right';
+        return '<tr><td style="padding:5px 8px;border-top:1px solid #eef2f6"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:'+sl.color+'"></span> <b>'+esc(sl.seller)+'</b>'+(sl.isUs?' <span style="color:#127a7a;font-weight:700">(you)</span>':'')+'<div class="hint">'+esc(sl.filename||'')+'</div></td>'
+          +'<td style="'+tdr+'">'+sl.rows.length+'</td><td style="'+tdr+'">'+sl.onOurs.length+'</td>'
+          +'<td style="'+tdr+'">'+n(sl.u)+'</td><td style="'+tdr+';font-weight:700">'+(sl.p?pct(sl.u/sl.p):'—')+'</td>'
+          +'<td style="'+tdr+'">'+(avgBB==null?'—':avgBB.toFixed(1)+'%')+'</td><td style="'+tdr+'">'+notOurs+'</td>'
+          +'<td style="'+tdr+'">'+(sl.isUs?'':'<button onclick="ssMarkUs(window._ssSellers['+sellers.indexOf(sl)+'].seller)" style="background:none;border:1px solid #127a7a;color:#127a7a;border-radius:6px;padding:3px 8px;cursor:pointer;white-space:nowrap">This is you</button>')+'</td></tr>';
+      }).join('')+'</table><div class="hint" style="margin-top:6px">"Share of pie" = their units on your listings ÷ the pie on those listings. "Avg Buy Box %" is their share of the whole listing, Amazon included.</div></div>';
   }
 
   // Your slice by listing
@@ -3016,7 +3051,7 @@ function renderSmartScout(){
   h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center"><b>Your slice, listing by listing</b>'
     +'<label class="hint">Sort by <select onchange="window._ssSort=this.value;renderSmartScout()" style="padding:5px">'+so('missing','Most missing vs fair share')+so('pie','Biggest pie')+so('share','Smallest share')+so('units','Listing sales')+'</select></label></div>'
     +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px;margin-top:6px"><tr class="hint" style="text-transform:uppercase;font-size:11px">'
-    +'<td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Listing sells / mo</td><td style="padding:6px 8px;text-align:right">Amazon</td><td style="padding:6px 8px;text-align:right">Pie / mo</td><td style="padding:6px 8px;text-align:right">3P sellers</td><td style="padding:6px 8px;text-align:right">Fair / mo</td><td style="padding:6px 8px;text-align:right">You / mo</td><td style="padding:6px 8px;text-align:right">Your share</td><td style="padding:6px 8px;text-align:right">Missing / mo</td><td style="padding:6px 8px;text-align:right">Price</td></tr>'
+    +'<td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Listing sells / mo</td><td style="padding:6px 8px;text-align:right">Amazon</td><td style="padding:6px 8px;text-align:right">Pie / mo</td><td style="padding:6px 8px;text-align:right">3P sellers</td><td style="padding:6px 8px;text-align:right">Fair / mo</td><td style="padding:6px 8px;text-align:right">You / mo</td><td style="padding:6px 8px;text-align:right">Your share</td><td style="padding:6px 8px;text-align:right">Missing / mo</td><td style="padding:6px 8px;text-align:right">Price</td>'+(sellers.length?'<td style="padding:6px 8px">Buy Box split</td>':'')+'</tr>'
     +rows.map(r=>{
       const fairPct=1/r.pie.sellers3P, sc=r.share==null?'#8a97a6':r.share>=fairPct?'#1e8449':r.share>=fairPct/2?'#b7791f':'#c0392b';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+esc(r.title||r.asin)+'<div class="hint">'+esc(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
@@ -3026,7 +3061,8 @@ function renderSmartScout(){
         +'<td style="'+td+';color:#127a7a;font-weight:700">'+(r.ourMonthly==null?'—':n(r.ours))+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+sc+'">'+pct(r.share)+'<div class="hint">fair '+pct(fairPct)+'</div></td>'
         +'<td style="'+td+';font-weight:700;color:'+(r.missing>0?'#c0392b':'#1e8449')+'">'+(r.missing>0?n(r.missing):'—')+'</td>'
-        +'<td style="'+td+'">'+(r.pie.price!=null?'$'+Number(r.pie.price).toFixed(2):'—')+'</td></tr>';
+        +'<td style="'+td+'">'+(r.pie.price!=null?'$'+Number(r.pie.price).toFixed(2):'—')+'</td>'
+        +(sellers.length?'<td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:170px;font-size:12px">'+ssSplit(r,sellers)+'</td>':'')+'</tr>';
     }).join('')+'</table>'
     +'<div class="hint" style="margin-top:6px">Red share = under half a fair share; amber = under fair; green = at or above. "Missing" = fair share − what you sell now. Big pies where you\'re red are where to push first (stock, price, Buy Box).</div></div>';
 

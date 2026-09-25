@@ -401,7 +401,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'smartscout-0925';
+const BUILD_ID = 'ss-sellers-0925';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5024,23 +5024,37 @@ function ssListing(ss, m) {
     newSellerShare: ss.newSellerShare, growth1m: ss.growth1m, refreshed: ss.refreshed, uploadedAt: ss.uploadedAt });
 }
 
+// Which seller is us. Set by ticking "This is us" on an upload; until then
+// our SmartScout storefront name. Compared loosely (sellerKey).
+const SS_US_DEFAULT = 'Beauty is...Urban Bliss Salon';
+async function ssUsName() {
+  const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='ss_us_seller'");
+  return (r.rows[0] && r.rows[0].data && r.rows[0].data.name) || SS_US_DEFAULT;
+}
+
+// kind 'auto' (the default) reads it from the columns: Products export =
+// brand, Offers export = seller. The seller's name comes from the file name
+// when it isn't typed.
 app.post('/api/smartscout/upload', ownerAuth, upload.array('file', 20), async (req, res) => {
-  const kind = String(req.body.kind || '');
-  if (kind !== 'brand' && kind !== 'seller') return res.status(400).json({ ok: false, error: 'Pick brand or seller.' });
-  const seller = String(req.body.seller || '').trim().slice(0, 80);
+  const want = String(req.body.kind || 'auto');
+  if (!['auto', 'brand', 'seller'].includes(want)) return res.status(400).json({ ok: false, error: 'Bad file type.' });
+  const typed = String(req.body.seller || '').trim().slice(0, 80);
   const isUs = String(req.body.isUs) === 'true';
-  if (kind === 'seller' && !seller) return res.status(400).json({ ok: false, error: 'Type the seller name for a seller file.' });
   if (!req.files || !req.files.length) return res.status(400).json({ ok: false, error: 'No file attached.' });
   const results = [];
   for (const f of req.files) {
     try {
       const p = smartscout.parseSmartScout(f.buffer.toString('utf8'));
       if (!p.rows.length) throw new Error('No product rows found.');
+      const kind = want === 'auto' ? p.kind : want;
+      const seller = kind === 'seller' ? (typed || smartscout.sellerFromFilename(f.originalname)) : null;
+      if (kind === 'seller' && !seller) throw new Error('Seller file: type the seller\'s name (it isn\'t in the file name).');
+      if (kind === 'seller' && isUs) await saveCache('ss_us_seller', { name: seller });
       const ins = await pool.query(
         'INSERT INTO inv_ss_uploads(kind, seller, is_us, filename, row_count, mapped, rows) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-        [kind, kind === 'seller' ? seller : null, kind === 'seller' && isUs, f.originalname, p.rows.length, JSON.stringify(p.mapped), JSON.stringify(p.rows)]);
+        [kind, seller, kind === 'seller' && isUs, f.originalname, p.rows.length, JSON.stringify(p.mapped), JSON.stringify(p.rows)]);
       const brands = [...new Set(p.rows.map(r => r.brand).filter(Boolean))];
-      results.push({ file: f.originalname, ok: true, id: ins.rows[0].id, rows: p.rows.length, skipped: p.skipped, brands, columns: Object.keys(p.mapped) });
+      results.push({ file: f.originalname, ok: true, id: ins.rows[0].id, kind, seller, rows: p.rows.length, skipped: p.skipped, brands, columns: Object.keys(p.mapped) });
     } catch (e) {
       results.push({ file: f.originalname, ok: false, error: e.message });
     }
@@ -5048,10 +5062,20 @@ app.post('/api/smartscout/upload', ownerAuth, upload.array('file', 20), async (r
   res.json({ ok: results.every(r => r.ok), results });
 });
 
+// Mark which seller is us (from the Sellers table).
+app.post('/api/smartscout/us', ownerAuth, async (req, res) => {
+  const name = String((req.body && req.body.seller) || '').trim().slice(0, 80);
+  if (!name) return res.status(400).json({ ok: false, error: 'No seller name.' });
+  await saveCache('ss_us_seller', { name });
+  res.json({ ok: true, name });
+});
+
 app.get('/api/smartscout/uploads', ownerAuth, async (req, res) => {
-  const r = await pool.query(`SELECT id, kind, seller, is_us, filename, row_count, mapped, uploaded_at,
+  const usKey = smartscout.sellerKey(await ssUsName());
+  const r = await pool.query(`SELECT id, kind, seller, filename, row_count, mapped, uploaded_at,
       (SELECT array_agg(DISTINCT x->>'brand') FROM jsonb_array_elements(rows) x) AS brands
     FROM inv_ss_uploads ORDER BY uploaded_at DESC, id DESC`);
+  r.rows.forEach(u => { u.is_us = u.kind === 'seller' && smartscout.sellerKey(u.seller) === usKey; });
   res.json({ ok: true, uploads: r.rows });
 });
 
@@ -5086,12 +5110,13 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
     carried: !!ours[ss.asin], ourMonthly: ours[ss.asin] ? ours[ss.asin].monthly : null,
     pie: ssListing(ss, mkt[ss.asin]),
   }));
-  const sel = await pool.query("SELECT id, seller, is_us, filename, uploaded_at, rows FROM inv_ss_uploads WHERE kind='seller' ORDER BY uploaded_at, id");
+  const sel = await pool.query("SELECT id, seller, filename, uploaded_at, rows FROM inv_ss_uploads WHERE kind='seller' ORDER BY uploaded_at, id");
+  const usKey = smartscout.sellerKey(await ssUsName());
   const sellers = {};
   for (const u of sel.rows) {
-    // Latest file per seller wins.
-    sellers[u.seller] = { seller: u.seller, isUs: u.is_us, filename: u.filename, uploadedAt: u.uploaded_at,
-      rows: (u.rows || []).map(r => ({ asin: r.asin, units: r.sellerUnits ?? null, revenue: r.sellerRevenue ?? null, buyBoxPct: r.buyBoxPct ?? null, listingUnits: r.units ?? null })) };
+    // Latest file per seller wins (names compared loosely).
+    sellers[smartscout.sellerKey(u.seller)] = { seller: u.seller, isUs: smartscout.sellerKey(u.seller) === usKey, filename: u.filename, uploadedAt: u.uploaded_at,
+      rows: (u.rows || []).map(r => ({ asin: r.asin, units: r.sellerUnits ?? null, revenue: r.sellerRevenue ?? null, buyBoxPct: r.buyBoxPct ?? null, price: r.price ?? null, fba: r.fba ?? null })) };
   }
   res.json({ ok: true, listings, sellers: Object.values(sellers), salesDays: velDays,
     asOf: { keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at } });

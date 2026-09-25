@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { parseCsv, parseSmartScout, pieFor, mergeRows } = require('../lib/smartscout');
+const { parseCsv, parseSmartScout, pieFor, mergeRows, sellerFromFilename, sellerKey } = require('../lib/smartscout');
 
 // Header and one row exactly as SmartScout's "Products" export writes them.
 const HEADER = '﻿Product Image,ASIN,Page Score,Title,Brand,Est. Monthly Revenue,Est. 12 Month Revenue,Est. Monthly Units Sold,Est. 12 Month Units Sold,Main Category Rank,Main Category Name,Primary Subcategory Rank,Primary Subcategory Name,1 Month Growth,12 Month Growth,Opportunity Score,Est. New Seller Share,Buy Box Price,Item Count,FBA Sellers,All Sellers,Amazon In-Stock Rate,12-24 Month Revenue,Child Review Count,Listing Review Count,Rating,Bought in Past Month,Parent ASIN,Is Variation,Return Rate,Last Refreshed,TTM Start Date,TTM End Date,TTM Revenue Change';
@@ -53,4 +53,35 @@ test('newer upload wins per ASIN', () => {
   const m = mergeRows([{ id: 1, rows: [{ asin: 'A', units: 1 }, { asin: 'B', units: 5 }] }, { id: 2, rows: [{ asin: 'A', units: 9 }] }]);
   assert.strictEqual(m.A.units, 9);
   assert.strictEqual(m.B.units, 5);
+});
+
+// Header and rows as SmartScout's seller "Offers" export writes them.
+const OFFERS = '"","Image","ASIN","Monthly Revenue","Buy Box Percentage","Brand","Category","Rank","Subcategory","FBA","Offer Price"\n'
+  + '"","31vlbaJzOtL.jpg","B000MD65FO","14338.24","3.11","Tea Tree","Beauty & Personal Care","530","Hair Shampoo","true","50"\n'
+  + '"","31P2+uwlsrL.jpg","B09B1PRHKR","485.74","0.5","Tea Tree","Beauty & Personal Care","95754","Hair Shampoo","false","25"\n';
+
+test('seller Offers export: detected, revenue is the seller\'s, units = revenue ÷ price', () => {
+  const r = parseSmartScout(OFFERS);
+  assert.strictEqual(r.kind, 'seller');
+  const t = r.rows[0];
+  assert.strictEqual(t.buyBoxPct, 3.11);
+  assert.strictEqual(t.sellerRevenue, 14338.24);
+  assert.strictEqual(t.revenue, undefined);
+  assert.strictEqual(t.price, 50);
+  assert.strictEqual(t.fba, true);
+  assert.ok(Math.abs(t.sellerUnits - 286.8) < 0.01);
+  // 0.5 in a column of percentages stays 0.5%, not 50%.
+  assert.strictEqual(r.rows[1].buyBoxPct, 0.5);
+  assert.strictEqual(r.rows[1].fba, false);
+});
+
+test('brand Products export is detected as brand', () => {
+  assert.strictEqual(parseSmartScout(HEADER + '\n' + TEA).kind, 'brand');
+});
+
+test('seller name from the export file name', () => {
+  assert.strictEqual(sellerFromFilename('SmartScout - Beauty is...Urban Bliss Salon - Offers 2026-09-24 10_46.csv'), 'Beauty is...Urban Bliss Salon');
+  assert.strictEqual(sellerFromFilename('SmartScout_-_Beauty_is...Urban_Bliss_Salon_-_Offers_2026-09-24_10_46'), 'Beauty is...Urban Bliss Salon');
+  assert.strictEqual(sellerFromFilename('export.csv'), null);
+  assert.strictEqual(sellerKey('Beauty is... Urban Bliss Salon'), sellerKey('Beauty is...Urban Bliss Salon'));
 });
