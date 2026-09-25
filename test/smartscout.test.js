@@ -93,6 +93,7 @@ test('seller column labels: the owner\'s names for the other sellers, US for us'
   assert.strictEqual(sellerAbbr('SD School Supply', false), 'SD');
   assert.strictEqual(sellerAbbr('Salon Blissful', false), 'SB');
   assert.strictEqual(sellerAbbr('Rival Beauty Co', false), 'RBC');
+  assert.strictEqual(sellerAbbr('School of Awesome', false), 'SD');  // "SOA" by initials
   // Units: listing sales × Buy Box % when both are known, else revenue ÷ price.
   assert.strictEqual(sellerUnitsOn(9454, { buyBoxPct: 10, sellerUnits: 5 }), 945.4);
   assert.strictEqual(sellerUnitsOn(null, { buyBoxPct: 10, sellerUnits: 5 }), 5);
