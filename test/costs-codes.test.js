@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const { blendCosts } = require('../lib/costs');
 const { normCode, normLoc, badQty, MAX_QTY, LOCATION_SLOTS } = require('../lib/codes');
 
-test('blendCosts: regular cost is the price paid for the most units; a >3% cheaper lot is a sale', () => {
+test('blendCosts: regular cost is the highest (non-sale) price; a >3% cheaper lot is a sale', () => {
   const r = blendCosts([
     { unit_cost: 17.31, qty: 100, invoice_date: '2026-06-01' },
     { unit_cost: 17.31, qty: 50, invoice_date: '2026-07-01' },
@@ -24,6 +24,31 @@ test('blendCosts: a lot within 3% of regular is not a sale', () => {
 });
 
 test('blendCosts: no lots gives null', () => assert.equal(blendCosts([]), null));
+
+test('blendCosts: bought mostly on sale — regular is still the shelf price (Tea Tree Leave-In)', () => {
+  const r = blendCosts([
+    { unit_cost: 25.20, qty: 24, invoice_date: '3/2/26' },
+    { unit_cost: 19.50, qty: 240, invoice_date: '5/14/26' },   // stocked up on sale
+    { unit_cost: 25.20, qty: 12, invoice_date: '8/20/26' },
+  ]);
+  assert.equal(r.regular, 25.2);
+  assert.equal(r.saleUnits, 240);
+  assert.ok(r.avg < 21);
+});
+
+test('blendCosts: prices older than 12 months before the newest invoice drop out', () => {
+  const r = blendCosts([
+    { unit_cost: 30, qty: 5, invoice_date: '1/5/24' },        // old, higher — ignored
+    { unit_cost: 24, qty: 10, invoice_date: '2/1/26' },
+    { unit_cost: 22, qty: 10, invoice_date: '9/1/26' },
+  ]);
+  assert.equal(r.regular, 24);
+});
+
+test('blendCosts: a price rise takes over once it is invoiced', () => {
+  const r = blendCosts([{ unit_cost: 22.92, qty: 50, invoice_date: '2026-01-10' }, { unit_cost: 23.50, qty: 6, invoice_date: '2026-09-01' }]);
+  assert.equal(r.regular, 23.5);
+});
 
 test('normCode: numeric barcodes match with or without leading zeros; text is upper-cased', () => {
   assert.equal(normCode('009531136929'), normCode('9531136929'));
