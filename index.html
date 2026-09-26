@@ -3955,13 +3955,17 @@ function ppListRows(items){
   // that stock lasts at the AVG pace (Keepa's listing sales when there's no AVG).
   if(!ssAvg) loadSsAvg();
   const amz=a=>{ const p=(products||[]).find(y=>y.asin===a)||{}; return {p, total:Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0), known:!!p.fba_as_of}; };
-  const num='text-align:right;white-space:nowrap;font-weight:800';
+  const num='text-align:center;white-space:nowrap;font-weight:800';
+  // Everything queued in prep for a listing (a listing can have several work orders).
+  const queued={}; for(const y of ((window._pendingPrepData&&window._pendingPrepData.items)||items)) queued[y.asin]=(queued[y.asin]||0)+(y.qty||0);
+  const dColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
   return '<div class="box" style="padding:6px 8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
-    +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td><td style="padding:4px 8px">Item</td><td style="padding:4px 8px;text-align:right">Qty</td>'
-    +'<td style="padding:4px 8px;text-align:right" title="At Amazon (in stock) plus on the way to Amazon, for this listing">Total at Amazon + transit</td>'
-    +'<td style="padding:4px 8px;text-align:right" title="SmartScout: average sales per month of the other sellers on this listing (not you)">Average (Smart Scout)</td>'
-    +'<td style="padding:4px 8px;text-align:right" title="Total at Amazon + transit ÷ daily sales at the Smart Scout average (Keepa listing sales when there is no average)">Days covered</td>'
-    +'<td style="padding:4px 8px">Plan</td><td style="padding:4px 8px">Status</td></tr>'
+    +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td><td style="padding:4px 8px">Item</td><td style="padding:4px 8px;text-align:center">Qty</td>'
+    +'<td style="padding:4px 8px;text-align:center" title="At Amazon (in stock) plus on the way to Amazon, for this listing">Total at Amazon + transit</td>'
+    +'<td style="padding:4px 8px;text-align:center" title="SmartScout: average sales per month of the other sellers on this listing (not you)">Average (Smart Scout)</td>'
+    +'<td style="padding:4px 8px;text-align:center" title="Total at Amazon + transit ÷ daily sales at the Smart Scout average (Keepa listing sales when there is no average)">Days covered</td>'
+    +'<td style="padding:4px 8px;text-align:center" title="Same as Days covered, adding everything queued in Pending Prep for this listing">Days covered (with pending prep)</td>'
+    +'<td style="padding:4px 8px;text-align:center">Plan</td><td style="padding:4px 8px">Status</td></tr>'
     +items.map(x=>{
       const claimed=!!x.claimed_by;
       const crew=(x.crew&&x.crew.length)?x.crew:(x.claimed_by?[{employee:x.claimed_by,since:x.claimed_at}]:[]);
@@ -3978,13 +3982,15 @@ function ppListRows(items){
       return '<tr style="'+(claimed?'background:#f0faf4':'')+'"><td style="'+td+';width:54px">'+img+'</td>'
         +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
-        +'<td style="'+td+';text-align:right;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
+        +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
         +(()=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null;
             const mo=av!=null?av:(a.p.monthlySold||null), d=a.known&&mo>0?Math.round(a.total/(mo/30)):null;
+            const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=av==null?'*':'';
             return '<td style="'+td+';'+num+';color:#2563a8">'+(a.known?a.total.toLocaleString():'—')+'</td>'
               +'<td style="'+td+';'+num+';color:#7a4fb5">'+(av!=null?'~'+Math.round(av).toLocaleString():'—')+'</td>'
-              +'<td style="'+td+';'+num+';color:'+(d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449')+'"'+(d!=null&&av==null?' title="No Smart Scout average: based on Keepa listing sales"':'')+'>'+(d==null?'—':d+' days'+(av==null?'*':''))+'</td>'; })()
-        +'<td style="'+td+'"><input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer"></td>'
+              +'<td style="'+td+';'+num+';color:'+dColor(d)+'"'+(d!=null&&av==null?' title="No Smart Scout average: based on Keepa listing sales"':'')+'>'+(d==null?'—':d+' days'+star)+'</td>'
+              +'<td style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep':'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
+        +'<td style="'+td+';text-align:center"><input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer"></td>'
         +'<td style="'+td+'">'+status+'</td></tr>';
     }).join('')+'</table></div>';
 }
