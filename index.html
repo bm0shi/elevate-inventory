@@ -3840,6 +3840,7 @@ function ppFiltered(all){
   });
 }
 function renderPendingPrep(){
+  picZoomOff();   // a refresh replaces the thumbnail, so its mouseleave would never fire
   paintViewToggles();
   const d=window._pendingPrepData; if(!d)return;
   const b=document.getElementById('pendingPrepBody');
@@ -3947,6 +3948,21 @@ function renderPendingPrep(){
 }
 // List view rows: photo, name, spot, ASIN/FNSKU, qty, In plan, and the same
 // Start / Finish / Release / edit / print actions as the cards.
+// Hover preview: a 3× copy of a thumbnail beside it, gone when the cursor
+// leaves. Fixed-position so the list's scroll box can't clip it.
+function picZoom(img){
+  picZoomOff();
+  const r=img.getBoundingClientRect(), W=Math.min(300, window.innerWidth-24);
+  const z=document.createElement('img'); z.id='picZoom'; z.src=img.src;
+  let left=r.right+12; if(left+W>window.innerWidth-8) left=Math.max(8, r.left-W-12);
+  const top=Math.min(Math.max(8, r.top+r.height/2-W/2), window.innerHeight-W-8);
+  z.style.cssText='position:fixed;left:'+left+'px;top:'+top+'px;width:'+W+'px!important;height:'+W+'px!important;object-fit:contain;background:#fff;border:1px solid #d8dee6;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,0.25);z-index:9999;pointer-events:none';
+  document.body.appendChild(z);
+}
+function picZoomOff(){ const z=document.getElementById('picZoom'); if(z) z.remove(); }
+// Pending Prep list: which column it's sorted by (per device). dir 1 = biggest first.
+function ppListSort(){ try{ return JSON.parse(localStorage_get('ppListSort')||'{}'); }catch(e){ return {}; } }
+function setPpListSort(k){ const o=ppListSort(); localStorage_set('ppListSort', JSON.stringify({key:k, dir:o.key===k?-(o.dir||1):1})); renderPendingPrep(); }
 function ppListRows(items){
   const td='padding:6px 8px;border-top:1px solid #eef2f6;vertical-align:middle';
   const copy=(v,label)=>v?'<span onclick="copyText(\''+esc(v)+'\',this)" title="Copy '+label+'" style="cursor:pointer;font-family:monospace;font-weight:700;color:#2563a8;background:#eef4fb;border-radius:4px;padding:1px 5px">'+esc(v)+'</span>':'';
@@ -3959,18 +3975,30 @@ function ppListRows(items){
   // Everything queued in prep for a listing (a listing can have several work orders).
   const queued={}; for(const y of ((window._pendingPrepData&&window._pendingPrepData.items)||items)) queued[y.asin]=(queued[y.asin]||0)+(y.qty||0);
   const dColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
+  // Click a header to sort (per device). Item: duos first, then singles;
+  // numbers: biggest first. Clicking the same header again flips it.
+  const mt=x=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null, mo=av!=null?av:(a.p.monthlySold||null);
+    return { total:a.known?a.total:null, avg:av, days:a.known&&mo>0?a.total/(mo/30):null, daysPrep:a.known&&mo>0?(a.total+(queued[x.asin]||0))/(mo/30):null }; };
+  const SK={ item:x=>x.is_duo?1:0, qty:x=>x.qty||0, total:x=>mt(x).total, avg:x=>mt(x).avg, days:x=>mt(x).days, daysPrep:x=>mt(x).daysPrep, plan:x=>x.in_plan?1:0, status:x=>x.claimed_by?1:0 };
+  const so=ppListSort();
+  if(so.key && SK[so.key]){
+    const g=SK[so.key];
+    items=items.slice().sort((p,q)=>{ const u=g(p), v=g(q); if(u==null&&v==null) return 0; if(u==null) return 1; if(v==null) return -1; return (v-u)*so.dir || String(p.name).localeCompare(String(q.name)); });
+  }
+  const th=(k,label,title,left)=>'<td onclick="setPpListSort(\''+k+'\')" style="padding:4px 8px;cursor:pointer;user-select:none;'+(left?'':'text-align:center;')+(so.key===k?'color:#1a2b4a;font-weight:800':'')+'"'+(title?' title="'+title+' · click to sort"':' title="Click to sort"')+'>'+label+(so.key===k?(so.dir===1?' ▼':' ▲'):'')+'</td>';
   return '<div class="box" style="padding:6px 8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
-    +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td><td style="padding:4px 8px">Item</td><td style="padding:4px 8px;text-align:center">Qty</td>'
-    +'<td style="padding:4px 8px;text-align:center" title="At Amazon (in stock) plus on the way to Amazon, for this listing">Total at Amazon + transit</td>'
-    +'<td style="padding:4px 8px;text-align:center" title="SmartScout: average sales per month of the other sellers on this listing (not you)">Average (Smart Scout)</td>'
-    +'<td style="padding:4px 8px;text-align:center" title="Total at Amazon + transit ÷ daily sales at the Smart Scout average (Keepa listing sales when there is no average)">Days covered</td>'
-    +'<td style="padding:4px 8px;text-align:center" title="Same as Days covered, adding everything queued in Pending Prep for this listing">Days covered (with pending prep)</td>'
-    +'<td style="padding:4px 8px;text-align:center">Plan</td><td style="padding:4px 8px">Status</td></tr>'
+    +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td>'
+    +th('item','Item','Duos first, then singles',1)+th('qty','Qty')
+    +th('total','Total at Amazon + transit','At Amazon (in stock) plus on the way to Amazon, for this listing')
+    +th('avg','Average (Smart Scout)','SmartScout: average sales per month of the other sellers on this listing (not you)')
+    +th('days','Days covered','Total at Amazon + transit ÷ daily sales at the Smart Scout average (Keepa listing sales when there is no average)')
+    +th('daysPrep','Days covered (with pending prep)','Same as Days covered, adding everything queued in Pending Prep for this listing')
+    +th('plan','Plan','Ticked first')+th('status','Status','In progress first',1)+'</tr>'
     +items.map(x=>{
       const claimed=!!x.claimed_by;
       const crew=(x.crew&&x.crew.length)?x.crew:(x.claimed_by?[{employee:x.claimed_by,since:x.claimed_at}]:[]);
       const safeName=String(x.name).replace(/'/g,"\\'").replace(/"/g,'');
-      const img=x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'" style="width:110px!important;height:110px!important;object-fit:contain;border-radius:8px;background:#fff;border:1px solid #eef2f6;display:block">':'<div style="width:110px;height:110px;border-radius:8px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;font-size:40px">📦</div>';
+      const img=x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'" onmouseenter="picZoom(this)" onmouseleave="picZoomOff()" style="cursor:zoom-in;width:90px!important;height:90px!important;object-fit:contain;border-radius:8px;background:#fff;border:1px solid #eef2f6;display:block">':'<div style="width:90px;height:90px;border-radius:8px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;font-size:34px">📦</div>';
       const loc=x.is_duo?'':'<span style="background:'+(x.location?'#1a2b4a':'#fdeceb')+';color:'+(x.location?'#fff':'#c0392b')+';border-radius:4px;padding:1px 6px;font-weight:800;font-size:12px">📍 '+esc(x.location||'none')+'</span>';
       const comps=(x.is_duo&&x.components&&x.components.length)?'<div style="font-size:11.5px;margin-top:3px;color:#c0392b"><b>Grab '+x.qty+' each:</b> '
         +x.components.map(c=>'<span style="white-space:nowrap;color:#1f2733">📍<b>'+esc(c.location||'none')+'</b> '+esc(String(c.name||c.asin).slice(0,34))+' <b style="color:'+(c.onhand>=x.qty?'#1e8449':'#c0392b')+'">('+c.onhand+')</b></span>').join(' · ')+'</div>':'';
@@ -3980,7 +4008,7 @@ function ppListRows(items){
           +'<button onclick="releasePrepJob('+x.id+')" style="padding:6px 10px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Release</button></div>'
         : '<button onclick="claimPrepJob('+x.id+')" style="padding:7px 12px;font-size:12px;font-weight:800;background:#1a2b4a;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">▶ Start prep</button>';
       // Duo rows tinted like Smart Scout Orders → By listing, so they stand out.
-      return '<tr style="'+(claimed?'background:#f0faf4':x.is_duo?'background:#fdebe6':'')+'"><td style="'+td+';width:118px">'+img+'</td>'
+      return '<tr style="'+(claimed?'background:#f0faf4':x.is_duo?'background:#fdebe6':'')+'"><td style="'+td+';width:98px">'+img+'</td>'
         +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
         +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
