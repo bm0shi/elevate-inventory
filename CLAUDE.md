@@ -103,8 +103,22 @@ node --check server.js finance.js autorun.js spapi.js keepa.js
 ```
 
 When you change a parser or rule in `lib/`, add a test for the case that
-prompted it. Routes in `server.js` have no automated tests: check them against
-a local Postgres (`DATABASE_URL=... npm start`) and in the browser.
+prompted it.
+
+The stock-moving routes (receive, invoice complete, pending prep, prep scan,
+ship, shipment received, undo, cycle count) have end-to-end tests in
+`test/routes/`: a real server on a throwaway database, checking the counts
+after double taps, simultaneous requests and repeats. They need a database
+whose name contains "test" (it is wiped):
+
+```
+TEST_DATABASE_URL=postgres://.../elevate_test npm run test:routes
+```
+
+GitHub Actions (`.github/workflows/test.yml`) runs both suites on every push
+and PR. When you change one of those routes, add a case to
+`test/routes/stock.routes.test.js`. Other routes: check them against a local
+Postgres (`DATABASE_URL=... npm start`) and in the browser.
 
 ## Workflow with the owner
 
