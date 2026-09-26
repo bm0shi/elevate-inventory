@@ -336,6 +336,28 @@ async function getSalesVelocity(days = 30) {
   return skuUnits;
 }
 
+// Amazon's restock recommendation (Seller Central → Restock Inventory), raw
+// tab-separated text; lib/restock.js parses it. Same create/poll/download
+// flow as the sales report. Errors are thrown, never returned as empty.
+async function getRestockReport() {
+  const token = await getAccessToken();
+  const createResp = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, {
+    reportType: 'GET_RESTOCK_INVENTORY_RECOMMENDATIONS_REPORT',
+    marketplaceIds: [MARKETPLACE_ID],
+  }, { headers: { 'x-amz-access-token': token, 'Content-Type': 'application/json' } });
+  const reportId = createResp.data.reportId;
+  let docId = null;
+  for (let i = 0; i < 24; i++) {   // up to ~2 minutes
+    await sleep(5000);
+    const st = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`, { headers: { 'x-amz-access-token': await getAccessToken() } });
+    const status = st.data.processingStatus;
+    if (status === 'DONE') { docId = st.data.reportDocumentId; break; }
+    if (status === 'CANCELLED' || status === 'FATAL') throw new Error('Restock report ' + status);
+  }
+  if (!docId) throw new Error('Restock report timed out');
+  return downloadReportDocument(docId);
+}
+
 // Get Amazon prices per ASIN. Uses the getItemOffers endpoint per-ASIN which is
 // more reliable for returning a current price than the batch price endpoint.
 // Returns { asin: price }. Also returns diagnostics via a global.
@@ -800,4 +822,4 @@ async function getInboundFees(sinceDays = 180, onProgress) {
   return out;
 }
 
-module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
+module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };

@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -21,6 +21,7 @@ const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
 const forecast = require('./lib/forecast');
+const { parseRestockReport } = require('./lib/restock');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -403,7 +404,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'listing-avg-duo-0927';
+const BUILD_ID = 'amazon-restock-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5115,6 +5116,14 @@ function startAmazonSync(trigger) {
     } catch (e) {
       result.errors.push(e.message);
     }
+    // Amazon's own restock number, shown beside ours on Send Next. Separate
+    // try: a failure here mustn't hide the stock pull above.
+    try {
+      amazonSync.step = "Reading Amazon's restock recommendation…";
+      const rs = parseRestockReport(await getRestockReport());
+      await saveCache('amazon_restock', rs);
+      result.restockSkus = Object.keys(rs.bySku).length;
+    } catch (e) { result.errors.push('restock report: ' + e.message); }
     amazonSync.result = result;
     amazonSync.error = result.errors.length ? result.errors.join(' · ') : null;
     amazonSync.running = false; amazonSync.done = true; amazonSync.finishedAt = new Date().toISOString();
@@ -5146,7 +5155,8 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
 // ============================================================
 app.get('/api/plan/data', ownerAuth, async (req, res) => {
   const cache = async (k) => { const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [k]); return r.rows[0] || null; };
-  const [fbaC, mktC, velC] = await Promise.all([cache('fba_inventory'), cache('market_data'), cache('velocity')]);
+  const [fbaC, mktC, velC, rsC] = await Promise.all([cache('fba_inventory'), cache('market_data'), cache('velocity'), cache('amazon_restock')]);
+  const restock = (rsC && rsC.data) || { bySku: {}, byAsin: {} };
   const fba = {}; for (const f of ((fbaC && fbaC.data) || [])) fba[f.asin] = f;
   const mkt = {}; for (const m of ((mktC && mktC.data) || [])) mkt[m.asin] = m;
   const velDays = (velC && velC.data && velC.data.days) || 30;
@@ -5207,6 +5217,8 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       // Each seller's units / month on this listing, by short label (US, Hyp…).
       // Amazon's Buy Box price from our Seller API (Inventory Value pull).
       amazonPrice: amzPrice[p.asin] ?? null,
+      // Amazon's restock recommendation for this listing (daily sync), for comparison only.
+      amazonRestock: (p.sku && restock.bySku[p.sku]) || restock.byAsin[p.asin] || null,
       ssSellers: ssSellers.reduce((o, sl) => {
         const r = sl.by[p.asin];
         if (r) o[sl.abbr] = smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, r);
@@ -5263,7 +5275,7 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   } catch (e) { console.error('[Plan] forecast log/learn failed:', e.message); }
   res.json({ ok: true, listings, bottles, forecast: model,
     sellerId, amazonPriceAt: valC && valC.updated_at, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
-    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
+    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays, restock: rsC && rsC.updated_at } });
 });
 
 // ============================================================
