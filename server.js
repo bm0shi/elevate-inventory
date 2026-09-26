@@ -23,6 +23,8 @@ const smartscout = require('./lib/smartscout');
 const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
 const capacity = require('./lib/capacity');
+const { checkinDays, checkinStats } = require('./lib/checkin');
+const { sendAlert, channels: alertChannels } = require('./lib/notify');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -405,7 +407,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-capacity-0926';
+const BUILD_ID = 'checkin-alerts-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1304,6 +1306,21 @@ app.get('/api/all-shipments', auth, async (req, res) => {
   res.json(out);
 });
 
+// How long Amazon takes to start receiving our shipments (lib/checkin.js).
+async function checkinNow() {
+  const r = await pool.query('SELECT created_at, received_at FROM inv_shipments WHERE received_at IS NOT NULL ORDER BY received_at DESC LIMIT 10');
+  return checkinStats(r.rows);
+}
+app.get('/api/checkin-stats', auth, async (req, res) => { res.json({ ok: true, ...(await checkinNow()) }); });
+// Alerts: which channels are set, and a test message.
+app.get('/api/alerts/status', ownerAuth, async (req, res) => { res.json({ ok: true, channels: alertChannels() }); });
+app.post('/api/alerts/test', ownerAuth, async (req, res) => {
+  const ch = alertChannels();
+  if (!ch.ntfy && !ch.email) return res.status(400).json({ ok: false, error: 'No alert channel set. Add NTFY_TOPIC (and/or ALERT_EMAIL_TO with the SMTP settings) in Railway.' });
+  const out = await sendAlert('Elevate Inventory test alert', '✅ Alerts work. You will get one when Amazon checks in a shipment, and when it closes one.', { tags: 'white_check_mark' });
+  res.json({ ok: true, result: out });
+});
+
 // Manually mark a shipment received (clear its units from transit)
 app.post('/api/receive-shipment', auth, async (req, res) => {
   const shipmentId = (req.body.shipmentId || '').trim();
@@ -1445,6 +1462,23 @@ async function reconcileInTransit() {
       return { clearedThis: firstTime ? clearedThis : 0, flag };
     });
     if (r.skipped) continue;
+    // Phone/email alert: once when Amazon starts receiving, once when it
+    // closes the shipment (with any shortfall — that's a reimbursement claim).
+    try {
+      const meta = (await pool.query('SELECT shipment_name, created_at, received_at FROM inv_shipments WHERE shipment_id=$1', [sid])).rows[0] || {};
+      const label = meta.shipment_name ? `${meta.shipment_name} (${sid})` : sid;
+      const units = ourItems.rows.reduce((n, it) => n + (it.qty || 0), 0);
+      const days = checkinDays(meta.created_at, meta.received_at);
+      const sent = meta.created_at ? new Date(meta.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'America/Phoenix' }) : '?';
+      const shorts = ourItems.rows.filter(it => recvBySku[it.sku] != null && recvBySku[it.sku] < it.qty)
+        .map(it => `${it.name || it.asin}: ${recvBySku[it.sku]} of ${it.qty} (short ${it.qty - recvBySku[it.sku]})`);
+      const closedLine = !closed ? '' : shorts.length
+        ? `\nAmazon CLOSED it SHORT — file a claim:\n• ${shorts.join('\n• ')}` : '\nAmazon closed it: all units received.';
+      if (firstTime) sendAlert(`Shipment ${label} checked in`,
+        `📦 Amazon started receiving ${label}: ${units} units, ${days != null ? Math.round(days) + ' days' : '?'} after it was sent (${sent}).${closedLine}`, { tags: 'package' });
+      else if (closed) sendAlert(`Shipment ${label} closed${shorts.length ? ' SHORT' : ''}`,
+        `${shorts.length ? '⚠' : '✅'} ${label}${closedLine}`, { tags: shorts.length ? 'warning' : 'white_check_mark' });
+    } catch (e) { console.error('[Alert] check-in alert skipped:', e.message); }
     clearedTotal += r.clearedThis;
     if (firstTime) shipmentsDone++;
     console.log(`[SP-API] Shipment ${sid}: ${firstTime ? 'cleared ' + r.clearedThis + ' units' : 'counts refreshed'}, ${closed ? 'closed' : 'still receiving'}, discrepancy=${r.flag}.`);
@@ -5399,7 +5433,9 @@ async function buildPlanData() {
     const b = forecast.blend(forecast.blendSignals(L.signals, { atAmazon: L.atAmazon, snapKnown: L.snap.known }), model.weights);
     L.demand = { monthly: b.monthly, used: b.used };
   }
-  return { ok: true, listings, bottles, forecast: model,
+  let checkIn = null;
+  try { checkIn = await checkinNow(); } catch (e) { console.error('[Plan] check-in stats failed:', e.message); }
+  return { ok: true, listings, bottles, forecast: model, checkIn,
     sellerId, amazonPriceAt: valC && valC.updated_at, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
     asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays, restock: rsC && rsC.updated_at } };
 }
@@ -5643,6 +5679,20 @@ app.get('/api/amazon-check/:asin', auth, async (req, res) => {
 // 6:30 it catches up any time before noon. The date is claimed atomically so
 // two copies of the server can't both run it.
 const DAILY_SYNC_PHX = { hour: 6, minute: 30 };
+// Check-ins every 2 hours, 8 AM–8 PM Arizona, so "shipment checked in"
+// alerts (and the check-in days) land the same day rather than the next
+// morning. reconcileInTransit is safe to repeat: each shipment is cleared
+// from transit once and finalised once.
+let lastCheckinRun = 0;
+setInterval(async () => {
+  try {
+    const phxHour = new Date(Date.now() - 7 * 3600 * 1000).getUTCHours();
+    if (phxHour < 8 || phxHour >= 20 || amazonSync.running || Date.now() - lastCheckinRun < 2 * 3600 * 1000) return;
+    lastCheckinRun = Date.now();
+    const r = await reconcileInTransit();
+    if (r && r.ok === false) console.error('[Checkin] 2-hourly check:', r.error);
+  } catch (e) { console.error('[Checkin] 2-hourly check failed:', e.message); }
+}, 10 * 60 * 1000).unref();
 setInterval(async () => {
   try {
     const phx = new Date(Date.now() - 7 * 3600 * 1000);

@@ -798,6 +798,7 @@
       </select>
       <div class="hint" style="margin:0">Pick a shipment to see sent vs. received per item. Discrepancies (Amazon received fewer than you sent) are flagged red.</div>
     </div>
+    <div id="checkinBox"></div>
     <div id="shipmentsBody"></div>
   </div>
 <div id="sub-fbainv" class="subpanel">
@@ -2913,10 +2914,17 @@ function planSet(){
     // the old default ('ours') onto the best estimate once. They can still
     // pick another basis after that.
     if(!saved.basisV2){ if(saved.basis==='ours'||!saved.basis) saved.basis='blend'; saved.basisV2=1; localStorage_set('planSettings', JSON.stringify(saved)); }
-    return Object.assign({}, PLAN_DEFAULTS, saved);
-  }catch(e){ return Object.assign({},PLAN_DEFAULTS); }
+    return planCheckinDays(Object.assign({}, PLAN_DEFAULTS, saved));
+  }catch(e){ return planCheckinDays(Object.assign({},PLAN_DEFAULTS)); }
 }
-function planSave(k,v){ const st=planSet(); st[k]=v; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
+function planSave(k,v){ const st=planSet(); st[k]=v; if(k==='amazonDays') st.amazonDaysManual=1; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
+// Amazon check-in days: your real typical (Admin → Shipments) unless you've
+// typed your own number on this device.
+function planCheckinDays(st){
+  const t=_plan&&_plan.checkIn&&_plan.checkIn.typical;
+  if(!st.amazonDaysManual && t!=null) st.amazonDays=Math.max(1, Math.round(t));
+  return st;
+}
 function loadPlan(view){
   window._planView=view;
   const box=document.getElementById(view==='orders'?'ordersBody':view==='ssorders'?'ssOrdersBody':'sendNextBody');
@@ -3250,7 +3258,7 @@ function renderOrders(boxId, mode){
   let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b style="font-size:16px">'+(isSS?'🥧 Smart Scout Suggested Orders':'🧾 Suggested Orders (CosmoProf)')+'</b>'
     +'<div class="hint">What to buy so every bottle lasts through the '+lead+'-day lead time plus '+st.target+' days. <b>'+units.toLocaleString()+'</b> bottles · <b>'+money(total)+'</b>'+(noCost?' (+'+noCost+' without a cost)':'')+'</div></div>'
     +(units?'<button class="action" onclick="ordersCsv()" style="background:#1a2b4a">⬇ Download order list</button>':'')+'</div>'
-    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">'+(isSS?ssTargetPicker(st):planBasisPicker(st))+planNum('planPct','Plan on % of expected sales',st)+planNum('target','Target days',st)+planNum('cosmoDays','Cosmoprof delivery days',st)+planNum('prepDays','Prep days',st)+planNum('amazonDays','Amazon check-in days',st)+planNum('packOf','Round up to',st)+'</div>'
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">'+(isSS?ssTargetPicker(st):planBasisPicker(st))+planNum('planPct','Plan on % of expected sales',st)+planNum('target','Target days',st)+planNum('cosmoDays','Cosmoprof delivery days',st)+planNum('prepDays','Prep days',st)+planNum('amazonDays','Amazon check-in days'+(_plan&&_plan.checkIn&&_plan.checkIn.typical!=null?(st.amazonDaysManual?' (yours: '+Math.round(_plan.checkIn.typical)+')':' (your real typical)'):''),st)+planNum('packOf','Round up to',st)+'</div>'
     +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center;background:#f7f9fb;border-radius:8px;padding:8px 10px"><b class="hint" style="color:#1a2b4a">FILTER</b>'
       +'<label class="hint">Hide unit cost under $<input type="number" min="0" step="0.5" value="'+(st.minUnitCost||'')+'" placeholder="0" onchange="planSave(\'minUnitCost\',Math.max(0,parseFloat(this.value)||0))" style="width:70px;padding:6px"></label>'
       +'<label class="hint">Hide profit / bottle under $<input type="number" step="0.5" value="'+(st.minProfit===''||st.minProfit==null?'':st.minProfit)+'" placeholder="off" onchange="planSave(\'minProfit\',this.value===\'\'?\'\':parseFloat(this.value))" style="width:70px;padding:6px"></label>'
@@ -6999,6 +7007,7 @@ function renderShipments(){
     else if(filter==='received') list=ships.filter(s=>s.status==='received');
     else if(filter==='discrepancy') list=ships.filter(s=>s.has_discrepancy);
     const b=document.getElementById('shipmentsBody');
+    loadCheckinBox();
     if(!list.length){ b.innerHTML='<div class="hint">No shipments match.</div>'; return; }
     // Costs are owner-only; fetch alongside so each card can show freight/placement.
     ownerApi('/api/shipment-costs').then(cd=>{ window._shipCosts=cd; drawShipments(list,b); })
@@ -7006,6 +7015,30 @@ function renderShipments(){
   });
 }
 
+// Real check-in times (sent → Amazon started receiving) and the alert setup.
+function loadCheckinBox(){
+  const el=document.getElementById('checkinBox'); if(!el) return;
+  Promise.all([api('/api/checkin-stats'), ownerApi('/api/alerts/status').catch(()=>null)]).then(([c,a])=>{
+    const r=v=>v==null?'—':Math.round(v);
+    let h='<div class="box" style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">'
+      +'<div><b>⏱ Amazon check-in time</b> '+(c&&c.n?'<span style="font-size:18px;font-weight:900;color:#127a7a">'+r(c.typical)+' days</span> <span class="hint">typical (middle) of your last '+c.n+' shipment'+(c.n===1?'':'s')+' · fastest '+r(c.min)+', slowest '+r(c.max)+' · Send Next uses it unless you type your own</span>':'<span class="hint">no checked-in shipments yet — it fills in as Amazon receives them</span>')+'</div>';
+    if(a&&a.ok){
+      const on=a.channels.ntfy||a.channels.email;
+      h+='<div style="display:flex;gap:8px;align-items:center"><span class="hint">Phone alerts: '+(on?'<b style="color:#1e8449">on</b> ('+[a.channels.ntfy?'ntfy app':'',a.channels.email?'email/text':''].filter(Boolean).join(' + ')+')':'<b style="color:#c0392b">off</b> — set NTFY_TOPIC in Railway')+'</span>'
+        +(on?'<button class="action" onclick="alertTest(this)" style="padding:6px 12px;font-size:12px;background:#1a2b4a">Send test</button>':'')+'</div>';
+    }
+    el.innerHTML=h+'</div>';
+  }).catch(()=>{});
+}
+function alertTest(btn){
+  btn.disabled=true;
+  ownerApi('/api/alerts/test',{method:'POST',body:'{}'}).then(d=>{
+    btn.disabled=false;
+    if(!d||d.ok===false){ toast('Not sent: '+((d&&d.error)||'error'),true); return; }
+    const bad=Object.entries(d.result||{}).filter(([k,v])=>v&&v!=='sent');
+    if(bad.length) toast('Problem: '+bad.map(([k,v])=>k+' '+v).join(' · '),true); else toast('Test alert sent — check your phone');
+  }).catch(e=>{ btn.disabled=false; toast('Not sent: '+e.message,true); });
+}
 function shipCostBlock(shipId, units){
   const d=window._shipCosts;
   if(!d) return '';   // not the owner, or costs unavailable
@@ -7069,7 +7102,7 @@ function drawShipments(list,b){
       }).join('');
       return `<div class="ship-card">
         <div class="ship-head" onclick="document.getElementById('si${i}').classList.toggle('open')">
-          <div><div class="ship-title">${esc(title)}</div><div class="ship-sub">${s.shipment_id} · ${totalSent} units sent · ${new Date(s.created_at).toLocaleDateString()}</div></div>
+          <div><div class="ship-title">${esc(title)}</div><div class="ship-sub">${s.shipment_id} · ${totalSent} units sent · ${new Date(s.created_at).toLocaleDateString()}${(()=>{ if(!s.received_at) return s.status==='in_transit'?' · <b style="color:#2563a8">'+Math.floor((Date.now()-Date.parse(s.created_at))/86400000)+' days so far</b>':''; const d=(Date.parse(s.received_at)-Date.parse(s.created_at))/86400000; return d>=0?' · <b style="color:#1e8449">checked in after '+Math.round(d)+' day'+(Math.round(d)===1?'':'s')+'</b>':''; })()}</div></div>
           ${badge}
         </div>
         <div class="ship-items" id="si${i}">${rows||'<div class="ship-item-row">No items</div>'}</div>
