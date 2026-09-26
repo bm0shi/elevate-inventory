@@ -1037,6 +1037,24 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 // On Hand page ("⭐ Smart Scout selections" filter) sees the same list on any
 // device, ready to prep.
 let ssPicks=new Set();
+// The best-estimate demand per listing (/api/demand, lib/forecast.js) — the
+// same number Send Next plans with — for Pending Prep and On Hand cover.
+let _demand=null;
+function loadDemand(){
+  if(loadDemand._busy) return Promise.resolve(); loadDemand._busy=true;
+  return api('/api/demand').then(d=>{ if(d&&d.ok){ _demand=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); } }).catch(()=>{}).finally(()=>{ loadDemand._busy=false; });
+}
+// Monthly units we'll sell of a listing, and where the number came from:
+// best estimate → else the other sellers' SmartScout average → else Keepa's
+// listing sales (all sellers, Amazon included — marked * as a rough guess).
+function demandRate(asin, keepaSold){
+  if(!_demand) loadDemand();
+  const b=_demand&&_demand.demand&&_demand.demand[asin];
+  if(b && b.monthly>0) return {mo:b.monthly, est:false, note:demandNote(b.used)+(_demand.learned?'':' (starting weights — it learns as 30-day checks come in)')};
+  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
+  if(a && a.avg>0) return {mo:a.avg, est:true, note:'No best estimate yet: other sellers\' Smart Scout average'};
+  return {mo:keepaSold||0, est:!!keepaSold, note:'No best estimate or Smart Scout average: Keepa listing sales (all sellers, includes Amazon)'};
+}
 let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo, for On Hand → Smart Scout selections
 function loadSsAvg(){
   if(loadSsAvg._busy) return Promise.resolve(); loadSsAvg._busy=true;
@@ -2817,8 +2835,17 @@ function shipBuilderDownload(){
 // Settings are remembered on this device.
 // ============================================================
 let _plan=null;
-const PLAN_DEFAULTS={ basis:'ours', ssMode:'fair', ssPct:25, planPct:80, target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1, minUnitCost:0, minProfit:'', ordSort:'cover', ordDir:1 };
-function planSet(){ try{ return Object.assign({}, PLAN_DEFAULTS, JSON.parse(localStorage_get('planSettings')||'{}')); }catch(e){ return Object.assign({},PLAN_DEFAULTS); } }
+const PLAN_DEFAULTS={ basis:'blend', ssMode:'fair', ssPct:25, planPct:80, target:60, cosmoDays:7, prepDays:3, amazonDays:14, packOf:1, minUnitCost:0, minProfit:'', ordSort:'cover', ordDir:1 };
+function planSet(){
+  try{
+    const saved=JSON.parse(localStorage_get('planSettings')||'{}');
+    // One demand number everywhere (owner's call): move devices that saved
+    // the old default ('ours') onto the best estimate once. They can still
+    // pick another basis after that.
+    if(!saved.basisV2){ if(saved.basis==='ours'||!saved.basis) saved.basis='blend'; saved.basisV2=1; localStorage_set('planSettings', JSON.stringify(saved)); }
+    return Object.assign({}, PLAN_DEFAULTS, saved);
+  }catch(e){ return Object.assign({},PLAN_DEFAULTS); }
+}
 function planSave(k,v){ const st=planSet(); st[k]=v; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
 function loadPlan(view){
   window._planView=view;
@@ -2845,6 +2872,13 @@ function planShare(l){
   return {share:PLAN_UNKNOWN_SHARE, how:'unknown'};
 }
 function planDemand(l, basis){
+  // Best estimate (server, lib/forecast.js): in-stock-corrected sales, raw
+  // sales, SmartScout, Keepa × share and the even split, weighted by how
+  // close each has landed. Same number Pending Prep and On Hand use.
+  if((basis||'blend')==='blend'){
+    if(l.demand && l.demand.monthly!=null) return {perDay:l.demand.monthly/30, src:'blend', used:l.demand.used||{}};
+    basis='ours';
+  }
   const ours = l.ourSold!=null ? l.ourSold/(l.ourDays||30) : null;
   const sh = planShare(l);
   const keepa = l.keepaMonthly!=null ? (l.keepaMonthly/30)*sh.share : null;
@@ -2858,6 +2892,7 @@ function planDemand(l, basis){
 function planSrcNote(l, dm){
   if(dm.ssNote && dm.src==='ss') return dm.ssNote;
   const pct=v=>(v*100<10?+(v*100).toFixed(2):Math.round(v*100))+'%';
+  if(dm.src==='blend') return demandNote(dm.used);
   if(dm.src==='ours'){
     let t='our sales';
     if(l.shareMeasured!=null) t+=' · '+pct(l.shareMeasured)+' of listing';
@@ -2874,11 +2909,18 @@ function planSrcNote(l, dm){
 }
 // Rec. Order: blend a listing's demand signals with the learned weights
 // (same maths as lib/forecast.js blend; the server learns the weights).
-const REC_LABELS={ours:'Your sales (30d)', ssus:'SmartScout (you)', keepa:'Keepa × your Buy Box', fair:'Fair share of pie'};
+const REC_LABELS={instock:'Your sales while in stock', ours:'Your sales (30d)', ssus:'SmartScout (you)', keepa:'Keepa × your Buy Box', fair:'Even split of the pie'};
+const REC_KEYS=['instock','ours','ssus','keepa','fair'];
+// "leans on: your sales while in stock 60% · even split 25%…" for tooltips.
+function demandNote(used){
+  const u=Object.entries(used||{}).filter(([k,w])=>w>=0.05).sort((a,b)=>b[1]-a[1]);
+  return u.length?'best estimate: '+u.map(([k,w])=>REC_LABELS[k]+' '+Math.round(w*100)+'%').join(' · '):'best estimate';
+}
 function recBlend(l){
+  if(l.demand && l.demand.monthly!=null) return {monthly:l.demand.monthly, used:l.demand.used||{}};   // server blend (includes in-stock days)
   const w=(_plan&&_plan.forecast&&_plan.forecast.weights)||{ours:0.5,ssus:0.25,keepa:0.15,fair:0.1};
   let num=0, den=0; const used={};
-  for(const k of ['ours','ssus','keepa','fair']){ const v=l.signals?l.signals[k]:null; if(v==null||!isFinite(v)||!(w[k]>0)) continue; num+=w[k]*v; den+=w[k]; used[k]=w[k]; }
+  for(const k of REC_KEYS){ const v=l.signals?l.signals[k]:null; if(v==null||!isFinite(v)||!(w[k]>0)) continue; num+=w[k]*v; den+=w[k]; used[k]=w[k]; }
   if(!den) return {monthly:null, used:{}};
   for(const k in used) used[k]/=den;
   return {monthly:num/den, used};
@@ -2947,8 +2989,8 @@ function recListingBreakdown(asin){
   m.onclick=e=>{ if(e.target===m) m.remove(); };
   const row=(k,v,w)=>'<tr><td style="padding:5px 8px;border-top:1px solid #eef2f6">'+esc(REC_LABELS[k])+'</td><td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right">'+n(v)+'/mo</td><td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right" class="hint">'+(w?Math.round(w*100)+'% weight':'no data')+'</td></tr>';
   m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:560px;width:100%"><div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:16px">Rec. Order — '+(r.qty==null?'no data':r.qty+' '+(l.isDuo?'duos':'units'))+'</b><div class="hint">'+(l.isDuo?'DUO':'SINGLE')+' · '+esc(l.name||asin)+' · '+esc(asin)+'</div></div><button class="action" onclick="document.getElementById(\'recModal\').remove()" style="background:#5a6472">Close</button></div>'
-    +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px">'+['ours','ssus','keepa','fair'].map(k=>row(k, l.signals&&l.signals[k], r.rb.used[k])).join('')+'</table>'
-    +(r.qty==null?'<div class="hint" style="margin-top:8px">None of the four signals has data for this listing yet.</div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px">'+REC_KEYS.map(k=>row(k, l.signals&&l.signals[k], r.rb.used[k])).join('')+'</table>'
+    +(r.qty==null?'<div class="hint" style="margin-top:8px">None of the signals has data for this listing yet.</div>'
       :'<div style="margin-top:10px;font-size:13px;line-height:1.6">Blend: <b>'+n(r.rb.monthly)+'/mo</b> × '+Math.round(r.pf*100)+'% = <b>'+n(r.perDay*30)+'/mo</b><br>Needed for '+lead+' lead + '+st.target+' target days: <b>'+n(r.perDay*r.horizon)+'</b> − has <b>'+n(r.have)+'</b> (at Amazon '+l.atAmazon+' + on the way '+l.onTheWay+' + in prep '+(l.queued||0)+') = <b style="color:#5b2d9e">'+r.qty+'</b>'+(st.packOf>1?' (rounded up to '+st.packOf+')':'')+'</div>'
        +'<div class="hint" style="margin-top:8px">In '+(l.isDuo?'duos':'units')+' of this listing. Loose bottles in the warehouse are shared between the single and its duos, so the bottle view (what to buy) counts them.</div>')
     +'</div>';
@@ -2968,9 +3010,9 @@ function recBreakdown(asin){
   m.onclick=e=>{ if(e.target===m) m.remove(); };
   const td='padding:5px 8px;border-top:1px solid #eef2f6;text-align:right';
   m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:760px;width:100%"><div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:16px">Rec. Order — why '+rec.toLocaleString()+'</b><div class="hint">'+esc(b.name||asin)+' · '+esc(asin)+'</div></div><button class="action" onclick="document.getElementById(\'recModal\').remove()" style="background:#5a6472">Close</button></div>'
-    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:10px"><tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:5px 8px">Listing</td>'+['ours','ssus','keepa','fair'].map(k=>'<td style="padding:5px 8px;text-align:right">'+esc(REC_LABELS[k])+'</td>').join('')+'<td style="padding:5px 8px;text-align:right">Blend / mo</td></tr>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:10px"><tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:5px 8px">Listing</td>'+REC_KEYS.map(k=>'<td style="padding:5px 8px;text-align:right">'+esc(REC_LABELS[k])+'</td>').join('')+'<td style="padding:5px 8px;text-align:right">Blend / mo</td></tr>'
     +lines.map(x=>'<tr><td style="padding:5px 8px;border-top:1px solid #eef2f6"><b style="color:'+(x.l.isDuo?'#c0392b':'#1a2b4a')+'">'+(x.l.isDuo?'DUO':'SINGLE')+'</b> '+esc(String(x.l.name||x.l.asin).slice(0,50))+'</td>'
-      +['ours','ssus','keepa','fair'].map(k=>'<td style="'+td+'">'+n(x.l.signals&&x.l.signals[k])+(x.rb.used[k]?'<div class="hint" style="font-size:10px">'+Math.round(x.rb.used[k]*100)+'% weight</div>':'')+'</td>').join('')
+      +REC_KEYS.map(k=>'<td style="'+td+'">'+n(x.l.signals&&x.l.signals[k])+(x.rb.used[k]?'<div class="hint" style="font-size:10px">'+Math.round(x.rb.used[k]*100)+'% weight</div>':'')+'</td>').join('')
       +'<td style="'+td+';font-weight:800;color:#5b2d9e">'+n(x.rb.monthly)+(x.per>1?' ×'+x.per:'')+'</td></tr>').join('')
     +'</table><div style="margin-top:10px;font-size:13px;line-height:1.6">Blended bottle sales: <b>'+n(perDay/pf*30)+'/mo</b> × '+Math.round(pf*100)+'% = <b>'+n(perDay*30)+'/mo</b><br>'
     +'Needed for '+lead+' lead + '+st.target+' target days: <b>'+n(perDay*horizon)+'</b> − have <b>'+n(have)+'</b> (warehouse '+(b.onhand||0)+' + at Amazon '+atAmz+' + on the way '+way+') = <b style="color:#5b2d9e">'+rec.toLocaleString()+'</b>'+(st.packOf>1?' (then rounded up to '+st.packOf+')':'')+'</div>'
@@ -3001,7 +3043,7 @@ function amazonSaysCell(r, td){
 }
 function planBasisPicker(st){
   const o=(v,t)=>'<option value="'+v+'"'+(st.basis===v?' selected':'')+'>'+t+'</option>';
-  return '<label class="hint">Demand from <select onchange="planSave(\'basis\',this.value)" style="padding:6px">'+o('ours','Our sales (Keepa if none)')+o('keepa','Keepa market × our share')+o('max','Higher of the two')+'</select></label>';
+  return '<label class="hint">Demand from <select onchange="planSave(\'basis\',this.value)" style="padding:6px">'+o('blend','Best estimate (learns over time)')+o('ours','Our sales (Keepa if none)')+o('keepa','Keepa market × our share')+o('max','Higher of the two')+'</select></label>';
 }
 function planNum(k,label,st,w){ return '<label class="hint">'+label+' <input type="number" min="0" value="'+st[k]+'" onchange="planSave(\''+k+'\',Math.max(0,parseInt(this.value)||0))" style="width:'+(w||60)+'px;padding:6px"></label>'; }
 function renderPlan(view){ if(!_plan) return; if(view==='orders') renderOrders(); else if(view==='ssorders') renderOrders('ssOrdersBody','ss'); else renderSendNext(); }
@@ -3156,7 +3198,7 @@ function renderOrders(boxId, mode){
     const F=d.forecast||{}, W=F.weights||{};
     const since=F.since?new Date(F.since).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'today';
     h+='<div class="box" style="background:#f7f2fd;border:1px solid #d9c7f3;font-size:13px"><b style="color:#5b2d9e">Rec. Order</b> blends '
-      +['ours','ssus','keepa','fair'].map(k=>esc(REC_LABELS[k])+' <b>'+Math.round((W[k]||0)*100)+'%</b>'+(F.stats&&F.stats[k]&&F.stats[k].n?' <span class="hint">('+F.stats[k].n+' checks, off by '+Math.round(F.stats[k].err*100)+'%)</span>':'')).join(' · ')
+      +REC_KEYS.map(k=>esc(REC_LABELS[k])+' <b>'+Math.round((W[k]||0)*100)+'%</b>'+(F.stats&&F.stats[k]&&F.stats[k].n?' <span class="hint">('+F.stats[k].n+' checks, off by '+Math.round(F.stats[k].err*100)+'%)</span>':'')).join(' · ')
       +'<div class="hint" style="margin-top:4px">'+(F.learned?'Weights learned from how close each signal came to what you actually sold 30 days later.':'Starting weights — the app logs every signal daily (since '+esc(since)+') and, once it can compare them with what you really sold 30 days later, shifts weight to whichever is most accurate.')
       +' Then: blended sales × '+Math.round(pf*100)+'% × ('+lead+' lead + '+st.target+' target days) − what you have. Click any Rec. Order number for its breakdown.</div></div>';
   }
@@ -3977,7 +4019,7 @@ function ppListRows(items){
   const dColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
   // Click a header to sort (per device). Item: duos first, then singles;
   // numbers: biggest first. Clicking the same header again flips it.
-  const mt=x=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null, mo=av!=null?av:(a.p.monthlySold||null);
+  const mt=x=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null, mo=demandRate(x.asin, a.p.monthlySold).mo||null;
     return { total:a.known?a.total:null, avg:av, days:a.known&&mo>0?a.total/(mo/30):null, daysPrep:a.known&&mo>0?(a.total+(queued[x.asin]||0))/(mo/30):null }; };
   const SK={ item:x=>x.is_duo?1:0, qty:x=>x.qty||0, total:x=>mt(x).total, avg:x=>mt(x).avg, days:x=>mt(x).days, daysPrep:x=>mt(x).daysPrep, plan:x=>x.in_plan?1:0, status:x=>x.claimed_by?1:0 };
   const so=ppListSort();
@@ -3991,7 +4033,7 @@ function ppListRows(items){
     +th('item','Item','Duos first, then singles',1)+th('qty','Qty')
     +th('total','Total at Amazon + transit','At Amazon (in stock) plus on the way to Amazon, for this listing')
     +th('avg','Average (Smart Scout)','SmartScout: average sales per month of the other sellers on this listing (not you)')
-    +th('days','Days covered','Total at Amazon + transit ÷ daily sales at the Smart Scout average (Keepa listing sales when there is no average)')
+    +th('days','Days covered','Total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
     +th('daysPrep','Days covered (with pending prep)','Same as Days covered, adding everything queued in Pending Prep for this listing')
     +th('plan','Plan','Ticked first')+th('status','Status','In progress first',1)+'</tr>'
     +items.map(x=>{
@@ -4013,12 +4055,13 @@ function ppListRows(items){
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
         +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
         +(()=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null;
-            const mo=av!=null?av:(a.p.monthlySold||null), d=a.known&&mo>0?Math.round(a.total/(mo/30)):null;
-            const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=av==null?'*':'';
+            const R=demandRate(x.asin, a.p.monthlySold), mo=R.mo||null, d=a.known&&mo>0?Math.round(a.total/(mo/30)):null;
+            const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=R.est?'*':'';
+            const why=mo>0?' · selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':'';
             return '<td style="'+td+';'+num+';color:#2563a8">'+(a.known?a.total.toLocaleString():'—')+'</td>'
               +'<td style="'+td+';'+num+';color:#7a4fb5">'+(av!=null?'~'+Math.round(av).toLocaleString():'—')+'</td>'
-              +'<td style="'+td+';'+num+';color:'+dColor(d)+'"'+(d!=null&&av==null?' title="No Smart Scout average: based on Keepa listing sales"':'')+'>'+(d==null?'—':d+' days'+star)+'</td>'
-              +'<td style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep':'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
+              +'<td style="'+td+';'+num+';color:'+dColor(d)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit'+why:'')+'">'+(d==null?'—':d+' days'+star)+'</td>'
+              +'<td style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep'+why:'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
         +'<td style="'+td+';text-align:center"><input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer"></td>'
         +'<td style="'+td+'">'+status+'</td></tr>';
     }).join('')+'</table></div>';
@@ -7255,16 +7298,15 @@ function amazonSplit(p){
   if(!rows.length) return '';
   const tAt=rows.reduce((n,r)=>n+r.at*r.per,0), tWay=rows.reduce((n,r)=>n+r.way*r.per,0);
   const cell='padding:4px 8px;text-align:right;font-weight:800';
-  // FBA cover = (at Amazon + on the way) ÷ daily sales at the other sellers'
-  // average (SmartScout AVG). Not Keepa's whole-listing sales: Amazon takes
-  // most of those, so they made cover look like a few days. We're sizing up
-  // against the other sellers' slice of the pie, so their pace is the
-  // realistic one. No average → Keepa's listing sales, marked *.
+  // FBA cover = (at Amazon + on the way) ÷ the best-estimate sales rate,
+  // the same demand number Send Next plans with (demandRate). Never Keepa's
+  // whole-listing sales on their own: Amazon takes most of those, so cover
+  // read as a few days. * = a rough fallback (no estimate yet).
   const avgOf=a=>ssAvg&&ssAvg.avg&&ssAvg.avg[a]?ssAvg.avg[a]:null;
-  const rate=r=>{ const v=avgOf(r.asin); return v?{mo:v.avg, est:false}:{mo:r.sold||0, est:!!r.sold}; };
-  const coverTd=(units, mo, est)=>{
+  const rate=r=>demandRate(r.asin, r.sold);
+  const coverTd=(units, mo, est, note)=>{
     const d=mo>0 ? Math.round(units/(mo/30)) : null;
-    return '<td style="'+cell+';color:'+(d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449')+'"'+(est&&d!=null?' title="No Smart Scout average: based on Keepa listing sales (all sellers, includes Amazon)"':'')+'>'+(d==null?'—':d+'d'+(est?'*':''))+'</td>';
+    return '<td style="'+cell+';color:'+(d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449')+'"'+(d!=null?' title="'+esc('Selling ~'+Math.round(mo).toLocaleString()+'/mo · '+(note||''))+'"':'')+'>'+(d==null?'—':d+'d'+(est?'*':''))+'</td>';
   };
   const tRate=rows.reduce((n,r)=>n+rate(r).mo*r.per,0), tEst=rows.some(r=>rate(r).est);
   // ⭐ Smart Scout selections view: AVG of the other sellers after Sold / mo.
@@ -7272,15 +7314,15 @@ function amazonSplit(p){
   const avgTd=r=>{ if(!showAvg) return ''; const v=avgOf(r.asin); return '<td style="'+cell+';color:#7a4fb5"'+(v?' title="Average of '+v.n+' other seller'+(v.n===1?'':'s')+'"':'')+'>'+(v?'~'+Math.round(v.avg).toLocaleString():'—')+'</td>'; };
   const tr=r=>'<tr style="border-top:1px solid #eef2f6"><td style="padding:4px 8px"><b style="color:'+(r.label==='Duo'?'#c0392b':'#1a2b4a')+'">'+r.label+'</b> <a href="https://www.amazon.com/dp/'+encodeURIComponent(r.asin)+'" target="_blank" rel="noopener" title="Open on Amazon" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">'+esc(r.asin)+'</a>'+(r.per>1?' <span class="hint">×'+r.per+' bottles</span>':'')+'</td>'
     +'<td style="'+cell+';color:#5a6472">'+(r.sold!=null?'~'+Number(r.sold).toLocaleString():'—')+'</td>'+avgTd(r)
-    +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td>'+coverTd(r.at+r.way, rate(r).mo, rate(r).est)+'</tr>';
+    +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td>'+coverTd(r.at+r.way, rate(r).mo, rate(r).est, rate(r).note)+'</tr>';
   const multi=rows.length>1;
   return '<div style="margin-top:8px;background:#f7f9fb;border-radius:8px;padding:6px 4px">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 2px"><span style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6">AT AMAZON BY LISTING</span>'
     +'<a href="#" onclick="amazonCheck(\''+esc(p.asin)+'\');return false" style="font-size:11.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a></div>'
     +(p.fba_amazon_asin?'<div class="hint" style="padding:0 8px 4px;color:#b7791f">Amazon files this SKU under ASIN <b>'+esc(p.fba_amazon_asin)+'</b>, not '+esc(p.asin)+' — numbers matched by SKU.</div>':'')
-    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td>'+(showAvg?'<td style="padding:2px 8px;text-align:right" title="SmartScout: average sells / mo of the other sellers'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+' — not you">AVG</td>':'')+'<td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td><td style="padding:2px 8px;text-align:right" title="Days the stock at Amazon plus on the way lasts at the other sellers\' average sales (Smart Scout). * = no average, Keepa listing sales used">FBA cover</td></tr>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td>'+(showAvg?'<td style="padding:2px 8px;text-align:right" title="SmartScout: average sells / mo of the other sellers'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+' — not you">AVG</td>':'')+'<td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td><td style="padding:2px 8px;text-align:right" title="Days the stock at Amazon plus on the way lasts at the best-estimate sales rate (same as Send Next). Hover a number to see what it leans on. * = rough fallback">FBA cover</td></tr>'
     +rows.map(tr).join('')
-    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td></td>'+(showAvg?'<td></td>':'')+'<td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td>'+coverTd(tAt+tWay, tRate, tEst)+'</tr>':'')
+    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td></td>'+(showAvg?'<td></td>':'')+'<td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td>'+coverTd(tAt+tWay, tRate, tEst, 'all listings together, bottles')+'</tr>':'')
     +'</table></div>';
 }
 // Ask Amazon about one product's SKUs right now and show the raw answer next

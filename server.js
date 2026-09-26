@@ -404,7 +404,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pp-cards-hover-0926';
+const BUILD_ID = 'demand-one-number-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -600,6 +600,16 @@ async function initDb() {
       taken_on DATE NOT NULL DEFAULT CURRENT_DATE,
       monthly NUMERIC,
       PRIMARY KEY (asin, signal, taken_on)
+    );
+    -- One row per listing per day from each Amazon stock pull: lets our
+    -- sales be judged per day IN STOCK (lib/forecast.js inStockMonthly),
+    -- since raw sales undercount after a stockout.
+    CREATE TABLE IF NOT EXISTS inv_fba_daily (
+      asin TEXT NOT NULL,
+      day DATE NOT NULL DEFAULT CURRENT_DATE,
+      onhand INTEGER, fulfillable INTEGER, inbound INTEGER,
+      updated_at TIMESTAMPTZ DEFAULT now(),
+      PRIMARY KEY (asin, day)
     );
     CREATE TABLE IF NOT EXISTS inv_ss_picks (
       asin TEXT PRIMARY KEY,
@@ -5069,6 +5079,14 @@ async function pullFbaInventory(onProgress) {
     await saveCache('fba_inventory', out);
     console.log(`[FBA] Cached ${out.length} ASINs.`);
   } catch(e) { console.error('[FBA] cache save failed (non-fatal):', e.message); }
+  // Today's snapshot per listing (the last pull of the day wins).
+  try {
+    const a = [], oh = [], fu = [], ib = [];
+    for (const r of out) { a.push(r.asin); oh.push(r.fba_onhand || 0); fu.push(r.fba_fulfillable || 0); ib.push(r.fba_inbound || 0); }
+    if (a.length) await pool.query(`INSERT INTO inv_fba_daily(asin, onhand, fulfillable, inbound)
+      SELECT * FROM unnest($1::text[], $2::int[], $3::int[], $4::int[])
+      ON CONFLICT (asin, day) DO UPDATE SET onhand=EXCLUDED.onhand, fulfillable=EXCLUDED.fulfillable, inbound=EXCLUDED.inbound, updated_at=now()`, [a, oh, fu, ib]);
+  } catch (e) { console.error('[FBA] daily snapshot failed (non-fatal):', e.message); }
 
   // Record EVERY seller SKU seen, not just the first. This is the only place
   // the full SKU list exists, and settlement costing depends on it.
@@ -5153,7 +5171,8 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
 //   bottles:  every physical bottle with warehouse stock, what's free, its
 //             cost and its Cosmoprof item number(s).
 // ============================================================
-app.get('/api/plan/data', ownerAuth, async (req, res) => {
+app.get('/api/plan/data', ownerAuth, async (req, res) => { res.json(await buildPlanData()); });
+async function buildPlanData() {
   const cache = async (k) => { const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [k]); return r.rows[0] || null; };
   const [fbaC, mktC, velC, rsC] = await Promise.all([cache('fba_inventory'), cache('market_data'), cache('velocity'), cache('amazon_restock')]);
   const restock = (rsC && rsC.data) || { bySku: {}, byAsin: {} };
@@ -5180,6 +5199,10 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
   const prepped = {}; for (const r of (await pool.query('SELECT asin, qty FROM inv_prepped')).rows) prepped[r.asin] = r.qty;
   const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep GROUP BY asin')).rows) pending[r.asin] = r.q;
   const cosmo = {}; for (const r of (await pool.query('SELECT cosmo_num, asin FROM inv_cosmo_map WHERE asin IS NOT NULL')).rows) (cosmo[r.asin] = cosmo[r.asin] || []).push(r.cosmo_num);
+  // Days with a stock snapshot in the sales window, and how many had sellable stock.
+  const snap = {};
+  for (const r of (await pool.query(`SELECT asin, COUNT(*)::int AS known, COUNT(*) FILTER (WHERE fulfillable > 0)::int AS in_stock
+      FROM inv_fba_daily WHERE day > CURRENT_DATE - $1::int GROUP BY asin`, [velDays])).rows) snap[r.asin] = { known: r.known, inStock: r.in_stock };
   const ssBrand = await ssBrandRows();
   const ssSellers = await ssSellerFiles();
   // Live Amazon prices from the last Inventory Value pull (SP-API). SmartScout
@@ -5232,7 +5255,9 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       const us = ssSellers.find(sl => sl.isUs);
       const usRow = us && us.by[p.asin];
       const share = L.shareMeasured != null ? L.shareMeasured : L.shareEst;
+      L.snap = snap[p.asin] || { known: 0, inStock: 0 };
       L.signals = {
+        instock: forecast.inStockMonthly(ourSold, velDays, L.snap),
         ours: ourSold != null ? ourSold * 30 / velDays : null,
         ssus: us ? (usRow ? smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, usRow) : 0) : null,
         keepa: m.monthlySold != null && share != null ? m.monthlySold * share : null,
@@ -5273,9 +5298,29 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
     const first = await pool.query('SELECT MIN(taken_on) AS d FROM inv_forecast_log');
     model.since = first.rows[0] && first.rows[0].d;
   } catch (e) { console.error('[Plan] forecast log/learn failed:', e.message); }
-  res.json({ ok: true, listings, bottles, forecast: model,
+  // THE demand number (monthly units we'll sell), used by Send Next, Rec.
+  // Order, Pending Prep and On Hand alike so they never disagree.
+  for (const L of listings) {
+    const b = forecast.blend(forecast.blendSignals(L.signals, { atAmazon: L.atAmazon, snapKnown: L.snap.known }), model.weights);
+    L.demand = { monthly: b.monthly, used: b.used };
+  }
+  return { ok: true, listings, bottles, forecast: model,
     sellerId, amazonPriceAt: valC && valC.updated_at, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
-    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays, restock: rsC && rsC.updated_at } });
+    asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays, restock: rsC && rsC.updated_at } };
+}
+// The demand number per listing for the warehouse screens (Pending Prep
+// days covered, On Hand FBA cover). Warehouse auth by the owner's choice
+// for the current staff (see CLAUDE.md). Cached 10 minutes: building it
+// reads every product and scores the forecast log.
+let demandCache = null;
+app.get('/api/demand', auth, async (req, res) => {
+  if (!demandCache || Date.now() - demandCache.at > 10 * 60000) {
+    const d = await buildPlanData();
+    const demand = {};
+    for (const L of d.listings) if (L.demand && L.demand.monthly != null) demand[L.asin] = { monthly: Math.round(L.demand.monthly * 10) / 10, used: L.demand.used };
+    demandCache = { at: Date.now(), body: { ok: true, demand, learned: !!(d.forecast && d.forecast.learned), since: d.forecast && d.forecast.since } };
+  }
+  res.json(demandCache.body);
 });
 
 // ============================================================

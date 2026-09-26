@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { learnWeights, blend, predError, PRIOR_WEIGHTS, MIN_SAMPLES } = require('../lib/forecast');
+const { learnWeights, blend, predError, inStockMonthly, blendSignals, PRIOR_WEIGHTS, MIN_SAMPLES } = require('../lib/forecast');
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) < e, `${a} ≠ ${b}`);
 
@@ -13,7 +13,8 @@ test('no history yet: starting weights (our sales count most)', () => {
 test('blend uses only the signals a listing has', () => {
   // Only our sales and Keepa: 0.5 and 0.15 renormalised.
   const b = blend({ ours: 100, ssus: null, keepa: 200, fair: null });
-  near(b.monthly, (0.5 * 100 + 0.15 * 200) / 0.65);
+  const w = PRIOR_WEIGHTS;
+  near(b.monthly, (w.ours * 100 + w.keepa * 200) / (w.ours + w.keepa));
   near(b.used.ours + b.used.keepa, 1);
   assert.strictEqual(blend({}).monthly, null);
 });
@@ -41,4 +42,21 @@ test('too few scored predictions: the signal keeps its prior', () => {
 test('small sellers: error floored at 5 units, so 1 vs 2 is not 100% off', () => {
   near(predError(1, 2), 1 / 5);
   near(predError(150, 100), 0.5);
+});
+
+test('in stock 20 of 30 days: 300 sold is a 15/day pace, not 10', () => {
+  near(inStockMonthly(300, 30, { known: 30, inStock: 20 }), 450);
+  near(inStockMonthly(300, 30, { known: 30, inStock: 30 }), 300);
+});
+
+test('in-stock correction needs a week of snapshots, and caps at 4x', () => {
+  assert.strictEqual(inStockMonthly(300, 30, { known: 3, inStock: 1 }), null);
+  near(inStockMonthly(30, 30, { known: 10, inStock: 1 }), 120);   // 10% in stock → floored at 25%
+});
+
+test('nothing at Amazon and no history: raw sales left out of the blend (may be a stockout)', () => {
+  assert.strictEqual(blendSignals({ ours: 40, fair: 300 }, { atAmazon: 0, snapKnown: 0 }).ours, null);
+  assert.strictEqual(blendSignals({ ours: 40, fair: 300 }, { atAmazon: 12, snapKnown: 0 }).ours, 40);
+  assert.strictEqual(blendSignals({ ours: 40, fair: 300 }, { atAmazon: 0, snapKnown: 20 }).ours, 40);
+  assert.strictEqual(blendSignals({ ours: 40 }, { atAmazon: 0, snapKnown: 0 }).ours, 40);   // nothing else to go on
 });
