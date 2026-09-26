@@ -2887,6 +2887,37 @@ function copyAsin(el){
   else prompt('Copy this ASIN:', a);
 }
 function fmtDays(v){ return v==null||!isFinite(v)?'—':v>=365?(v/365).toFixed(1)+' yr':Math.round(v)+'d'; }
+// Rec. Order for ONE listing, in listing units (a duo = 1): what that single
+// or duo needs at Amazon — blend × Plan on % × (lead + target) − what it has
+// (at Amazon + on the way + in prep). Loose warehouse bottles are shared
+// between a single and its duos, so they're counted in the bottle view.
+function listingRec(l, st){
+  const rb=recBlend(l); if(rb.monthly==null) return {qty:null, rb};
+  const pf=Math.min(100,Math.max(1,Number(st.planPct)||100))/100, horizon=st.cosmoDays+st.prepDays+st.amazonDays+st.target;
+  const perDay=rb.monthly/30*pf, have=l.atAmazon+l.onTheWay+(l.queued||0);
+  let qty=Math.max(0,Math.ceil(perDay*horizon-have)); if(qty && st.packOf>1) qty=Math.ceil(qty/st.packOf)*st.packOf;
+  return {qty, rb, perDay, have, pf, horizon};
+}
+function recCell(l, st, td){
+  const r=listingRec(l, st);
+  return '<td style="'+td+';background:#f7f2fd;font-weight:900;color:'+(r.qty?'#5b2d9e':'#8a97a6')+';cursor:pointer" onclick="recListingBreakdown(\''+esc(l.asin)+'\')" title="Why this number — click">'+(r.qty==null?'—':r.qty)+'</td>';
+}
+function recListingBreakdown(asin){
+  const d=_plan, st=planSet(), l=d&&d.listings.find(x=>x.asin===asin); if(!l) return;
+  const r=listingRec(l, st), n=v=>v==null?'—':Math.round(v).toLocaleString(), lead=st.cosmoDays+st.prepDays+st.amazonDays;
+  const old=document.getElementById('recModal'); if(old) old.remove();
+  const m=document.createElement('div'); m.id='recModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+  m.onclick=e=>{ if(e.target===m) m.remove(); };
+  const row=(k,v,w)=>'<tr><td style="padding:5px 8px;border-top:1px solid #eef2f6">'+esc(REC_LABELS[k])+'</td><td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right">'+n(v)+'/mo</td><td style="padding:5px 8px;border-top:1px solid #eef2f6;text-align:right" class="hint">'+(w?Math.round(w*100)+'% weight':'no data')+'</td></tr>';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:560px;width:100%"><div style="display:flex;justify-content:space-between;gap:10px"><div><b style="font-size:16px">Rec. Order — '+(r.qty==null?'no data':r.qty+' '+(l.isDuo?'duos':'units'))+'</b><div class="hint">'+(l.isDuo?'DUO':'SINGLE')+' · '+esc(l.name||asin)+' · '+esc(asin)+'</div></div><button class="action" onclick="document.getElementById(\'recModal\').remove()" style="background:#5a6472">Close</button></div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:10px">'+['ours','ssus','keepa','fair'].map(k=>row(k, l.signals&&l.signals[k], r.rb.used[k])).join('')+'</table>'
+    +(r.qty==null?'<div class="hint" style="margin-top:8px">None of the four signals has data for this listing yet.</div>'
+      :'<div style="margin-top:10px;font-size:13px;line-height:1.6">Blend: <b>'+n(r.rb.monthly)+'/mo</b> × '+Math.round(r.pf*100)+'% = <b>'+n(r.perDay*30)+'/mo</b><br>Needed for '+lead+' lead + '+st.target+' target days: <b>'+n(r.perDay*r.horizon)+'</b> − has <b>'+n(r.have)+'</b> (at Amazon '+l.atAmazon+' + on the way '+l.onTheWay+' + in prep '+(l.queued||0)+') = <b style="color:#5b2d9e">'+r.qty+'</b>'+(st.packOf>1?' (rounded up to '+st.packOf+')':'')+'</div>'
+       +'<div class="hint" style="margin-top:8px">In '+(l.isDuo?'duos':'units')+' of this listing. Loose bottles in the warehouse are shared between the single and its duos, so the bottle view (what to buy) counts them.</div>')
+    +'</div>';
+  document.body.appendChild(m);
+}
 function recBreakdown(asin){
   const d=_plan, st=planSet(); if(!d) return;
   const pf=Math.min(100,Math.max(1,Number(st.planPct)||100))/100, lead=st.cosmoDays+st.prepDays+st.amazonDays, horizon=lead+st.target;
@@ -3136,7 +3167,7 @@ function ordersLineRows(r, isSS, st, selCols){
       +selCols.map(c=>{ const v=(l.ssSellers||{})[c.abbr]; return '<td style="'+td+(c.isUs?';color:#127a7a;background:#eef6f6':'')+'">'+(v==null?'—':Math.round(v).toLocaleString())+'</td>'; }).join('')
       +(isSS?ssPickCell(l.asin, ssListingOnhand(l), td):'<td style="'+td+'"></td>')+'<td style="'+td+'">'+l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+l.onTheWay+'</td>'
       +'<td style="'+td+'">'+fmtDays(cover)+'</td>'
-      +'<td colspan="'+(nAfter-4)+'"></td></tr>';
+      +(isSS?'<td style="'+td+'"></td>'+recCell(l, st, td)+'<td colspan="'+(nAfter-6)+'"></td>':'<td colspan="'+(nAfter-4)+'"></td>')+'</tr>';
   }).join('');
 }
 // "By listing" view: every single and duo as its own row, to compare sellers
@@ -3148,17 +3179,17 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
     return {l, dm, perDay, have, cover:perDay>0?have/perDay:null, pace, sel:l.ssSellers||{}};
   }).filter(r=>r.perDay>0||r.have>0);
   const S={ name:r=>String(r.l.name||'').toLowerCase(), net:r=>{ const n=listingNet(r.l); return n?n.v:null; }, type:r=>r.l.isDuo?1:0, sold:r=>r.perDay, amz:r=>r.l.atAmazon, way:r=>r.l.onTheWay, prep:r=>r.l.queued||0,
-            cover:r=>r.cover, pie:r=>r.l.ss?r.l.ss.pie:null, price:r=>r.l.price, oh:r=>Number((ssListingOnhand(r.l).match(/<b>(\d+)<\/b>/)||[])[1]||0),
+            cover:r=>r.cover, rec:r=>listingRec(r.l, st).qty, pie:r=>r.l.ss?r.l.ss.pie:null, price:r=>r.l.price, oh:r=>Number((ssListingOnhand(r.l).match(/<b>(\d+)<\/b>/)||[])[1]||0),
             ...Object.fromEntries(selCols.map(c=>['sel_'+c.abbr, r=>r.sel[c.abbr]??null])) };
   const key=S[st.lstSort]?st.lstSort:'sold', dir=st.lstDir===1?1:-1, get=S[key];
   rows.sort((a,c)=>{ const x=get(a), y=get(c); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*dir; });
   const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
   const cols=[['name','Listing',0],['net','Net / unit',1,'Price − product cost − Amazon fees − supplies − labor per piece. Click a figure for the breakdown'],['type','Type',0],['sold','Sells / mo',1]].concat(selCols.map(c=>['sel_'+c.abbr,c.abbr,1,c.name+' — sells / mo of this listing (SmartScout)'+(c.isUs?' · this is you':'')]),
     isSS?[['oh','On hand',1,'Singles: bottles in the warehouse. Duos: how many you can build from free bottles. Tick to list it under On Hand → ⭐ Smart Scout selections']]:[],
-    [['amz','At Amazon',1],['way','On the way',1],['prep','In prep',1],['cover','Days covered',1]], isSS?[['pie','Pie / mo',1]]:[], [['price','Price',1]]);
+    [['amz','At Amazon',1],['way','On the way',1],['prep','In prep',1],['cover','Days covered',1]], isSS?[['rec','Rec. Order',1,'Recommended for this listing, in its own units (a duo = 1). Click a number for the breakdown.'],['pie','Pie / mo',1]]:[], [['price','Price',1]]);
   let h='<div class="box" style="overflow-x:auto"><div class="hint" style="margin-bottom:6px">Every listing on its own row, duos included, in <b>listing units</b> (one duo = one sale). Switch back to "By bottle" for the order quantities.</div>'
     +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:'+(920+selCols.length*60)+'px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
-    +cols.map(([k,t,right,tip])=>'<td onclick="listSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(k==='oh'?'background:#ffe066;color:#1a2b4a;font-weight:900;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
+    +cols.map(([k,t,right,tip])=>'<td onclick="listSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(k==='oh'?'background:#ffe066;color:#1a2b4a;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
     +rows.map(r=>{
       const l=r.l, cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const top=Math.max(0,...selCols.map(c=>r.sel[c.abbr]||0));
@@ -3170,7 +3201,7 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
         +(isSS?ssPickCell(l.asin, ssListingOnhand(l), td):'')
         +'<td style="'+td+'">'+l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+l.onTheWay+'</td><td style="'+td+';color:#7a4fb5">'+(l.queued||'')+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+fmtDays(r.cover)+(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400;white-space:nowrap">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>'
-        +(isSS?'<td style="'+td+'">'+(l.ss?Math.round(l.ss.pie).toLocaleString():'—')+'</td>':'')
+        +(isSS?recCell(l, st, td)+'<td style="'+td+'">'+(l.ss?Math.round(l.ss.pie).toLocaleString():'—')+'</td>':'')
         +'<td style="'+td+'">'+(l.price!=null?'$'+Number(l.price).toFixed(2):'—')+'</td></tr>';
     }).join('')+'</table></div>';
   return h;
