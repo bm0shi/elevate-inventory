@@ -403,7 +403,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'rec-order-listings-0927';
+const BUILD_ID = 'prep-pick-duo-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5523,21 +5523,33 @@ app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
 
 // Create a prep request
 app.post('/api/pending-prep/add', auth, async (req, res) => {
-  const { asin, qty, isDuo } = req.body;
+  const { asin, qty, isDuo, duoAsin } = req.body;
   const q = parseInt(qty);
   if (!asin || !q || q < 1) return res.status(400).json({ error: 'asin + qty required' });
 
-  // If marked as duo, the asin passed should be a component; find the duo it belongs to.
+  // If marked as duo, the asin passed is either the duo itself or a bottle in
+  // it. A bottle can be in several duos (Tea Tree Special Shampoo is in the
+  // Tingle Liter Duo and the Head-to-Toe set); taking the first one found
+  // made work orders for the wrong duo. The duo picked in the prep window
+  // (duoAsin) is used, and must actually contain this bottle.
   let requestAsin = asin, duoFlag = false;
   if (isDuo) {
     // is this asin already a bundle (duo) itself?
     const isBundle = await pool.query('SELECT 1 FROM inv_bundles WHERE bundle_asin=$1 LIMIT 1', [asin]);
     if (isBundle.rows.length) { requestAsin = asin; duoFlag = true; }
     else {
-      // it's a component — find a duo containing it
-      const b = await pool.query('SELECT bundle_asin FROM inv_bundles WHERE component_asin=$1 LIMIT 1', [asin]);
+      const b = await pool.query('SELECT DISTINCT bundle_asin FROM inv_bundles WHERE component_asin=$1', [asin]);
       if (!b.rows.length) return res.status(400).json({ error: 'This item is not part of any duo.' });
-      requestAsin = b.rows[0].bundle_asin; duoFlag = true;
+      const options = b.rows.map(r => r.bundle_asin);
+      if (duoAsin) {
+        if (!options.includes(duoAsin)) return res.status(400).json({ error: 'That duo doesn\'t contain this bottle.' });
+        requestAsin = duoAsin;
+      } else if (options.length === 1) {
+        requestAsin = options[0];
+      } else {
+        return res.status(400).json({ error: 'This bottle is in ' + options.length + ' duos — pick which one.', duoOptions: options });
+      }
+      duoFlag = true;
     }
   }
 

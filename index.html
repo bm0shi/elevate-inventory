@@ -2662,10 +2662,19 @@ function requestPrep(asin, canDuo){
   const p = products.find(x=>x.asin===asin);
   if(!p) return;
   const avail = Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0));
-  let partnerHtml='';
-  if(canDuo && p.partners && p.partners.length){
-    partnerHtml='<div style="font-size:12px;color:#5a6472;margin-top:6px">Partner stock: '+p.partners.map(pt=>`<b style="color:${pt.onhand>0?'#1e8449':'#c0392b'}">${pt.onhand}</b> (${pt.asin})`).join(', ')+'</div>';
+  // One choice per duo this bottle is in (a bottle can be in several), with
+  // the partner's stock and how many can be built from free stock now.
+  const duoOpts={};
+  for(const pt of (canDuo&&p.partners)||[]){
+    const o=duoOpts[pt.bundle_asin]=duoOpts[pt.bundle_asin]||{asin:pt.bundle_asin, partners:[]};
+    o.partners.push(pt);
   }
+  const duoList=Object.values(duoOpts).map(o=>{
+    const dp=(products||[]).find(x=>x.asin===o.asin)||{};
+    const partnerFree=o.partners.map(pt=>{ const q=(products||[]).find(x=>x.asin===pt.asin)||{}; return Math.max(0,(q.onhand!=null?q.onhand:pt.onhand||0)-(q.pending_prep||0)-(q.prepped||0)); });
+    return Object.assign(o,{name:dp.name||o.asin, image:dp.image, fnsku:dp.fnsku, canBuild:Math.min(avail, ...partnerFree)});
+  }).sort((a,b)=>b.canBuild-a.canBuild);
+  const partnerHtml='';
   const modal=document.createElement('div');
   modal.id='prepModal';
   modal.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
@@ -2680,14 +2689,22 @@ function requestPrep(asin, canDuo){
       ${canDuo ? `
       <div style="margin-top:16px">
         <div style="font-size:13px;font-weight:700;margin-bottom:8px">Prep as:</div>
-        <label style="display:flex;align-items:center;gap:9px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="document.getElementById('prepModeSingle').checked=true">
+        <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="document.getElementById('prepModeSingle').checked=true">
           <input type="radio" name="prepMode" id="prepModeSingle" checked style="width:18px;height:18px">
           <span><b>SINGLES</b> <span style="color:#5a6472;font-size:12px">— just this item</span></span>
         </label>
-        <label style="display:flex;align-items:center;gap:9px;padding:11px;border:2px solid #fdeceb;background:#fffafa;border-radius:8px;cursor:pointer" onclick="document.getElementById('prepModeDuo').checked=true">
-          <input type="radio" name="prepMode" id="prepModeDuo" style="width:18px;height:18px">
+        ${duoList.length ? duoList.map((o,i)=>`
+        <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:9px 11px;border:2px solid #fdeceb;background:#fffafa;border-radius:8px;cursor:pointer;margin-bottom:8px">
+          <input type="radio" name="prepMode" class="prepModeDuo" value="${esc(o.asin)}" style="width:18px;height:18px;flex:none">
+          ${o.image?`<img src="${esc(o.image)}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid #f3d9d6;flex:none">`:''}
+          <span style="font-size:12.5px;line-height:1.3"><b style="color:#c0392b">DUO</b> <b>${esc(String(o.name).slice(0,70))}</b><br>
+            <span style="font-family:monospace;color:#2563a8">${esc(o.asin)}</span>${o.fnsku?` · <span style="font-family:monospace">${esc(o.fnsku)}</span>`:''}<br>
+            <span style="color:#5a6472">with ${o.partners.map(pt=>esc(pt.asin)+' (<b style="color:'+(pt.onhand>0?'#1e8449':'#c0392b')+'">'+pt.onhand+'</b> on hand)').join(', ')} · <b style="color:${o.canBuild>0?'#7a4fb5':'#c0392b'}">can build ${o.canBuild}</b></span></span>
+        </label>`).join('') : `
+        <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:11px;border:2px solid #fdeceb;background:#fffafa;border-radius:8px;cursor:pointer">
+          <input type="radio" name="prepMode" class="prepModeDuo" value="" style="width:18px;height:18px">
           <span><b style="color:#c0392b">DUOS</b> <span style="color:#5a6472;font-size:12px">— uses this + its partner</span></span>
-        </label>
+        </label>`}
       </div>` : ''}
       <div style="display:flex;gap:8px;margin-top:18px">
         <button onclick="closePrepModal()" style="flex:1;padding:12px;font-size:14px;font-weight:700;background:#e2e8f0;color:#1f2733;border:none;border-radius:8px;cursor:pointer">Cancel</button>
@@ -2701,12 +2718,14 @@ function closePrepModal(){ const m=document.getElementById('prepModal'); if(m) m
 function submitPrepRequest(asin){
   const qty=parseInt((document.getElementById('prepQtyInput')||{}).value);
   if(!qty||qty<1){ toast('Enter a valid quantity',true); return; }
-  const duoEl=document.getElementById('prepModeDuo');
-  const isDuo = duoEl ? duoEl.checked : false;
+  // Which duo was picked (each duo is its own choice); none = singles.
+  const duoEl=document.querySelector('#prepModal .prepModeDuo:checked');
+  const isDuo = !!duoEl, duoAsin = duoEl && duoEl.value ? duoEl.value : undefined;
   closePrepModal();
-  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo})}).then(d=>{
+  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo,duoAsin})}).then(d=>{
     if(d.error){ toast(d.error,true); return; }
-    toast('Added to Pending Prep: '+qty+(d.isDuo?' duos':' units'));
+    const dn=d.isDuo?(((products||[]).find(x=>x.asin===d.asin)||{}).name||d.asin):'';
+    toast('Added to Pending Prep: '+qty+(d.isDuo?' duos — '+String(dn).slice(0,40):' units'));
     loadProducts();
   });
 }
