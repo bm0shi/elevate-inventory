@@ -1,0 +1,31 @@
+# Runs on every push and pull request: the pure-helper unit tests, then the
+# stock-moving route tests against a throwaway Postgres (test/routes/).
+# A red check means a change would move stock wrong — don't merge it.
+name: tests
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: pg
+          POSTGRES_DB: elevate_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci || npm install
+      - run: node --check server.js finance.js autorun.js spapi.js keepa.js
+      - run: npm test
+      - run: npm run test:routes
+        env:
+          TEST_DATABASE_URL: postgres://postgres:pg@localhost:5432/elevate_test
