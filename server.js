@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -22,6 +22,7 @@ const { estimateShare, measuredShare } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
 const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
+const capacity = require('./lib/capacity');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -404,7 +405,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'demand-one-number-0926';
+const BUILD_ID = 'fba-capacity-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -932,6 +933,15 @@ async function initDb() {
     `);
     console.log('[Inventory] Hazmat columns ready.');
   } catch(e) { console.error('hazmat migration skipped:', e.message); }
+
+  // ---- Package size per listing, for FBA capacity (lib/capacity.js) ----
+  try {
+    await pool.query(`
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft NUMERIC;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_at TIMESTAMPTZ;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_error TEXT;
+    `);
+  } catch(e) { console.error('cuft migration skipped:', e.message); }
 
   // ---- Hazmat, keyed by ASIN (idempotent) ----
   // Originally stored on inv_products, which only holds the ~111 products we
@@ -5142,6 +5152,13 @@ function startAmazonSync(trigger) {
       await saveCache('amazon_restock', rs);
       result.restockSkus = Object.keys(rs.bySku).length;
     } catch (e) { result.errors.push('restock report: ' + e.message); }
+    // Package sizes for listings that don't have one yet (new products), for
+    // the FBA capacity bar. Only the missing ones: sizes rarely change.
+    try {
+      amazonSync.step = 'Looking up package sizes for new listings…';
+      const sz = await pullItemSizes(false);
+      if (sz.failed) result.errors.push('package sizes: ' + sz.failed + ' failed');
+    } catch (e) { result.errors.push('package sizes: ' + e.message); }
     amazonSync.result = result;
     amazonSync.error = result.errors.length ? result.errors.join(' · ') : null;
     amazonSync.running = false; amazonSync.done = true; amazonSync.finishedAt = new Date().toISOString();
@@ -5159,6 +5176,84 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
   let last = null;
   try { const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='amazon_sync_last'"); last = r.rows[0] ? r.rows[0].data : null; } catch (e) {}
   res.json({ ...amazonSync, last });
+});
+
+// ============================================================
+// FBA CAPACITY — Pending Prep's capacity bar. Amazon counts stock at Amazon
+// plus open shipments, in cubic feet, against a monthly limit that isn't in
+// the API (Seller Central → Capacity Monitor), so the owner enters it. The
+// app adds what's prepped and what's queued in Pending Prep, so the owner
+// sees BEFORE the work is done whether it will fit. Math in lib/capacity.js.
+// ============================================================
+let sizeJob = { running: false, step: '', done: false, result: null };
+async function pullItemSizes(all, onStep) {
+  const q = all ? 'SELECT asin FROM inv_products' : 'SELECT asin FROM inv_products WHERE cuft IS NULL';
+  const asins = (await pool.query(q)).rows.map(r => r.asin);
+  if (!asins.length) return { looked: 0, found: 0, failed: 0 };
+  const dims = await getItemDimensions(asins, onStep);
+  let found = 0, failed = 0;
+  for (const a of asins) {
+    const r = dims[a] || {};
+    const cf = r.error ? null : capacity.cubicFeet(r.dimensions);
+    if (cf) found++; else failed++;
+    await pool.query('UPDATE inv_products SET cuft=COALESCE($2, cuft), cuft_at=CASE WHEN $2::numeric IS NULL THEN cuft_at ELSE now() END, cuft_error=$3 WHERE asin=$1',
+      [a, cf, cf ? null : (r.error || 'Amazon has no size for this listing')]);
+  }
+  console.log(`[Capacity] sizes: ${found} found, ${failed} without.`);
+  return { looked: asins.length, found, failed };
+}
+app.post('/api/capacity/sizes/start', auth, (req, res) => {
+  if (sizeJob.running) return res.json({ ok: true, already: true });
+  const all = !!(req.body && req.body.all);
+  sizeJob = { running: true, step: 'Starting…', done: false, result: null };
+  pullItemSizes(all, t => { sizeJob.step = t; })
+    .then(r => { sizeJob = { running: false, step: 'Done', done: true, result: r }; })
+    .catch(e => { sizeJob = { running: false, step: 'Failed', done: true, result: null, error: e.message }; });
+  res.json({ ok: true, started: true });
+});
+async function capacityNow() {
+  const fbaR = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='fba_inventory'");
+  const fba = (fbaR.rows[0] && fbaR.rows[0].data) || [];
+  const limR = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_capacity'");
+  const lim = (limR.rows[0] && limR.rows[0].data) || {};
+  const prods = (await pool.query('SELECT asin, name, cuft::float AS cuft, hazmat, cuft_error FROM inv_products')).rows;
+  const P = {}; for (const p of prods) P[p.asin] = p;
+  const prepped = {}; for (const r of (await pool.query('SELECT asin, qty FROM inv_prepped WHERE qty > 0')).rows) prepped[r.asin] = r.qty;
+  const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep GROUP BY asin')).rows) pending[r.asin] = r.q;
+  const row = (asin, units) => ({ cuft: P[asin] ? P[asin].cuft : null, hazmat: !!(P[asin] && P[asin].hazmat), units, asin });
+  // Each listing counted on its own ASIN: a duo takes a duo box, not two bottles.
+  const nowRows = fba.map(f => row(f.asin, Math.max(f.fba_onhand || 0, f.fba_fulfillable || 0) + (f.fba_inbound || 0)));
+  const prepRows = Object.entries(prepped).map(([a, q]) => row(a, q));
+  const pendRows = Object.entries(pending).map(([a, q]) => row(a, q));
+  const used = capacity.volumeOf(nowRows), prep = capacity.volumeOf(prepRows), pend = capacity.volumeOf(pendRows);
+  const missing = [...new Set(nowRows.concat(prepRows, pendRows).filter(r => r.units > 0 && !(r.cuft > 0)).map(r => r.asin))]
+    .map(a => ({ asin: a, name: P[a] ? P[a].name : a, why: P[a] ? P[a].cuft_error : 'not in the catalog' }));
+  // Scale by how far off we were the last time the owner read Seller Central.
+  const cal = lim.amazonUsed && lim.ourUsedThen ? capacity.calibration(lim.ourUsedThen, lim.amazonUsed) : 1;
+  const cuft = {}; for (const p of prods) if (p.cuft > 0) cuft[p.asin] = p.cuft * cal;
+  const sc = (v) => ({ standard: v.standard * cal, hazmat: v.hazmat * cal, missing: v.missing });
+  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, setAt: lim.setAt || null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
+    cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
+    sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
+}
+app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow()); });
+// Owner sets the month's limits (from Seller Central → Capacity Monitor), and
+// optionally what Seller Central says is used right now, to calibrate.
+app.post('/api/capacity/limit', ownerAuth, async (req, res) => {
+  const b = req.body || {};
+  const num = (v) => v === '' || v == null ? null : Number(v);
+  const standard = num(b.standard), hazmat = num(b.hazmat), amazonUsed = num(b.amazonUsed);
+  for (const v of [standard, hazmat, amazonUsed]) if (v != null && !(v >= 0 && v < 1e7)) return res.status(400).json({ ok: false, error: 'Enter cubic feet as a number.' });
+  const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_capacity'")).rows[0];
+  const data = Object.assign({}, prev ? prev.data : {}, { standard, hazmat, setAt: new Date().toISOString() });
+  if (amazonUsed != null) {
+    // Store our own figure at the same moment, so the ratio compares like with like.
+    const c = await capacityNow();
+    data.amazonUsed = amazonUsed; data.amazonUsedAt = new Date().toISOString();
+    data.ourUsedThen = c.cal ? c.used.standard / c.cal : c.used.standard;
+  }
+  await saveCache('fba_capacity', data);
+  res.json(await capacityNow());
 });
 
 // ============================================================
