@@ -58,6 +58,7 @@ and shown in the UI so you can confirm the deploy is live.
 - `auth` middleware: warehouse routes. Checks the `x-app-password` header and honors `AUTH_DISABLED`.
 - `ownerAuth` middleware: checks the `x-owner-password` header. It does **not** honor `AUTH_DISABLED` and does **not** accept the app password. Staff must never see velocity, margin, cost, inventory value, settlements, or the P&L.
 - Any new route that exposes money, cost, velocity, or value data must use `ownerAuth`. Hiding a screen in `index.html` is not protection.
+- Owner-approved exception (for now, three trusted staff): `/api/ss-avg` (other sellers' average sales, shown on On Hand → Smart Scout selections) uses `auth`. Revisit when per-person PINs or a separate staff link are added.
 - Passwords are compared with `safeEq` (timing-safe), and login routes are rate limited (`loginLimiter`).
 
 ## Domain rules learned the hard way
