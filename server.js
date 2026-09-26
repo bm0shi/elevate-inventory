@@ -404,7 +404,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'onhand-fba-cover-0926';
+const BUILD_ID = 'onhand-ss-avg-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5378,6 +5378,22 @@ app.post('/api/products/:asin/regular-cost', ownerAuth, async (req, res) => {
 // Smart Scout selections: ticked on Smart Scout Orders (owner), read by the
 // On Hand filter (warehouse). Only ASINs — no sales or cost data — so the
 // warehouse login is enough, and clearing them from On Hand works for staff.
+// AVG per listing for On Hand → ⭐ Smart Scout selections: what the OTHER
+// sellers (not us) sell of it per month, averaged over those whose SmartScout
+// file lists it. Same figure as the AVG column on Smart Scout Orders.
+// Warehouse auth, not ownerAuth: the owner chose to show it to the current
+// staff (three people, family/friends). Revisit with per-person PINs (#10).
+app.get('/api/ss-avg', auth, async (req, res) => {
+  const ssBrand = await ssBrandRows();
+  const others = (await ssSellerFiles()).filter(sl => !sl.isUs);
+  const avg = {};
+  const asins = new Set(others.flatMap(sl => Object.keys(sl.by)));
+  for (const a of asins) {
+    const v = others.filter(sl => sl.by[a]).map(sl => smartscout.sellerUnitsOn(ssBrand[a] ? ssBrand[a].units : null, sl.by[a])).filter(x => x != null);
+    if (v.length) avg[a] = { avg: v.reduce((t, x) => t + x, 0) / v.length, n: v.length };
+  }
+  res.json({ ok: true, avg, sellers: others.map(sl => sl.abbr) });
+});
 app.get('/api/ss-picks', auth, async (req, res) => {
   const r = await pool.query('SELECT asin FROM inv_ss_picks ORDER BY picked_at');
   res.json({ ok: true, asins: r.rows.map(x => x.asin) });

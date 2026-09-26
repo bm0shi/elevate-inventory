@@ -1037,6 +1037,10 @@ fetch('/api/auth-status').then(r=>r.json()).then(d=>{
 // On Hand page ("⭐ Smart Scout selections" filter) sees the same list on any
 // device, ready to prep.
 let ssPicks=new Set();
+let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo, for On Hand → Smart Scout selections
+function loadSsAvg(){
+  return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(((document.getElementById('filterOnhand')||{}).value)==='sspicks') renderOnhand(); } }).catch(()=>{});
+}
 function loadSsPicks(){
   return api('/api/ss-picks').then(d=>{ if(d&&d.ok){ ssPicks=new Set(d.asins); ssPicksPaint(); } }).catch(()=>{});
 }
@@ -7202,17 +7206,21 @@ function amazonSplit(p){
     return '<td style="'+cell+';color:'+(d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449')+'">'+(d==null?'—':d+'d')+'</td>';
   };
   const tSold=rows.reduce((n,r)=>n+(r.sold||0)*r.per,0);
+  // ⭐ Smart Scout selections view: AVG of the other sellers after Sold / mo.
+  const showAvg=((document.getElementById('filterOnhand')||{}).value)==='sspicks';
+  const avgOf=a=>ssAvg&&ssAvg.avg&&ssAvg.avg[a]?ssAvg.avg[a]:null;
+  const avgTd=r=>{ if(!showAvg) return ''; const v=avgOf(r.asin); return '<td style="'+cell+';color:#7a4fb5"'+(v?' title="Average of '+v.n+' other seller'+(v.n===1?'':'s')+'"':'')+'>'+(v?'~'+Math.round(v.avg).toLocaleString():'—')+'</td>'; };
   const tr=r=>'<tr style="border-top:1px solid #eef2f6"><td style="padding:4px 8px"><b style="color:'+(r.label==='Duo'?'#c0392b':'#1a2b4a')+'">'+r.label+'</b> <a href="https://www.amazon.com/dp/'+encodeURIComponent(r.asin)+'" target="_blank" rel="noopener" title="Open on Amazon" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">'+esc(r.asin)+'</a>'+(r.per>1?' <span class="hint">×'+r.per+' bottles</span>':'')+'</td>'
-    +'<td style="'+cell+';color:#5a6472">'+(r.sold!=null?'~'+Number(r.sold).toLocaleString():'—')+'</td>'
+    +'<td style="'+cell+';color:#5a6472">'+(r.sold!=null?'~'+Number(r.sold).toLocaleString():'—')+'</td>'+avgTd(r)
     +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td>'+coverTd(r.at+r.way, r.sold)+'</tr>';
   const multi=rows.length>1;
   return '<div style="margin-top:8px;background:#f7f9fb;border-radius:8px;padding:6px 4px">'
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 2px"><span style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6">AT AMAZON BY LISTING</span>'
     +'<a href="#" onclick="amazonCheck(\''+esc(p.asin)+'\');return false" style="font-size:11.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a></div>'
     +(p.fba_amazon_asin?'<div class="hint" style="padding:0 8px 4px;color:#b7791f">Amazon files this SKU under ASIN <b>'+esc(p.fba_amazon_asin)+'</b>, not '+esc(p.asin)+' — numbers matched by SKU.</div>':'')
-    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td><td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td><td style="padding:2px 8px;text-align:right" title="Days the stock at Amazon plus on the way lasts at this listing\'s monthly sales (Sold / mo, all sellers)">FBA cover</td></tr>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td>'+(showAvg?'<td style="padding:2px 8px;text-align:right" title="SmartScout: average sells / mo of the other sellers'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+' — not you">AVG</td>':'')+'<td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td><td style="padding:2px 8px;text-align:right" title="Days the stock at Amazon plus on the way lasts at this listing\'s monthly sales (Sold / mo, all sellers)">FBA cover</td></tr>'
     +rows.map(tr).join('')
-    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td></td><td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td>'+coverTd(tAt+tWay, tSold)+'</tr>':'')
+    +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td></td>'+(showAvg?'<td></td>':'')+'<td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td>'+coverTd(tAt+tWay, tSold)+'</tr>':'')
     +'</table></div>';
 }
 // Ask Amazon about one product's SKUs right now and show the raw answer next
@@ -7254,6 +7262,7 @@ function renderOnhand(){
   // stock filter
   const stockFilter=(document.getElementById('filterOnhand')||{}).value||'all';
   if(stockFilter==='duobuildable'){ renderDuoBuilder(body, q); return; }
+  if(stockFilter==='sspicks' && !ssAvg) loadSsAvg();
   // filter
   let list=products.filter(p=>{
     if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;

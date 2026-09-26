@@ -1,0 +1,18 @@
+[Inventory] Seeded 0 FNSKUs from shipment plans.
+[Inventory] Seeded costs for 36 products (blanks only).
+[Inventory] Location column ready.
+[Inventory] Cost history ready.
+[Inventory] Shipment cost tables ready.
+[Inventory] SKU map ready.
+[Inventory] Settlement tables ready.
+[Inventory] Prep crew ready.
+[Inventory] Employees + timecards ready.
+[Inventory] Hazmat columns ready.
+[Inventory] Hazmat table ready.
+[Inventory] Cosmo-map verification columns ready.
+[Inventory] DB ready.
+[Finance] routes registered.
+[Auto] weekly refresh scheduled — Sundays 11:59 PM Arizona time.
+[Inventory] BUILD onhand-ss-avg-0926
+[Inventory] Live on port 3056
+[Finance] tables ready.
