@@ -514,6 +514,33 @@ async function getCatalogItems(asins, onProgress) {
   return out;
 }
 
+// Package / item dimensions per ASIN (Catalog Items `dimensions`), for FBA
+// capacity (lib/capacity.js turns them into cubic feet). Returns
+// { asin: { dimensions } | { error } } — an error is kept per ASIN, never
+// turned into "no size", so a failed lookup can be retried.
+async function getItemDimensions(asins, onProgress) {
+  const out = {};
+  const unique = [...new Set(asins.filter(Boolean))];
+  let i = 0;
+  for (const asin of unique) {
+    i++;
+    if (onProgress && i % 5 === 0) onProgress(`${i} of ${unique.length} sizes looked up…`);
+    try {
+      const token = await getAccessToken();
+      const resp = await http.get(`${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=dimensions`,
+        { headers: { 'x-amz-access-token': token } });
+      const d = (resp.data.dimensions || []).find(x => x.marketplaceId === MARKETPLACE_ID) || (resp.data.dimensions || [])[0] || null;
+      out[asin] = { dimensions: d };
+    } catch (e) {
+      const st = e.response?.status;
+      if (st === 429 && requeue(unique, asin)) { await sleep(3000); continue; }
+      out[asin] = { error: e.response?.data?.errors?.[0]?.message || e.message };
+    }
+    await sleep(600); // Catalog Items rate limit ~2/sec
+  }
+  return out;
+}
+
 // Hazmat / dangerous-goods status per ASIN.
 // Two independent sources, because neither is populated for every listing:
 //   1. Catalog Items attributes -> supplier_declared_dg_hz_regulation
@@ -822,4 +849,4 @@ async function getInboundFees(sinceDays = 180, onProgress) {
   return out;
 }
 
-module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getLiveOffers };
+module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers };

@@ -371,6 +371,7 @@
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
     <button class="action full" onclick="showPickList()" style="margin-bottom:12px;background:#1a2b4a">🗺 Pick list — walk the racks in order</button>
+    <div id="capBar"></div>
     <div id="pendingPrepBody"></div>
     <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
@@ -2757,6 +2758,75 @@ function loadPendingPrep(){
     window._pendingPrepData=d;
     renderPendingPrep();
   });
+  loadCapacity();
+}
+// ---- FBA CAPACITY BAR (Pending Prep) ----
+// Cubic feet at Amazon + on the way, plus what's prepped and what's queued
+// here, against the limit the owner copies from Seller Central → Capacity
+// Monitor (Amazon doesn't expose it). /api/capacity, lib/capacity.js.
+let _cap=null;
+function loadCapacity(){
+  return api('/api/capacity').then(d=>{ if(d&&d.ok){ _cap=d; renderCapBar(); if(ppList()) renderPendingPrep(); } }).catch(()=>{});
+}
+function renderCapBar(){
+  const el=document.getElementById('capBar'), c=_cap; if(!el||!c) return;
+  const f=v=>Math.round(v).toLocaleString();
+  const line=(label, key, limit)=>{
+    const now=c.used[key], prep=c.prepped[key], pend=c.pending[key], tot=now+prep+pend;
+    if(!limit && !tot) return '';
+    const pct=limit?tot/limit*100:null, col=pct==null?'#5a6472':pct>100?'#c0392b':pct>90?'#b7791f':'#1e8449';
+    const w=v=>limit?Math.min(100, v/limit*100):0;
+    const bar=limit?'<div style="position:relative;height:16px;background:#eef2f6;border-radius:8px;overflow:hidden;margin-top:6px">'
+      +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+w(now)+'%;background:#2563a8" title="At Amazon + on the way: '+f(now)+' cu ft"></div>'
+      +'<div style="position:absolute;left:'+w(now)+'%;top:0;bottom:0;width:'+Math.max(0,w(now+prep)-w(now))+'%;background:#b7791f" title="Prepped, not shipped: '+f(prep)+' cu ft"></div>'
+      +'<div style="position:absolute;left:'+w(now+prep)+'%;top:0;bottom:0;width:'+Math.max(0,w(tot)-w(now+prep))+'%;background:#7a4fb5" title="Pending prep: '+f(pend)+' cu ft"></div></div>':'';
+    return '<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px">'
+      +'<span><b>'+label+'</b> · <span style="color:#2563a8">'+f(now)+' at Amazon + on the way</span> + <span style="color:#b7791f">'+f(prep)+' prepped</span> + <span style="color:#7a4fb5">'+f(pend)+' pending prep</span></span>'
+      +'<b style="color:'+col+'">'+f(tot)+(limit?' of '+f(limit)+' cu ft ('+Math.round(pct)+'%)'+(pct>100?' — OVER by '+f(tot-limit):''):' cu ft · no limit set')+'</b></div>'+bar+'</div>';
+  };
+  const L=c.limit||{};
+  let h='<div class="box" style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<div><b>📦 FBA capacity</b> <span class="hint">'+(L.setAt?'limit entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'enter your limit from Seller Central → Capacity Monitor')+(c.cal!==1?' · calibrated ×'+c.cal.toFixed(2)+' to Seller Central':'')+'</span></div>'
+    +'<div style="display:flex;gap:6px"><button class="action" onclick="capLimitModal()" style="padding:6px 12px;font-size:12px;background:#1a2b4a">Set limit</button>'
+    +'<button class="action" onclick="capSizes()" style="padding:6px 12px;font-size:12px;background:#5a6472" title="Look up each listing\'s package size on Amazon">'+(c.sizeJob&&c.sizeJob.running?'Getting sizes… '+esc(c.sizeJob.step||''):'Get sizes from Amazon')+'</button></div></div>'
+    +line('Standard', 'standard', L.standard)
+    +line('Dangerous goods', 'hazmat', L.hazmat);
+  if(c.missing&&c.missing.length) h+='<div class="hint" style="margin-top:6px;color:#b7791f">⚠ No package size yet for '+c.missing.length+' listing'+(c.missing.length===1?'':'s')+', not counted: '+c.missing.slice(0,6).map(m=>esc(String(m.name||m.asin).slice(0,40))).join(' · ')+(c.missing.length>6?' …':'')+'. Tap “Get sizes from Amazon”.</div>';
+  h+='<div class="hint" style="margin-top:4px">Amazon counts stock at Amazon plus open shipments. Prepped and pending prep are what you\'re about to add. '+(L.amazonUsed?'Seller Central showed '+f(L.amazonUsed)+' cu ft used on '+new Date(L.amazonUsedAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'.':'Enter Seller Central\'s “used” figure with the limit once to calibrate.')+'</div></div>';
+  el.innerHTML=h;
+}
+function capSizes(){
+  api('/api/capacity/sizes/start',{method:'POST',body:'{}'}).then(d=>{
+    if(!d||d.ok===false){ toast('Could not start: '+((d&&d.error)||'error'),true); return; }
+    toast('Looking up package sizes — about a minute');
+    let n=0; const t=setInterval(()=>{ n++; loadCapacity().then(()=>{ if((_cap&&_cap.sizeJob&&!_cap.sizeJob.running)||n>60){ clearInterval(t); if(_cap&&_cap.sizeJob&&_cap.sizeJob.error) toast('Sizes: '+_cap.sizeJob.error,true); } }); }, 4000);
+  }).catch(()=>toast('Could not start — connection problem',true));
+}
+function capLimitModal(){
+  const L=(_cap&&_cap.limit)||{};
+  const m=document.createElement('div'); m.id='capModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+  const inp=(id,label,v,hint)=>'<label style="display:block;margin-top:10px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">'+label+(hint?' <span class="hint" style="font-weight:400">'+hint+'</span>':'')+'<input id="'+id+'" type="number" min="0" step="any" value="'+(v==null?'':v)+'" style="width:100%;padding:10px;font-size:15px;border:2px solid #e2e8f0;border-radius:8px;margin-top:4px"></label>';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%"><b style="font-size:16px">FBA capacity limit</b>'
+    +'<div class="hint" style="margin-top:4px">From Seller Central → Inventory → FBA dashboard → Capacity Monitor, in cubic feet. It changes monthly.</div>'
+    +inp('capStd','Standard-size limit',L.standard)+inp('capHaz','Dangerous goods limit',L.hazmat,'(optional)')
+    +inp('capUsed','Standard used right now, as Seller Central shows it',null,'(optional — calibrates the app)')
+    +(OWNER_PW?'':'<label style="display:block;margin-top:10px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">Owner password<input id="capPw" type="password" style="width:100%;padding:10px;font-size:15px;border:2px solid #e2e8f0;border-radius:8px;margin-top:4px"></label>')
+    +'<div style="display:flex;gap:8px;margin-top:16px"><button onclick="document.getElementById(\'capModal\').remove()" style="flex:1;padding:11px;font-weight:700;background:#e2e8f0;border:none;border-radius:8px;cursor:pointer">Cancel</button>'
+    +'<button onclick="capSaveLimit()" style="flex:2;padding:11px;font-weight:700;background:#1a2b4a;color:#fff;border:none;border-radius:8px;cursor:pointer">Save</button></div></div>';
+  m.onclick=e=>{ if(e.target===m) m.remove(); };
+  document.body.appendChild(m);
+}
+function capSaveLimit(){
+  const v=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
+  const pwEl=document.getElementById('capPw'), had=OWNER_PW;
+  if(!OWNER_PW && pwEl) OWNER_PW=pwEl.value;
+  ownerApi('/api/capacity/limit',{method:'POST',body:JSON.stringify({standard:v('capStd'), hazmat:v('capHaz'), amazonUsed:v('capUsed')||null})}).then(d=>{
+    if(!had) OWNER_PW='';
+    if(!d||d.ok===false||d.error){ toast('NOT saved: '+((d&&d.error)||'error'),true); return; }
+    _cap=d; renderCapBar(); if(ppList()) renderPendingPrep();
+    const m=document.getElementById('capModal'); if(m) m.remove(); toast('Capacity limit saved');
+  }).catch(e=>{ if(!had) OWNER_PW=''; toast('NOT saved: '+e.message,true); });
 }
 // ---- SHIPMENT BUILDER ----
 // Turns the Restock Plan's suggested send quantities into a draft shipment:
@@ -4021,7 +4091,9 @@ function ppListRows(items){
   // numbers: biggest first. Clicking the same header again flips it.
   const mt=x=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null, mo=demandRate(x.asin, a.p.monthlySold).mo||null;
     return { total:a.known?a.total:null, avg:av, days:a.known&&mo>0?a.total/(mo/30):null, daysPrep:a.known&&mo>0?(a.total+(queued[x.asin]||0))/(mo/30):null }; };
-  const SK={ item:x=>x.is_duo?1:0, qty:x=>x.qty||0, total:x=>mt(x).total, avg:x=>mt(x).avg, days:x=>mt(x).days, daysPrep:x=>mt(x).daysPrep, plan:x=>x.in_plan?1:0, status:x=>x.claimed_by?1:0 };
+  // Space this job will take at Amazon (FBA capacity): qty × the listing's cubic feet.
+  const space=x=>{ const cf=_cap&&_cap.cuft&&_cap.cuft[x.asin]; return cf?cf*(x.qty||0):null; };
+  const SK={ item:x=>x.is_duo?1:0, qty:x=>x.qty||0, space:x=>space(x), total:x=>mt(x).total, avg:x=>mt(x).avg, days:x=>mt(x).days, daysPrep:x=>mt(x).daysPrep, plan:x=>x.in_plan?1:0, status:x=>x.claimed_by?1:0 };
   const so=ppListSort();
   if(so.key && SK[so.key]){
     const g=SK[so.key];
@@ -4030,7 +4102,7 @@ function ppListRows(items){
   const th=(k,label,title,left)=>'<td onclick="setPpListSort(\''+k+'\')" style="padding:4px 8px;cursor:pointer;user-select:none;'+(left?'':'text-align:center;')+(so.key===k?'color:#1a2b4a;font-weight:800':'')+'"'+(title?' title="'+title+' · click to sort"':' title="Click to sort"')+'>'+label+(so.key===k?(so.dir===1?' ▼':' ▲'):'')+'</td>';
   return '<div class="box" style="padding:6px 8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
     +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td>'
-    +th('item','Item','Duos first, then singles',1)+th('qty','Qty')
+    +th('item','Item','Duos first, then singles',1)+th('qty','Qty')+th('space','Space (cu ft)','FBA capacity this job will use at Amazon: qty × the listing\'s package size')
     +th('total','Total at Amazon + transit','At Amazon (in stock) plus on the way to Amazon, for this listing')
     +th('avg','Average (Smart Scout)','SmartScout: average sales per month of the other sellers on this listing (not you)')
     +th('days','Days covered','Total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
@@ -4054,6 +4126,7 @@ function ppListRows(items){
         +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
         +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
+        +(()=>{ const sp=space(x); return '<td style="'+td+';'+num+';color:#5a6472"'+(sp==null?' title="No package size yet — Get sizes from Amazon (capacity box above)"':'')+'>'+(sp==null?'—':(sp<10?sp.toFixed(1):Math.round(sp).toLocaleString()))+'</td>'; })()
         +(()=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null;
             const R=demandRate(x.asin, a.p.monthlySold), mo=R.mo||null, d=a.known&&mo>0?Math.round(a.total/(mo/30)):null;
             const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=R.est?'*':'';
