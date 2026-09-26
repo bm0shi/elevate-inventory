@@ -3888,7 +3888,7 @@ function renderPendingPrep(){
   const lastActiveIdx=showDivider ? items.map(x=>!!x.claimed_by).lastIndexOf(true) : -1;
   h+='<div class="pcards">';
   h+=items.map((x,idx)=>{
-    const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
+    const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
     const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`;
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
@@ -7358,7 +7358,7 @@ function renderOnhand(){
       +(list.length?'':'<div class="box hint">Nothing selected yet. Tick products in the yellow On hand column on Admin → Smart Scout Orders.</div>')
     : '';
   body.innerHTML = pickBar+'<div class="pcards'+(viewBig('onhand')?' bigcards':'')+'">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
-    const img=p.image?`<img src="${esc(p.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,380)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
+    const img=p.image?`<img src="${esc(p.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
     const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(p.name)}</a>`:p.name;
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     let duoNote='';
