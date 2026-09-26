@@ -20,6 +20,7 @@ const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv } = r
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
+const forecast = require('./lib/forecast');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -402,7 +403,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pp-list-view-0927';
+const BUILD_ID = 'rec-order-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -588,6 +589,16 @@ async function initDb() {
       empty_since TIMESTAMPTZ,
       last_stocked_at TIMESTAMPTZ,
       updated_at TIMESTAMPTZ DEFAULT now()
+    );
+    -- Daily log of each demand signal per listing (lib/forecast.js). Thirty
+    -- days on, the logged 'ours' figure is what we really sold, so earlier
+    -- predictions can be scored and the Rec. Order blend learns its weights.
+    CREATE TABLE IF NOT EXISTS inv_forecast_log (
+      asin TEXT NOT NULL,
+      signal TEXT NOT NULL,
+      taken_on DATE NOT NULL DEFAULT CURRENT_DATE,
+      monthly NUMERIC,
+      PRIMARY KEY (asin, signal, taken_on)
     );
     CREATE TABLE IF NOT EXISTS inv_ss_picks (
       asin TEXT PRIMARY KEY,
@@ -5202,6 +5213,20 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
         return o;
       }, {}),
     });
+    // The four demand signals for Rec. Order (lib/forecast.js), monthly units
+    // for OUR sales of this listing; null = no data for that signal.
+    {
+      const L = listings[listings.length - 1];
+      const us = ssSellers.find(sl => sl.isUs);
+      const usRow = us && us.by[p.asin];
+      const share = L.shareMeasured != null ? L.shareMeasured : L.shareEst;
+      L.signals = {
+        ours: ourSold != null ? ourSold * 30 / velDays : null,
+        ssus: us ? (usRow ? smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, usRow) : 0) : null,
+        keepa: m.monthlySold != null && share != null ? m.monthlySold * share : null,
+        fair: L.ss ? L.ss.fair : null,
+      };
+    }
     if (!isDuo) bottles.push({
       asin: p.asin, name: p.name, image: p.image, location: p.location, onhand: p.onhand, transit: p.transit,
       free: Math.max(0, p.onhand - (committed[p.asin] || 0)),
@@ -5209,7 +5234,34 @@ app.get('/api/plan/data', ownerAuth, async (req, res) => {
       avgCost: p.avg_cost != null ? Number(p.avg_cost) : null, costManual: p.regular_cost_manual != null,
     });
   }
-  res.json({ ok: true, listings, bottles,
+  // Log today's signals (once a day per listing and signal). 'ours' is only
+  // logged while the sales figure is fresh, since it's also the answer the
+  // older predictions are scored against.
+  let model = { weights: { ...forecast.PRIOR_WEIGHTS }, stats: {}, learned: false };
+  try {
+    const salesFresh = velC && velC.updated_at && (Date.now() - new Date(velC.updated_at).getTime()) < 3 * 86400000;
+    const a = [], sg = [], mo = [];
+    for (const L of listings) for (const k of forecast.SIGNALS) {
+      const v = L.signals && L.signals[k];
+      if (v == null || !isFinite(v) || (k === 'ours' && !salesFresh)) continue;
+      a.push(L.asin); sg.push(k); mo.push(Math.round(v * 100) / 100);
+    }
+    if (a.length) await pool.query(`INSERT INTO inv_forecast_log(asin, signal, monthly)
+      SELECT * FROM unnest($1::text[], $2::text[], $3::numeric[]) ON CONFLICT (asin, signal, taken_on) DO NOTHING`, [a, sg, mo]);
+    // Score predictions made 25–35 days before a logged 'ours' figure.
+    const sc = await pool.query(`
+      SELECT p.signal, p.monthly::float AS pred, act.monthly::float AS actual
+      FROM inv_forecast_log p
+      JOIN LATERAL (SELECT monthly FROM inv_forecast_log a
+                    WHERE a.asin = p.asin AND a.signal = 'ours'
+                      AND a.taken_on BETWEEN p.taken_on + 25 AND p.taken_on + 35
+                    ORDER BY abs(a.taken_on - (p.taken_on + 30)) LIMIT 1) act ON true
+      WHERE p.taken_on >= CURRENT_DATE - 240 AND NOT (p.monthly = 0 AND act.monthly = 0)`);
+    model = forecast.learnWeights(sc.rows);
+    const first = await pool.query('SELECT MIN(taken_on) AS d FROM inv_forecast_log');
+    model.since = first.rows[0] && first.rows[0].d;
+  } catch (e) { console.error('[Plan] forecast log/learn failed:', e.message); }
+  res.json({ ok: true, listings, bottles, forecast: model,
     sellerId, amazonPriceAt: valC && valC.updated_at, ssSellers: ssSellers.map(sl => ({ abbr: sl.abbr, name: sl.seller, isUs: sl.isUs, uploadedAt: sl.uploadedAt })),
     asOf: { amazon: fbaC && fbaC.updated_at, keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at, salesDays: velDays } });
 });
