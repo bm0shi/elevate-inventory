@@ -24,7 +24,7 @@ const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
 const capacity = require('./lib/capacity');
 const { checkinDays, checkinStats } = require('./lib/checkin');
-const { sendAlert, channels: alertChannels } = require('./lib/notify');
+const { sendAlert, sendEmail, channels: alertChannels } = require('./lib/notify');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -407,7 +407,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'checkin-alerts-0926';
+const BUILD_ID = 'backups-0926';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5673,6 +5673,78 @@ app.get('/api/amazon-check/:asin', auth, async (req, res) => {
   } catch (e) {}
   res.json({ ok: true, asin, name: p.rows[0] ? p.rows[0].name : null, skus, amazon, amazonError, saved, lastPull });
 });
+
+// ============================================================
+// BACKUPS — every inv_* and fin_* table as gzipped JSON. Download any time
+// (Admin → Data Sources, owner), and emailed every Sunday at 3 AM Arizona
+// to BACKUP_EMAIL_TO (else REPORT_EMAIL_TO, else SMTP_USER) so a copy lives
+// outside Railway. Restore with scripts/restore-backup.js. The idempotency
+// replay cache is left out: it's only useful for a few minutes.
+// ============================================================
+const BACKUP_SKIP = new Set(['inv_idempotency']);
+async function buildBackup() {
+  const zlib = require('zlib');
+  const t = await pool.query(`SELECT table_name FROM information_schema.tables
+    WHERE table_schema='public' AND table_type='BASE TABLE' AND (table_name LIKE 'inv\\_%' OR table_name LIKE 'fin\\_%') ORDER BY table_name`);
+  const tables = {}, counts = {};
+  for (const { table_name: name } of t.rows) {
+    if (BACKUP_SKIP.has(name)) continue;
+    // Table names come from the catalog above, never from the request.
+    const r = await pool.query(`SELECT * FROM "${name}"`);
+    tables[name] = r.rows; counts[name] = r.rows.length;
+  }
+  const at = new Date().toISOString();
+  const json = JSON.stringify({ app: 'elevate-inventory', build: BUILD_ID, at, tables });
+  const buffer = zlib.gzipSync(Buffer.from(json));
+  return { buffer, name: `elevate-backup-${at.slice(0, 10)}.json.gz`, counts, at };
+}
+app.get('/api/backup/download', ownerAuth, async (req, res) => {
+  const b = await buildBackup();
+  res.setHeader('Content-Type', 'application/gzip');
+  res.setHeader('Content-Disposition', `attachment; filename="${b.name}"`);
+  res.send(b.buffer);
+});
+app.get('/api/backup/status', ownerAuth, async (req, res) => {
+  const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='backup_last'");
+  res.json({ ok: true, last: r.rows[0] ? r.rows[0].data : null,
+    emailTo: process.env.BACKUP_EMAIL_TO || process.env.REPORT_EMAIL_TO || process.env.SMTP_USER || null,
+    smtp: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) });
+});
+async function emailBackup(trigger) {
+  const to = process.env.BACKUP_EMAIL_TO || process.env.REPORT_EMAIL_TO || process.env.SMTP_USER;
+  let rec;
+  try {
+    const b = await buildBackup();
+    const mb = b.buffer.length / 1048576;
+    const rows = Object.values(b.counts).reduce((n, x) => n + x, 0);
+    const sent = await sendEmail(to, `Elevate Inventory backup ${b.at.slice(0, 10)}`,
+      `Weekly backup of the app database: ${Object.keys(b.counts).length} tables, ${rows.toLocaleString()} rows, ${mb.toFixed(1)} MB.\n` +
+      `Keep this email. To restore: node scripts/restore-backup.js ${b.name} (see the script's notes).`,
+      [{ filename: b.name, content: b.buffer }]);
+    rec = { at: b.at, trigger, sent, to: sent ? to : null, mb: Math.round(mb * 10) / 10, rows, error: sent ? null : 'SMTP not set up — download it from Admin instead' };
+  } catch (e) {
+    rec = { at: new Date().toISOString(), trigger, sent: false, error: e.message };
+    sendAlert('Elevate Inventory backup FAILED', 'The weekly backup email did not go out: ' + e.message + '\nDownload one from Admin → Data Sources.', { tags: 'warning' });
+  }
+  console.log('[Backup]', JSON.stringify(rec));
+  try { await saveCache('backup_last', rec); } catch (e) {}
+  return rec;
+}
+app.post('/api/backup/email', ownerAuth, async (req, res) => { res.json({ ok: true, result: await emailBackup('manual') }); });
+// Sundays at 3 AM Arizona (caught up until noon if the server was down);
+// the week is claimed atomically so two copies can't both send it.
+setInterval(async () => {
+  try {
+    const phx = new Date(Date.now() - 7 * 3600 * 1000);
+    if (phx.getUTCDay() !== 0 || phx.getUTCHours() < 3 || phx.getUTCHours() >= 12) return;
+    const day = phx.toISOString().slice(0, 10);
+    const claim = await pool.query(
+      `INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('backup_week', to_jsonb($1::text), now())
+       ON CONFLICT (cache_key) DO UPDATE SET data = to_jsonb($1::text), updated_at = now()
+       WHERE inv_cache.data IS DISTINCT FROM to_jsonb($1::text) RETURNING 1`, [day]);
+    if (claim.rowCount) await emailBackup('weekly');
+  } catch (e) { console.error('[Backup] weekly check failed:', e.message); }
+}, 10 * 60 * 1000).unref();
 
 // Every morning at 6:30 Arizona time (UTC-7, no daylight saving), so the
 // numbers are fresh when the floor starts at 7. If the server was down at

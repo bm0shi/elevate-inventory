@@ -601,6 +601,7 @@
       <h3 style="margin:0 0 4px">Data Sources</h3>
       <div class="hint">Everything that feeds the P&amp;L. <b style="color:#1e8449">Green</b> means that line is trustworthy; <b style="color:#b7791f">amber</b> means partial; <b style="color:#c0392b">red</b> means missing. You only need to come here when a light isn't green.</div>
     </div>
+    <div id="backupBox"></div>
     <div id="fsrcBody"><div class="hint" style="padding:16px">Loading…</div></div>
   </div>
 
@@ -5775,7 +5776,39 @@ const FIN_SRC_ACTIONS = {
   cash:        ['Enter balances', "showSubTab('fcash')"],
   buy:         ['Set next buy', "showSubTab('fcash')"]
 };
+// Backups: download one now, email one now, and when the last weekly one went.
+function loadBackupBox(){
+  const el=document.getElementById('backupBox'); if(!el) return;
+  ownerApi('/api/backup/status').then(d=>{
+    if(!d||!d.ok){ el.innerHTML=''; return; }
+    const L=d.last, when=L?new Date(L.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):null;
+    el.innerHTML='<div class="box" style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center">'
+      +'<div><b>🗄 Backups</b> <span class="hint">'+(L&&(L.sent||d.smtp)?(L.sent?'last emailed '+esc(when)+' to '+esc(L.to||'')+' ('+L.mb+' MB)':'last attempt '+esc(when)+': <b style="color:#c0392b">'+esc(L.error||'not sent')+'</b>'):'no emailed backup yet')
+      +' · every Sunday 3 AM a full copy is emailed'+(d.smtp&&d.emailTo?' to '+esc(d.emailTo):' — <b style="color:#c0392b">email not set up (SMTP), so download one here</b>')+'</span></div>'
+      +'<div style="display:flex;gap:6px"><button class="action" onclick="backupDownload(this)" style="padding:7px 12px;font-size:12px;background:#1a2b4a">⬇ Download backup</button>'
+      +(d.smtp?'<button class="action" onclick="backupEmail(this)" style="padding:7px 12px;font-size:12px;background:#5a6472">Email one now</button>':'')+'</div></div>';
+  }).catch(()=>{});
+}
+function backupDownload(btn){
+  btn.disabled=true; btn.textContent='Preparing…';
+  fetch('/api/backup/download',{headers:{'x-app-password':PW,'x-owner-password':OWNER_PW}}).then(r=>{
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const name=((r.headers.get('Content-Disposition')||'').match(/filename="([^"]+)"/)||[])[1]||'elevate-backup.json.gz';
+    return r.blob().then(b=>{ const a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; document.body.appendChild(a); a.click(); a.remove(); });
+  }).then(()=>toast('Backup downloaded — keep it somewhere safe')).catch(e=>toast('Backup failed: '+e.message,true))
+    .finally(()=>{ btn.disabled=false; btn.textContent='⬇ Download backup'; });
+}
+function backupEmail(btn){
+  btn.disabled=true;
+  ownerApi('/api/backup/email',{method:'POST',body:'{}'}).then(d=>{
+    btn.disabled=false;
+    const r=d&&d.result;
+    if(!r||!r.sent){ toast('Not sent: '+((r&&r.error)||(d&&d.error)||'error'),true); } else toast('Backup emailed to '+r.to);
+    loadBackupBox();
+  }).catch(e=>{ btn.disabled=false; toast('Not sent: '+e.message,true); });
+}
 function loadFinSources() {
+  loadBackupBox();
   const b = document.getElementById('fsrcBody'); if (!b) return;
   ownerApi('/api/finance/sources').then(d => {
     if (!d || !d.sources) { b.innerHTML = '<div class="box hint" style="color:#c0392b">' + (esc((d && d.error) || 'Could not load.')) + '</div>'; return; }

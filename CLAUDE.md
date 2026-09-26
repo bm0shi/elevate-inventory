@@ -53,6 +53,7 @@ and shown in the UI so you can confirm the deploy is live.
 - `KEEPA_API_KEY`
 - `RECONCILE_LOOKBACK_DAYS`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `REPORT_EMAIL_TO`: the Sunday summary email (`lib/weekly-email.js`).
+- `BACKUP_EMAIL_TO`: where the Sunday 3 AM backup goes (defaults to `REPORT_EMAIL_TO`, then `SMTP_USER`). Backups are every `inv_*`/`fin_*` table as gzipped JSON; download from Admin → Data Sources; restore with `scripts/restore-backup.js` (read its header first).
 - `NTFY_TOPIC` (and optional `NTFY_SERVER`), `ALERT_EMAIL_TO`: phone/email alerts (`lib/notify.js`), e.g. when Amazon checks in or closes a shipment.
 
 ## Auth model (important)
