@@ -3214,30 +3214,35 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
   const rows=d.listings.map(l=>{
     const dm=isSS?ssDemand(l,st):planDemand(l, st.basis), perDay=dm.perDay*pf;
     const have=l.atAmazon+l.onTheWay+(l.queued||0), pace=l.ourSold!=null?l.ourSold/(l.ourDays||30):0;
-    return {l, dm, perDay, have, cover:perDay>0?have/perDay:null, pace, sel:l.ssSellers||{}};
+    // AVG = what the OTHER sellers (not us) sell of this listing per month,
+    // averaged over those whose file lists it.
+    const sel=l.ssSellers||{}, others=selCols.filter(c=>!c.isUs).map(c=>sel[c.abbr]).filter(v=>v!=null);
+    return {l, dm, perDay, have, cover:perDay>0?have/perDay:null, pace, sel, avg3:others.length?others.reduce((a,b)=>a+b,0)/others.length:null, avgN:others.length};
   }).filter(r=>r.perDay>0||r.have>0);
-  const S={ name:r=>String(r.l.name||'').toLowerCase(), net:r=>{ const n=listingNet(r.l); return n?n.v:null; }, type:r=>r.l.isDuo?1:0, sold:r=>r.perDay, amz:r=>r.l.atAmazon, way:r=>r.l.onTheWay, prep:r=>r.l.queued||0,
+  const S={ name:r=>String(r.l.name||'').toLowerCase(), net:r=>{ const n=listingNet(r.l); return n?n.v:null; }, avg:r=>r.avg3, sold:r=>r.perDay, amz:r=>r.l.atAmazon, way:r=>r.l.onTheWay, prep:r=>r.l.queued||0,
             cover:r=>r.cover, rec:r=>listingRec(r.l, st).qty, ord:r=>listingOrder(r.l, st), pie:r=>r.l.ss?r.l.ss.pie:null, price:r=>r.l.price, oh:r=>Number((ssListingOnhand(r.l).match(/<b>(\d+)<\/b>/)||[])[1]||0),
             ...Object.fromEntries(selCols.map(c=>['sel_'+c.abbr, r=>r.sel[c.abbr]??null])) };
   const key=S[st.lstSort]?st.lstSort:'sold', dir=st.lstDir===1?1:-1, get=S[key];
   rows.sort((a,c)=>{ const x=get(a), y=get(c); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*dir; });
   const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
-  const cols=[['name','Listing',0],['net','Net / unit',1,'Price − product cost − Amazon fees − supplies − labor per piece. Click a figure for the breakdown'],['type','Type',0],['sold','Sells / mo',1]].concat(selCols.map(c=>['sel_'+c.abbr,c.abbr,1,c.name+' — sells / mo of this listing (SmartScout)'+(c.isUs?' · this is you':'')]),
+  const cols=[['name','Listing',0],['net','Net / unit',1,'Price − product cost − Amazon fees − supplies − labor per piece. Click a figure for the breakdown'],['sold','Sells / mo',1]].concat(selCols.map(c=>['sel_'+c.abbr,c.abbr,1,c.name+' — sells / mo of this listing (SmartScout)'+(c.isUs?' · this is you':'')]),
+    selCols.some(c=>!c.isUs)?[['avg','AVG',1,'Average sells / mo of the other sellers ('+selCols.filter(c=>!c.isUs).map(c=>c.abbr).join(', ')+') — not you']]:[],
     isSS?[['oh','On hand',1,'Singles: bottles in the warehouse. Duos: how many you can build from free bottles. Tick to list it under On Hand → ⭐ Smart Scout selections'],
           ['ord','Order',1,'Order for this listing for the share picked in "Plan on", in its own units (a duo = 1)'],
           ['rec','Rec. Order',1,'Recommended for this listing, in its own units (a duo = 1). Click a number for the breakdown.']]:[],
     [['amz','At Amazon',1],['way','On the way',1],['prep','In prep',1],['cover','Days covered',1]], isSS?[['pie','Pie / mo',1]]:[], [['price','Price',1]]);
   let h='<div class="box" style="overflow-x:auto"><div class="hint" style="margin-bottom:6px">Every listing on its own row, duos included, in <b>listing units</b> (one duo = one sale). Switch back to "By bottle" for the order quantities.</div>'
     +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:'+(920+selCols.length*60)+'px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
-    +cols.map(([k,t,right,tip])=>'<td onclick="listSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(k==='oh'?'background:#ffe066;color:#1a2b4a;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
+    +cols.map(([k,t,right,tip])=>'<td onclick="listSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(k==='oh'?'background:#ffe066;color:#1a2b4a;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(k==='avg'?'background:#eef2f6;':'')+(key===k?'color:#1a2b4a;font-weight:900':t==='US'?'color:#127a7a;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
     +rows.map(r=>{
       const l=r.l, cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const top=Math.max(0,...selCols.map(c=>r.sel[c.abbr]||0));
-      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b>'+amzLink(l.asin, l.name)+'</b><div class="hint">'+asinChip(l.asin)+(l.sku?' · '+esc(l.sku):'')+' · '+esc(planSrcNote(l,r.dm))+'</div></td>'
-        +'<td style="'+td+';background:#f4fbf6">'+netBadge(l)+'</td>'
-        +'<td style="padding:6px 8px;border-top:1px solid #eef2f6;font-weight:800;color:'+(l.isDuo?'#c0392b':'#1a2b4a')+'">'+(l.isDuo?'DUO':'SINGLE')+'</td>'
+      // Duos: the whole row tinted light orange-red (replaces the Type column).
+      return '<tr style="'+(l.isDuo?'background:#fdebe6':'')+'" title="'+(l.isDuo?'Duo':'Single')+'"><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b>'+amzLink(l.asin, l.name)+'</b><div class="hint">'+asinChip(l.asin)+(l.sku?' · '+esc(l.sku):'')+' · '+esc(planSrcNote(l,r.dm))+'</div></td>'
+        +'<td style="'+td+';background:'+(l.isDuo?'#f3efe6':'#f4fbf6')+'">'+netBadge(l)+'</td>'
         +'<td style="'+td+'">'+(r.perDay>0?Math.round(r.perDay*30).toLocaleString():'—')+'</td>'
         +selCols.map(c=>{ const v=r.sel[c.abbr]; return '<td style="'+td+';'+(c.isUs?'color:#127a7a;background:#f0f8f8;':'')+(v&&v===top?'font-weight:800':'')+'" title="'+esc(c.name)+'">'+(v==null?'<span class="hint">—</span>':Math.round(v).toLocaleString())+'</td>'; }).join('')
+        +(selCols.some(c=>!c.isUs)?'<td style="'+td+';font-weight:800;color:#1a2b4a" title="Average of '+r.avgN+' seller'+(r.avgN===1?'':'s')+'">'+(r.avg3==null?'<span class="hint">—</span>':Math.round(r.avg3).toLocaleString()+(r.avgN<selCols.filter(c=>!c.isUs).length?'<span class="hint" style="font-size:10px"> ('+r.avgN+')</span>':''))+'</td>':'')
         +(isSS?ssPickCell(l.asin, ssListingOnhand(l), td)+listingOrderCell(l, st, td)+recCell(l, st, td):'')
         +'<td style="'+td+'">'+l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+l.onTheWay+'</td><td style="'+td+';color:#7a4fb5">'+(l.queued||'')+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+cc+'">'+fmtDays(r.cover)+(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400;white-space:nowrap">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>'
@@ -3249,7 +3254,7 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
 function listSort(k){
   const st=planSet();
   if(st.lstSort===k) planSave('lstDir', st.lstDir===1?-1:1);
-  else { st.lstSort=k; st.lstDir=(k==='name'||k==='cover'||k==='type')?1:-1; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
+  else { st.lstSort=k; st.lstDir=(k==='name'||k==='cover')?1:-1; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
 }
 function ordersSort(k){
   const st=planSet();
