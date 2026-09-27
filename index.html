@@ -1226,44 +1226,54 @@ function prodMixClose(n){
   }).catch(e=>toast('Box NOT closed: '+e.message,true));
 }
 // ---- the label: Source Correct's 4×6 layout ----
-// Amazon box ID (shipment + U + box number) as Code 128 and PDF417, ship
-// from / to, big text, and the 2D box-content PDF417 across the bottom
-// (error correction 6, 6 columns, 0.0205 in modules — the same as the
-// Source Correct label the owner has shipped with).
+// Every element sits where it does on the owner's real Source Correct label
+// (measured from their PDF, in inches): Times Bold, ship from/to at 8 pt,
+// shipment bar, Amazon box ID (shipment + U + box number) as Code 128
+// (2.31 × 0.72 in) and as a sideways PDF417 (1.24 × 2.27 in area), 14 pt
+// text, and the 2D box-content PDF417 across the bottom (bars 3.39 × 1.38 in,
+// 0.4 in left below). Both PDF417s are 12 columns, error correction 6,
+// ~0.0125 in modules — what theirs decode as, and Amazon accepts them.
 function prodPrint(nums){
   const v=_prod.v, sh=v.shipment;
   if(!sh.dest_confirmed_at){ toast('Confirm the destination first',true); return; }
   const boxes=v.boxes.filter(b=>b.status==='closed'&&b.items.length&&(!nums||nums.includes(b.box_no))).sort((a,b)=>a.box_no-b.box_no);
   if(!boxes.length){ toast('No labels to print',true); return; }
   const w=window.open('','_blank','width=460,height=720'); if(!w){ toast('Popup blocked — allow popups to print',true); return; }
-  const A=a=>a?esc(a.name||'')+'<br>'+esc(a.line1||'')+(a.line2?'<br>'+esc(a.line2):'')+'<br>'+esc(a.city||'')+', '+esc(a.state||'')+', '+esc(a.zip||'')+'<br>'+esc(a.country||'US'):'';
+  const A=(a,fc)=>(fc?[fc]:[]).concat(a?[a.name||'', a.line1||''].concat(a.line2?[a.line2]:[]).concat([(a.city||'')+', '+(a.state||'')+', '+(a.zip||''), a.country||'US']):[]).map(esc);
   const expTxt=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'-'+e.slice(4,6)+'-20'+e.slice(0,2):'';
+  // Text positions are Source Correct's glyph tops; +0.035 in puts the browser's text box on them.
+  const at=(x,y,html,cls,extra)=>'<div class="'+(cls||'')+'" style="left:'+x+'in;top:'+(y+0.035).toFixed(3)+'in;'+(extra||'')+'">'+html+'</div>';
   const pages=boxes.map(b=>{
     const one=b.items.length===1?b.items[0]:null, exp=one&&(one.exp||b.exp);
-    return '<div class="lbl"><div class="t1">PLEASE LEAVE THIS LABEL UNCOVERED</div><div class="fba"><span>FBA</span><span class="pal">PALLET '+(b.pallet_no||1)+'</span></div>'
-      +'<div class="addr"><div><b>SHIP FROM:</b><br>'+A(sh.ship_from)+'</div><div><b>SHIP TO:</b><br>'+esc(sh.fc||'')+'<br>'+A(sh.ship_to)+'</div></div>'
-      +'<div class="bar">'+esc(sh.shipment_id)+'</div>'
-      +'<div class="mid"><div class="left"><div class="c128" data-t="'+esc(b.boxId)+'"></div><div class="bid">'+esc(b.boxId)+'</div>'
-      +'<div class="big">Shipment: '+esc(sh.shipment_id)+'</div>'+(exp?'<div class="big">Exp: '+expTxt(exp)+'</div>':'')
-      +(one?'<div class="big">FNSKU: '+esc(one.fnsku)+'</div><div class="big">Qty: '+one.qty+' &nbsp; Box: '+b.box_no+'</div>'
-           :'<div class="big">Mixed: '+b.items.length+' SKUs</div><div class="big">Qty: '+b.units+' &nbsp; Box: '+b.box_no+'</div>')
-      +'<div class="big">Weight: '+(b.weight_lb!=null?b.weight_lb:'')+' lb</div></div><div class="side" data-t="'+esc(b.boxId)+'"></div></div>'
-      +'<div class="c2d" data-t="'+esc(b.barcode)+'"></div></div>';
+    const from=A(sh.ship_from), to=A(sh.ship_to, sh.fc);
+    let h=at(0,0.31,'PLEASE LEAVE THIS LABEL UNCOVERED','t10','width:4in;text-align:center')
+      +at(0.43,0.425,'FBA','t14')+at(2.9,0.47,'PALLET '+(b.pallet_no||1),'t10','width:0.9in;text-align:right')
+      +'<div class="rule" style="left:0.31in;top:0.685in;width:3.47in"></div>'
+      +at(0.47,0.68,'SHIP FROM:','t8')+from.map((l,i)=>at(0.47,0.80+i*0.115,l,'t8')).join('')
+      +at(2.24,0.68,'SHIP TO:','t8')+to.map((l,i)=>at(2.24,0.80+i*0.115,l,'t8')).join('')
+      +'<div class="blk" style="left:0.31in;top:1.42in;width:3.51in;height:0.07in"></div>'+at(0.43,1.37,esc(sh.shipment_id),'t6')
+      +'<div class="bc c128" data-t="'+esc(b.boxId)+'" style="left:0.24in;top:1.676in;width:2.306in;height:0.718in"></div>'
+      +at(0.24,2.47,esc(b.boxId),'t7','width:2.32in;text-align:center')
+      +'<div class="rule" style="left:0.24in;top:2.60in;width:2.32in"></div>'
+      +'<div class="bc side" data-t="'+esc(b.boxId)+'" style="left:2.948in;top:1.673in;width:0.904in;height:2.164in"></div>';
+    const lines=['Shipment: '+esc(sh.shipment_id)];
+    if(exp) lines.push('Exp: '+expTxt(exp));
+    lines.push(one?'FNSKU: '+esc(one.fnsku):'Mixed: '+b.items.length+' SKUs');
+    h+=lines.map((t,i)=>at(0.24,2.61+i*0.21,t,'t14')).join('');
+    const yQ=2.61+lines.length*0.21;
+    h+=at(0.24,yQ,'Qty: '+(one?one.qty:b.units),'t14')+at(1.03,yQ,'Box: '+b.box_no,'t14')+at(0.24,yQ+0.21,'Weight: '+(b.weight_lb!=null?b.weight_lb:'')+' lb','t14');
+    h+='<div class="bc c2d" data-t="'+esc(b.barcode)+'" style="left:0.393in;top:4.215in;width:3.385in;height:1.38in"></div>';
+    return '<div class="lbl">'+h+'</div>';
   }).join('');
   w.document.write('<!DOCTYPE html><html><head><title>'+esc(sh.shipment_id)+' labels</title><script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
-    +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Times New Roman",Times,serif}'
-    +'.lbl{width:4in;height:6in;padding:0.12in 0.16in;page-break-after:always;overflow:hidden;display:flex;flex-direction:column}'
-    +'.t1{text-align:center;font-weight:700;font-size:10.5pt}.fba{display:flex;justify-content:space-between;align-items:baseline;font-weight:700;font-size:22pt;border-bottom:1.5pt solid #000;line-height:1}.pal{font-size:12pt}'
-    +'.addr{display:grid;grid-template-columns:1fr 1fr;gap:0.1in;font-size:8.5pt;font-weight:700;line-height:1.15;margin-top:2px}'
-    +'.bar{background:#000;color:#fff;font-size:8pt;font-weight:700;padding:0 4px;margin-top:3px}'
-    +'.mid{display:flex;gap:0.08in;margin-top:0.06in}.left{flex:1;min-width:0}.c128 svg{width:2.4in;height:0.62in;display:block}.bid{font-size:9pt;font-weight:700;text-align:center;border-bottom:1pt solid #000;width:2.4in}'
-    +'.big{font-size:15pt;font-weight:700;line-height:1.12;white-space:nowrap}.side{width:0.95in;display:flex;justify-content:flex-end}'
-    +'.c2d{margin-top:auto;display:flex;justify-content:center}.err{color:#c00;font:10pt Arial}</style></head><body>'+pages
-    +'<script>(function(){var M=0.0205;/* 1 SVG unit = 1 module (scale 1) */function put(el,svg,wIn,hIn){el.innerHTML=svg;var s=el.querySelector("svg"),vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");'
-    +'if(wIn){s.setAttribute("preserveAspectRatio","none");s.style.width=wIn+"in";s.style.height=hIn+"in";}else{var m=hIn?Math.min(M,hIn/vb.height):M;s.style.width=(vb.width*m)+"in";s.style.height=(vb.height*m)+"in";}}'
-    +'try{document.querySelectorAll(".c128").forEach(function(e){put(e,bwipjs.toSVG({bcid:"code128",text:e.dataset.t,height:12}),2.4,0.62);});'
-    +'document.querySelectorAll(".side").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,columns:2,rowmult:3,rotate:"R",scaleX:1,scaleY:1}),0,2.25);});'
-    +'document.querySelectorAll(".c2d").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:6,rowmult:3,scaleX:1,scaleY:1}),0,0);e.querySelector("svg").setAttribute("data-text",e.dataset.t);});'
+    +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Times New Roman",Times,"Liberation Serif",serif;font-weight:700;color:#000}'
+    +'.lbl{position:relative;width:4in;height:6in;page-break-after:always;overflow:hidden}.lbl>div{position:absolute;white-space:nowrap;line-height:1.15}'
+    +'.t6{font-size:6pt;color:#fff;line-height:1}.t7{font-size:7pt}.t8{font-size:8pt}.t10{font-size:10pt}.t14{font-size:14pt}'
+    +'.rule{height:0;border-top:1pt solid #000}.blk{background:#000}.bc svg{width:100%;height:100%;display:block}.err{position:static!important;color:#c00;font:10pt Arial}</style></head><body>'+pages
+    +'<script>(function(){function put(el,svg){el.innerHTML=svg;var s=el.querySelector("svg");s.removeAttribute("width");s.removeAttribute("height");s.setAttribute("preserveAspectRatio","none");}'
+    +'try{document.querySelectorAll(".c128").forEach(function(e){put(e,bwipjs.toSVG({bcid:"code128",text:e.dataset.t,height:10}));});'
+    +'document.querySelectorAll(".side").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:12,rowmult:3,rotate:"R",scaleX:1,scaleY:1}));});'
+    +'document.querySelectorAll(".c2d").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:12,rowmult:3,scaleX:1,scaleY:1}));e.querySelector("svg").setAttribute("data-text",e.dataset.t);});'
     +'setTimeout(function(){window.print();},300);}catch(err){document.body.insertAdjacentHTML("afterbegin","<div class=err>Could not draw a barcode: "+String(err.message||err).replace(/</g,"&lt;")+"</div>");}})();<\/script></body></html>');
   w.document.close();
 }
