@@ -38,6 +38,7 @@
   button.action:hover { background: #0e6363; }
   button.action.danger { background: #c0392b; }
   button.action.full { width: 100%; }
+  button.action:disabled { opacity: 0.45; cursor: not-allowed; }
   table { width: 100%; background: #fff; border-radius: 12px; overflow: hidden; border-collapse: collapse; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   th { background: #0f1b2d; color: #fff; font-size: 11px; text-transform: uppercase; padding: 10px; text-align: left; }
   td { padding: 10px; border-bottom: 1px solid #eef2f6; font-size: 13px; }
@@ -974,7 +975,31 @@ const prodTh=(txt,al)=>'<th style="padding:10px;font-weight:900;color:#1f2733;ba
 const prodTd=(html,al,extra)=>'<td style="padding:10px;border-top:1px solid #eef2f6;border-bottom:0;vertical-align:middle;text-align:'+(al||'center')+';'+(extra||'')+'">'+html+'</td>';
 // Big, can't-miss warning boxes for the packing floor.
 const prodWarn=(html,hard)=>'<div style="margin-top:10px;padding:12px 14px;border:3px solid #c0392b;background:'+(hard?'#c0392b':'#fdecea')+';color:'+(hard?'#fff':'#c0392b')+';font-size:19px;font-weight:900;border-radius:10px;line-height:1.3">'+html+'</div>';
+// Big screen: a toggle per device (remembered), for a TV on the packing
+// floor. Shows only what the floor watches, in large type, and refreshes
+// itself every 15 s so it follows boxes built on another device.
+function prodBig(){ return localStorage_get('prodBig')==='1'; }
+function prodBigToggle(){ localStorage_set('prodBig', prodBig()?'':'1'); prodRender(); window.scrollTo(0,0); }
+setInterval(()=>{ try{ if(prodBig()&&prodSid()&&document.visibilityState==='visible'&&document.getElementById('prod').classList.contains('active')) prodLoad(prodSid()); }catch(e){} }, 15000);
+function prodBigHtml(){
+  const v=_prod.v, sh=v.shipment, S=v.settings, cur=v.currentPallet, st=v.pallets[cur]||{boxes:0,weight:0,height:0,weightPct:0,heightPct:0,status:'ok'};
+  const col=st.status==='ok'?'#127a7a':'#c0392b', next=Math.max(...Object.keys(v.pallets).map(Number),cur)+1;
+  const bar=(pct,label)=>'<div style="margin-top:34px"><div style="display:flex;justify-content:space-between;align-items:baseline;font-size:38px;font-weight:900;margin-bottom:14px"><span>'+label+'</span><span style="color:'+(pct>=S.warnPct?'#c0392b':'#1f2733')+'">'+Math.round(pct)+'%</span></div><div style="height:56px;background:#e2e8f0;border-radius:28px;overflow:hidden"><div style="height:100%;width:'+Math.min(100,pct)+'%;background:'+(pct>=S.warnPct?'#c0392b':'#127a7a')+'"></div></div></div>';
+  const totP=v.plan.reduce((n,r)=>n+r.planned,0), totB=v.plan.reduce((n,r)=>n+r.produced,0), pct=totP?Math.min(100,Math.round(totB/totP*100)):0;
+  let h='<div class="box" style="padding:28px 34px;border:6px solid '+col+'">'
+    +'<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><div style="font-size:26px;font-weight:800;color:#5a6472">'+esc(sh.shipment_id)+(sh.fc?' → '+esc(sh.fc):'')+' · updated '+new Date().toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})+'</div>'
+    +'<button class="action" onclick="prodBigToggle()" style="font-size:18px;padding:10px 18px;background:#5a6472">✕ Exit big screen</button></div>'
+    +'<div style="font-size:96px;font-weight:900;color:'+col+';line-height:1.05;margin-top:14px">NOW PACKING: PALLET '+cur+'</div>'
+    +bar(st.weightPct,f1(st.weight)+' / '+S.limitLb.toLocaleString()+' lb')
+    +bar(st.heightPct,f1(st.height)+' / '+S.maxHeightIn+' in'+(st.measured?'':' (est.)'));
+  if(st.status==='full') h+='<div style="margin-top:30px;padding:24px;border-radius:16px;background:#c0392b;color:#fff;font-size:52px;font-weight:900;text-align:center">⛔ FULL — WRAP IT, START PALLET '+next+'</div>';
+  else if(st.status==='near') h+='<div style="margin-top:30px;padding:24px;border-radius:16px;background:#fdecea;border:5px solid #c0392b;color:#c0392b;font-size:44px;font-weight:900;text-align:center">⚠️ ONLY '+f1(S.limitLb-st.weight)+' LB · ~'+f1(S.maxHeightIn-st.height)+' IN LEFT</div>';
+  if(v.recommend&&v.recommend.length&&st.status!=='full') h+='<div style="margin-top:34px;font-size:34px;font-weight:900">FITS NEXT:</div>'+v.recommend.slice(0,3).map(r=>'<div style="margin-top:10px;font-size:32px;padding:14px 18px;border-radius:12px;background:#f3f6f9">➜ <b>'+r.boxes+' box'+(r.boxes===1?'':'es')+'</b> · '+esc(String(r.name||r.asin).slice(0,60))+(r.finishes?' <b style="color:#1e8449">✓ finishes it</b>':'')+'</div>').join('');
+  h+='<div style="margin-top:36px"><div style="display:flex;justify-content:space-between;font-size:32px;font-weight:900;margin-bottom:12px"><span>✅ SHIPMENT: '+totB.toLocaleString()+' / '+totP.toLocaleString()+' BUILT</span><span>'+pct+'%</span></div><div style="height:40px;background:#e2e8f0;border-radius:20px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:linear-gradient(90deg,#1e8449,#27ae60)"></div></div></div></div>';
+  return h;
+}
 function prodRender(){
+  if(prodBig()&&_prod&&_prod.v){ document.getElementById('prodArea').innerHTML=prodBigHtml(); return; }
   const el=document.getElementById('prodArea'), v=_prod.v, sh=v.shipment, sid=sh.shipment_id, done=sh.status!=='packing', S=v.settings;
   const cur=v.currentPallet, st=v.pallets[cur]||{boxes:0,weight:0,height:0,weightPct:0,heightPct:0,status:'ok'};
   const col=st.status==='ok'?'#127a7a':'#c0392b';
@@ -982,6 +1007,7 @@ function prodRender(){
     +'<div><b style="font-size:19px">'+esc(sid)+'</b> '+(sh.name?'<span class="hint">'+esc(sh.name)+'</span>':'')+(sh.fc?' <b style="color:#2563a8">→ '+esc(sh.fc)+'</b>':'')+(done?' <span class="badge received">Finished — stock deducted</span>':'')
     +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(done?'':'<button class="action" id="prodRefreshBtn" onclick="prodStart(true)" style="padding:6px 12px;font-size:12px;background:#2563a8">↻ Refresh from Amazon</button>')
+    +'<button class="action" onclick="prodBigToggle()" style="padding:6px 12px;font-size:12px;background:#1a2b4a">📺 Big screen</button>'
     +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
@@ -1001,7 +1027,8 @@ function prodRender(){
     +(done?'':'<button class="action" onclick="prodPallet('+(Math.max(...pn,cur)+1)+')" style="padding:6px 12px;font-size:13px;background:#1a2b4a">+ Start pallet '+(Math.max(...pn,cur)+1)+'</button>')+'</div></div>'
     +bar(st.weightPct,'Weight '+f1(st.weight)+' / '+S.limitLb.toLocaleString()+' lb safe limit <span class="hint" style="font-weight:600">(Amazon max '+S.maxLb.toLocaleString()+(st.boxes?' · includes '+f1(st.packagingLb)+' lb pallet, cardboard & bags':'')+')</span>')
     +bar(st.heightPct,'Height '+f1(st.height)+' / '+S.maxHeightIn+' in '+(st.measured?'(measured'+(st.height>st.measuredAt.h?' + boxes since':'')+')':'(estimated)'))
-    +(st.status==='full'?prodWarn('⛔ PALLET '+cur+' IS FULL — wrap it and start pallet '+(Math.max(...pn,cur)+1)+'.'+(st.weight>S.limitLb?' It is '+f1(st.weight-S.limitLb)+' lb over the safe limit.':''),true)
+    +(st.status==='full'?prodWarn('⛔ PALLET '+cur+' IS FULL — wrap it and start pallet '+(Math.max(...pn,cur)+1)+'.'+(st.weight>S.limitLb?' It is '+f1(st.weight-S.limitLb)+' lb over the safe limit.':'')
+        +(done?'':'<button class="action" onclick="prodPallet('+(Math.max(...pn,cur)+1)+')" style="display:block;width:100%;margin-top:10px;font-size:20px;padding:14px;background:#fff;color:#c0392b;font-weight:900">➡️ START PALLET '+(Math.max(...pn,cur)+1)+' NOW</button>'),true)
       :st.status==='near'?prodWarn('⚠️ GETTING CLOSE: only '+f1(S.limitLb-st.weight)+' lb and ~'+f1(S.maxHeightIn-st.height)+' in left on pallet '+cur+'.'):'')
     +(done?'':'<div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="hint">Measured height of pallet '+cur+' (optional, beats the estimate):</span><input id="prodMeasH" type="number" min="1" step="0.5" value="'+(st.measuredAt?st.measuredAt.h:'')+'" style="width:80px;padding:6px"> in <button class="action" onclick="prodMeasure()" style="padding:5px 10px;font-size:12px;background:#5a6472">Save</button></div>');
   if(v.recommend&&v.recommend.length&&!done) h+='<div style="margin-top:10px"><b>Fits next on pallet '+cur+':</b>'+v.recommend.slice(0,5).map(r=>'<div style="padding:5px 0;border-top:1px solid #eef2f6;cursor:pointer" onclick="prodPick(\''+esc(r.asin)+'\','+r.boxes+')">➜ <b>'+r.boxes+' box'+(r.boxes===1?'':'es')+'</b> of '+esc(String(r.name||r.asin).slice(0,60))+' <span class="hint">('+r.units+' units, '+f1(r.lb)+' lb)</span> '+(r.finishes?'<b style="color:#1e8449">finishes it ✓</b>':'<span class="hint">'+r.boxesLeft+' boxes still to make · limited by '+r.limitedBy+'</span>')+'</div>').join('')+'</div>';
@@ -1128,10 +1155,10 @@ function prodExpDefault(row){ try{ const m=JSON.parse(localStorage_get('prodExp'
 function prodScan(code){
   code=String(code||'').trim(); if(!code) return;
   api('/api/pack/product/'+encodeURIComponent(code)).then(d=>{
-    if(!d||d.ok===false){ toast((d&&d.error)||'Unknown barcode',true); const sc=document.getElementById('prodScan'); if(sc){ sc.value=''; sc.focus(); } return; }
-    _prod.sel=d.product; prodRender();
+    if(!d||d.ok===false){ scanError(); toast((d&&d.error)||'Unknown barcode',true); const sc=document.getElementById('prodScan'); if(sc){ sc.value=''; sc.focus(); } return; }
+    scanFeedback(); _prod.sel=d.product; prodRender();
     const f=document.getElementById(d.product.case_qty?'prodCount':'prodPer'); if(f){ f.focus(); f.select(); }
-  }).catch(e=>toast('Lookup failed: '+e.message,true));
+  }).catch(e=>{ scanError(); toast('Lookup failed: '+e.message,true); });
 }
 function prodPick(asin, count){ api('/api/pack/product/'+encodeURIComponent(asin)).then(d=>{ if(d&&d.ok){ _prod.sel=Object.assign(d.product,{_count:count||1}); prodRender(); window.scrollTo({top:document.getElementById('prodScan').getBoundingClientRect().top+window.scrollY-80,behavior:'smooth'}); } }); }
 function prodForm(){
@@ -1168,7 +1195,7 @@ function prodMake(override, palletNo, countOverride){
     if(d&&d.error==='pallet_full'){ return prodFull(d, count, pal); }
     if(!d||d.ok===false){ toast('NOT created: '+((d&&(d.message||d.error))||'error'),true); return; }
     toast('Boxes '+d.boxes.join(', ')+' created — printing '+d.boxes.length+' label'+(d.boxes.length===1?'':'s'));
-    return prodLoad(prodSid()).then(()=>{ prodPrint(d.boxes); _prod.sel=null; prodRender(); });
+    return prodLoad(prodSid()).then(()=>{ prodPrint(d.boxes); _prod.sel=null; prodRender(); prodFullPrompt(); });
   }).catch(e=>{ if(btn) btn.disabled=false; toast('NOT created — connection problem: '+e.message,true); });
 }
 // Hard stop when the boxes won't fit: split across the next pallet, make
@@ -1185,6 +1212,21 @@ function prodFull(d, count, pal){
     +(fits>0?b('Only make '+fits+' now','prodMake(false,'+pal+','+fits+')','#5a6472'):'')
     +b('Go over the limit on pallet '+pal+' anyway','prodMake(true,'+pal+','+count+')','#c0392b')
     +b('Cancel','0','#eef2f6;color:#1f2733')+'</div>';
+  document.body.appendChild(m);
+}
+// Right after boxes are built: if that filled the pallet, offer the next
+// one in a single tap (instead of someone noticing the red banner later).
+function prodFullPrompt(){
+  const v=_prod&&_prod.v; if(!v||v.shipment.status!=='packing') return;
+  const cur=v.currentPallet, st=v.pallets[cur]; if(!st||st.status!=='full') return;
+  const next=Math.max(...Object.keys(v.pallets).map(Number), cur)+1;
+  const m=document.createElement('div'); m.id='prodNextModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+  m.innerHTML='<div style="background:#fff;border-radius:14px;padding:22px;max-width:460px;width:100%;border:4px solid #c0392b;text-align:center">'
+    +'<div style="font-size:26px;font-weight:900;color:#c0392b">⛔ PALLET '+cur+' IS FULL</div>'
+    +'<div style="margin-top:6px;font-size:16px">'+f1(st.weight)+' lb · ~'+f1(st.height)+' in. Wrap it and move on.</div>'
+    +'<button class="action" onclick="document.getElementById(\'prodNextModal\').remove();prodPallet('+next+')" style="width:100%;margin-top:14px;font-size:20px;padding:16px;background:#127a7a">➡️ Start pallet '+next+' now</button>'
+    +'<button class="action" onclick="document.getElementById(\'prodNextModal\').remove()" style="width:100%;margin-top:8px;background:#eef2f6;color:#1f2733">Stay on pallet '+cur+'</button></div>';
   document.body.appendChild(m);
 }
 function prodSplit(a, pa, b, pb){
@@ -1274,10 +1316,36 @@ function prodVoid(n){
   if(!confirm('Void box '+n+'? Tear its label off. The next box you make takes number '+n+' so Amazon\'s box count still lines up.')) return;
   api('/api/pack/box/void',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } toast('Box '+n+' voided'); prodLoad(prodSid()); });
 }
+// Finish = stock leaves On Hand, once. Before that, a checklist of what
+// usually goes wrong; any problem must be ticked off to enable Finish.
 function prodFinish(){
-  const closed=_prod.v.boxes.filter(b=>b.status==='closed'&&b.items.length), units=closed.reduce((n,b)=>n+b.units,0);
-  const left=_prod.v.plan.filter(r=>r.left>0);
-  if(!confirm('Finish '+prodSid()+'?\n\n'+closed.length+' boxes, '+units+' units move from On Hand to In Transit (duos count as their bottles).'+(left.length?'\n\n⚠ '+left.length+' product(s) still have units left to make for this shipment.':'')+'\n\nThis happens once.')) return;
+  const v=_prod.v, S=v.settings, closed=v.boxes.filter(b=>b.status==='closed'&&b.items.length), units=closed.reduce((n,b)=>n+b.units,0);
+  const short=v.plan.filter(r=>r.left>0&&!r.notInShipment), over=v.plan.filter(r=>r.over>0&&!r.notInShipment), extra=v.plan.filter(r=>r.notInShipment);
+  const openBox=v.boxes.filter(b=>b.status!=='closed'&&b.items.length);
+  const used=[...new Set(closed.map(b=>b.pallet_no||1))].sort((a,b)=>a-b);
+  const heavy=used.filter(n=>v.pallets[n]&&v.pallets[n].weight>S.limitLb), tall=used.filter(n=>v.pallets[n]&&v.pallets[n].height>S.maxHeightIn), est=used.filter(n=>v.pallets[n]&&!v.pallets[n].measured);
+  const items=[
+    [!short.length,'Every product fully built',short.map(r=>esc(r.fnsku||'')+' — '+r.left+' left').join('<br>'),false],
+    [!extra.length,'Nothing packed that isn\'t in the shipment',extra.map(r=>esc(r.fnsku||r.asin||'')+' ×'+r.produced).join('<br>'),true],
+    [!over.length,'No product built over the shipment qty',over.map(r=>esc(r.fnsku||'')+' +'+r.over).join('<br>'),false],
+    [!openBox.length,'No mixed box left open','Box '+openBox.map(b=>b.box_no).join(', ')+' — its units are NOT counted',true],
+    [!heavy.length,'Every pallet under '+S.limitLb.toLocaleString()+' lb','Pallet '+heavy.join(', '),true],
+    [!tall.length,'Every pallet under '+S.maxHeightIn+' in','Pallet '+tall.join(', '),true],
+    [!est.length,'Every pallet height tape-measured','Pallet '+est.join(', ')+' still estimated — Amazon needs the real height',false],
+  ];
+  const bad=items.filter(x=>!x[0]).length;
+  const m=document.createElement('div'); m.id='prodFinModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;overflow:auto';
+  m.innerHTML='<div style="background:#fff;border-radius:14px;padding:22px;max-width:560px;width:100%;border:4px solid '+(bad?'#c0392b':'#1e8449')+'">'
+    +'<div style="font-size:24px;font-weight:900">🏁 Finish '+esc(prodSid())+'?</div>'
+    +'<div style="margin-top:4px;font-size:15px">'+closed.length+' boxes on '+used.length+' pallet'+(used.length===1?'':'s')+' · <b>'+units+' units</b> move from On Hand to In Transit (duos count as their bottles). This happens once.</div>'
+    +items.map(x=>'<div style="display:flex;gap:10px;margin-top:10px;padding:10px 12px;border-radius:10px;background:'+(x[0]?'#f0faf4':x[3]?'#fdecea':'#fff7e6')+'"><div style="font-size:22px">'+(x[0]?'✅':x[3]?'⛔':'⚠️')+'</div><div><div style="font-weight:800;font-size:15px;color:'+(x[0]?'#1e8449':x[3]?'#c0392b':'#b45309')+'">'+x[1]+'</div>'+(x[0]?'':'<div style="font-size:13px;margin-top:2px">'+x[2]+'</div>')+'</div></div>').join('')
+    +(bad?'<label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:15px;font-weight:800;text-transform:none;letter-spacing:0;color:#c0392b"><input type="checkbox" id="prodFinOk" onchange="document.getElementById(\'prodFinBtn\').disabled=!this.checked" style="width:22px;height:22px"> I checked the '+bad+' item'+(bad===1?'':'s')+' above — finish anyway</label>':'')
+    +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" onclick="document.getElementById(\'prodFinModal\').remove()" style="flex:1;background:#eef2f6;color:#1f2733">Cancel</button>'
+    +'<button class="action danger" id="prodFinBtn" onclick="document.getElementById(\'prodFinModal\').remove();prodFinishGo()"'+(bad?' disabled':'')+' style="flex:2">Finish — deduct '+units+' units</button></div></div>';
+  document.body.appendChild(m);
+}
+function prodFinishGo(){
   api('/api/pack/finish',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid()})}).then(d=>{
     if(!d||d.ok===false){ toast('NOT finished: '+((d&&(d.message||d.error))||'error'),true); return; }
     toast('Done: '+d.units+' units in '+d.boxes+' boxes moved to In Transit'); prodLoad(prodSid()); try{ loadProducts(); }catch(e){}
@@ -1302,9 +1370,9 @@ function prodMixedHtml(){
 function prodMixScan(n){
   const el=document.getElementById('mixScan'), code=(el.value||'').trim(), qty=parseInt(document.getElementById('mixQty').value)||1; if(!code) return; el.value='';
   api('/api/pack/scan',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), boxNo:n, code, qty})}).then(d=>{
-    if(!d||d.ok===false){ toast('NOT added: '+((d&&d.error)||'error'),true); return; }
-    toast('+'+d.qty+' '+String(d.product.name||'').slice(0,40)); prodLoad(prodSid()).then(()=>{ const s=document.getElementById('mixScan'); if(s) s.focus(); });
-  }).catch(e=>toast('NOT added: '+e.message,true));
+    if(!d||d.ok===false){ scanError(); toast('NOT added: '+((d&&d.error)||'error'),true); return; }
+    scanFeedback(); toast('+'+d.qty+' '+String(d.product.name||'').slice(0,40)); prodLoad(prodSid()).then(()=>{ const s=document.getElementById('mixScan'); if(s) s.focus(); });
+  }).catch(e=>{ scanError(); toast('NOT added: '+e.message,true); });
 }
 function prodMixLine(n, asin){ api('/api/pack/box/line',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n, asin, qty:0})}).then(()=>prodLoad(prodSid())); }
 function prodMixClose(n){
@@ -8191,6 +8259,28 @@ function scanFeedback() {
     document.body.appendChild(f);
     requestAnimationFrame(()=>{ f.style.opacity='0'; });
     setTimeout(()=>f.remove(), 400);
+  } catch(e){}
+}
+
+// The opposite of scanFeedback: long buzz, low tone, red flash, so a bad
+// scan is noticed without looking at the screen.
+function scanError() {
+  try { navigator.vibrate && navigator.vibrate([200,80,200]); } catch(e){}
+  try {
+    _audioCtx = _audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = _audioCtx.createOscillator(), g = _audioCtx.createGain();
+    o.connect(g); g.connect(_audioCtx.destination);
+    o.frequency.value = 180; o.type = 'square';
+    g.gain.setValueAtTime(0.18, _audioCtx.currentTime);
+    g.gain.setValueAtTime(0.001, _audioCtx.currentTime + 0.45);
+    o.start(); o.stop(_audioCtx.currentTime + 0.45);
+  } catch(e){}
+  try {
+    const f = document.createElement('div');
+    f.style.cssText = 'position:fixed;inset:0;background:#c0392b;opacity:0.6;z-index:999;pointer-events:none;transition:opacity 0.6s';
+    document.body.appendChild(f);
+    requestAnimationFrame(()=>{ f.style.opacity='0'; });
+    setTimeout(()=>f.remove(), 700);
   } catch(e){}
 }
 
