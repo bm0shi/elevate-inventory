@@ -1273,7 +1273,8 @@ function prodPrint(nums){
       +'<div class="rule" style="left:0.31in;top:0.685in;width:3.47in"></div>'
       +at(0.47,0.68,'SHIP FROM:','t8')+from.map((l,i)=>at(0.47,0.80+i*0.115,l,'t8')).join('')
       +at(2.24,0.68,'SHIP TO:','t8')+to.map((l,i)=>at(2.24,0.80+i*0.115,l,'t8')).join('')
-      +'<div class="blk" style="left:0.31in;top:1.42in;width:3.51in;height:0.07in"></div>'+at(0.43,1.37,esc(sh.shipment_id),'t6')
+      // A border, not a background: Chrome drops backgrounds when "Background graphics" is off in the print dialog (a test print came out without the bar).
+      +'<div class="blk" style="left:0.31in;top:1.42in;width:3.51in"></div>'+at(0.43,1.37,esc(sh.shipment_id),'t6')
       +'<div class="bc c128" data-t="'+esc(b.boxId)+'" style="left:0.24in;top:1.676in;height:0.718in"></div>'
       +at(0.24,2.47,esc(b.boxId),'t7','width:2.32in;text-align:center')
       +'<div class="rule" style="left:0.24in;top:2.60in;width:2.32in"></div>'
@@ -1305,7 +1306,7 @@ function prodPrint(nums){
     +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Times New Roman",Times,"Liberation Serif",serif;font-weight:700;color:#000}'
     +'.lbl{position:relative;width:4in;height:6in;page-break-after:always;overflow:hidden}.lbl>div{position:absolute;white-space:nowrap;line-height:1.15}'
     +'.t6{font-size:6pt;color:#fff;line-height:1}.t7{font-size:7pt}.t8{font-size:8pt}.t10{font-size:10pt}.t14{font-size:14pt}'
-    +'@media screen{body::before{content:"Print at 100% / Actual size (no scaling, no fit-to-page) on 4 x 6 labels.";display:block;font:13px Arial;color:#c00;padding:6px}}.rule{height:0;border-top:1pt solid #000}.blk{background:#000}.bc svg{width:100%;height:100%;display:block}.err{position:static!important;color:#c00;font:10pt Arial}</style></head><body>'+pages
+    +'@media screen{body::before{content:"Print at 100% / Actual size (no scaling, no fit-to-page) on 4 x 6 labels.";display:block;font:13px Arial;color:#c00;padding:6px}}.rule{height:0;border-top:1pt solid #000}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.blk{height:0!important;border-top:0.07in solid #000}.bc svg{width:100%;height:100%;display:block}.err{position:static!important;color:#c00;font:10pt Arial}</style></head><body>'+pages
     +'<script>(function(){'
     +'var DOT=1/203, BOTTOM=5.88;'
     +'function draw(el,opts,modIn,fixH){var svg=bwipjs.toSVG(Object.assign({scaleX:1,scaleY:1},opts));el.innerHTML=svg;var s=el.querySelector("svg"),vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");s.setAttribute("preserveAspectRatio","none");s.setAttribute("shape-rendering","crispEdges");'
