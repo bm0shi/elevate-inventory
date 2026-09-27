@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'label-bar-print-0927';
+const BUILD_ID = 'prod-ui-weights-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1400,7 +1400,7 @@ async function packView(sid, opts = {}) {
   // What fits next on the current pallet
   const candidates = plan.filter(r => r.asin && r.left > 0 && r.caseQty > 0 && r.unitWeight > 0 && r.len > 0 && r.wid > 0 && r.hgt > 0)
     .map(r => ({ asin: r.asin, name: r.name, perBox: r.caseQty, boxesLeft: Math.ceil(r.left / r.caseQty),
-                 box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), len: r.len, wid: r.wid, hgt: r.hgt } }));
+                 box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), units: r.caseQty, len: r.len, wid: r.wid, hgt: r.hgt } }));
   const nums = new Set(boxes.map(b => b.box_no));
   let nextBoxNo = 1; while (nums.has(nextBoxNo)) nextBoxNo++;
   return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo,
@@ -1416,7 +1416,7 @@ app.get('/api/pack/list', auth, async (req, res) => {
 app.get('/api/pack/settings', auth, async (req, res) => { res.json({ ok: true, settings: await packSettings() }); });
 app.post('/api/pack/settings', auth, async (req, res) => {
   const b = req.body || {}, keep = {};
-  for (const k of Object.keys(pallet.DEFAULTS)) if (b[k] != null && b[k] !== '') { const n = Number(b[k]); if (!(n > 0 && n < 100000)) return res.status(400).json({ ok: false, error: `Bad value for ${k}` }); keep[k] = n; }
+  for (const k of Object.keys(pallet.DEFAULTS)) if (b[k] != null && b[k] !== '') { const n = Number(b[k]); if (!((n > 0 || (n === 0 && (k === 'safetyLb' || k === 'unitPackLb'))) && n < 100000)) return res.status(400).json({ ok: false, error: `Bad value for ${k}` }); keep[k] = n; }
   const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'")).rows[0];
   const data = Object.assign({}, prev ? prev.data : {}, keep);
   if (b.shipFrom && typeof b.shipFrom === 'object') data.shipFrom = packAddr(b.shipFrom);
@@ -1561,10 +1561,10 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
     const sh = (await db.query('SELECT dest_confirmed_at, pallets FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
     if (!sh.dest_confirmed_at) return { status: 409, body: { ok: false, error: 'Confirm the destination first — the label prints the ship-to address.' } };
     const S = await packSettings();
-    const onPallet = (await db.query("SELECT weight_lb::float AS weight_lb, len::float AS len, wid::float AS wid, hgt::float AS hgt FROM inv_pack_boxes WHERE shipment_id=$1 AND COALESCE(pallet_no,1)=$2 AND status='closed' AND jsonb_array_length(items) > 0 ORDER BY id", [sid, pal])).rows;
+    const onPallet = (await db.query("SELECT weight_lb::float AS weight_lb, len::float AS len, wid::float AS wid, hgt::float AS hgt, (SELECT COALESCE(SUM((i->>'qty')::int),0) FROM jsonb_array_elements(items) i)::int AS units FROM inv_pack_boxes WHERE shipment_id=$1 AND COALESCE(pallet_no,1)=$2 AND status='closed' AND jsonb_array_length(items) > 0 ORDER BY id", [sid, pal])).rows;
     const meas = (sh.pallets || {})[pal] || null;
     const before = pallet.palletStats(onPallet, S, meas);
-    const fit = pallet.boxesThatFit(before, { weight_lb: boxW, len: L, wid: W, hgt: H }, S);
+    const fit = pallet.boxesThatFit(before, { weight_lb: boxW, units: per, len: L, wid: W, hgt: H }, S);
     if (fit.n != null && count > fit.n && !b.override) {
       return { status: 409, body: { ok: false, error: 'pallet_full', fits: fit.n, limitedBy: fit.limitedBy,
         message: `Pallet ${pal} only has room for ${fit.n} more of these (${fit.limitedBy}).` } };
