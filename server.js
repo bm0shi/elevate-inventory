@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prod-row-status-0927';
+const BUILD_ID = 'prod-home-status-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -989,6 +989,8 @@ async function initDb() {
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS dest_confirmed_at TIMESTAMPTZ;
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS current_pallet INTEGER DEFAULT 1;
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS pallets JSONB DEFAULT '{}';
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_status TEXT;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_status_at TIMESTAMPTZ;
       ALTER TABLE inv_pack_boxes ADD COLUMN IF NOT EXISTS exp TEXT;
     `);
   } catch(e) { console.error('2D production migration skipped:', e.message); }
@@ -1412,12 +1414,45 @@ async function packView(sid, opts = {}) {
   return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
-app.get('/api/pack/list', auth, async (req, res) => {
-  const r = await pool.query(`SELECT s.shipment_id, s.name, s.status, s.created_at, s.shipped_at, s.fc,
-      COUNT(b.id) FILTER (WHERE jsonb_array_length(b.items) > 0)::int AS boxes
-    FROM inv_pack_shipments s LEFT JOIN inv_pack_boxes b ON b.shipment_id = s.shipment_id
-    GROUP BY s.shipment_id ORDER BY (s.status = 'packing') DESC, s.created_at DESC LIMIT 20`);
-  res.json({ ok: true, shipments: r.rows });
+// The 2D Production start page: every shipment built in the app (deleted
+// ones are gone), still-packing first, then newest first, with Amazon's
+// live status. Only shipments started here — never older Amazon history.
+async function packList() {
+  const r = await pool.query(`SELECT s.shipment_id, s.name, s.status, s.created_at, s.shipped_at, s.fc, s.amz_status, s.amz_status_at,
+      COALESCE((SELECT SUM((i->>'qty')::int) FROM jsonb_array_elements(COALESCE(s.amz->'items','[]'::jsonb)) i),0)::int AS planned,
+      COUNT(b.id) FILTER (WHERE b.status='closed' AND jsonb_array_length(b.items) > 0)::int AS boxes,
+      COALESCE(SUM(bu.u) FILTER (WHERE b.status='closed'),0)::int AS built,
+      COUNT(DISTINCT COALESCE(b.pallet_no,1)) FILTER (WHERE b.status='closed' AND jsonb_array_length(b.items) > 0)::int AS pallets,
+      sh.status AS ship_status, sh.has_discrepancy, sh.received_at,
+      EXISTS(SELECT 1 FROM inv_processed_shipments ps WHERE ps.shipment_id=s.shipment_id) AS processed
+    FROM inv_pack_shipments s
+    LEFT JOIN inv_pack_boxes b ON b.shipment_id = s.shipment_id
+    LEFT JOIN LATERAL (SELECT COALESCE(SUM((i->>'qty')::int),0) AS u FROM jsonb_array_elements(b.items) i) bu ON true
+    LEFT JOIN inv_shipments sh ON sh.shipment_id = s.shipment_id
+    GROUP BY s.shipment_id, sh.status, sh.has_discrepancy, sh.received_at
+    ORDER BY (s.status = 'packing') DESC, s.created_at DESC LIMIT 500`);
+  const last = (await pool.query('SELECT MAX(amz_status_at) AS t FROM inv_pack_shipments')).rows[0].t;
+  return { ok: true, shipments: r.rows, statusAt: last };
+}
+// Ask Amazon for the status of every app shipment not yet closed. At most
+// every 10 minutes unless forced; one call covers up to 50 shipments.
+let packStatusRun = 0;
+async function packRefreshStatuses(force) {
+  if (!force && Date.now() - packStatusRun < 10 * 60 * 1000) return { skipped: true };
+  packStatusRun = Date.now();
+  const ids = (await pool.query(`SELECT shipment_id FROM inv_pack_shipments
+    WHERE COALESCE(amz_status,'') NOT IN ('CLOSED','CANCELLED','DELETED')`)).rows.map(r => r.shipment_id);
+  if (!ids.length) return { updated: 0 };
+  const st = await getShipmentStatuses(ids);
+  let n = 0;
+  for (const id of ids) if (st[id]) { await pool.query('UPDATE inv_pack_shipments SET amz_status=$2, amz_status_at=now() WHERE shipment_id=$1', [id, st[id]]); n++; }
+  return { updated: n };
+}
+app.get('/api/pack/list', auth, async (req, res) => { res.json(await packList()); });
+app.post('/api/pack/list/refresh', auth, async (req, res) => {
+  let error = null;
+  try { await packRefreshStatuses(!!(req.body && req.body.force)); } catch (e) { error = e.message; }
+  res.json({ ...(await packList()), statusError: error });
 });
 app.get('/api/pack/settings', auth, async (req, res) => { res.json({ ok: true, settings: await packSettings() }); });
 app.post('/api/pack/settings', auth, async (req, res) => {
@@ -1456,6 +1491,7 @@ async function packPull(sid) {
   const shipFrom = amz.shipFrom && amz.shipFrom.line1 ? amz.shipFrom : S.shipFrom;
   if (amz.fc && amz.shipTo && amz.shipTo.line1) { fcMem[amz.fc] = amz.shipTo; await saveCache('fc_addresses', fcMem); }
   const changed = JSON.stringify([cur.fc, cur.ship_to]) !== JSON.stringify([amz.fc || null, shipTo]);
+  if (amz.status) await pool.query('UPDATE inv_pack_shipments SET amz_status=$2, amz_status_at=now() WHERE shipment_id=$1', [sid, String(amz.status).toUpperCase()]);
   await pool.query(`UPDATE inv_pack_shipments SET amz=$2, amz_error=NULL, amz_at=now(), name=COALESCE(NULLIF(name,''), $3),
       fc=$4, ship_to=$5, ship_from=COALESCE(ship_from, $6), dest_confirmed_at=CASE WHEN $7 THEN NULL ELSE dest_confirmed_at END WHERE shipment_id=$1`,
     [sid, JSON.stringify(amz), amz.name || '', amz.fc || null, shipTo ? JSON.stringify(shipTo) : null, shipFrom ? JSON.stringify(shipFrom) : null, changed]);
@@ -1957,6 +1993,7 @@ app.post('/api/sync-fba', auth, async (req, res) => {
 const RECONCILE_INTERVAL_MS = 3 * 60 * 60 * 1000;
 setInterval(() => {
   reconcileInTransit().catch(e => console.error('[SP-API] scheduled reconcile error:', e.message));
+  packRefreshStatuses(true).catch(e => console.error('[2D] status refresh failed:', e.message));
 }, RECONCILE_INTERVAL_MS);
 
 // Given a product ASIN + quantity, expand into actual stock deductions.

@@ -932,4 +932,29 @@ async function findInboundShipment(confirmationId, { days = 90, onProgress } = {
            note: 'Amazon\'s older API gives the warehouse code but not its street address.' };
 }
 
-module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment };
+// Current Amazon status (WORKING, SHIPPED, IN_TRANSIT, DELIVERED, CHECKED_IN,
+// RECEIVING, CLOSED, CANCELLED…) for the given shipment IDs → { id: status }.
+// Only the shipments the app built are asked about. Errors are thrown, not
+// returned as an empty map (empty would read as "Amazon has none of them").
+async function getShipmentStatuses(ids) {
+  const out = {};
+  const list = [...new Set((ids || []).map(x => String(x).toUpperCase()).filter(Boolean))];
+  if (!list.length) return out;
+  const token = await getAccessToken();
+  for (let i = 0; i < list.length; i += 50) {
+    const batch = list.slice(i, i + 50);
+    let resp;
+    try {
+      resp = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments`, { headers: { 'x-amz-access-token': token },
+        params: { MarketplaceId: MARKETPLACE_ID, QueryType: 'SHIPMENT', ShipmentIdList: batch.join(',') } });
+    } catch (err) {
+      const body = err.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : err.message;
+      throw new Error(`SP-API ${err.response?.status || ''}: ${body}`);
+    }
+    for (const sd of (resp.data.payload?.ShipmentData || [])) if (sd.ShipmentId) out[String(sd.ShipmentId).toUpperCase()] = sd.ShipmentStatus || null;
+    if (i + 50 < list.length) await sleep(600);
+  }
+  return out;
+}
+
+module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses };
