@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'label-one-page-0927';
+const BUILD_ID = 'pack-delete-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1694,6 +1694,24 @@ app.post('/api/pack/finish', auth, async (req, res) => {
     if (r.notfound.length) throw new Error('Products no longer in the catalog: ' + r.notfound.join(', '));
     await db.query("UPDATE inv_pack_shipments SET status='shipped', shipped_at=now() WHERE shipment_id=$1", [sid]);
     return { status: 200, body: { ok: true, boxes: boxes.length, units: Object.values(tot).reduce((n, x) => n + x, 0), expanded: r.expanded } };
+  });
+  res.status(out.status).json(out.body);
+});
+
+// Delete a shipment from 2D Production (a test run, or a start that went
+// wrong). Removes only the 2D Production record: its boxes, pallets and
+// labels. Stock is never touched — a shipment deducted by Finish or a pack
+// slip stays deducted and stays on Ship to FBA. Loading the same ID again
+// starts clean from Amazon.
+app.post('/api/pack/delete', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'bad shipment id' });
+  const out = await withTx(async (db) => {
+    const r = await db.query('SELECT status FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sid]);
+    if (!r.rows.length) return { status: 404, body: { ok: false, error: `${sid} isn't in 2D Production (already deleted?).` } };
+    const b = await db.query('DELETE FROM inv_pack_boxes WHERE shipment_id=$1', [sid]);
+    await db.query('DELETE FROM inv_pack_shipments WHERE shipment_id=$1', [sid]);
+    return { status: 200, body: { ok: true, boxes: b.rowCount, wasFinished: r.rows[0].status !== 'packing' } };
   });
   res.status(out.status).json(out.body);
 });

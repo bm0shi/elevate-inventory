@@ -219,6 +219,27 @@ test('pack boxes: a shipment already posted by pack slip is not deducted again',
   assert.deepStrictEqual(await stock('TSTA'), A);
 });
 
+test('2D production delete: removes only the packing record, never stock', { skip }, async () => {
+  // A shipment already deducted by pack slip, tested in 2D Production, then deleted
+  const SID = 'FBAPACKTEST2';
+  const A = await stock('TSTA');
+  const posted = (await one('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [SID])).n;
+  const [d1, d2] = await Promise.all([post('/api/pack/delete', { shipmentId: SID }), post('/api/pack/delete', { shipmentId: SID })]);
+  assert.deepStrictEqual([d1.status, d2.status].sort(), [200, 404]);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [SID])).n, 0);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_shipments WHERE shipment_id=$1', [SID])).n, 0);
+  assert.deepStrictEqual(await stock('TSTA'), A);
+  assert.strictEqual((await one('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [SID])).n, posted);
+  // A finished one: its deduction stays
+  const S1 = 'FBAPACKTEST1', before = await stock('TSTA');
+  const r = await post('/api/pack/delete', { shipmentId: S1 });
+  assert.strictEqual(r.status, 200); assert.strictEqual(r.body.wasFinished, true);
+  assert.deepStrictEqual(await stock('TSTA'), before);
+  // Loading the same ID again starts clean
+  assert.strictEqual((await post('/api/pack/start', { shipmentId: SID })).status, 200);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [SID])).n, 0);
+});
+
 test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {
   const SID = 'FBAPACKTEST3';
   await post('/api/pack/start', { shipmentId: SID });
