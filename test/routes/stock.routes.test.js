@@ -49,7 +49,7 @@ test.before(async () => {
     server.stdout.on('data', on); server.stderr.on('data', on);
   });
   // Two bottles and the duo made of one of each.
-  await pool.query(`INSERT INTO inv_products(asin, name, sku) VALUES ('TSTA','Test Shampoo','SKU-A'),('TSTB','Test Conditioner','SKU-B'),('TSTDUO','Test Duo','SKU-DUO') ON CONFLICT (asin) DO NOTHING`);
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTA','Test Shampoo','SKU-A','X00TESTAAA'),('TSTB','Test Conditioner','SKU-B','X00TESTBBB'),('TSTDUO','Test Duo','SKU-DUO','X00TESTDUO') ON CONFLICT (asin) DO NOTHING`);
   await pool.query(`INSERT INTO inv_bundles(bundle_asin, component_asin, qty) VALUES ('TSTDUO','TSTA',1),('TSTDUO','TSTB',1)`);
 });
 test.after(async () => { if (server) server.kill(); if (pool) await pool.end(); });
@@ -163,6 +163,48 @@ test('a cycle count sets on hand to what was counted plus what is prepped (bottl
   assert.strictEqual(r.status, 200);
   assert.strictEqual((await stock('TSTB')).onhand, 7 + staged);
   assert.strictEqual((await post('/api/count/apply', { location: 'A-1', counts: [{ asin: 'TSTB', counted: -3 }] })).status, 400);
+});
+
+test('pack boxes: scan, close (label text), finish deducts once; nothing changes after', { skip }, async () => {
+  const SID = 'FBAPACKTEST1';
+  assert.strictEqual((await post('/api/pack/start', { shipmentId: SID, name: 'Pack test' })).status, 200);
+  await post('/api/receive', { asin: 'TSTA', qty: 50 }); await post('/api/receive', { asin: 'TSTB', qty: 50 });
+  const A = await stock('TSTA'), B = await stock('TSTB');
+  // Box 1: 4 singles of A (scanned by FNSKU) and 2 duos
+  assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'X00TESTAAA', qty: 4 })).status, 200);
+  assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'X00TESTDUO' })).status, 200);
+  assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'X00TESTDUO' })).status, 200);
+  // Box 2 left open: finishing is refused (its label isn't printed)
+  await post('/api/pack/scan', { shipmentId: SID, boxNo: 2, code: 'TSTB', qty: 3 });
+  const c1 = await post('/api/pack/box/close', { shipmentId: SID, boxNo: 1 });
+  assert.strictEqual(c1.status, 200);
+  assert.strictEqual(c1.body.barcode, 'AMZN,PO:FBAPACKTEST1,FNSKU:X00TESTAAA,QTY:4,FNSKU:X00TESTDUO,QTY:2');
+  assert.strictEqual((await post('/api/pack/finish', { shipmentId: SID })).status, 409);
+  // A closed box can't be scanned into
+  assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'TSTA' })).status, 409);
+  assert.strictEqual((await post('/api/pack/box/close', { shipmentId: SID, boxNo: 2 })).status, 200);
+  // Nothing deducted until Finish
+  assert.deepStrictEqual(await stock('TSTA'), A);
+  const [f1, f2] = await Promise.all([post('/api/pack/finish', { shipmentId: SID }), post('/api/pack/finish', { shipmentId: SID })]);
+  assert.deepStrictEqual([f1.status, f2.status].sort(), [200, 409]);
+  // A: 4 singles + 2 in duos; B: 3 singles + 2 in duos
+  assert.deepStrictEqual(await stock('TSTA'), { onhand: A.onhand - 6, transit: A.transit + 6 });
+  assert.deepStrictEqual(await stock('TSTB'), { onhand: B.onhand - 5, transit: B.transit + 5 });
+  assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 3, code: 'TSTA' })).status, 409);
+  assert.strictEqual((await post('/api/pack/finish', { shipmentId: SID })).status, 409);
+  assert.deepStrictEqual(await stock('TSTA'), { onhand: A.onhand - 6, transit: A.transit + 6 });
+});
+
+test('pack boxes: a shipment already posted by pack slip is not deducted again', { skip }, async () => {
+  const SID = 'FBAPACKTEST2';
+  await post('/api/bulk-ship', { shipmentId: SID, items: [{ code: 'TSTA', qty: 1 }] });
+  await post('/api/pack/start', { shipmentId: SID });
+  await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'TSTA', qty: 2 });
+  await post('/api/pack/box/close', { shipmentId: SID, boxNo: 1 });
+  const A = await stock('TSTA');
+  const r = await post('/api/pack/finish', { shipmentId: SID });
+  assert.strictEqual(r.status, 409);
+  assert.deepStrictEqual(await stock('TSTA'), A);
 });
 
 test('staff cannot reach owner routes', { skip }, async () => {

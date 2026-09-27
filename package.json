@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "axios": "^1.6.0",
+    "bwip-js": "^4.11.4",
     "express": "^4.18.2",
     "multer": "^1.4.5-lts.1",
     "nodemailer": "^6.10.1",
