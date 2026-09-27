@@ -974,7 +974,8 @@ function prodRender(){
     +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(done?'':'<button class="action" id="prodRefreshBtn" onclick="prodStart(true)" style="padding:6px 12px;font-size:12px;background:#2563a8">↻ Refresh from Amazon</button>')
     +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
-    +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button></div></div>';
+    +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
+    +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
   if(sh.amz_error) h+='<div class="box" style="border:2px solid #c0392b;color:#c0392b"><b>Amazon lookup failed:</b> '+esc(sh.amz_error)+'<div class="hint">Check the ID, or enter the destination by hand below.</div></div>';
   // Destination
   const conf=!!sh.dest_confirmed_at;
@@ -1177,6 +1178,19 @@ function prodMove(n){
   const to=parseInt(prompt('Move box '+n+' to pallet #:', _prod.v.currentPallet)); if(!to) return;
   const b=_prod.v.boxes.find(x=>x.box_no===n);
   api('/api/pack/box/meta',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n, pallet:to, weight:b.weight_lb, len:b.len, wid:b.wid, hgt:b.hgt})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } prodLoad(prodSid()); });
+}
+// Removes the shipment from 2D Production only (boxes, pallets, labels).
+// Stock is never changed; typing the ID guards against deleting the wrong one.
+function prodDelete(){
+  const sid=prodSid(), done=_prod.v.shipment.status!=='packing', n=_prod.v.boxes.filter(b=>b.items.length).length;
+  const typed=prompt('Delete '+sid+' from 2D Production?\n\nThis removes its '+n+' box'+(n===1?'':'es')+', pallets and labels here. It does NOT change any stock'
+    +(done?' — the units deducted when it was finished stay deducted, and the shipment stays on Ship to FBA':'')+'.\n\nType the shipment ID to confirm:');
+  if(typed==null) return;
+  if(typed.trim().toUpperCase()!==sid){ toast('ID didn\'t match — nothing deleted',true); return; }
+  api('/api/pack/delete',{method:'POST',body:JSON.stringify({shipmentId:sid})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not delete',true); return; }
+    toast(sid+' deleted from 2D Production'); _prod=null; prodOpen();
+  }).catch(e=>toast('Could not delete: '+e.message,true));
 }
 function prodVoid(n){
   if(!confirm('Void box '+n+'? Tear its label off. The next box you make takes number '+n+' so Amazon\'s box count still lines up.')) return;
