@@ -1230,9 +1230,17 @@ function prodMixClose(n){
 // (measured from their PDF, in inches): Times Bold, ship from/to at 8 pt,
 // shipment bar, Amazon box ID (shipment + U + box number) as Code 128
 // (2.31 × 0.72 in) and as a sideways PDF417 (1.24 × 2.27 in area), 14 pt
-// text, and the 2D box-content PDF417 across the bottom (bars 3.39 × 1.38 in,
-// 0.4 in left below). Both PDF417s are 12 columns, error correction 6,
-// ~0.0125 in modules — what theirs decode as, and Amazon accepts them.
+// text, and the 2D box-content PDF417 across the bottom.
+// Barcode sizes are whole dots of the owner's 203 dpi thermal printers
+// (Zebra ZP450, Rollo), so every bar prints crisp and even:
+//   contents PDF417  Always one label per box. 4 dots (0.0197 in) — Amazon
+//                    asks for 0.020 in, the nearest printable size — or 3 dots
+//                    (0.0148 in) when rows can then be taller. Source Correct's
+//                    is 0.0124 in and Amazon reads it. Error correction 6, rows
+//                    3-5 modules tall (4+ survives a tilted scan), 6-11 columns.
+//                    Mixed boxes list the first two FNSKUs in text (as Wizard
+//                    Industries did); the barcode carries every product.
+//   box ID Code 128 / PDF417  2 dots.
 function prodPrint(nums){
   const v=_prod.v, sh=v.shipment;
   if(!sh.dest_confirmed_at){ toast('Confirm the destination first',true); return; }
@@ -1252,28 +1260,60 @@ function prodPrint(nums){
       +at(0.47,0.68,'SHIP FROM:','t8')+from.map((l,i)=>at(0.47,0.80+i*0.115,l,'t8')).join('')
       +at(2.24,0.68,'SHIP TO:','t8')+to.map((l,i)=>at(2.24,0.80+i*0.115,l,'t8')).join('')
       +'<div class="blk" style="left:0.31in;top:1.42in;width:3.51in;height:0.07in"></div>'+at(0.43,1.37,esc(sh.shipment_id),'t6')
-      +'<div class="bc c128" data-t="'+esc(b.boxId)+'" style="left:0.24in;top:1.676in;width:2.306in;height:0.718in"></div>'
+      +'<div class="bc c128" data-t="'+esc(b.boxId)+'" style="left:0.24in;top:1.676in;height:0.718in"></div>'
       +at(0.24,2.47,esc(b.boxId),'t7','width:2.32in;text-align:center')
       +'<div class="rule" style="left:0.24in;top:2.60in;width:2.32in"></div>'
-      +'<div class="bc side" data-t="'+esc(b.boxId)+'" style="left:2.948in;top:1.673in;width:0.904in;height:2.164in"></div>';
-    const lines=['Shipment: '+esc(sh.shipment_id)];
-    if(exp) lines.push('Exp: '+expTxt(exp));
-    lines.push(one?'FNSKU: '+esc(one.fnsku):'Mixed: '+b.items.length+' SKUs');
-    h+=lines.map((t,i)=>at(0.24,2.61+i*0.21,t,'t14')).join('');
-    const yQ=2.61+lines.length*0.21;
-    h+=at(0.24,yQ,'Qty: '+(one?one.qty:b.units),'t14')+at(1.03,yQ,'Box: '+b.box_no,'t14')+at(0.24,yQ+0.21,'Weight: '+(b.weight_lb!=null?b.weight_lb:'')+' lb','t14');
-    h+='<div class="bc c2d" data-t="'+esc(b.barcode)+'" style="left:0.393in;top:4.215in;width:3.385in;height:1.38in"></div>';
+      +'<div class="bc side" data-t="'+esc(b.boxId)+'"'+(one?'':' data-short="1"')+' style="left:2.948in;top:1.673in"></div>';
+    let top;
+    if(one){
+      const lines=['Shipment: '+esc(sh.shipment_id)];
+      if(exp) lines.push('Exp: '+expTxt(exp));
+      lines.push('FNSKU: '+esc(one.fnsku));
+      h+=lines.map((t,i)=>at(0.24,2.61+i*0.21,t,'t14')).join('');
+      const yQ=2.61+lines.length*0.21;
+      h+=at(0.24,yQ,'Qty: '+one.qty,'t14')+at(1.03,yQ,'Box: '+b.box_no,'t14')+at(0.24,yQ+0.21,'Weight: '+(b.weight_lb!=null?b.weight_lb:'')+' lb','t14');
+      top=3.95;   // clears the full-length sideways barcode on the right
+    } else {
+      // Mixed box: always one label. Like Wizard Industries' labels, the text names
+      // the first two products and the barcode carries every product for Amazon.
+      // The sideways barcode is shortened so the contents barcode gets the room.
+      const its=b.items.slice().sort((x,y)=>y.qty-x.qty), more=its.length-2;
+      h+=at(0.24,2.61,'Shipment: '+esc(sh.shipment_id),'t14')
+        +at(0.24,2.82,'Qty: '+b.units,'t14')+at(1.03,2.82,'Box: '+b.box_no,'t14')
+        +at(0.24,3.03,'Weight: '+(b.weight_lb!=null?b.weight_lb:'')+' lb','t14')+at(1.75,3.075,'Mixed: '+its.length+' SKUs','t10')
+        +at(0.24,3.23,its.slice(0,2).map(i=>esc(i.fnsku)+' \u00d7'+i.qty).join(', ')+(more>0?' +'+more+' more':''),'t10');
+      top=3.47;
+    }
+    h+='<div class="bc c2d" data-t="'+esc(b.barcode)+'" data-top="'+top+'"></div>';
     return '<div class="lbl">'+h+'</div>';
   }).join('');
   w.document.write('<!DOCTYPE html><html><head><title>'+esc(sh.shipment_id)+' labels</title><script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
     +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Times New Roman",Times,"Liberation Serif",serif;font-weight:700;color:#000}'
     +'.lbl{position:relative;width:4in;height:6in;page-break-after:always;overflow:hidden}.lbl>div{position:absolute;white-space:nowrap;line-height:1.15}'
     +'.t6{font-size:6pt;color:#fff;line-height:1}.t7{font-size:7pt}.t8{font-size:8pt}.t10{font-size:10pt}.t14{font-size:14pt}'
-    +'.rule{height:0;border-top:1pt solid #000}.blk{background:#000}.bc svg{width:100%;height:100%;display:block}.err{position:static!important;color:#c00;font:10pt Arial}</style></head><body>'+pages
-    +'<script>(function(){function put(el,svg){el.innerHTML=svg;var s=el.querySelector("svg");s.removeAttribute("width");s.removeAttribute("height");s.setAttribute("preserveAspectRatio","none");}'
-    +'try{document.querySelectorAll(".c128").forEach(function(e){put(e,bwipjs.toSVG({bcid:"code128",text:e.dataset.t,height:10}));});'
-    +'document.querySelectorAll(".side").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:12,rowmult:3,rotate:"R",scaleX:1,scaleY:1}));});'
-    +'document.querySelectorAll(".c2d").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:12,rowmult:3,scaleX:1,scaleY:1}));e.querySelector("svg").setAttribute("data-text",e.dataset.t);});'
+    +'@media screen{body::before{content:"Print at 100% / Actual size (no scaling, no fit-to-page) on 4 x 6 labels.";display:block;font:13px Arial;color:#c00;padding:6px}}.rule{height:0;border-top:1pt solid #000}.blk{background:#000}.bc svg{width:100%;height:100%;display:block}.err{position:static!important;color:#c00;font:10pt Arial}</style></head><body>'+pages
+    +'<script>(function(){'
+    +'var DOT=1/203, BOTTOM=5.88;'
+    +'function draw(el,opts,modIn,fixH){var svg=bwipjs.toSVG(Object.assign({scaleX:1,scaleY:1},opts));el.innerHTML=svg;var s=el.querySelector("svg"),vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");s.setAttribute("preserveAspectRatio","none");s.setAttribute("shape-rendering","crispEdges");'
+    +'var w=vb.width*modIn,h=fixH||vb.height*modIn;s.style.width=w+"in";s.style.height=h+"in";el.style.width=w+"in";el.style.height=h+"in";return {w:w,h:h,vb:vb};}'
+    +'try{'
+    +'document.querySelectorAll(".c128").forEach(function(e){var r=draw(e,{bcid:"code128",text:e.dataset.t,height:10},2*DOT,0.718);e.style.left=(1.40-r.w/2)+"in";});'
+    // Sideways box-ID barcode: full length (8 columns) on single-product labels, 5 columns (about 1.5 in) on mixed ones.
+    +'document.querySelectorAll(".side").forEach(function(e){var sh=!!e.dataset.short,o={bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:sh?5:8,rowmult:1,rotate:"R"};var r=draw(e,o,2*DOT);var rows=r.vb.width;o.rowmult=Math.max(3,Math.floor(0.9/(rows*2*DOT)));r=draw(e,o,2*DOT);e.style.left=(3.85-r.w)+"in";e.style.top=(sh?1.673:1.673+(2.164-r.h)/2)+"in";});'
+    // Contents barcode: bars 4 printer dots wide (0.0197 in, the closest a 203 dpi printer gets to Amazon's 0.020 in) when it fits,
+    // else 3 dots (0.0148 in, still wider than Source Correct's 0.0124 in). Rows at least 3 bars tall, taller when there is room (reads better tilted).
+    // Scan tests (both decoders, 203 dpi, blur / missing dots / fading / tilt): rows 4+ modules tall survive a 4 degree tilt, rows 3 tall
+    // mostly don't, whatever the bar width. So first choice is rows 4+ tall, then the thicker bar; 11 columns (3.78 in, little edge
+    // margin) only when nothing else fits. Within a choice, the tallest rows for the width.
+    +'var C=[[4,6],[4,7],[3,8],[3,9],[3,10],[3,11]];'
+    +'document.querySelectorAll(".c2d").forEach(function(e){var t=e.dataset.t,avail=BOTTOM-(+e.dataset.top),pick=null,r;'
+    +'for(var i=0;i<C.length;i++){try{r=draw(e,{bcid:"pdf417",text:t,eclevel:6,columns:C[i][1],rowmult:1},C[i][0]*DOT);}catch(x){continue;}'
+    +'var rm=Math.min(5,Math.floor(avail/(r.vb.height*C[i][0]*DOT)+1e-9));if(rm<3)continue;'
+    +'var tier=C[i][1]===11?4:(rm>=4?0:2)+(C[i][0]===4?0:1),q=rm/r.vb.width;'
+    +'if(!pick||tier<pick.tier||(tier===pick.tier&&q>pick.q))pick={d:C[i][0],c:C[i][1],rm:rm,tier:tier,q:q};}'
+    +'if(!pick){e.innerHTML="";e.className="err";e.style.cssText="position:absolute!important;left:0.24in;top:4.2in;white-space:normal;width:3.5in";e.textContent="Too many products for one label \u2014 split this box.";return;}'
+    +'r=draw(e,{bcid:"pdf417",text:t,eclevel:6,columns:pick.c,rowmult:pick.rm},pick.d*DOT);e.querySelector("svg").setAttribute("data-text",t);e.dataset.dots=pick.d;e.dataset.cols=pick.c;e.dataset.rm=pick.rm;'
+    +'e.style.left=((4-r.w)/2)+"in";e.style.top=(BOTTOM-r.h)+"in";});'
     +'setTimeout(function(){window.print();},300);}catch(err){document.body.insertAdjacentHTML("afterbegin","<div class=err>Could not draw a barcode: "+String(err.message||err).replace(/</g,"&lt;")+"</div>");}})();<\/script></body></html>');
   w.document.close();
 }
