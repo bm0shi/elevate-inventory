@@ -932,16 +932,71 @@ function prodSid(){ return _prod&&_prod.v&&_prod.v.shipment.shipment_id; }
 function prodOpen(){
   if(prodSid()) return prodLoad(prodSid());
   const el=document.getElementById('prodArea');
-  api('/api/pack/list').then(d=>{
-    const list=(d&&d.shipments)||[];
-    el.innerHTML='<div class="box"><div style="font-weight:800;font-size:17px">🏷 2D Production</div>'
-      +'<div class="hint">Create the shipment in Send to Amazon, then enter its ID here. The app pulls the destination and items from Amazon.</div>'
-      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">'
-      +'<label style="flex:1;min-width:220px">Shipment ID<input id="prodSidIn" placeholder="FBA19R87QYJJ" autocomplete="off" style="text-transform:uppercase;font-size:18px" onkeydown="if(event.key===\'Enter\')prodStart()"></label>'
-      +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#127a7a">Load from Amazon</button></div>'
-      +(list.length?'<div style="margin-top:12px"><b style="font-size:13px">Recent</b>'+list.map(x=>'<div style="padding:6px 0;border-top:1px solid #eef2f6"><a href="#" onclick="event.preventDefault();prodLoad(\''+esc(x.shipment_id)+'\')"><b>'+esc(x.shipment_id)+'</b></a> '+(x.name?esc(x.name):'')+(x.fc?' · '+esc(x.fc):'')+' · '+x.boxes+' box'+(x.boxes===1?'':'es')+' · '+(x.status==='packing'?'<b style="color:#127a7a">packing</b>':'<span class="hint">finished</span>')+'</div>').join('')+'</div>':'')
-      +'</div>';
-  }).catch(e=>{ el.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
+  api('/api/pack/list').then(d=>{ prodHome(d); return api('/api/pack/list/refresh',{method:'POST',body:'{}'}); })
+    .then(d=>{ if(d&&!prodSid()&&document.getElementById('prodHome')) prodHome(d); })
+    .catch(e=>{ el.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
+}
+// Status shown for a shipment: PACKING while it's being built here, then
+// Amazon's own status (refreshed from Amazon), falling back to what the app
+// knows (in transit / received) when Amazon hasn't answered yet.
+function prodStatus(x){
+  const S={PACKING:['PACKING','#127a7a','#e3f4f4'], READY:['READY TO SHIP','#b45309','#fff3dc'], TRANSIT:['IN TRANSIT','#2563a8','#e6effa'],
+    DELIVERED:['DELIVERED','#4338ca','#ebe9fe'], CHECKED_IN:['CHECKED IN','#7a4fb5','#f1eafa'], RECEIVING:['RECEIVING','#7a4fb5','#f1eafa'],
+    CLOSED:['CLOSED','#1e8449','#e7f6ec'], CANCELLED:['CANCELLED','#6b7280','#eef0f3']};
+  const a=String(x.amz_status||'').toUpperCase();
+  let k;
+  if(a==='CANCELLED'||a==='DELETED') k='CANCELLED';
+  else if(x.status==='packing') k='PACKING';
+  else if(a==='CLOSED') k='CLOSED';
+  else if(a==='RECEIVING') k='RECEIVING';
+  else if(a==='CHECKED_IN') k='CHECKED_IN';
+  else if(a==='DELIVERED') k='DELIVERED';
+  else if(a==='SHIPPED'||a==='IN_TRANSIT') k='TRANSIT';
+  else if(a==='WORKING'||a==='READY_TO_SHIP') k='READY';
+  else if(x.processed) k='CLOSED';
+  else if(x.ship_status==='received') k='RECEIVING';
+  else k='TRANSIT';
+  return {key:k, t:S[k][0], c:S[k][1], bg:S[k][2]};
+}
+function prodHome(d){
+  const el=document.getElementById('prodArea'), list=(d&&d.shipments)||[];
+  const pill=st=>'<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:0.4px;color:'+st.c+';background:'+st.bg+';border:1px solid '+st.c+'33;white-space:nowrap">'+st.t+'</span>';
+  const counts={}; list.forEach(x=>{ const st=prodStatus(x); (counts[st.t]=counts[st.t]||{n:0,st}).n++; });
+  const ago=t=>{ if(!t) return 'not yet'; const m=Math.round((Date.now()-new Date(t))/60000); return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'; };
+  const step=(n,t)=>'<div style="display:flex;align-items:center;gap:8px"><span style="width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px">'+n+'</span><span style="font-size:13px;font-weight:700">'+t+'</span></div>';
+  let h='<div id="prodHome"><div style="border-radius:16px;overflow:hidden;box-shadow:0 2px 10px rgba(15,27,45,0.10);margin-bottom:18px">'
+    +'<div style="background:linear-gradient(120deg,#0f1b2d 0%,#16395a 60%,#127a7a 100%);color:#fff;padding:26px 28px">'
+      +'<div style="font-size:28px;font-weight:900;letter-spacing:0.3px">🏷️ 2D Production</div>'
+      +'<div style="margin-top:6px;font-size:14px;opacity:0.85">Build boxes, print Amazon 2D box labels and track every pallet, from Send to Amazon to checked in.</div>'
+      +'<div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:16px;opacity:0.95">'+step(1,'Create the shipment in Send to Amazon')+step(2,'Load it here')+step(3,'Build boxes & print labels')+step(4,'Finish')+'</div></div>'
+    +'<div style="background:#fff;padding:20px 28px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">'
+      +'<div style="flex:1;min-width:260px"><div style="font-size:12px;font-weight:900;letter-spacing:0.4px;color:#5a6472;margin-bottom:6px">SHIPMENT ID</div>'
+      +'<input id="prodSidIn" placeholder="FBA19R87QYJJ" autocomplete="off" style="width:100%;box-sizing:border-box;text-transform:uppercase;font-size:22px;font-weight:800;letter-spacing:1px;padding:12px 16px;border:2px solid #cfd8e3;border-radius:10px;font-family:monospace" onkeydown="if(event.key===\'Enter\')prodStart()"></div>'
+      +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#127a7a;font-size:17px;padding:14px 26px;border-radius:10px">Load from Amazon →</button></div></div>';
+  h+='<div class="box" style="padding:0;overflow:hidden"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid #eef2f6">'
+    +'<div><div style="font-size:18px;font-weight:900">Shipments</div><div class="hint">Every shipment built in this app. Status from Amazon, updated '+ago(d&&d.statusAt)+(d&&d.statusError?' · <span style="color:#c0392b">Amazon: '+esc(d.statusError).slice(0,120)+'</span>':'')+'</div></div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+Object.values(counts).map(c=>'<span style="font-size:12px;font-weight:800;color:'+c.st.c+';background:'+c.st.bg+';padding:4px 10px;border-radius:999px">'+c.n+' '+c.st.t.toLowerCase()+'</span>').join('')
+    +'<button class="action" onclick="prodRefreshList(this)" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">↻ Refresh</button></div></div>';
+  if(!list.length) h+='<div style="padding:30px;text-align:center;color:#5a6472">No shipments yet. Enter a shipment ID above to start the first one.</div>';
+  else h+='<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('SHIPMENT','left')+prodTh('DESTINATION')+prodTh('BOXES')+prodTh('UNITS BUILT')+prodTh('PALLETS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
+    +list.map(x=>{ const st=prodStatus(x), pct=x.planned?Math.min(100,Math.round(x.built/x.planned*100)):0;
+      return '<tr style="cursor:pointer" onmouseover="this.style.background=\'#f6f9fc\'" onmouseout="this.style.background=\'\'" onclick="prodLoad(\''+esc(x.shipment_id)+'\')">'
+        +prodTd('<div style="font-family:monospace;font-size:16px;font-weight:900;color:#0f1b2d">'+esc(x.shipment_id)+'</div><div class="hint" style="font-size:12px">'+esc(x.name||'')+'</div>','left')
+        +prodTd(x.fc?'<b style="color:#2563a8;font-size:15px">'+esc(x.fc)+'</b>':'—')
+        +prodTd('<b style="font-size:16px">'+x.boxes+'</b>')
+        +prodTd('<div style="font-weight:800">'+x.built.toLocaleString()+(x.planned?' / '+x.planned.toLocaleString():'')+'</div>'+(x.planned?'<div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin:4px auto 0;max-width:120px"><div style="height:100%;width:'+pct+'%;background:'+(pct>=100?'#1e8449':'#127a7a')+'"></div></div>':''))
+        +prodTd('<b>'+(x.pallets||'—')+'</b>')
+        +prodTd(new Date(x.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),'center','white-space:nowrap;color:#5a6472')
+        +prodTd(pill(st)+(x.has_discrepancy?'<div style="margin-top:4px;font-size:11px;font-weight:900;color:#c0392b">⚠ units short</div>':''))
+        +prodTd('<span style="font-size:20px;color:#9aa6b2">›</span>')+'</tr>'; }).join('')+'</table>';
+  h+='</div></div>';
+  el.innerHTML=h;
+  const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
+}
+function prodRefreshList(btn){
+  if(btn){ btn.disabled=true; btn.textContent='Asking Amazon…'; }
+  api('/api/pack/list/refresh',{method:'POST',body:JSON.stringify({force:true})}).then(d=>{ if(!prodSid()) prodHome(d); })
+    .catch(e=>{ toast('Could not refresh: '+e.message,true); if(btn){ btn.disabled=false; btn.textContent='↻ Refresh'; } });
 }
 function prodStart(refresh){
   const sid=refresh?prodSid():(document.getElementById('prodSidIn').value||'').trim();
