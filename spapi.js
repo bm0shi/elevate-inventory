@@ -849,4 +849,87 @@ async function getInboundFees(sinceDays = 180, onProgress) {
   return out;
 }
 
-module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers };
+// One shipment by the ID Send to Amazon shows (FBA19R87QYJJ), for 2D
+// Production: its name, destination warehouse and FULL address, ship-from,
+// and items with quantities. The address is what the box label needs.
+// Tries the current inbound API (plans made in Send to Amazon, newest first,
+// last `days` days); if the shipment isn't found there, the older v0 API,
+// which gives the warehouse code but not its street address. Throws on
+// failure — the caller shows it; nothing is guessed.
+function addr(a) {
+  if (!a) return null;
+  return { name: a.name || a.Name || '', line1: a.addressLine1 || a.AddressLine1 || '', line2: a.addressLine2 || a.AddressLine2 || '',
+           city: a.city || a.City || '', state: a.stateOrProvinceCode || a.StateOrProvinceCode || '',
+           zip: a.postalCode || a.PostalCode || '', country: a.countryCode || a.CountryCode || '' };
+}
+async function findInboundShipment(confirmationId, { days = 90, onProgress } = {}) {
+  const want = String(confirmationId || '').trim().toUpperCase();
+  const token = await getAccessToken();
+  const cutoff = Date.now() - days * 86400000;
+  const say = m => { if (onProgress) onProgress(m); };
+  let checked = 0, v2024Error = null;
+  try {
+    for (const status of ['ACTIVE', 'SHIPPED']) {
+      let next = null, pages = 0;
+      do {
+        const d = await inbGet('/inboundPlans', token, { pageSize: 30, status, sortBy: 'CREATION_TIME', sortOrder: 'DESC', ...(next ? { paginationToken: next } : {}) });
+        let tooOld = false;
+        for (const plan of (d.inboundPlans || [])) {
+          if (new Date(plan.createdAt).getTime() < cutoff) { tooOld = true; break; }
+          checked++; say(`Looking through plan ${checked} (${plan.name || plan.inboundPlanId})…`);
+          let detail;
+          try { detail = await inbGet(`/inboundPlans/${plan.inboundPlanId}`, token); } catch (e) { continue; }   // AWD plans can't be read here
+          for (const sh of (detail.shipments || [])) {
+            const full = await inbGet(`/inboundPlans/${plan.inboundPlanId}/shipments/${sh.shipmentId}`, token);
+            if (String(full.shipmentConfirmationId || '').toUpperCase() !== want) continue;
+            const items = [];
+            let tok = null, ip = 0;
+            do {
+              const it = await inbGet(`/inboundPlans/${plan.inboundPlanId}/shipments/${sh.shipmentId}/items`, token, { pageSize: 100, ...(tok ? { paginationToken: tok } : {}) });
+              for (const x of (it.items || [])) items.push({ msku: x.msku || null, fnsku: x.fnsku || null, asin: x.asin || null, qty: Number(x.quantity) || 0, expiration: x.expiration || null });
+              tok = (it.pagination && it.pagination.nextToken) || null; ip++;
+            } while (tok && ip < 20);
+            const dst = full.destination || {};
+            return { source: 'v2024', inboundPlanId: plan.inboundPlanId, internalId: sh.shipmentId, shipmentId: want,
+                     name: full.name || plan.name || null, status: full.status || null,
+                     fc: dst.warehouseId || null, shipTo: addr(dst.address), shipFrom: addr((full.source || {}).address || plan.sourceAddress), items };
+          }
+        }
+        next = tooOld ? null : (d.pagination && d.pagination.nextToken) || null; pages++;
+      } while (next && pages < 10);
+    }
+  } catch (e) { v2024Error = e.message; }
+
+  // Older API: warehouse code and ship-from, but no warehouse street address.
+  say('Trying the older shipment API…');
+  let resp;
+  try {
+    resp = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments`, { headers: { 'x-amz-access-token': token },
+      params: { MarketplaceId: MARKETPLACE_ID, QueryType: 'SHIPMENT', ShipmentIdList: want } });
+  } catch (err) {
+    const body = err.response?.data ? JSON.stringify(err.response.data).slice(0, 300) : err.message;
+    throw new Error(`Amazon couldn't find ${want}. ${v2024Error ? 'Inbound plans: ' + v2024Error + ' · ' : ''}Shipments: ${err.response?.status || ''} ${body}`);
+  }
+  const sd = (resp.data.payload?.ShipmentData || [])[0];
+  if (!sd) throw new Error(`Amazon has no shipment ${want}${v2024Error ? ' (inbound plans: ' + v2024Error + ')' : ''}. Check the ID in Send to Amazon.`);
+  const items = [];
+  let next = null, pages = 0;
+  const seen = new Set();
+  do {
+    const r = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${want}/items`, { headers: { 'x-amz-access-token': token },
+      params: { MarketplaceId: MARKETPLACE_ID, QueryType: next ? 'NEXT_TOKEN' : 'SHIPMENT', ...(next ? { NextToken: next } : {}) } });
+    let fresh = 0;
+    for (const it of (r.data.payload?.ItemData || [])) {
+      if (seen.has(it.SellerSKU)) continue; seen.add(it.SellerSKU); fresh++;
+      items.push({ msku: it.SellerSKU, fnsku: it.FulfillmentNetworkSKU || null, asin: null, qty: it.QuantityShipped || 0, expiration: null });
+    }
+    const tok = r.data.payload?.NextToken || null; pages++;
+    next = tok && fresh && pages < 20 ? tok : null;
+    await sleep(600);
+  } while (next);
+  return { source: 'v0', shipmentId: want, name: sd.ShipmentName || null, status: sd.ShipmentStatus || null,
+           fc: sd.DestinationFulfillmentCenterId || null, shipTo: null, shipFrom: addr(sd.ShipFromAddress), items,
+           note: 'Amazon\'s older API gives the warehouse code but not its street address.' };
+}
+
+module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment };

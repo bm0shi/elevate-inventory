@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -26,6 +26,7 @@ const capacity = require('./lib/capacity');
 const { checkinDays, checkinStats } = require('./lib/checkin');
 const { sendAlert, sendEmail, channels: alertChannels } = require('./lib/notify');
 const pack = require('./lib/pack');
+const pallet = require('./lib/pallet');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -408,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pack-2d-labels-0927';
+const BUILD_ID = '2d-production-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -968,6 +969,30 @@ async function initDb() {
     `);
   } catch(e) { console.error('cuft migration skipped:', e.message); }
 
+  // ---- 2D Production: per-product packing defaults, remembered so they're
+  // entered once (unit weight from Amazon unless typed; case qty and case box
+  // size typed once), and what each packed shipment pulled from Amazon. ----
+  try {
+    await pool.query(`
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS unit_weight_lb NUMERIC;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS unit_weight_src TEXT;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS case_qty INTEGER;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS case_len NUMERIC;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS case_wid NUMERIC;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS case_hgt NUMERIC;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz JSONB;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_error TEXT;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_at TIMESTAMPTZ;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS fc TEXT;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS ship_to JSONB;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS ship_from JSONB;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS dest_confirmed_at TIMESTAMPTZ;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS current_pallet INTEGER DEFAULT 1;
+      ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS pallets JSONB DEFAULT '{}';
+      ALTER TABLE inv_pack_boxes ADD COLUMN IF NOT EXISTS exp TEXT;
+    `);
+  } catch(e) { console.error('2D production migration skipped:', e.message); }
+
   // ---- Hazmat, keyed by ASIN (idempotent) ----
   // Originally stored on inv_products, which only holds the ~111 products we
   // actually carry. Products to Add is about the ~469 Keepa ASINs we DON'T
@@ -1315,28 +1340,88 @@ async function packBox(db, sid, boxNo, lock) {
   await db.query('INSERT INTO inv_pack_boxes(shipment_id, box_no) VALUES($1,$2) ON CONFLICT (shipment_id, box_no) DO NOTHING', [sid, boxNo]);
   return (await db.query(`SELECT * FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=$2${lock ? ' FOR UPDATE' : ''}`, [sid, boxNo])).rows[0];
 }
-async function packView(sid) {
+async function packSettings() {
+  const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'");
+  const d = (r.rows[0] && r.rows[0].data) || {};
+  return { ...pallet.settings(d), shipFrom: d.shipFrom || null };
+}
+const boxWeightOf = (unitLb, qty) => unitLb > 0 && qty > 0 ? Math.round(unitLb * qty * 100) / 100 : null;
+async function packView(sid, opts = {}) {
   const sh = (await pool.query('SELECT * FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
   if (!sh) return null;
+  const S = await packSettings();
   const boxes = (await pool.query('SELECT * FROM inv_pack_boxes WHERE shipment_id=$1 ORDER BY box_no', [sid])).rows;
-  const asins = [...new Set(boxes.flatMap(b => (b.items || []).map(i => i.asin)))];
-  const P = {}; if (asins.length) for (const r of (await pool.query('SELECT asin, name, image FROM inv_products WHERE asin = ANY($1)', [asins])).rows) P[r.asin] = r;
+  // Products: everything in the boxes and everything in Amazon's shipment.
+  const planItems = (sh.amz && sh.amz.items) || [];
+  const codes = [...new Set(boxes.flatMap(b => (b.items || []).map(i => i.asin)))];
+  const P = {};
+  const prodCols = 'asin, name, image, sku, fnsku, unit_weight_lb::float AS unit_weight_lb, unit_weight_src, case_qty, case_len::float AS case_len, case_wid::float AS case_wid, case_hgt::float AS case_hgt';
+  if (codes.length) for (const r of (await pool.query(`SELECT ${prodCols} FROM inv_products WHERE asin = ANY($1)`, [codes])).rows) P[r.asin] = r;
+  const fnskus = planItems.map(i => i.fnsku).filter(Boolean), skus = planItems.map(i => i.msku).filter(Boolean);
+  const byFn = {}, bySku = {};
+  if (fnskus.length || skus.length) for (const r of (await pool.query(`SELECT ${prodCols} FROM inv_products WHERE UPPER(fnsku) = ANY($1) OR sku = ANY($2)`, [fnskus.map(x => x.toUpperCase()), skus])).rows) {
+    P[r.asin] = r; if (r.fnsku) byFn[r.fnsku.toUpperCase()] = r; if (r.sku) bySku[r.sku] = r;
+  }
   for (const b of boxes) {
     b.items = (b.items || []).map(i => ({ ...i, name: P[i.asin] ? P[i.asin].name : i.asin, image: P[i.asin] ? P[i.asin].image : null }));
     for (const k of ['weight_lb', 'len', 'wid', 'hgt']) b[k] = b[k] == null ? null : Number(b[k]);
     const bc = pack.boxBarcode(sid, b.items);
     b.barcode = bc.text || null; b.barcodeError = bc.error || null;
+    b.boxId = pack.boxId(sid, b.box_no);
     b.units = b.items.reduce((n, i) => n + i.qty, 0);
     b.warnings = pack.boxWarnings(b);
   }
-  return { ok: true, shipment: sh, boxes };
+  // Plan vs produced, per product (Source Correct's Produced / Left)
+  const produced = {};
+  for (const b of boxes) if (b.status === 'closed') for (const i of b.items) produced[i.asin] = (produced[i.asin] || 0) + i.qty;
+  const plan = [], inPlan = new Set();
+  for (const it of planItems) {
+    const p = (it.fnsku && byFn[it.fnsku.toUpperCase()]) || (it.msku && bySku[it.msku]) || null;
+    const asin = p ? p.asin : (it.asin || null);
+    if (asin) inPlan.add(asin);
+    const made = asin ? (produced[asin] || 0) : 0;
+    plan.push({ asin, known: !!p, fnsku: it.fnsku || (p && p.fnsku), msku: it.msku, name: p ? p.name : (it.msku || it.fnsku), image: p ? p.image : null,
+      planned: it.qty, produced: made, left: Math.max(0, it.qty - made), over: Math.max(0, made - it.qty), expiration: it.expiration || null,
+      unitWeight: p ? p.unit_weight_lb : null, weightSrc: p ? p.unit_weight_src : null, caseQty: p ? p.case_qty : null,
+      len: p ? p.case_len : null, wid: p ? p.case_wid : null, hgt: p ? p.case_hgt : null });
+  }
+  // Packed but NOT in Amazon's shipment: a mistake to catch before it ships.
+  for (const a of Object.keys(produced)) if (planItems.length && !inPlan.has(a)) plan.push({ asin: a, known: true, notInShipment: true, name: P[a] ? P[a].name : a, fnsku: P[a] && P[a].fnsku, planned: 0, produced: produced[a], left: 0, over: produced[a] });
+  // Pallets, in packing order (box id), with measured heights
+  const measured = sh.pallets || {};
+  const byPallet = {};
+  for (const b of [...boxes].sort((x, y) => x.id - y.id)) if (b.status === 'closed' && b.items.length) (byPallet[b.pallet_no || 1] = byPallet[b.pallet_no || 1] || []).push(b);
+  const cur = Math.max(1, sh.current_pallet || 1);
+  const pallets = {};
+  for (const n of new Set([...Object.keys(byPallet).map(Number), cur])) {
+    pallets[n] = pallet.palletStats(byPallet[n] || [], S, measured[n] || null);
+    pallets[n].measuredAt = measured[n] || null;
+  }
+  // What fits next on the current pallet
+  const candidates = plan.filter(r => r.asin && r.left > 0 && r.caseQty > 0 && r.unitWeight > 0 && r.len > 0 && r.wid > 0 && r.hgt > 0)
+    .map(r => ({ asin: r.asin, name: r.name, perBox: r.caseQty, boxesLeft: Math.ceil(r.left / r.caseQty),
+                 box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), len: r.len, wid: r.wid, hgt: r.hgt } }));
+  const nums = new Set(boxes.map(b => b.box_no));
+  let nextBoxNo = 1; while (nums.has(nextBoxNo)) nextBoxNo++;
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo,
+           recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 app.get('/api/pack/list', auth, async (req, res) => {
-  const r = await pool.query(`SELECT s.shipment_id, s.name, s.status, s.created_at, s.shipped_at,
+  const r = await pool.query(`SELECT s.shipment_id, s.name, s.status, s.created_at, s.shipped_at, s.fc,
       COUNT(b.id) FILTER (WHERE jsonb_array_length(b.items) > 0)::int AS boxes
     FROM inv_pack_shipments s LEFT JOIN inv_pack_boxes b ON b.shipment_id = s.shipment_id
     GROUP BY s.shipment_id ORDER BY (s.status = 'packing') DESC, s.created_at DESC LIMIT 20`);
   res.json({ ok: true, shipments: r.rows });
+});
+app.get('/api/pack/settings', auth, async (req, res) => { res.json({ ok: true, settings: await packSettings() }); });
+app.post('/api/pack/settings', auth, async (req, res) => {
+  const b = req.body || {}, keep = {};
+  for (const k of Object.keys(pallet.DEFAULTS)) if (b[k] != null && b[k] !== '') { const n = Number(b[k]); if (!(n > 0 && n < 100000)) return res.status(400).json({ ok: false, error: `Bad value for ${k}` }); keep[k] = n; }
+  const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'")).rows[0];
+  const data = Object.assign({}, prev ? prev.data : {}, keep);
+  if (b.shipFrom && typeof b.shipFrom === 'object') data.shipFrom = packAddr(b.shipFrom);
+  await saveCache('pack_settings', data);
+  res.json({ ok: true, settings: await packSettings() });
 });
 app.get('/api/pack/:sid', auth, async (req, res) => {
   const sid = pack.normShipmentId(req.params.sid);
@@ -1344,14 +1429,177 @@ app.get('/api/pack/:sid', auth, async (req, res) => {
   if (!v) return res.status(404).json({ ok: false, error: 'Not found' });
   res.json(v);
 });
+const packAddr = (a) => a ? { name: String(a.name || '').slice(0, 80), line1: String(a.line1 || '').slice(0, 120), line2: String(a.line2 || '').slice(0, 120),
+  city: String(a.city || '').slice(0, 60), state: String(a.state || '').slice(0, 20), zip: String(a.zip || '').slice(0, 20), country: String(a.country || 'US').slice(0, 3) } : null;
+// Pull the shipment from Amazon: name, destination warehouse + address,
+// ship-from, items. A fresh pull clears the destination confirmation if the
+// destination changed. Remembers each warehouse's address, so the older API
+// (code only) can still fill it next time.
+async function packPull(sid) {
+  let amz = null, err = null;
+  try { amz = await findInboundShipment(sid); } catch (e) { err = e.message; }
+  const cur = (await pool.query('SELECT fc, ship_to, ship_from FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0] || {};
+  if (!amz) {
+    await pool.query('UPDATE inv_pack_shipments SET amz_error=$2, amz_at=now() WHERE shipment_id=$1', [sid, err]);
+    return;
+  }
+  const mem = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fc_addresses'")).rows[0];
+  const fcMem = (mem && mem.data) || {};
+  const shipTo = amz.shipTo && amz.shipTo.line1 ? amz.shipTo : (amz.fc && fcMem[amz.fc]) || null;
+  const S = await packSettings();
+  const shipFrom = amz.shipFrom && amz.shipFrom.line1 ? amz.shipFrom : S.shipFrom;
+  if (amz.fc && amz.shipTo && amz.shipTo.line1) { fcMem[amz.fc] = amz.shipTo; await saveCache('fc_addresses', fcMem); }
+  const changed = JSON.stringify([cur.fc, cur.ship_to]) !== JSON.stringify([amz.fc || null, shipTo]);
+  await pool.query(`UPDATE inv_pack_shipments SET amz=$2, amz_error=NULL, amz_at=now(), name=COALESCE(NULLIF(name,''), $3),
+      fc=$4, ship_to=$5, ship_from=COALESCE(ship_from, $6), dest_confirmed_at=CASE WHEN $7 THEN NULL ELSE dest_confirmed_at END WHERE shipment_id=$1`,
+    [sid, JSON.stringify(amz), amz.name || '', amz.fc || null, shipTo ? JSON.stringify(shipTo) : null, shipFrom ? JSON.stringify(shipFrom) : null, changed]);
+}
 app.post('/api/pack/start', auth, async (req, res) => {
   const sid = pack.normShipmentId(req.body.shipmentId);
   if (!sid) return res.status(400).json({ ok: false, error: 'Enter the shipment ID from Send to Amazon (it looks like FBA18XRL8GV5).' });
   const posted = await pool.query('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [sid]);
-  await pool.query(`INSERT INTO inv_pack_shipments(shipment_id, name) VALUES($1,$2)
-    ON CONFLICT (shipment_id) DO UPDATE SET name = COALESCE(NULLIF($2,''), inv_pack_shipments.name)`, [sid, String(req.body.name || '').trim().slice(0, 120)]);
+  const ins = await pool.query(`INSERT INTO inv_pack_shipments(shipment_id, name) VALUES($1,$2)
+    ON CONFLICT (shipment_id) DO UPDATE SET name = COALESCE(NULLIF($2,''), inv_pack_shipments.name) RETURNING amz`, [sid, String(req.body.name || '').trim().slice(0, 120)]);
+  if (!ins.rows[0].amz || req.body.refresh) await packPull(sid);
   const v = await packView(sid);
   res.json({ ...v, alreadyPosted: posted.rows[0].n });
+});
+// Destination typed or corrected by hand (when Amazon's older API gave only
+// the warehouse code). Any change needs confirming again before labels print.
+app.post('/api/pack/destination', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId);
+  const fc = String(req.body.fc || '').trim().toUpperCase().slice(0, 10), to = packAddr(req.body.shipTo), from = packAddr(req.body.shipFrom);
+  if (!sid || !fc || !to || !to.line1 || !to.city || !to.zip || !from || !from.line1) return res.status(400).json({ ok: false, error: 'Warehouse code, ship-to street/city/ZIP and ship-from street are required.' });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    await db.query('UPDATE inv_pack_shipments SET fc=$2, ship_to=$3, ship_from=$4, dest_confirmed_at=NULL WHERE shipment_id=$1', [sid, fc, JSON.stringify(to), JSON.stringify(from)]);
+    return { status: 200, body: { ok: true } };
+  });
+  if (out.status === 200) {
+    const mem = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fc_addresses'")).rows[0];
+    await saveCache('fc_addresses', Object.assign({}, mem ? mem.data : {}, { [fc]: to }));
+  }
+  res.status(out.status).json(out.body);
+});
+app.post('/api/pack/confirm', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId);
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const r = (await db.query('SELECT fc, ship_to, ship_from FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
+    if (!r.fc || !r.ship_to || !r.ship_to.line1 || !r.ship_from || !r.ship_from.line1) return { status: 400, body: { ok: false, error: 'Destination and ship-from address are needed first.' } };
+    await db.query('UPDATE inv_pack_shipments SET dest_confirmed_at=now() WHERE shipment_id=$1', [sid]);
+    return { status: 200, body: { ok: true } };
+  });
+  res.status(out.status).json(out.body);
+});
+// A product's packing defaults, looked up by any code the floor scans. If
+// Amazon's weight isn't on file yet it's fetched now (one catalog call).
+app.get('/api/pack/product/:code', auth, async (req, res) => {
+  const prod = await resolveCode(req.params.code || '');
+  if (!prod) return res.status(404).json({ ok: false, error: `Unknown barcode ${String(req.params.code || '').slice(0, 30)}` });
+  let p = (await pool.query('SELECT asin, name, image, sku, fnsku, unit_weight_lb::float AS unit_weight_lb, unit_weight_src, case_qty, case_len::float AS case_len, case_wid::float AS case_wid, case_hgt::float AS case_hgt FROM inv_products WHERE asin=$1', [prod.asin])).rows[0];
+  if (!(p.unit_weight_lb > 0)) {
+    try {
+      const d = (await getItemDimensions([p.asin]))[p.asin] || {};
+      const lb = d.error ? null : capacity.unitWeightLb(d.dimensions);
+      if (lb) { await pool.query("UPDATE inv_products SET unit_weight_lb=$2, unit_weight_src='amazon' WHERE asin=$1 AND COALESCE(unit_weight_src,'') <> 'manual'", [p.asin, lb]); p.unit_weight_lb = lb; p.unit_weight_src = 'amazon'; }
+    } catch (e) { p.weightLookupError = e.message; }
+  }
+  res.json({ ok: true, product: p });
+});
+// Remember a product's case qty, case box size and (typed) unit weight.
+app.post('/api/pack/product', auth, async (req, res) => {
+  const b = req.body || {};
+  const num = (v, max) => v === '' || v == null ? null : (Number(v) > 0 && Number(v) <= max ? Number(v) : undefined);
+  const w = num(b.unitWeight, 200), q = b.caseQty === '' || b.caseQty == null ? null : parseInt(b.caseQty, 10), l = num(b.len, 72), wd = num(b.wid, 72), h = num(b.hgt, 72);
+  if (!b.asin || [w, l, wd, h].includes(undefined) || (q != null && !(q >= 1 && q <= 1000))) return res.status(400).json({ ok: false, error: 'Check the weight, case qty and box size.' });
+  const r = await pool.query(`UPDATE inv_products SET
+      unit_weight_lb = CASE WHEN $2::numeric IS NULL THEN unit_weight_lb ELSE $2 END,
+      unit_weight_src = CASE WHEN $2::numeric IS NULL OR $2 = unit_weight_lb THEN unit_weight_src ELSE 'manual' END,
+      case_qty = COALESCE($3, case_qty), case_len = COALESCE($4, case_len), case_wid = COALESCE($5, case_wid), case_hgt = COALESCE($6, case_hgt)
+    WHERE asin=$1`, [b.asin, w, q, l, wd, h]);
+  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Product not found' });
+  res.json({ ok: true });
+});
+// Current pallet, and a tape-measured height for a pallet (optional).
+app.post('/api/pack/pallet', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), n = parseInt(req.body.pallet, 10);
+  if (!sid || !(n >= 1 && n <= 99)) return res.status(400).json({ ok: false, error: 'bad pallet' });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    if (req.body.current) await db.query('UPDATE inv_pack_shipments SET current_pallet=$2 WHERE shipment_id=$1', [sid, n]);
+    if (req.body.measuredHeight !== undefined) {
+      const h = req.body.measuredHeight === '' || req.body.measuredHeight == null ? null : Number(req.body.measuredHeight);
+      if (h != null && !(h > 0 && h < 120)) return { status: 400, body: { ok: false, error: 'Height in inches, 1–120.' } };
+      const cnt = (await db.query("SELECT COUNT(*)::int AS c FROM inv_pack_boxes WHERE shipment_id=$1 AND COALESCE(pallet_no,1)=$2 AND status='closed' AND jsonb_array_length(items) > 0", [sid, n])).rows[0].c;
+      await db.query(`UPDATE inv_pack_shipments SET pallets = CASE WHEN $3::numeric IS NULL THEN COALESCE(pallets,'{}'::jsonb) - $2::text
+        ELSE jsonb_set(COALESCE(pallets,'{}'::jsonb), ARRAY[$2::text], jsonb_build_object('h', $3::numeric, 'count', $4::int)) END WHERE shipment_id=$1`, [sid, String(n), h, cnt]);
+    }
+    return { status: 200, body: { ok: true } };
+  });
+  res.status(out.status).json(out.body);
+});
+// Make `count` identical single-product boxes (the usual case: 10 cases of
+// 6), closed and ready to print. Box numbers fill any gap first so they stay
+// 1..N (Amazon numbers boxes that way). Refused if the destination isn't
+// confirmed, or if the boxes would take the pallet over its weight or height
+// limit — unless `override` (the floor saw the warning and chose to).
+app.post('/api/pack/boxes', auth, async (req, res) => {
+  const b = req.body || {};
+  const sid = pack.normShipmentId(b.shipmentId), per = parseInt(b.qtyPerBox, 10), count = parseInt(b.count, 10), pal = parseInt(b.pallet, 10) || 1;
+  const w = Number(b.unitWeight), L = Number(b.len), W = Number(b.wid), H = Number(b.hgt);
+  const exp = b.exp ? pack.normExp(b.exp) : null;
+  if (!sid || !b.asin || badQty(per) || !(count >= 1 && count <= 200)) return res.status(400).json({ ok: false, error: 'Units per box and number of boxes are needed.' });
+  if (!(w > 0 && L > 0 && W > 0 && H > 0)) return res.status(400).json({ ok: false, error: 'Unit weight and box size (L × W × H) are needed for the label and the pallet limits.' });
+  if (b.exp && !exp) return res.status(400).json({ ok: false, error: 'Expiration date isn\'t a real date.' });
+  const p = (await pool.query('SELECT asin, name, fnsku FROM inv_products WHERE asin=$1', [b.asin])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Product not found' });
+  if (!p.fnsku) return res.status(400).json({ ok: false, error: `${p.name || p.asin} has no FNSKU on file — the label needs it.` });
+  const boxW = boxWeightOf(w, per);
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const sh = (await db.query('SELECT dest_confirmed_at, pallets FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
+    if (!sh.dest_confirmed_at) return { status: 409, body: { ok: false, error: 'Confirm the destination first — the label prints the ship-to address.' } };
+    const S = await packSettings();
+    const onPallet = (await db.query("SELECT weight_lb::float AS weight_lb, len::float AS len, wid::float AS wid, hgt::float AS hgt FROM inv_pack_boxes WHERE shipment_id=$1 AND COALESCE(pallet_no,1)=$2 AND status='closed' AND jsonb_array_length(items) > 0 ORDER BY id", [sid, pal])).rows;
+    const meas = (sh.pallets || {})[pal] || null;
+    const before = pallet.palletStats(onPallet, S, meas);
+    const fit = pallet.boxesThatFit(before, { weight_lb: boxW, len: L, wid: W, hgt: H }, S);
+    if (fit.n != null && count > fit.n && !b.override) {
+      return { status: 409, body: { ok: false, error: 'pallet_full', fits: fit.n, limitedBy: fit.limitedBy,
+        message: `Pallet ${pal} only has room for ${fit.n} more of these (${fit.limitedBy}).` } };
+    }
+    const used = new Set((await db.query('SELECT box_no FROM inv_pack_boxes WHERE shipment_id=$1', [sid])).rows.map(r => r.box_no));
+    const made = [];
+    let n = 1;
+    for (let i = 0; i < count; i++) {
+      while (used.has(n)) n++;
+      used.add(n);
+      await db.query(`INSERT INTO inv_pack_boxes(shipment_id, box_no, pallet_no, weight_lb, len, wid, hgt, items, status, closed_at, exp)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,'closed',now(),$9)`,
+        [sid, n, pal, boxW, L, W, H, JSON.stringify([{ asin: p.asin, fnsku: p.fnsku, qty: per, exp }]), exp]);
+      made.push(n);
+    }
+    return { status: 200, body: { ok: true, boxes: made, units: per * count, weight: boxW } };
+  });
+  // Remember this product's case qty, size and weight for next time.
+  if (out.status === 200 && b.remember !== false) {
+    await pool.query(`UPDATE inv_products SET case_qty=$2, case_len=$3, case_wid=$4, case_hgt=$5,
+        unit_weight_src = CASE WHEN unit_weight_lb IS DISTINCT FROM $6::numeric THEN 'manual' ELSE unit_weight_src END, unit_weight_lb=$6 WHERE asin=$1`,
+      [p.asin, per, L, W, H, w]);
+  }
+  res.status(out.status).json(out.body);
+});
+// Remove a box (a label printed by mistake). Its number is reused by the
+// next box, so the numbers stay 1..N.
+app.post('/api/pack/box/void', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10);
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const r = await db.query('DELETE FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=$2', [sid, boxNo]);
+    return r.rowCount ? { status: 200, body: { ok: true } } : { status: 404, body: { ok: false, error: 'No such box' } };
+  });
+  res.status(out.status).json(out.body);
 });
 app.post('/api/pack/scan', auth, async (req, res) => {
   const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10);
@@ -1408,6 +1656,8 @@ app.post('/api/pack/box/close', auth, async (req, res) => {
   const out = await withTx(async (db) => {
     const bad = await packLock(db, sid); if (bad) return bad;
     const box = await packBox(db, sid, boxNo, true);
+    const dc = (await db.query('SELECT dest_confirmed_at FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
+    if (!dc.dest_confirmed_at) return { status: 409, body: { ok: false, error: 'Confirm the destination first — the label prints the ship-to address.' } };
     const bc = pack.boxBarcode(sid, box.items);
     if (bc.error) return { status: 400, body: { ok: false, error: bc.error } };
     await db.query("UPDATE inv_pack_boxes SET status='closed', closed_at=COALESCE(closed_at, now()) WHERE shipment_id=$1 AND box_no=$2", [sid, boxNo]);
@@ -5405,7 +5655,7 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
 // ============================================================
 let sizeJob = { running: false, step: '', done: false, result: null };
 async function pullItemSizes(all, onStep) {
-  const q = all ? 'SELECT asin FROM inv_products' : 'SELECT asin FROM inv_products WHERE cuft IS NULL';
+  const q = all ? 'SELECT asin FROM inv_products' : 'SELECT asin FROM inv_products WHERE cuft IS NULL OR unit_weight_lb IS NULL';
   const asins = (await pool.query(q)).rows.map(r => r.asin);
   if (!asins.length) return { looked: 0, found: 0, failed: 0 };
   const dims = await getItemDimensions(asins, onStep);
@@ -5416,6 +5666,9 @@ async function pullItemSizes(all, onStep) {
     if (cf) found++; else failed++;
     await pool.query('UPDATE inv_products SET cuft=COALESCE($2, cuft), cuft_at=CASE WHEN $2::numeric IS NULL THEN cuft_at ELSE now() END, cuft_error=$3 WHERE asin=$1',
       [a, cf, cf ? null : (r.error || 'Amazon has no size for this listing')]);
+    // Unit weight for 2D Production box weights — never over a typed one.
+    const lb = r.error ? null : capacity.unitWeightLb(r.dimensions);
+    if (lb) await pool.query("UPDATE inv_products SET unit_weight_lb=$2, unit_weight_src='amazon' WHERE asin=$1 AND COALESCE(unit_weight_src,'') <> 'manual'", [a, lb]);
   }
   console.log(`[Capacity] sizes: ${found} found, ${failed} without.`);
   return { looked: asins.length, found, failed };

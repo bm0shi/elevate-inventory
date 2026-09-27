@@ -168,7 +168,8 @@
     <span class="flowlabel">WAREHOUSE FLOW</span>
     <button class="tab active" onclick="showTab('pendingprep',event)"><b>1</b> Pending Prep</button>
     <button class="tab" onclick="showTab('prep',event)"><b>2</b> Prepped &amp; Ready</button>
-    <button class="tab" onclick="showTab('ship',event)"><b>3</b> Ship to FBA</button>
+    <button class="tab" onclick="showTab('prod',event)"><b>3</b> 2D Production</button>
+    <button class="tab" onclick="showTab('ship',event)"><b>4</b> Ship to FBA</button>
     <span class="flowdiv"></span>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
     <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
@@ -420,15 +421,9 @@
     <div id="prepListBox"></div>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
+  <div id="prod" class="panel"><div id="prodArea"></div></div>
   <div id="ship" class="panel">
-    <div class="box" style="border:2px solid #127a7a">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
-        <div><div style="font-weight:800;font-size:16px">📦 Pack boxes &amp; print 2D labels</div>
-        <div class="hint">Scan each unit into the box, close it, and its 2D box label prints right away — label it, stack it. Finish deducts the whole shipment once.</div></div>
-        <button class="action" onclick="packOpen()" style="background:#127a7a">Open packing</button>
-      </div>
-      <div id="packArea" style="display:none;margin-top:12px"></div>
-    </div>
+    <div class="box hint" style="border:1px dashed #127a7a">📦 Packing boxes and printing 2D box labels moved to its own tab: <a href="#" onclick="event.preventDefault();[...document.querySelectorAll('.tab')].find(b=>(b.getAttribute('onclick')||'').includes('prod')).click()"><b>2D Production</b></a>. Finishing a shipment there deducts it — don't also post it here.</div>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">📄 Upload Amazon Shipment Plan (easiest)</div>
       <div class="hint" style="margin-bottom:10px">Download the shipment plan TSV from Seller Central and upload it here. It reads the Shipment ID, all items, and quantities automatically — then deducts from on-hand and clears those items from Prepped.</div>
@@ -922,152 +917,354 @@ function api(path, opts={}) {
   // caller's .catch shows an error instead of a false "done".
   return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
 }
-// ---- PACK BOXES & 2D LABELS (Ship to FBA) ----
-// One box at a time: scan units in, enter pallet / weight / size, "Close box"
-// prints its 2D label (PDF417, Amazon's AMZN,PO:… format from the server,
-// lib/pack.js) so it's labelled before it goes on the pallet. The last box
-// size and pallet are remembered on this device.
-let _pack=null;
-function packOpen(){
-  const el=document.getElementById('packArea'); el.style.display='block';
-  if(_pack&&_pack.sid) return packLoad(_pack.sid);
+// ---- 2D PRODUCTION (own tab) ----
+// Box labels printed as each box is packed, in Source Correct's layout:
+// Amazon's box ID (FBA…U000001) as Code 128 + PDF417, ship-from / ship-to,
+// and the 2D box-content barcode — so no Amazon box label is needed.
+// The shipment (name, destination address, items) comes from Amazon; the
+// destination must be confirmed before anything prints. Each product's unit
+// weight, units per case and case size are remembered. Every box goes on a
+// numbered pallet, tracked against the weight and height limits (lib/pallet.js).
+let _prod=null;
+const f1=v=>v==null?'':(Math.round(v*10)/10).toLocaleString();
+function prodSid(){ return _prod&&_prod.v&&_prod.v.shipment.shipment_id; }
+function prodOpen(){
+  if(prodSid()) return prodLoad(prodSid());
+  const el=document.getElementById('prodArea');
   api('/api/pack/list').then(d=>{
-    const open=((d&&d.shipments)||[]).filter(x=>x.status==='packing');
-    el.innerHTML='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
-      +'<label style="flex:1;min-width:200px">Shipment ID (from Send to Amazon)<input id="packSid" placeholder="FBA18XRL8GV5" autocomplete="off" style="text-transform:uppercase"></label>'
-      +'<label style="flex:1;min-width:200px">Name (optional)<input id="packName" placeholder="Sept pallet 2" autocomplete="off"></label>'
-      +'<button class="action" onclick="packStart()" style="background:#127a7a">Start / resume</button></div>'
-      +(open.length?'<div class="hint" style="margin-top:8px">Packing now: '+open.map(x=>'<a href="#" onclick="event.preventDefault();packLoad(\''+esc(x.shipment_id)+'\')"><b>'+esc(x.shipment_id)+'</b></a>'+(x.name?' ('+esc(x.name)+')':'')+' · '+x.boxes+' box'+(x.boxes===1?'':'es')).join(' &nbsp; ')+'</div>':'');
-  }).catch(e=>{ el.innerHTML='<div class="hint" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
-}
-function packStart(){
-  const sid=(document.getElementById('packSid').value||'').trim(), name=(document.getElementById('packName').value||'').trim();
-  api('/api/pack/start',{method:'POST',body:JSON.stringify({shipmentId:sid,name})}).then(d=>{
-    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Could not start',true); return; }
-    if(d.alreadyPosted>0) alert('Heads up: '+d.shipment.shipment_id+' already has '+d.alreadyPosted+' units deducted (pack slip or plan file). You can print labels, but Finish will refuse to deduct it again.');
-    packShow(d);
-  }).catch(e=>toast('Could not start: '+e.message,true));
-}
-function packLoad(sid){
-  document.getElementById('packArea').style.display='block';
-  return api('/api/pack/'+encodeURIComponent(sid)).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not found',true); _pack=null; return packOpen(); } packShow(d); })
-    .catch(e=>toast('Could not load: '+e.message,true));
-}
-function packDefaults(){ try{ return JSON.parse(localStorage_get('packDefaults')||'{}'); }catch(e){ return {}; } }
-function packShow(d){
-  const sid=d.shipment.shipment_id, done=d.shipment.status!=='packing';
-  const boxes=d.boxes.filter(b=>b.items.length||b.status==='open');
-  // The box being packed: the first open box, else a new one after the last.
-  let cur=d.boxes.find(b=>b.status==='open');
-  const nextNo=(d.boxes.reduce((m,b)=>Math.max(m,b.box_no),0))+1;
-  _pack={sid, view:d, box: cur?cur.box_no:nextNo};
-  const dft=packDefaults(), cb=cur||{box_no:nextNo, items:[], pallet_no:dft.pallet||1, len:dft.len, wid:dft.wid, hgt:dft.hgt, weight_lb:null, units:0, warnings:[]};
-  const v=(x)=>x==null?'':x;
-  let h='<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
-    +'<div><b style="font-size:17px">'+esc(sid)+'</b> '+(d.shipment.name?'<span class="hint">'+esc(d.shipment.name)+'</span>':'')+(done?' <span class="badge received">Finished — stock deducted</span>':'')+'</div>'
-    +'<button class="action" onclick="_pack=null;packOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button></div>';
-  if(!done){
-    const lines=cb.items.map(i=>'<tr><td style="padding:5px 6px;border-top:1px solid #eef2f6">'+esc(String(i.name||i.asin).slice(0,70))+'<div class="hint" style="font-family:monospace">'+esc(i.fnsku)+'</div></td>'
-      +'<td style="padding:5px 6px;border-top:1px solid #eef2f6;text-align:right;white-space:nowrap"><input type="number" min="0" value="'+i.qty+'" onchange="packLine(\''+esc(i.asin)+'\',this.value)" style="width:70px;padding:6px;font-weight:800;text-align:center"> <button class="copybtn" title="Remove" onclick="packLine(\''+esc(i.asin)+'\',0)">✕</button></td></tr>').join('');
-    h+='<div style="background:#f4fbfb;border:2px solid #127a7a;border-radius:10px;padding:12px">'
-      +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:20px">Box '+cb.box_no+'</b><span class="hint">'+cb.units+' unit'+(cb.units===1?'':'s')+' in this box</span></div>'
-      +'<div style="display:flex;gap:8px;margin-top:8px"><input id="packScan" placeholder="Scan FNSKU label (or type) → Enter" autocomplete="off" style="flex:1;font-size:17px;padding:12px" onkeydown="if(event.key===\'Enter\'){event.preventDefault();packScan();}">'
-      +'<input id="packQty" type="number" min="1" value="1" title="How many of this item (1 per scan)" style="width:80px;font-size:17px;padding:12px;text-align:center"></div>'
-      +(lines?'<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">'+lines+'</table>':'<div class="hint" style="margin-top:8px">Empty — scan the first unit.</div>')
+    const list=(d&&d.shipments)||[];
+    el.innerHTML='<div class="box"><div style="font-weight:800;font-size:17px">🏷 2D Production</div>'
+      +'<div class="hint">Create the shipment in Send to Amazon, then enter its ID here. The app pulls the destination and items from Amazon.</div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">'
-        +'<label style="width:80px">Pallet #<input id="packPallet" type="number" min="1" value="'+v(cb.pallet_no||dft.pallet||1)+'"></label>'
-        +'<label style="width:100px">Weight (lb)<input id="packW" type="number" min="0" step="0.1" value="'+v(cb.weight_lb)+'"></label>'
-        +'<label style="width:230px">Box size L × W × H (in)<span style="display:flex;gap:4px"><input id="packL" type="number" min="0" step="0.1" value="'+v(cb.len)+'"><input id="packWd" type="number" min="0" step="0.1" value="'+v(cb.wid)+'"><input id="packH" type="number" min="0" step="0.1" value="'+v(cb.hgt)+'"></span></label>'
-        +'<button class="action" onclick="packClose()" style="flex:1;min-width:200px;background:#127a7a;font-size:16px">✅ Close box '+cb.box_no+' &amp; print label</button></div>'
+      +'<label style="flex:1;min-width:220px">Shipment ID<input id="prodSidIn" placeholder="FBA19R87QYJJ" autocomplete="off" style="text-transform:uppercase;font-size:18px" onkeydown="if(event.key===\'Enter\')prodStart()"></label>'
+      +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#127a7a">Load from Amazon</button></div>'
+      +(list.length?'<div style="margin-top:12px"><b style="font-size:13px">Recent</b>'+list.map(x=>'<div style="padding:6px 0;border-top:1px solid #eef2f6"><a href="#" onclick="event.preventDefault();prodLoad(\''+esc(x.shipment_id)+'\')"><b>'+esc(x.shipment_id)+'</b></a> '+(x.name?esc(x.name):'')+(x.fc?' · '+esc(x.fc):'')+' · '+x.boxes+' box'+(x.boxes===1?'':'es')+' · '+(x.status==='packing'?'<b style="color:#127a7a">packing</b>':'<span class="hint">finished</span>')+'</div>').join('')+'</div>':'')
       +'</div>';
+  }).catch(e=>{ el.innerHTML='<div class="box" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
+}
+function prodStart(refresh){
+  const sid=refresh?prodSid():(document.getElementById('prodSidIn').value||'').trim();
+  const btn=document.getElementById(refresh?'prodRefreshBtn':'prodStartBtn'); if(btn){ btn.disabled=true; btn.textContent='Asking Amazon… (up to a minute)'; }
+  api('/api/pack/start',{method:'POST',body:JSON.stringify({shipmentId:sid, refresh:!!refresh})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Could not load',true); if(btn){ btn.disabled=false; btn.textContent=refresh?'↻ Refresh from Amazon':'Load from Amazon'; } return; }
+    if(d.alreadyPosted>0) alert('Heads up: '+sid+' already has '+d.alreadyPosted+' units deducted (pack slip or plan file on Ship to FBA). Labels are fine, but Finish here will refuse to deduct it again.');
+    _prod={v:d, sel:(_prod&&_prod.sel)||null}; prodRender();
+  }).catch(e=>{ toast('Could not load: '+e.message,true); if(btn) btn.disabled=false; });
+}
+function prodLoad(sid){
+  return api('/api/pack/'+encodeURIComponent(sid)).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not found',true); _prod=null; return prodOpen(); }
+    _prod=Object.assign(_prod&&prodSid()===sid?_prod:{}, {v:d}); prodRender();
+  }).catch(e=>toast('Could not load: '+e.message,true));
+}
+const prodAddrHtml=a=>a&&a.line1?esc(a.name||'')+'<br>'+esc(a.line1)+(a.line2?'<br>'+esc(a.line2):'')+'<br>'+esc(a.city)+', '+esc(a.state)+', '+esc(a.zip)+' '+esc(a.country||''):'<span style="color:#c0392b">missing</span>';
+// Same arithmetic as lib/pallet.js boxesThatFit, for the live preview.
+function prodFit(st, box, S){
+  const base=st&&st.boxes?st:{weight:S.allowanceLb, height:S.deckIn};
+  const v=box.len*box.wid*box.hgt, area=S.footL*S.footW*S.fill;
+  const byW=box.weight_lb>0?Math.floor((S.maxLb-base.weight)/box.weight_lb+1e-9):Infinity, byH=v>0?Math.floor((S.maxHeightIn-base.height)*area/v+1e-9):Infinity;
+  return {n:Math.max(0,Math.min(byW,byH)), limitedBy:byW<=byH?'weight':'height', addH:v/area};
+}
+function prodRender(){
+  const el=document.getElementById('prodArea'), v=_prod.v, sh=v.shipment, sid=sh.shipment_id, done=sh.status!=='packing', S=v.settings;
+  const cur=v.currentPallet, st=v.pallets[cur]||{boxes:0,weight:0,height:0,weightPct:0,heightPct:0,status:'ok'};
+  const col=st.status==='full'?'#c0392b':st.status==='near'?'#d97706':'#127a7a';
+  let h='<div class="box" style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
+    +'<div><b style="font-size:19px">'+esc(sid)+'</b> '+(sh.name?'<span class="hint">'+esc(sh.name)+'</span>':'')+(sh.fc?' <b style="color:#2563a8">→ '+esc(sh.fc)+'</b>':'')+(done?' <span class="badge received">Finished — stock deducted</span>':'')
+    +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(done?'':'<button class="action" id="prodRefreshBtn" onclick="prodStart(true)" style="padding:6px 12px;font-size:12px;background:#2563a8">↻ Refresh from Amazon</button>')
+    +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
+    +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button></div></div>';
+  if(sh.amz_error) h+='<div class="box" style="border:2px solid #c0392b;color:#c0392b"><b>Amazon lookup failed:</b> '+esc(sh.amz_error)+'<div class="hint">Check the ID, or enter the destination by hand below.</div></div>';
+  // Destination
+  const conf=!!sh.dest_confirmed_at;
+  h+='<div class="box" style="border:2px solid '+(conf?'#1e8449':'#d97706')+';background:'+(conf?'#f4fbf7':'#fffaf0')+'"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+    +'<div style="display:flex;gap:30px;flex-wrap:wrap;font-size:13px"><div><div class="hint" style="font-weight:800">SHIP FROM</div>'+prodAddrHtml(sh.ship_from)+'</div><div><div class="hint" style="font-weight:800">SHIP TO '+(sh.fc?esc(sh.fc):'')+'</div>'+prodAddrHtml(sh.ship_to)+'</div></div>'
+    +'<div style="display:flex;flex-direction:column;gap:6px;align-items:flex-end">'+(conf?'<b style="color:#1e8449">✓ Destination confirmed</b>':'<b style="color:#d97706">Check this address — every label prints it</b><button class="action" onclick="prodConfirm()" style="background:#1e8449">✓ Confirm destination</button>')
+    +(done?'':'<button class="action" onclick="prodDestEdit()" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">Edit</button>')+'</div></div></div>';
+  // Pallet banner
+  const pn=Object.keys(v.pallets).map(Number).sort((a,b)=>a-b);
+  const bar=(pct,label)=>'<div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700"><span>'+label+'</span><span>'+Math.round(pct)+'%</span></div><div style="height:14px;background:#eef2f6;border-radius:7px;overflow:hidden"><div style="height:100%;width:'+Math.min(100,pct)+'%;background:'+(pct>=100?'#c0392b':pct>=S.warnPct?'#d97706':'#127a7a')+'"></div></div></div>';
+  h+='<div class="box" style="border:3px solid '+col+'"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">'
+    +'<div style="font-size:30px;font-weight:900;color:'+col+'">NOW PACKING: PALLET '+cur+'</div>'
+    +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+pn.map(n=>'<button class="action" onclick="prodPallet('+n+')" style="padding:6px 12px;font-size:13px;background:'+(n===cur?col:'#eef2f6')+';color:'+(n===cur?'#fff':'#1f2733')+'">Pallet '+n+'</button>').join('')
+    +(done?'':'<button class="action" onclick="prodPallet('+(Math.max(...pn,cur)+1)+')" style="padding:6px 12px;font-size:13px;background:#1a2b4a">+ Start pallet '+(Math.max(...pn,cur)+1)+'</button>')+'</div></div>'
+    +bar(st.weightPct,'Weight '+f1(st.weight)+' / '+S.maxLb.toLocaleString()+' lb'+(st.boxes?' (incl. '+S.allowanceLb+' lb pallet & packaging)':''))
+    +bar(st.heightPct,'Height '+f1(st.height)+' / '+S.maxHeightIn+' in '+(st.measured?'(measured'+(st.height>st.measuredAt.h?' + boxes since':'')+')':'(estimated)'))
+    +(st.status==='full'?'<div style="margin-top:8px;font-size:18px;font-weight:900;color:#c0392b">⛔ Pallet '+cur+' is full — wrap it and start pallet '+(Math.max(...pn,cur)+1)+'.</div>'
+      :st.status==='near'?'<div style="margin-top:8px;font-size:16px;font-weight:800;color:#d97706">⚠ Getting close: '+f1(S.maxLb-st.weight)+' lb and ~'+f1(S.maxHeightIn-st.height)+' in left.</div>':'')
+    +(done?'':'<div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap"><span class="hint">Measured height of pallet '+cur+' (optional, beats the estimate):</span><input id="prodMeasH" type="number" min="1" step="0.5" value="'+(st.measuredAt?st.measuredAt.h:'')+'" style="width:80px;padding:6px"> in <button class="action" onclick="prodMeasure()" style="padding:5px 10px;font-size:12px;background:#5a6472">Save</button></div>');
+  if(v.recommend&&v.recommend.length&&!done) h+='<div style="margin-top:10px"><b>Fits next on pallet '+cur+':</b>'+v.recommend.slice(0,5).map(r=>'<div style="padding:5px 0;border-top:1px solid #eef2f6;cursor:pointer" onclick="prodPick(\''+esc(r.asin)+'\','+r.boxes+')">➜ <b>'+r.boxes+' box'+(r.boxes===1?'':'es')+'</b> of '+esc(String(r.name||r.asin).slice(0,60))+' <span class="hint">('+r.units+' units, '+f1(r.lb)+' lb)</span> '+(r.finishes?'<b style="color:#1e8449">finishes it ✓</b>':'<span class="hint">'+r.boxesLeft+' boxes still to make · limited by '+r.limitedBy+'</span>')+'</div>').join('')+'</div>';
+  else if(!done&&v.plan.some(r=>r.left>0)) h+='<div class="hint" style="margin-top:8px">Suggestions show once products have a case qty, box size and weight on file (they\'re saved the first time you make boxes).</div>';
+  h+='</div>';
+  // Produce
+  if(!done){
+    const P=_prod.sel;
+    h+='<div class="box" style="border:2px solid #127a7a"><div style="font-weight:800;font-size:16px">Make boxes</div>'
+      +'<div style="display:flex;gap:8px;margin-top:8px"><input id="prodScan" placeholder="Scan or type FNSKU / UPC / ASIN → Enter" autocomplete="off" style="flex:1;font-size:18px;padding:12px" onkeydown="if(event.key===\'Enter\'){event.preventDefault();prodScan(this.value);}"></div>';
+    if(P){
+      const row=v.plan.find(r=>r.asin===P.asin);
+      h+='<div style="display:flex;gap:12px;margin-top:10px;align-items:flex-start;flex-wrap:wrap">'+(P.image?'<img src="'+esc(P.image)+'" onerror="this.style.display=\'none\'" onmouseenter="picZoom(this,380)" onmouseleave="picZoomOff()" style="width:90px!important;height:90px!important;object-fit:contain;border-radius:8px;border:1px solid #eef2f6;background:#fff">':'')
+        +'<div style="flex:1;min-width:240px"><b>'+esc(P.name||P.asin)+'</b><div class="hint">FNSKU <b style="font-family:monospace">'+esc(P.fnsku||'none on file')+'</b> · '+esc(P.asin)+'</div>'
+        +(row?'<div style="margin-top:4px;font-size:14px">In shipment: <b>'+row.planned+'</b> · made <b>'+row.produced+'</b> · <b style="color:'+(row.left?'#c0392b':'#1e8449')+'">left '+row.left+'</b></div>':(v.plan.length?'<div style="margin-top:4px;color:#c0392b;font-weight:800">⚠ Not in this Amazon shipment</div>':''))+'</div></div>'
+        +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">'
+        +'<label style="width:95px">Units / box<input id="prodPer" type="number" min="1" value="'+(P.case_qty||'')+'" oninput="prodPreview()"></label>'
+        +'<label style="width:95px">Boxes<input id="prodCount" type="number" min="1" value="'+(P._count||1)+'" oninput="prodPreview()"></label>'
+        +'<label style="width:115px">Unit weight lb<input id="prodW" type="number" min="0" step="0.01" value="'+(P.unit_weight_lb||'')+'" oninput="prodPreview()"><span class="hint" style="font-size:10px">'+(P.unit_weight_src==='manual'?'typed':P.unit_weight_src==='amazon'?'from Amazon':'not on file')+'</span></label>'
+        +'<label style="width:230px">Box size L × W × H in<span style="display:flex;gap:4px"><input id="prodL" type="number" min="0" step="0.1" value="'+(P.case_len||'')+'" oninput="prodPreview()"><input id="prodWd" type="number" min="0" step="0.1" value="'+(P.case_wid||'')+'" oninput="prodPreview()"><input id="prodH" type="number" min="0" step="0.1" value="'+(P.case_hgt||'')+'" oninput="prodPreview()"></span></label>'
+        +'<label style="width:140px">Expiration (optional)<input id="prodExp" placeholder="09/26/2029" value="'+esc(prodExpDefault(row))+'"></label></div>'
+        +'<div id="prodPrev" style="margin-top:8px;font-size:14px"></div>'
+        +'<button class="action" id="prodMakeBtn" onclick="prodMake()" style="width:100%;margin-top:8px;font-size:18px;padding:14px;background:#127a7a">Create boxes &amp; print labels</button>';
+    }
+    h+='</div>';
   }
-  const closed=d.boxes.filter(b=>b.status==='closed'&&b.items.length);
+  // Plan
+  if(v.plan.length){
+    h+='<div class="box" style="overflow-x:auto"><b>Amazon shipment: '+v.plan.reduce((n,r)=>n+r.planned,0)+' units</b><table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 6px">Product</td><td>FNSKU</td><td style="text-align:center">Shipment</td><td style="text-align:center">Made</td><td style="text-align:center">Left</td><td style="text-align:center">Per box</td><td style="text-align:center">Box size</td><td style="text-align:center">Unit lb</td></tr>'
+      +v.plan.map(r=>'<tr style="'+(r.notInShipment?'background:#fdecea':r.left===0?'background:#f0faf4':'')+';cursor:pointer" onclick="'+(r.asin&&!done?'prodPick(\''+esc(r.asin)+'\')':'')+'"><td style="padding:5px 6px;border-top:1px solid #eef2f6">'+esc(String(r.name||'').slice(0,60))+(r.notInShipment?' <b style="color:#c0392b">NOT IN SHIPMENT</b>':'')+(!r.known?' <b style="color:#c0392b">not in the app\'s catalog</b>':'')+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;font-family:monospace">'+esc(r.fnsku||'')+'</td><td style="border-top:1px solid #eef2f6;text-align:center">'+r.planned+'</td><td style="border-top:1px solid #eef2f6;text-align:center;font-weight:800">'+r.produced+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;text-align:center;font-weight:800;color:'+(r.left?'#c0392b':'#1e8449')+'">'+(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':'')+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;text-align:center">'+(r.caseQty||'—')+'</td><td style="border-top:1px solid #eef2f6;text-align:center">'+(r.len?r.len+'×'+r.wid+'×'+r.hgt:'—')+'</td><td style="border-top:1px solid #eef2f6;text-align:center">'+(r.unitWeight||'—')+'</td></tr>').join('')+'</table></div>';
+  }
+  // Mixed box
+  if(!done) h+=prodMixedHtml();
+  // Boxes by pallet
+  const closed=v.boxes.filter(b=>b.status==='closed'&&b.items.length);
   if(closed.length){
-    const pal={}; for(const b of closed){ const k=b.pallet_no||'—'; pal[k]=pal[k]||{boxes:0,lb:0,units:0}; pal[k].boxes++; pal[k].lb+=b.weight_lb||0; pal[k].units+=b.units; }
-    const tot={}; for(const b of closed) for(const i of b.items){ tot[i.fnsku]=tot[i.fnsku]||{name:i.name,qty:0}; tot[i.fnsku].qty+=i.qty; }
-    h+='<div style="margin-top:12px"><b>Boxes ('+closed.length+')</b> <span class="hint">'+Object.entries(pal).map(([k,p])=>'Pallet '+esc(k)+': '+p.boxes+' boxes, '+p.units+' units, '+Math.round(p.lb*10)/10+' lb').join(' · ')+'</span>'
-      +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 6px">Box</td><td>Pallet</td><td>Contents</td><td style="text-align:right">Units</td><td style="text-align:right">Weight</td><td style="text-align:right">Size</td><td></td></tr>'
-      +closed.map(b=>'<tr><td style="padding:5px 6px;border-top:1px solid #eef2f6"><b>'+b.box_no+'</b></td><td style="border-top:1px solid #eef2f6">'+esc(v(b.pallet_no))+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;font-size:12px">'+b.items.map(i=>esc(String(i.name||i.asin).slice(0,32))+' <b>×'+i.qty+'</b>').join('<br>')+(b.warnings.length?'<div style="color:#b7791f">⚠ '+b.warnings.map(esc).join(' ')+'</div>':'')+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;text-align:right;font-weight:800">'+b.units+'</td><td style="border-top:1px solid #eef2f6;text-align:right">'+(b.weight_lb!=null?b.weight_lb+' lb':'—')+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;text-align:right;white-space:nowrap">'+(b.len?b.len+'×'+b.wid+'×'+b.hgt:'—')+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;text-align:right;white-space:nowrap"><button class="action" onclick="packReprint('+b.box_no+')" style="padding:5px 9px;font-size:11px;background:#1a2b4a">🖨 Reprint</button>'
-        +(done?'':' <button class="action" onclick="packReopen('+b.box_no+')" style="padding:5px 9px;font-size:11px;background:#eef2f6;color:#1f2733">Reopen</button>')+'</td></tr>').join('')+'</table>'
-      +'<div class="hint" style="margin-top:6px">Shipment total: '+Object.entries(tot).map(([f,t])=>esc(String(t.name||f).slice(0,28))+' <b>'+t.qty+'</b>').join(' · ')+'</div>'
-      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
-      +'<button class="action" onclick="packCopyBoxes()" style="background:#5a6472">📋 Copy box weights &amp; sizes (for Send to Amazon)</button>'
-      +(done?'':'<button class="action danger" onclick="packFinish()" style="flex:1;min-width:240px">Finish shipment — deduct '+closed.reduce((n,b)=>n+b.units,0)+' units from On Hand</button>')+'</div></div>';
+    h+='<div class="box" style="overflow-x:auto"><b>Boxes ('+closed.length+')</b>';
+    for(const n of pn){
+      const bx=closed.filter(b=>(b.pallet_no||1)===n); if(!bx.length) continue;
+      const p=v.pallets[n];
+      h+='<div style="margin-top:10px;font-weight:800;color:'+(p.status==='full'?'#c0392b':p.status==='near'?'#d97706':'#1a2b4a')+'">Pallet '+n+' · '+bx.length+' boxes · '+bx.reduce((t,b)=>t+b.units,0)+' units · '+f1(p.weight)+' lb · ~'+f1(p.height)+' in</div>'
+        +'<table style="width:100%;border-collapse:collapse;font-size:12.5px">'+bx.sort((x,y)=>x.box_no-y.box_no).map(b=>'<tr><td style="padding:4px 6px;border-top:1px solid #eef2f6;font-weight:800">Box '+b.box_no+'</td><td style="border-top:1px solid #eef2f6;font-family:monospace;font-size:11px">'+esc(b.boxId||'')+'</td>'
+          +'<td style="border-top:1px solid #eef2f6">'+b.items.map(i=>esc(String(i.name||i.asin).slice(0,34))+' <b>×'+i.qty+'</b>').join('<br>')+'</td><td style="border-top:1px solid #eef2f6;text-align:right">'+(b.weight_lb!=null?b.weight_lb+' lb':'—')+'</td><td style="border-top:1px solid #eef2f6;text-align:right">'+(b.len?b.len+'×'+b.wid+'×'+b.hgt:'')+'</td>'
+          +'<td style="border-top:1px solid #eef2f6;text-align:right;white-space:nowrap"><button class="action" onclick="prodPrint(['+b.box_no+'])" style="padding:4px 8px;font-size:11px;background:#1a2b4a">🖨</button>'
+          +(done?'':' <button class="action" onclick="prodMove('+b.box_no+')" style="padding:4px 8px;font-size:11px;background:#eef2f6;color:#1f2733">Move</button> <button class="action" onclick="prodVoid('+b.box_no+')" style="padding:4px 8px;font-size:11px;background:#fdecea;color:#c0392b">Void</button>')+'</td></tr>').join('')+'</table>';
+    }
+    h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="action" onclick="prodPrint(null)" style="background:#1a2b4a">🖨 Reprint all labels</button>'
+      +'<button class="action" onclick="prodCopyBoxes()" style="background:#5a6472">📋 Copy box list</button>'
+      +(done?'':'<button class="action danger" onclick="prodFinish()" style="flex:1;min-width:260px">Finish shipment — deduct '+closed.reduce((t,b)=>t+b.units,0)+' units from On Hand</button>')+'</div></div>';
   }
-  document.getElementById('packArea').innerHTML=h;
-  const sc=document.getElementById('packScan'); if(sc) sc.focus();
+  el.innerHTML=h;
+  if(_prod.sel) prodPreview();
+  const sc=document.getElementById('prodScan'); if(sc&&!_prod.sel) sc.focus();
 }
-function packScan(){
-  const el=document.getElementById('packScan'), code=(el.value||'').trim(), qty=parseInt(document.getElementById('packQty').value)||1;
-  if(!code) return;
-  el.value=''; el.disabled=true;
-  api('/api/pack/scan',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:_pack.sid, boxNo:_pack.box, code, qty})}).then(d=>{
-    if(!d||d.ok===false||d.error){ toast('NOT added: '+((d&&d.error)||'error'),true); el.disabled=false; el.focus(); return; }
-    toast('+'+d.qty+' '+String(d.product.name||'').slice(0,40)+' (now '+d.boxQty+' in box '+_pack.box+')');
-    document.getElementById('packQty').value=1;
-    packLoad(_pack.sid);
-  }).catch(e=>{ toast('NOT added — connection problem: '+e.message,true); el.disabled=false; el.focus(); });
+function prodExpDefault(row){ try{ const m=JSON.parse(localStorage_get('prodExp')||'{}'); return m[prodSid()]||(row&&row.expiration)||''; }catch(e){ return ''; } }
+function prodScan(code){
+  code=String(code||'').trim(); if(!code) return;
+  api('/api/pack/product/'+encodeURIComponent(code)).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Unknown barcode',true); const sc=document.getElementById('prodScan'); if(sc){ sc.value=''; sc.focus(); } return; }
+    _prod.sel=d.product; prodRender();
+    const f=document.getElementById(d.product.case_qty?'prodCount':'prodPer'); if(f){ f.focus(); f.select(); }
+  }).catch(e=>toast('Lookup failed: '+e.message,true));
 }
-function packLine(asin, qty){
-  api('/api/pack/box/line',{method:'POST',body:JSON.stringify({shipmentId:_pack.sid, boxNo:_pack.box, asin, qty:parseInt(qty)||0})}).then(d=>{
-    if(!d||d.ok===false){ toast('Not changed: '+((d&&d.error)||'error'),true); } packLoad(_pack.sid);
-  }).catch(e=>toast('Not changed: '+e.message,true));
+function prodPick(asin, count){ api('/api/pack/product/'+encodeURIComponent(asin)).then(d=>{ if(d&&d.ok){ _prod.sel=Object.assign(d.product,{_count:count||1}); prodRender(); window.scrollTo({top:document.getElementById('prodScan').getBoundingClientRect().top+window.scrollY-80,behavior:'smooth'}); } }); }
+function prodForm(){
+  const g=id=>Number(document.getElementById(id).value);
+  return {per:parseInt(document.getElementById('prodPer').value)||0, count:parseInt(document.getElementById('prodCount').value)||0, w:g('prodW'), L:g('prodL'), W:g('prodWd'), H:g('prodH'), exp:(document.getElementById('prodExp').value||'').trim()};
 }
-function packClose(){
-  const g=id=>document.getElementById(id).value;
-  const meta={shipmentId:_pack.sid, boxNo:_pack.box, pallet:g('packPallet'), weight:g('packW'), len:g('packL'), wid:g('packWd'), hgt:g('packH')};
-  if(!meta.weight && !confirm('No weight entered for box '+_pack.box+'. Close it anyway?')) return;
-  if(Number(meta.weight)>50 && !confirm('Box '+_pack.box+' is over 50 lb — Amazon needs a Team Lift label (or split it). Close anyway?')) return;
-  api('/api/pack/box/meta',{method:'POST',body:JSON.stringify(meta)}).then(d=>{
-    if(!d||d.ok===false){ throw new Error((d&&d.error)||'could not save weight/size'); }
-    return api('/api/pack/box/close',{method:'POST',body:JSON.stringify({shipmentId:_pack.sid, boxNo:_pack.box})});
-  }).then(d=>{
-    if(!d||d.ok===false){ toast('Box NOT closed: '+((d&&d.error)||'error'),true); return; }
-    try{ localStorage_set('packDefaults', JSON.stringify({pallet:meta.pallet, len:meta.len, wid:meta.wid, hgt:meta.hgt})); }catch(e){}
-    const box=_pack.box;
-    return packLoad(_pack.sid).then(()=>packReprint(box));
-  }).catch(e=>toast('Box NOT closed: '+e.message,true));
+function prodPreview(){
+  const el=document.getElementById('prodPrev'); if(!el) return;
+  const f=prodForm(), v=_prod.v, S=v.settings, st=v.pallets[v.currentPallet], P=_prod.sel;
+  if(!(f.per>0&&f.count>0&&f.w>0&&f.L>0&&f.W>0&&f.H>0)){ el.innerHTML='<span class="hint">Fill in units per box, boxes, unit weight and box size — they\'re saved for next time.</span>'; return; }
+  const bw=Math.round(f.w*f.per*100)/100, fit=prodFit(st,{weight_lb:bw,len:f.L,wid:f.W,hgt:f.H},S);
+  const wAfter=(st.boxes?st.weight:S.allowanceLb)+bw*f.count, hAfter=(st.boxes?st.height:S.deckIn)+fit.addH*f.count;
+  const row=v.plan.find(r=>r.asin===P.asin);
+  let t='<b>'+f.count+' box'+(f.count===1?'':'es')+' × '+f.per+' = '+(f.count*f.per)+' units</b> · '+bw+' lb per box · pallet '+v.currentPallet+' after: <b>'+f1(wAfter)+' / '+S.maxLb+' lb</b>, ~<b>'+f1(hAfter)+' / '+S.maxHeightIn+' in</b>';
+  if(f.count>fit.n) t+='<div style="color:#c0392b;font-weight:900;font-size:16px;margin-top:4px">⛔ Only '+fit.n+' fit on pallet '+v.currentPallet+' ('+fit.limitedBy+' limit).</div>';
+  else if(wAfter/S.maxLb*100>=S.warnPct||hAfter/S.maxHeightIn*100>=S.warnPct) t+='<div style="color:#d97706;font-weight:800;margin-top:4px">⚠ Pallet '+v.currentPallet+' will be near its limit.</div>';
+  if(row&&f.count*f.per>row.left) t+='<div style="color:#c0392b;font-weight:800;margin-top:4px">⚠ That\'s '+(f.count*f.per-row.left)+' more than the shipment still needs ('+row.left+' left).</div>';
+  if(f.exp&&!/^\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}$|^\d{4}-\d{1,2}-\d{1,2}$/.test(f.exp)) t+='<div style="color:#c0392b;margin-top:4px">Expiration should look like 09/26/2029.</div>';
+  el.innerHTML=t;
+  const b=document.getElementById('prodMakeBtn'); if(b) b.textContent='Create '+f.count+' box'+(f.count===1?'':'es')+' on pallet '+v.currentPallet+' & print '+f.count+' label'+(f.count===1?'':'s');
 }
-function packReopen(n){
-  if(!confirm('Reopen box '+n+'? Change it, then close it again and put the NEW label over the old one.')) return;
-  api('/api/pack/box/reopen',{method:'POST',body:JSON.stringify({shipmentId:_pack.sid, boxNo:n})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); packLoad(_pack.sid); });
+function prodMake(override, palletNo, countOverride){
+  const f=prodForm(), v=_prod.v, P=_prod.sel, row=v.plan.find(r=>r.asin===P.asin);
+  if(!v.shipment.dest_confirmed_at){ toast('Confirm the destination first — it prints on every label',true); return; }
+  if(v.plan.length&&!row&&!override&&!confirm('This product is NOT in Amazon\'s shipment '+prodSid()+'. Amazon may refuse it. Make the boxes anyway?')) return;
+  if(row&&f.count*f.per>row.left&&!override&&!confirm('That\'s more than the shipment still needs ('+row.left+' left). Continue?')) return;
+  try{ const m=JSON.parse(localStorage_get('prodExp')||'{}'); m[prodSid()]=f.exp; localStorage_set('prodExp',JSON.stringify(m)); }catch(e){}
+  const count=countOverride||f.count, pal=palletNo||v.currentPallet;
+  const btn=document.getElementById('prodMakeBtn'); if(btn) btn.disabled=true;
+  api('/api/pack/boxes',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), asin:P.asin, qtyPerBox:f.per, count, pallet:pal, unitWeight:f.w, len:f.L, wid:f.W, hgt:f.H, exp:f.exp||null, override:!!override})}).then(d=>{
+    if(btn) btn.disabled=false;
+    if(d&&d.error==='pallet_full'){ return prodFull(d, count, pal); }
+    if(!d||d.ok===false){ toast('NOT created: '+((d&&(d.message||d.error))||'error'),true); return; }
+    toast('Boxes '+d.boxes.join(', ')+' created — printing '+d.boxes.length+' label'+(d.boxes.length===1?'':'s'));
+    return prodLoad(prodSid()).then(()=>{ prodPrint(d.boxes); _prod.sel=null; prodRender(); });
+  }).catch(e=>{ if(btn) btn.disabled=false; toast('NOT created — connection problem: '+e.message,true); });
 }
-function packFinish(){
-  const v=_pack.view, closed=v.boxes.filter(b=>b.status==='closed'&&b.items.length), units=closed.reduce((n,b)=>n+b.units,0);
-  if(!confirm('Finish '+_pack.sid+'?\n\n'+closed.length+' boxes, '+units+' units move from On Hand to In Transit (duos count as their bottles). This happens once — boxes can\'t be changed after.')) return;
-  api('/api/pack/finish',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:_pack.sid})}).then(d=>{
+// Hard stop when the boxes won't fit: split across the next pallet, make
+// only what fits, or (someone checked) go over on purpose.
+function prodFull(d, count, pal){
+  const fits=d.fits, rest=count-fits, next=Math.max(...Object.keys(_prod.v.pallets).map(Number), pal)+1;
+  const m=document.createElement('div'); m.id='prodFullModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+  const b=(txt,fn,bg)=>'<button class="action" onclick="document.getElementById(\'prodFullModal\').remove();'+fn+'" style="width:100%;margin-top:8px;background:'+bg+'">'+txt+'</button>';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px;max-width:460px;width:100%;border:4px solid #c0392b"><div style="font-size:22px;font-weight:900;color:#c0392b">⛔ Pallet '+pal+' is too full</div>'
+    +'<div style="margin-top:6px;font-size:15px">Only <b>'+fits+'</b> of these '+count+' boxes fit on pallet '+pal+' (<b>'+esc(d.limitedBy)+'</b> limit).</div>'
+    +(fits>0&&rest>0?b('Put '+fits+' on pallet '+pal+' and '+rest+' on pallet '+next,'prodSplit('+fits+','+pal+','+rest+','+next+')','#127a7a'):'')
+    +b('Put all '+count+' on a new pallet '+next,'prodMake(false,'+next+','+count+')','#1a2b4a')
+    +(fits>0?b('Only make '+fits+' now','prodMake(false,'+pal+','+fits+')','#5a6472'):'')
+    +b('Go over the limit on pallet '+pal+' anyway','prodMake(true,'+pal+','+count+')','#c0392b')
+    +b('Cancel','0','#eef2f6;color:#1f2733')+'</div>';
+  document.body.appendChild(m);
+}
+function prodSplit(a, pa, b, pb){
+  prodMakeSeq([[a,pa],[b,pb]]);
+}
+function prodMakeSeq(parts){
+  const f=prodForm(), P=_prod.sel, made=[];
+  const step=i=>{
+    if(i>=parts.length){ toast('Boxes '+made.join(', ')+' created'); return prodPallet(parts[parts.length-1][1], true).then(()=>{ prodPrint(made); _prod.sel=null; prodRender(); }); }
+    const [count,pal]=parts[i];
+    return api('/api/pack/boxes',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), asin:P.asin, qtyPerBox:f.per, count, pallet:pal, unitWeight:f.w, len:f.L, wid:f.W, hgt:f.H, exp:f.exp||null})}).then(d=>{
+      if(!d||d.ok===false){ toast('Stopped: '+((d&&(d.message||d.error))||'error')+(made.length?' — boxes '+made.join(', ')+' were made':''),true); if(made.length) prodLoad(prodSid()).then(()=>prodPrint(made)); return; }
+      made.push(...d.boxes); return step(i+1);
+    });
+  };
+  step(0).catch(e=>toast('Connection problem: '+e.message,true));
+}
+function prodPallet(n, quiet){
+  return api('/api/pack/pallet',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), pallet:n, current:true})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; }
+    if(!quiet) toast('Now packing pallet '+n);
+    return prodLoad(prodSid());
+  });
+}
+function prodMeasure(){
+  const h=document.getElementById('prodMeasH').value;
+  api('/api/pack/pallet',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), pallet:_prod.v.currentPallet, measuredHeight:h})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } toast(h?'Height saved':'Measured height cleared'); prodLoad(prodSid()); });
+}
+function prodConfirm(){
+  const sh=_prod.v.shipment;
+  if(!confirm('Labels will print:\n\nSHIP TO '+(sh.fc||'')+'\n'+[sh.ship_to&&sh.ship_to.name, sh.ship_to&&sh.ship_to.line1, sh.ship_to&&(sh.ship_to.city+', '+sh.ship_to.state+' '+sh.ship_to.zip)].filter(Boolean).join('\n')+'\n\nIs this the destination Send to Amazon shows?')) return;
+  api('/api/pack/confirm',{method:'POST',body:JSON.stringify({shipmentId:prodSid()})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } toast('Destination confirmed'); prodLoad(prodSid()); });
+}
+function prodDestEdit(){
+  const sh=_prod.v.shipment, t=sh.ship_to||{}, fr=sh.ship_from||{};
+  const m=document.createElement('div'); m.id='prodDestModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.55);display:flex;align-items:flex-start;justify-content:center;z-index:9999;padding:16px;overflow:auto';
+  const inp=(id,label,val,w)=>'<label style="display:block;margin-top:6px;text-transform:none;letter-spacing:0;font-size:12px;font-weight:700;color:#1f2733'+(w?';width:'+w:'')+'">'+label+'<input id="'+id+'" value="'+esc(val||'')+'" style="width:100%;padding:8px;margin-top:2px"></label>';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:520px;width:100%"><b style="font-size:16px">Destination &amp; ship-from</b><div class="hint">Copy from Send to Amazon. Saved per warehouse, so next time it fills itself.</div>'
+    +inp('dFc','Warehouse code (e.g. MIT2)',sh.fc)+inp('dTn','Ship to — name',t.name||'Amazon.com Services, Inc.')+inp('dT1','Street',t.line1)+inp('dT2','Street 2',t.line2)
+    +'<div style="display:flex;gap:6px">'+inp('dTc','City',t.city)+inp('dTs','State',t.state,'80px')+inp('dTz','ZIP',t.zip,'110px')+'</div>'
+    +'<hr style="margin:12px 0">'+inp('dFn','Ship from — name',fr.name)+inp('dF1','Street',fr.line1)+'<div style="display:flex;gap:6px">'+inp('dFc2','City',fr.city)+inp('dFs','State',fr.state,'80px')+inp('dFz','ZIP',fr.zip,'110px')+'</div>'
+    +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" onclick="document.getElementById(\'prodDestModal\').remove()" style="flex:1;background:#e2e8f0;color:#1f2733">Cancel</button><button class="action" onclick="prodDestSave()" style="flex:2;background:#1a2b4a">Save</button></div></div>';
+  document.body.appendChild(m);
+}
+function prodDestSave(){
+  const g=id=>(document.getElementById(id).value||'').trim();
+  const body={shipmentId:prodSid(), fc:g('dFc'), shipTo:{name:g('dTn'),line1:g('dT1'),line2:g('dT2'),city:g('dTc'),state:g('dTs'),zip:g('dTz'),country:'US'}, shipFrom:{name:g('dFn'),line1:g('dF1'),city:g('dFc2'),state:g('dFs'),zip:g('dFz'),country:'US'}};
+  api('/api/pack/destination',{method:'POST',body:JSON.stringify(body)}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } document.getElementById('prodDestModal').remove(); toast('Saved — now confirm it'); prodLoad(prodSid()); });
+}
+function prodSettings(){
+  const S=_prod.v.settings;
+  const m=document.createElement('div'); m.id='prodSetModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
+  const inp=(k,label,hint)=>'<label style="display:block;margin-top:8px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">'+label+(hint?' <span class="hint" style="font-weight:400">'+hint+'</span>':'')+'<input id="ps_'+k+'" type="number" step="any" value="'+(k==='fill'?Math.round(S[k]*100):S[k])+'" style="width:100%;padding:8px;margin-top:2px"></label>';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:420px;width:100%"><b style="font-size:16px">Pallet limits</b>'
+    +inp('maxLb','Max pallet weight (lb)','Amazon LTL: 1,500')+inp('allowanceLb','Pallet + packaging allowance (lb)','counted on every pallet')+inp('maxHeightIn','Max height (in)','ours, including the pallet')
+    +inp('deckIn','Empty pallet height (in)')+inp('fill','Packing efficiency (%)','how tightly boxes fill the 48×40 footprint; lower = more cautious height')+inp('warnPct','Warn at (%)')
+    +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" onclick="document.getElementById(\'prodSetModal\').remove()" style="flex:1;background:#e2e8f0;color:#1f2733">Cancel</button><button class="action" onclick="prodSettingsSave()" style="flex:2;background:#1a2b4a">Save</button></div></div>';
+  document.body.appendChild(m);
+}
+function prodSettingsSave(){
+  const b={}; for(const k of ['maxLb','allowanceLb','maxHeightIn','deckIn','fill','warnPct']) b[k]=document.getElementById('ps_'+k).value;
+  api('/api/pack/settings',{method:'POST',body:JSON.stringify(b)}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } document.getElementById('prodSetModal').remove(); toast('Pallet limits saved'); prodLoad(prodSid()); });
+}
+function prodMove(n){
+  const to=parseInt(prompt('Move box '+n+' to pallet #:', _prod.v.currentPallet)); if(!to) return;
+  const b=_prod.v.boxes.find(x=>x.box_no===n);
+  api('/api/pack/box/meta',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n, pallet:to, weight:b.weight_lb, len:b.len, wid:b.wid, hgt:b.hgt})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } prodLoad(prodSid()); });
+}
+function prodVoid(n){
+  if(!confirm('Void box '+n+'? Tear its label off. The next box you make takes number '+n+' so Amazon\'s box count still lines up.')) return;
+  api('/api/pack/box/void',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } toast('Box '+n+' voided'); prodLoad(prodSid()); });
+}
+function prodFinish(){
+  const closed=_prod.v.boxes.filter(b=>b.status==='closed'&&b.items.length), units=closed.reduce((n,b)=>n+b.units,0);
+  const left=_prod.v.plan.filter(r=>r.left>0);
+  if(!confirm('Finish '+prodSid()+'?\n\n'+closed.length+' boxes, '+units+' units move from On Hand to In Transit (duos count as their bottles).'+(left.length?'\n\n⚠ '+left.length+' product(s) still have units left to make for this shipment.':'')+'\n\nThis happens once.')) return;
+  api('/api/pack/finish',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid()})}).then(d=>{
     if(!d||d.ok===false){ toast('NOT finished: '+((d&&(d.message||d.error))||'error'),true); return; }
-    toast('Done: '+d.units+' units in '+d.boxes+' boxes moved to In Transit'); packLoad(_pack.sid); try{ loadProducts(); }catch(e){}
+    toast('Done: '+d.units+' units in '+d.boxes+' boxes moved to In Transit'); prodLoad(prodSid()); try{ loadProducts(); }catch(e){}
   }).catch(e=>toast('NOT finished — connection problem: '+e.message,true));
 }
-function packCopyBoxes(){
-  const rows=_pack.view.boxes.filter(b=>b.status==='closed'&&b.items.length).map(b=>['Box '+b.box_no, 'Pallet '+(b.pallet_no||''), (b.weight_lb||'')+' lb', b.len?b.len+' x '+b.wid+' x '+b.hgt+' in':'', b.units+' units'].join('\t'));
+function prodCopyBoxes(){
+  const rows=_prod.v.boxes.filter(b=>b.status==='closed'&&b.items.length).sort((a,b)=>a.box_no-b.box_no).map(b=>['Box '+b.box_no, b.boxId, 'Pallet '+(b.pallet_no||1), (b.weight_lb||'')+' lb', b.len?b.len+' x '+b.wid+' x '+b.hgt+' in':'', b.items.map(i=>i.fnsku+' x'+i.qty).join(' ')].join('\t'));
   copyText(rows.join('\n'));
 }
-// 4×6 label: box number, pallet, weight/size, the PDF417, and what's inside.
-// PDF417 per Amazon: error correction level 6, rows 3 modules tall, module
-// width ≥ 0.020 in (drawn at 0.022 in so a 203 dpi printer can't round below).
-function packReprint(n){
-  const b=_pack.view.boxes.find(x=>x.box_no===n); if(!b||!b.barcode){ toast((b&&b.barcodeError)||'No label for that box',true); return; }
+// ---- mixed box (several products in one box): scan units in, close it ----
+function prodMixedHtml(){
+  const v=_prod.v, open=v.boxes.find(b=>b.status==='open'&&b.items.length);
+  const n=open?open.box_no:v.nextBoxNo;
+  return '<details class="box"'+(open?' open':'')+'><summary style="cursor:pointer;font-weight:800">Mixed box — several products in one box'+(open?' (box '+n+' open)':'')+'</summary>'
+    +'<div class="hint" style="margin-top:6px">Scan each unit into box '+n+', then close it to print its label. Goes on pallet '+v.currentPallet+'.</div>'
+    +'<div style="display:flex;gap:8px;margin-top:8px"><input id="mixScan" placeholder="Scan unit → Enter" autocomplete="off" style="flex:1;font-size:16px;padding:10px" onkeydown="if(event.key===\'Enter\'){event.preventDefault();prodMixScan('+n+');}"><input id="mixQty" type="number" min="1" value="1" style="width:70px;font-size:16px;text-align:center"></div>'
+    +(open?'<div style="margin-top:6px;font-size:13px">'+open.items.map(i=>esc(String(i.name||i.asin).slice(0,50))+' <b>×'+i.qty+'</b> <a href="#" onclick="event.preventDefault();prodMixLine('+n+',\''+esc(i.asin)+'\')">remove</a>').join('<br>')+'</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;align-items:flex-end"><label style="width:100px">Weight lb<input id="mixW" type="number" min="0" step="0.1"></label><label style="width:220px">Box L × W × H in<span style="display:flex;gap:4px"><input id="mixL" type="number"><input id="mixWd" type="number"><input id="mixH" type="number"></span></label>'
+      +'<button class="action" onclick="prodMixClose('+n+')" style="flex:1;background:#127a7a">Close box '+n+' &amp; print label</button></div>':'')
+    +'</details>';
+}
+function prodMixScan(n){
+  const el=document.getElementById('mixScan'), code=(el.value||'').trim(), qty=parseInt(document.getElementById('mixQty').value)||1; if(!code) return; el.value='';
+  api('/api/pack/scan',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), boxNo:n, code, qty})}).then(d=>{
+    if(!d||d.ok===false){ toast('NOT added: '+((d&&d.error)||'error'),true); return; }
+    toast('+'+d.qty+' '+String(d.product.name||'').slice(0,40)); prodLoad(prodSid()).then(()=>{ const s=document.getElementById('mixScan'); if(s) s.focus(); });
+  }).catch(e=>toast('NOT added: '+e.message,true));
+}
+function prodMixLine(n, asin){ api('/api/pack/box/line',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n, asin, qty:0})}).then(()=>prodLoad(prodSid())); }
+function prodMixClose(n){
+  const g=id=>document.getElementById(id).value;
+  const meta={shipmentId:prodSid(), boxNo:n, pallet:_prod.v.currentPallet, weight:g('mixW'), len:g('mixL'), wid:g('mixWd'), hgt:g('mixH')};
+  if(!(Number(meta.weight)>0&&Number(meta.len)>0&&Number(meta.wid)>0&&Number(meta.hgt)>0)){ toast('Weight and box size are needed for the label and pallet limits',true); return; }
+  api('/api/pack/box/meta',{method:'POST',body:JSON.stringify(meta)}).then(d=>{ if(!d||d.ok===false) throw new Error((d&&d.error)||'error');
+    return api('/api/pack/box/close',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), boxNo:n})}); }).then(d=>{
+    if(!d||d.ok===false){ toast('Box NOT closed: '+((d&&d.error)||'error'),true); return; }
+    return prodLoad(prodSid()).then(()=>prodPrint([n]));
+  }).catch(e=>toast('Box NOT closed: '+e.message,true));
+}
+// ---- the label: Source Correct's 4×6 layout ----
+// Amazon box ID (shipment + U + box number) as Code 128 and PDF417, ship
+// from / to, big text, and the 2D box-content PDF417 across the bottom
+// (error correction 6, 6 columns, 0.0205 in modules — the same as the
+// Source Correct label the owner has shipped with).
+function prodPrint(nums){
+  const v=_prod.v, sh=v.shipment;
+  if(!sh.dest_confirmed_at){ toast('Confirm the destination first',true); return; }
+  const boxes=v.boxes.filter(b=>b.status==='closed'&&b.items.length&&(!nums||nums.includes(b.box_no))).sort((a,b)=>a.box_no-b.box_no);
+  if(!boxes.length){ toast('No labels to print',true); return; }
   const w=window.open('','_blank','width=460,height=720'); if(!w){ toast('Popup blocked — allow popups to print',true); return; }
-  const list=b.items.map(i=>'<tr><td>'+esc(i.fnsku)+'</td><td>'+esc(String(i.name||'').slice(0,34))+'</td><td style="text-align:right"><b>'+i.qty+'</b></td></tr>').join('');
-  w.document.write('<!DOCTYPE html><html><head><title>Box '+n+' — '+esc(_pack.sid)+'</title>'
-    +'<script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
-    +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;width:4in;height:6in;padding:0.18in;display:flex;flex-direction:column;gap:0.06in}'
-    +'.top{display:flex;justify-content:space-between;align-items:baseline}.bx{font-size:30pt;font-weight:900}.pl{font-size:15pt;font-weight:800}.meta{font-size:9pt}#bc{display:flex;justify-content:center;margin:0.05in 0}'
-    +'table{width:100%;border-collapse:collapse;font-size:7.5pt}td{padding:1px 2px;border-top:1px solid #999;font-family:Arial}td:first-child{font-family:monospace;white-space:nowrap}.err{color:#c00;font-size:12pt}</style></head><body>'
-    +'<div class="top"><div class="bx">BOX '+n+'</div><div class="pl">'+(b.pallet_no?'PALLET '+b.pallet_no:'')+'</div></div>'
-    +'<div class="meta"><b>'+esc(_pack.sid)+'</b>'+(_pack.view.shipment.name?' · '+esc(_pack.view.shipment.name):'')+' · '+b.units+' units'+(b.weight_lb?' · '+b.weight_lb+' lb':'')+(b.len?' · '+b.len+'×'+b.wid+'×'+b.hgt+' in':'')+'</div>'
-    +'<div id="bc"></div><table>'+list+'</table>'
-    +'<script>(function(){try{var svg=bwipjs.toSVG({bcid:"pdf417",text:'+JSON.stringify(b.barcode)+',eclevel:6,columns:5,rowmult:3,scaleX:1,scaleY:1});'
-    +'var d=document.getElementById("bc");d.innerHTML=svg;var s=d.querySelector("svg");var vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");'
-    +'s.style.width=(vb.width*0.022)+"in";s.style.height=(vb.height*0.022)+"in";s.setAttribute("data-text",'+JSON.stringify(b.barcode)+');'
-    +'setTimeout(function(){window.print();},300);}catch(e){document.getElementById("bc").innerHTML="<div class=err>Could not draw the barcode: "+String(e.message||e).replace(/</g,"&lt;")+"</div>";}})();<\/script>'
-    +'</body></html>');
+  const A=a=>a?esc(a.name||'')+'<br>'+esc(a.line1||'')+(a.line2?'<br>'+esc(a.line2):'')+'<br>'+esc(a.city||'')+', '+esc(a.state||'')+', '+esc(a.zip||'')+'<br>'+esc(a.country||'US'):'';
+  const expTxt=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'-'+e.slice(4,6)+'-20'+e.slice(0,2):'';
+  const pages=boxes.map(b=>{
+    const one=b.items.length===1?b.items[0]:null, exp=one&&(one.exp||b.exp);
+    return '<div class="lbl"><div class="t1">PLEASE LEAVE THIS LABEL UNCOVERED</div><div class="fba"><span>FBA</span><span class="pal">PALLET '+(b.pallet_no||1)+'</span></div>'
+      +'<div class="addr"><div><b>SHIP FROM:</b><br>'+A(sh.ship_from)+'</div><div><b>SHIP TO:</b><br>'+esc(sh.fc||'')+'<br>'+A(sh.ship_to)+'</div></div>'
+      +'<div class="bar">'+esc(sh.shipment_id)+'</div>'
+      +'<div class="mid"><div class="left"><div class="c128" data-t="'+esc(b.boxId)+'"></div><div class="bid">'+esc(b.boxId)+'</div>'
+      +'<div class="big">Shipment: '+esc(sh.shipment_id)+'</div>'+(exp?'<div class="big">Exp: '+expTxt(exp)+'</div>':'')
+      +(one?'<div class="big">FNSKU: '+esc(one.fnsku)+'</div><div class="big">Qty: '+one.qty+' &nbsp; Box: '+b.box_no+'</div>'
+           :'<div class="big">Mixed: '+b.items.length+' SKUs</div><div class="big">Qty: '+b.units+' &nbsp; Box: '+b.box_no+'</div>')
+      +'<div class="big">Weight: '+(b.weight_lb!=null?b.weight_lb:'')+' lb</div></div><div class="side" data-t="'+esc(b.boxId)+'"></div></div>'
+      +'<div class="c2d" data-t="'+esc(b.barcode)+'"></div></div>';
+  }).join('');
+  w.document.write('<!DOCTYPE html><html><head><title>'+esc(sh.shipment_id)+' labels</title><script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
+    +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Times New Roman",Times,serif}'
+    +'.lbl{width:4in;height:6in;padding:0.12in 0.16in;page-break-after:always;overflow:hidden;display:flex;flex-direction:column}'
+    +'.t1{text-align:center;font-weight:700;font-size:10.5pt}.fba{display:flex;justify-content:space-between;align-items:baseline;font-weight:700;font-size:22pt;border-bottom:1.5pt solid #000;line-height:1}.pal{font-size:12pt}'
+    +'.addr{display:grid;grid-template-columns:1fr 1fr;gap:0.1in;font-size:8.5pt;font-weight:700;line-height:1.15;margin-top:2px}'
+    +'.bar{background:#000;color:#fff;font-size:8pt;font-weight:700;padding:0 4px;margin-top:3px}'
+    +'.mid{display:flex;gap:0.08in;margin-top:0.06in}.left{flex:1;min-width:0}.c128 svg{width:2.4in;height:0.62in;display:block}.bid{font-size:9pt;font-weight:700;text-align:center;border-bottom:1pt solid #000;width:2.4in}'
+    +'.big{font-size:15pt;font-weight:700;line-height:1.12;white-space:nowrap}.side{width:0.95in;display:flex;justify-content:flex-end}'
+    +'.c2d{margin-top:auto;display:flex;justify-content:center}.err{color:#c00;font:10pt Arial}</style></head><body>'+pages
+    +'<script>(function(){var M=0.0205;/* 1 SVG unit = 1 module (scale 1) */function put(el,svg,wIn,hIn){el.innerHTML=svg;var s=el.querySelector("svg"),vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");'
+    +'if(wIn){s.setAttribute("preserveAspectRatio","none");s.style.width=wIn+"in";s.style.height=hIn+"in";}else{var m=hIn?Math.min(M,hIn/vb.height):M;s.style.width=(vb.width*m)+"in";s.style.height=(vb.height*m)+"in";}}'
+    +'try{document.querySelectorAll(".c128").forEach(function(e){put(e,bwipjs.toSVG({bcid:"code128",text:e.dataset.t,height:12}),2.4,0.62);});'
+    +'document.querySelectorAll(".side").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,columns:2,rowmult:3,rotate:"R",scaleX:1,scaleY:1}),0,2.25);});'
+    +'document.querySelectorAll(".c2d").forEach(function(e){put(e,bwipjs.toSVG({bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:6,rowmult:3,scaleX:1,scaleY:1}),0,0);e.querySelector("svg").setAttribute("data-text",e.dataset.t);});'
+    +'setTimeout(function(){window.print();},300);}catch(err){document.body.insertAdjacentHTML("afterbegin","<div class=err>Could not draw a barcode: "+String(err.message||err).replace(/</g,"&lt;")+"</div>");}})();<\/script></body></html>');
   w.document.close();
 }
 // ---- OFFLINE QUEUE ----
@@ -1348,7 +1545,7 @@ function loadProducts(){ loadSsPicks(); return api('/api/products').then(d=>{
   if(!Array.isArray(d)){ toast('Could not refresh products: '+((d&&(d.error||d.message))||'server error'),true); return; }
   products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='prod'){ prodOpen(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
   if(t==='count'){ countInit(); }
   if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }

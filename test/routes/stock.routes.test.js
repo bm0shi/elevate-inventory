@@ -165,9 +165,20 @@ test('a cycle count sets on hand to what was counted plus what is prepped (bottl
   assert.strictEqual((await post('/api/count/apply', { location: 'A-1', counts: [{ asin: 'TSTB', counted: -3 }] })).status, 400);
 });
 
+// No Amazon keys in tests, so the destination is entered by hand, as the
+// floor would when Amazon's lookup can't give the street address.
+async function confirmDest(SID) {
+  const d = await post('/api/pack/destination', { shipmentId: SID, fc: 'MIT2',
+    shipTo: { name: 'Amazon.com Services', line1: '5408 Express Avenue', city: 'Shafter', state: 'CA', zip: '93263', country: 'US' },
+    shipFrom: { name: 'Test warehouse', line1: '1 Test Rd', city: 'Phoenix', state: 'AZ', zip: '85029', country: 'US' } });
+  assert.strictEqual(d.status, 200, JSON.stringify(d.body));
+  assert.strictEqual((await post('/api/pack/confirm', { shipmentId: SID })).status, 200);
+}
+
 test('pack boxes: scan, close (label text), finish deducts once; nothing changes after', { skip }, async () => {
   const SID = 'FBAPACKTEST1';
   assert.strictEqual((await post('/api/pack/start', { shipmentId: SID, name: 'Pack test' })).status, 200);
+  await confirmDest(SID);
   await post('/api/receive', { asin: 'TSTA', qty: 50 }); await post('/api/receive', { asin: 'TSTB', qty: 50 });
   const A = await stock('TSTA'), B = await stock('TSTB');
   // Box 1: 4 singles of A (scanned by FNSKU) and 2 duos
@@ -199,12 +210,41 @@ test('pack boxes: a shipment already posted by pack slip is not deducted again',
   const SID = 'FBAPACKTEST2';
   await post('/api/bulk-ship', { shipmentId: SID, items: [{ code: 'TSTA', qty: 1 }] });
   await post('/api/pack/start', { shipmentId: SID });
+  await confirmDest(SID);
   await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'TSTA', qty: 2 });
   await post('/api/pack/box/close', { shipmentId: SID, boxNo: 1 });
   const A = await stock('TSTA');
   const r = await post('/api/pack/finish', { shipmentId: SID });
   assert.strictEqual(r.status, 409);
   assert.deepStrictEqual(await stock('TSTA'), A);
+});
+
+test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {
+  const SID = 'FBAPACKTEST3';
+  await post('/api/pack/start', { shipmentId: SID });
+  const mk = (count, extra) => post('/api/pack/boxes', Object.assign({ shipmentId: SID, asin: 'TSTDUO', qtyPerBox: 6, count, pallet: 1, unitWeight: 5, len: 12, wid: 12, hgt: 12 }, extra || {}));
+  // No labels before the destination is confirmed
+  assert.strictEqual((await mk(1)).status, 409);
+  await confirmDest(SID);
+  const a = await mk(10);
+  assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+  assert.deepStrictEqual(a.body.boxes, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.strictEqual(a.body.weight, 30);   // 6 × 5 lb
+  // Remembered for next time
+  const p = await one(`SELECT case_qty, case_len::float AS l, unit_weight_lb::float AS w, unit_weight_src FROM inv_products WHERE asin='TSTDUO'`);
+  assert.deepStrictEqual(p, { case_qty: 6, l: 12, w: 5, unit_weight_src: 'manual' });
+  // Pallet 1: 100 lb allowance + 10 × 30 = 400 lb. 60 more boxes (1,800 lb) won't fit.
+  const big = await mk(60);
+  assert.strictEqual(big.status, 409);
+  assert.strictEqual(big.body.error, 'pallet_full');
+  assert.ok(big.body.fits > 0 && big.body.fits < 60);
+  assert.strictEqual((await one(`SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1`, [SID])).n, 10);
+  // Void box 4: the next box takes number 4, so Amazon's 1..N still lines up
+  assert.strictEqual((await post('/api/pack/box/void', { shipmentId: SID, boxNo: 4 })).status, 200);
+  assert.deepStrictEqual((await mk(2)).body.boxes, [4, 11]);
+  // Going over on purpose, on a new pallet, is allowed
+  const over = await mk(big.body.fits + 1, { pallet: 2, override: true });
+  assert.strictEqual(over.status, 200);
 });
 
 test('staff cannot reach owner routes', { skip }, async () => {
