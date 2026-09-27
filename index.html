@@ -968,6 +968,10 @@ function prodFit(st, box, S){
   const byW=packed>0?Math.floor((S.limitLb-base.weight)/packed+1e-9):Infinity, byH=v>0?Math.floor((S.maxHeightIn-base.height)*area/v+1e-9):Infinity;
   return {n:Math.max(0,Math.min(byW,byH)), limitedBy:byW<=byH?'weight':'height', addH:v/area, packed};
 }
+// Table cells for the 2D Production tables. Headers and cells share the same
+// padding and alignment (headers were 4px off their columns when they didn't).
+const prodTh=(txt,al)=>'<th style="padding:10px;font-weight:900;color:#1f2733;background:#eef2f6;position:static;font-size:12px;letter-spacing:0.3px;white-space:nowrap;border-bottom:2px solid #1f2733;vertical-align:bottom;text-align:'+(al||'center')+'">'+txt+'</th>';
+const prodTd=(html,al,extra)=>'<td style="padding:10px;border-top:1px solid #eef2f6;border-bottom:0;vertical-align:middle;text-align:'+(al||'center')+';'+(extra||'')+'">'+html+'</td>';
 // Big, can't-miss warning boxes for the packing floor.
 const prodWarn=(html,hard)=>'<div style="margin-top:10px;padding:12px 14px;border:3px solid #c0392b;background:'+(hard?'#c0392b':'#fdecea')+';color:'+(hard?'#fff':'#c0392b')+';font-size:19px;font-weight:900;border-radius:10px;line-height:1.3">'+html+'</div>';
 function prodRender(){
@@ -1015,10 +1019,21 @@ function prodRender(){
       const fi='width:100%;box-sizing:border-box;height:48px;font-size:19px;font-weight:700;padding:8px 10px;margin:0;text-align:center';
       const fld=(label,input,span)=>'<div style="grid-column:span '+(span||1)+'"><span style="'+fl+'">'+label+'</span>'+input+'</div>';
       const num=(id,val,step,oninput)=>'<input id="'+id+'" type="number" min="0" step="'+step+'" value="'+val+'"'+(oninput===false?'':' oninput="prodPreview()"')+' style="'+fi+'">';
-      h+='<div style="display:flex;gap:18px;margin-top:14px;align-items:flex-start;flex-wrap:wrap">'+(P.image?'<img src="'+esc(P.image)+'" onerror="this.style.display=\'none\'" onmouseenter="picZoom(this,520)" onmouseleave="picZoomOff()" style="width:170px!important;height:170px!important;object-fit:contain;border-radius:10px;border:1px solid #e2e8f0;background:#fff;cursor:zoom-in">':'')
-        +'<div style="flex:1;min-width:260px"><div style="font-size:19px;font-weight:800;line-height:1.3">'+esc(P.name||P.asin)+'</div>'
-        +'<div style="margin-top:8px;font-size:17px;font-weight:800">FNSKU <span style="font-family:monospace;font-size:19px">'+esc(P.fnsku||'none on file')+'</span> &nbsp;·&nbsp; ASIN <span style="font-family:monospace;font-size:19px">'+esc(P.asin)+'</span></div>'
-        +(row?'<div style="margin-top:8px;font-size:16px">Shipment qty <b>'+row.planned+'</b> · already built <b>'+row.produced+'</b> · <b style="color:'+(row.left?'#c0392b':'#1e8449')+'">remaining '+row.left+'</b></div>':(v.plan.length?prodWarn('⛔ NOT IN THIS AMAZON SHIPMENT — Amazon may refuse it.',true):''))+'</div></div>'
+      const per0=P.case_qty||(row&&row.caseQty)||0, pct=row&&row.planned?Math.min(100,Math.round(row.produced/row.planned*100)):0;
+      const tile=(label,val,color,sub,id)=>'<div style="background:#fff;border:1px solid #dfe7ef;border-radius:12px;padding:10px 12px;text-align:center;box-shadow:0 1px 2px rgba(15,27,45,0.06)"><div style="font-size:11px;font-weight:900;letter-spacing:0.4px;color:#5a6472">'+label+'</div><div'+(id?' id="'+id+'"':'')+' style="font-size:30px;font-weight:900;line-height:1.15;color:'+(color||'#1f2733')+'">'+val+'</div>'+(sub?'<div'+(id?' id="'+id+'Sub"':'')+' style="font-size:11px;color:#5a6472;font-weight:700">'+sub+'</div>':'')+'</div>';
+      h+='<div style="display:flex;gap:20px;margin-top:16px;padding:16px;border-radius:16px;background:linear-gradient(135deg,#f2fafa 0%,#eef3fb 100%);border:1px solid #d3e4e4;align-items:stretch;flex-wrap:wrap">'
+        +(P.image?'<div style="background:#fff;border-radius:14px;padding:8px;box-shadow:0 2px 8px rgba(15,27,45,0.10);align-self:flex-start"><img src="'+esc(P.image)+'" onerror="this.parentNode.style.display=\'none\'" onmouseenter="picZoom(this,520)" onmouseleave="picZoomOff()" style="width:170px!important;height:170px!important;object-fit:contain;display:block;cursor:zoom-in"></div>':'')
+        +'<div style="flex:1;min-width:280px;display:flex;flex-direction:column;gap:10px">'
+        +'<div style="font-size:20px;font-weight:800;line-height:1.3;color:#0f1b2d">'+esc(P.name||P.asin)+'</div>'
+        +'<div style="display:flex;gap:8px;flex-wrap:wrap">'
+          +'<span style="background:#0f1b2d;color:#fff;border-radius:8px;padding:6px 12px;font-size:13px;font-weight:800">FNSKU <span style="font-family:monospace;font-size:18px;margin-left:4px">'+esc(P.fnsku||'none on file')+'</span></span>'
+          +'<span style="background:#fff;color:#0f1b2d;border:2px solid #0f1b2d;border-radius:8px;padding:4px 12px;font-size:13px;font-weight:800">ASIN <span style="font-family:monospace;font-size:18px;margin-left:4px">'+esc(P.asin)+'</span></span></div>'
+        +(row?'<div style="display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px">'
+            +tile('SHIPMENT QTY',row.planned)+tile('✅ BUILT',row.produced,'#1e8449')+tile('QTY LEFT',row.left||'✓',row.left?'#c0392b':'#1e8449')
+            +tile('BOXES LEFT',!row.left?'✓':per0?Math.ceil(row.left/per0):'—',row.left?'#c0392b':'#1e8449',!row.left?'done':per0?per0+' per box'+(row.left%per0?' · last box '+(row.left%per0):''):'enter units per box','prodBxLeft')+'</div>'
+          +'<div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:#5a6472;margin-bottom:4px"><span>BUILT</span><span>'+pct+'%</span></div><div style="height:12px;background:#dfe7ef;border-radius:6px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:linear-gradient(90deg,#1e8449,#27ae60)"></div></div></div>'
+          :(v.plan.length?prodWarn('⛔ NOT IN THIS AMAZON SHIPMENT — Amazon may refuse it.',true):''))
+        +'</div></div>'
         +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;margin-top:16px;align-items:end">'
         +fld('UNITS PER BOX',num('prodPer',P.case_qty||'',1))
         +fld('TOTAL BOXES',num('prodCount',P._count||1,1))
@@ -1032,35 +1047,62 @@ function prodRender(){
   }
   // Plan
   if(v.plan.length){
-    // Boxes remaining: from the units per box saved for the product; the last box may be a partial.
-    const bxLeft=r=>!r.left?'✓':!(r.caseQty>0)?'<span class="hint" title="Build a box of it once and its units per box are saved">—</span>':Math.ceil(r.left/r.caseQty)+(r.left%r.caseQty?'<div class="hint" style="font-size:11px">last box '+(r.left%r.caseQty)+'</div>':'');
-    const th='style="padding:8px 6px;font-weight:900;color:#1f2733;background:#eef2f6;position:static;font-size:12px;text-align:center;white-space:nowrap;border-bottom:2px solid #1f2733"';
-    h+='<div class="box" style="overflow-x:auto"><b style="font-size:17px">Amazon shipment: '+v.plan.reduce((n,r)=>n+r.planned,0)+' units</b><table style="width:100%;border-collapse:collapse;font-size:13.5px;margin-top:8px"><tr><th '+th.replace('text-align:center','text-align:left')+'>PRODUCT</th><th '+th.replace('text-align:center','text-align:left')+'>FNSKU</th><th '+th+'>SHIPMENT QTY</th><th '+th+'>ALREADY BUILT</th><th '+th+'>QTY REMAINING</th><th '+th+'>BOXES REMAINING</th><th '+th+'>UNITS PER BOX</th><th '+th+'>BOX SIZE</th><th '+th+'>UNIT LB</th></tr>'
-      +v.plan.map(r=>'<tr style="'+(r.notInShipment?'background:#fdecea':r.left===0?'background:#f0faf4':'')+';cursor:pointer" onclick="'+(r.asin&&!done?'prodPick(\''+esc(r.asin)+'\')':'')+'"><td style="padding:7px 6px;border-top:1px solid #eef2f6;min-width:260px;line-height:1.3">'+esc(String(r.name||''))+(r.notInShipment?' <b style="color:#c0392b">NOT IN SHIPMENT</b>':'')+(!r.known?' <b style="color:#c0392b">not in the app\'s catalog</b>':'')+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;font-family:monospace;font-weight:700;white-space:nowrap">'+esc(r.fnsku||'')+'</td><td style="border-top:1px solid #eef2f6;text-align:center">'+r.planned+'</td><td style="border-top:1px solid #eef2f6;text-align:center;font-weight:800">'+r.produced+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;text-align:center;font-weight:800;color:'+(r.left?'#c0392b':'#1e8449')+'">'+(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':'')+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;text-align:center;font-weight:800;color:'+(r.left?'#c0392b':'#1e8449')+'">'+bxLeft(r)+'</td>'
-        +'<td style="border-top:1px solid #eef2f6;text-align:center">'+(r.caseQty||'—')+'</td><td style="border-top:1px solid #eef2f6;text-align:center">'+(r.len?r.len+'×'+r.wid+'×'+r.hgt:'—')+'</td><td style="border-top:1px solid #eef2f6;text-align:center">'+(r.unitWeight||'—')+'</td></tr>').join('')+'</table></div>';
+    // Boxes left: from the units per box saved for the product; the last box may be a partial.
+    const bxN=r=>r.left&&r.caseQty>0?Math.ceil(r.left/r.caseQty):0;
+    const bxLeft=r=>!r.left?'✓':!(r.caseQty>0)?'<span class="hint" title="Build a box of it once and its units per box are saved">—</span>':bxN(r)+(r.left%r.caseQty?'<div class="hint" style="font-size:11px">last box '+(r.left%r.caseQty)+'</div>':'');
+    const tot=k=>v.plan.reduce((n,r)=>n+(r[k]||0),0), totP=tot('planned'), totB=tot('produced'), totL=tot('left');
+    const unknownBx=v.plan.some(r=>r.left&&!(r.caseQty>0)), totBx=v.plan.reduce((n,r)=>n+bxN(r),0);
+    const selA=_prod.sel&&_prod.sel.asin;
+    // The row picked for Build Boxes gets a heavy outline so it's obvious which product is up.
+    const selTd=(i,last)=>'border-top:3px solid #127a7a;border-bottom:3px solid #127a7a;'+(i===0?'border-left:3px solid #127a7a;':'')+(last?'border-right:3px solid #127a7a;':'');
+    const cell=(r,i,html,al,extra)=>prodTd(html,al,(r.asin&&r.asin===selA?selTd(i,i===8):'')+(extra||''));
+    const pctAll=totP?Math.min(100,Math.round(totB/totP*100)):0;
+    h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap"><b style="font-size:18px">Amazon shipment: '+totP.toLocaleString()+' units</b>'
+      +'<div style="flex:1;min-width:220px;max-width:420px"><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:#5a6472;margin-bottom:4px"><span>✅ '+totB.toLocaleString()+' built</span><span>'+pctAll+'%</span></div><div style="height:12px;background:#dfe7ef;border-radius:6px;overflow:hidden"><div style="height:100%;width:'+pctAll+'%;background:linear-gradient(90deg,#1e8449,#27ae60)"></div></div></div></div>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin-top:10px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('FNSKU','left')+prodTh('SHIPMENT QTY')+prodTh('✅ BUILT')+prodTh('QTY LEFT')+prodTh('BOXES LEFT')+prodTh('UNITS PER BOX')+prodTh('BOX SIZE')+prodTh('UNIT LB')+'</tr>'
+      +v.plan.map(r=>'<tr style="'+(r.asin&&r.asin===selA?'background:#e3f4f4':r.notInShipment?'background:#fdecea':r.left===0?'background:#f0faf4':'')+';cursor:pointer" onclick="'+(r.asin&&!done?'prodPick(\''+esc(r.asin)+'\')':'')+'">'
+        +cell(r,0,(r.asin&&r.asin===selA?'<b style="color:#127a7a">▶ </b>':'')+esc(String(r.name||''))+(r.notInShipment?' <b style="color:#c0392b">NOT IN SHIPMENT</b>':'')+(!r.known?' <b style="color:#c0392b">not in the app\'s catalog</b>':''),'left','min-width:260px;line-height:1.3')
+        +cell(r,1,esc(r.fnsku||''),'left','font-family:monospace;font-weight:700;white-space:nowrap')
+        +cell(r,2,r.planned)
+        +cell(r,3,r.produced,'center','font-weight:800;color:'+(r.produced?'#1e8449':'#1f2733'))
+        +cell(r,4,(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':''),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
+        +cell(r,5,bxLeft(r),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
+        +cell(r,6,r.caseQty||'—')+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
+      +'<tr style="background:#f6f8fa">'+prodTd('<b style="font-size:15px">TOTAL</b>','left','border-top:2px solid #1f2733')+prodTd('','left','border-top:2px solid #1f2733')
+        +prodTd('<b style="font-size:16px">'+totP.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
+        +prodTd('<b style="font-size:16px;color:#1e8449">'+totB.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
+        +prodTd('<b style="font-size:16px;color:'+(totL?'#c0392b':'#1e8449')+'">'+(totL?totL.toLocaleString():'✓')+'</b>','center','border-top:2px solid #1f2733')
+        +prodTd('<b style="font-size:16px;color:'+(totL?'#c0392b':'#1e8449')+'">'+(totL?totBx+(unknownBx?'+':''):'✓')+'</b>'+(unknownBx?'<div class="hint" style="font-size:11px">+ products without units per box</div>':''),'center','border-top:2px solid #1f2733')
+        +prodTd('','center','border-top:2px solid #1f2733')+prodTd('','center','border-top:2px solid #1f2733')+prodTd('','center','border-top:2px solid #1f2733')+'</tr>'
+      +'</table></div>';
   }
   // Mixed box
   if(!done) h+=prodMixedHtml();
   // Boxes by pallet
   const closed=v.boxes.filter(b=>b.status==='closed'&&b.items.length);
   if(closed.length){
-    h+='<div class="box" style="overflow-x:auto"><b>Boxes ('+closed.length+')</b>';
-    for(const n of pn){
-      const bx=closed.filter(b=>(b.pallet_no||1)===n); if(!bx.length) continue;
-      const p=v.pallets[n];
-      const bth='style="padding:7px 6px;font-weight:900;color:#1f2733;background:#eef2f6;position:static;font-size:12px;white-space:nowrap;border-bottom:2px solid #1f2733;text-align:left"', btd='border-top:1px solid #eef2f6;padding:6px;vertical-align:top';
-      h+='<div style="margin-top:16px;font-weight:900;font-size:16px;color:'+(p.status==='ok'?'#1a2b4a':'#c0392b')+'">PALLET '+n+' · '+bx.length+' boxes · '+bx.reduce((t,b)=>t+b.units,0)+' units · '+f1(p.weight)+' lb · ~'+f1(p.height)+' in</div>'
-        +'<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin-top:4px"><tr><th '+bth+'>BOX #</th><th '+bth+'>PRODUCT</th><th '+bth+'>FNSKU</th><th '+bth.replace('left','center')+'>UNITS</th><th '+bth.replace('left','right')+'>PRODUCT WEIGHT</th><th '+bth.replace('left','right')+'>BOX SIZE (IN)</th><th '+bth+'></th></tr>'
-        +bx.sort((x,y)=>x.box_no-y.box_no).map(b=>'<tr><td style="'+btd+';font-weight:900;font-size:15px">'+b.box_no+'</td>'
-          +'<td style="'+btd+';min-width:240px;line-height:1.3">'+b.items.map(i=>esc(String(i.name||i.asin))).join('<br>')+'</td>'
-          +'<td style="'+btd+';font-family:monospace;font-weight:700;white-space:nowrap">'+b.items.map(i=>esc(i.fnsku||'')).join('<br>')+'</td>'
-          +'<td style="'+btd+';text-align:center;font-weight:800">'+b.items.map(i=>i.qty).join('<br>')+'</td>'
-          +'<td style="'+btd+';text-align:right;white-space:nowrap">'+(b.weight_lb!=null?b.weight_lb+' lb':'—')+'</td><td style="'+btd+';text-align:right;white-space:nowrap">'+(b.len?b.len+'×'+b.wid+'×'+b.hgt:'')+'</td>'
-          +'<td style="'+btd+';text-align:right;white-space:nowrap"><button class="action" onclick="prodPrint(['+b.box_no+'])" style="padding:4px 8px;font-size:11px;background:#1a2b4a">🖨</button>'
-          +(done?'':' <button class="action" onclick="prodMove('+b.box_no+')" style="padding:4px 8px;font-size:11px;background:#eef2f6;color:#1f2733">Move</button> <button class="action" onclick="prodVoid('+b.box_no+')" style="padding:4px 8px;font-size:11px;background:#fdecea;color:#c0392b">Void</button>')+'</td></tr>').join('')+'</table>';
+    // Only the pallet being packed starts open; the rest fold to one line
+    // (8-12 pallets is a lot of scrolling). Tap a pallet to open or close it.
+    if(_prod.openFor!==sid+'#'+cur){ _prod.openFor=sid+'#'+cur; _prod.openPallets=[cur]; }
+    const shown=pn.filter(n=>closed.some(b=>(b.pallet_no||1)===n));
+    h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:18px">Boxes ('+closed.length+')</b>'
+      +(shown.length>1?'<div style="display:flex;gap:6px"><button class="action" onclick="_prod.openPallets='+JSON.stringify(shown)+';prodRender()" style="padding:5px 10px;font-size:12px;background:#eef2f6;color:#1f2733">Open all</button><button class="action" onclick="_prod.openPallets=[];prodRender()" style="padding:5px 10px;font-size:12px;background:#eef2f6;color:#1f2733">Close all</button></div>':'')+'</div>';
+    for(const n of shown){
+      const bx=closed.filter(b=>(b.pallet_no||1)===n), p=v.pallets[n], open=_prod.openPallets.includes(n), pc=p.status==='ok'?'#1a2b4a':'#c0392b';
+      h+='<div onclick="prodTogglePallet('+n+')" style="margin-top:12px;display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:10px;cursor:pointer;user-select:none;background:'+(open?'#0f1b2d':'#f3f6f9')+';color:'+(open?'#fff':pc)+';border:2px solid '+(p.status==='ok'?(open?'#0f1b2d':'#dfe7ef'):'#c0392b')+'">'
+        +'<span style="font-size:14px;width:14px">'+(open?'▼':'▶')+'</span><span style="font-weight:900;font-size:17px">PALLET '+n+'</span>'
+        +(n===cur?'<span style="background:#127a7a;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:900">PACKING NOW</span>':'')
+        +(p.status!=='ok'?'<span style="background:#c0392b;color:#fff;border-radius:6px;padding:2px 8px;font-size:11px;font-weight:900">'+(p.status==='full'?'⛔ FULL':'⚠️ NEAR LIMIT')+'</span>':'')
+        +'<span style="margin-left:auto;font-weight:800;font-size:14px">'+bx.length+' boxes · '+bx.reduce((t,b)=>t+b.units,0)+' units · '+f1(p.weight)+' lb · ~'+f1(p.height)+' in</span></div>';
+      if(!open) continue;
+      h+='<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('BOX #')+prodTh('PRODUCT','left')+prodTh('FNSKU','left')+prodTh('UNITS')+prodTh('PRODUCT WEIGHT')+prodTh('BOX SIZE (IN)')+prodTh('REPRINT BOX')+'</tr>'
+        +bx.sort((x,y)=>x.box_no-y.box_no).map(b=>'<tr>'+prodTd(b.box_no,'center','font-weight:900;font-size:16px')
+          +prodTd(b.items.map(i=>esc(String(i.name||i.asin))).join('<br>'),'left','min-width:240px;line-height:1.3')
+          +prodTd(b.items.map(i=>esc(i.fnsku||'')).join('<br>'),'left','font-family:monospace;font-weight:700;white-space:nowrap')
+          +prodTd(b.items.map(i=>i.qty).join('<br>'),'center','font-weight:800')
+          +prodTd(b.weight_lb!=null?b.weight_lb+' lb':'—','center','white-space:nowrap')+prodTd(b.len?b.len+'×'+b.wid+'×'+b.hgt:'','center','white-space:nowrap')
+          +prodTd('<button class="action" onclick="prodPrint(['+b.box_no+'])" style="padding:5px 10px;font-size:12px;background:#1a2b4a">🖨 Reprint</button>'
+            +(done?'':' <button class="action" onclick="prodMove('+b.box_no+')" style="padding:5px 9px;font-size:12px;background:#eef2f6;color:#1f2733">Move</button> <button class="action" onclick="prodVoid('+b.box_no+')" style="padding:5px 9px;font-size:12px;background:#fdecea;color:#c0392b">Void</button>'),'center','white-space:nowrap')+'</tr>').join('')+'</table>';
     }
     h+='<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="action" onclick="prodPrint(null)" style="background:#1a2b4a">🖨 Reprint all labels</button>'
       +'<button class="action" onclick="prodCopyBoxes()" style="background:#5a6472">📋 Copy box list</button>'
@@ -1081,6 +1123,7 @@ function prodRender(){
   if(_prod.sel) prodPreview();
   const sc=document.getElementById('prodScan'); if(sc&&!_prod.sel) sc.focus();
 }
+function prodTogglePallet(n){ const o=_prod.openPallets||[]; _prod.openPallets=o.includes(n)?o.filter(x=>x!==n):o.concat([n]); prodRender(); }
 function prodExpDefault(row){ try{ const m=JSON.parse(localStorage_get('prodExp')||'{}'); return m[prodSid()]||(row&&row.expiration)||''; }catch(e){ return ''; } }
 function prodScan(code){
   code=String(code||'').trim(); if(!code) return;
@@ -1098,6 +1141,8 @@ function prodForm(){
 function prodPreview(){
   const el=document.getElementById('prodPrev'); if(!el) return;
   const f=prodForm(), v=_prod.v, S=v.settings, st=v.pallets[v.currentPallet], P=_prod.sel;
+  { const r0=v.plan.find(r=>r.asin===P.asin), bl=document.getElementById('prodBxLeft'), bs=document.getElementById('prodBxLeftSub');
+    if(r0&&r0.left&&bl&&f.per>0){ bl.textContent=Math.ceil(r0.left/f.per); if(bs) bs.textContent=f.per+' per box'+(r0.left%f.per?' · last box '+(r0.left%f.per):''); } }
   if(!(f.per>0&&f.count>0&&f.w>0&&f.L>0&&f.W>0&&f.H>0)){ el.innerHTML='<span class="hint">Fill in units per box, boxes, unit weight and box size — they\'re saved for next time.</span>'; return; }
   const bw=Math.round(f.w*f.per*100)/100, fit=prodFit(st,{weight_lb:bw,units:f.per,len:f.L,wid:f.W,hgt:f.H},S);
   const wAfter=(st.boxes?st.weight:S.palletLb)+fit.packed*f.count, hAfter=(st.boxes?st.height:S.deckIn)+fit.addH*f.count;
