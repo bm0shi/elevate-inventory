@@ -25,6 +25,7 @@ const { parseRestockReport } = require('./lib/restock');
 const capacity = require('./lib/capacity');
 const { checkinDays, checkinStats } = require('./lib/checkin');
 const { sendAlert, sendEmail, channels: alertChannels } = require('./lib/notify');
+const pack = require('./lib/pack');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -407,7 +408,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'backups-0926';
+const BUILD_ID = 'pack-2d-labels-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -613,6 +614,28 @@ async function initDb() {
       onhand INTEGER, fulfillable INTEGER, inbound INTEGER,
       updated_at TIMESTAMPTZ DEFAULT now(),
       PRIMARY KEY (asin, day)
+    );
+    -- Pack boxes (Ship to FBA): each box scanned as it's packed, its 2D
+    -- label printed when it's closed (lib/pack.js). Finishing the shipment
+    -- deducts the boxed units once, like a pasted pack slip.
+    CREATE TABLE IF NOT EXISTS inv_pack_shipments (
+      shipment_id TEXT PRIMARY KEY,
+      name TEXT,
+      status TEXT NOT NULL DEFAULT 'packing',
+      created_at TIMESTAMPTZ DEFAULT now(),
+      shipped_at TIMESTAMPTZ
+    );
+    CREATE TABLE IF NOT EXISTS inv_pack_boxes (
+      id SERIAL PRIMARY KEY,
+      shipment_id TEXT NOT NULL,
+      box_no INTEGER NOT NULL,
+      pallet_no INTEGER,
+      weight_lb NUMERIC, len NUMERIC, wid NUMERIC, hgt NUMERIC,
+      items JSONB NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'open',
+      closed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      UNIQUE (shipment_id, box_no)
     );
     CREATE TABLE IF NOT EXISTS inv_ss_picks (
       asin TEXT PRIMARY KEY,
@@ -1232,6 +1255,17 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
       return { status: 409, body: { ok: false, error: 'shipment_exists', units: already,
         message: `Shipment ${shipmentId} already has ${already} units recorded. Posting again would deduct them a second time.` } };
     }
+    const r = await applyShipItems(db, shipmentId, items);
+    return { status: 200, body: { ok: true, done: r.done, notfound: r.notfound, shipmentId, expanded: r.expanded } };
+  });
+  res.status(out.status).json(out.body);
+});
+
+// Deduct shipped items from On Hand into transit, tagged to the shipment.
+// Shared by the pasted pack slip (/api/bulk-ship) and Pack boxes (/api/pack/
+// finish). Call inside withTx AFTER lockShipment has checked the shipment
+// hasn't been posted already. items: [{ code (ASIN/SKU/UPC), qty }].
+async function applyShipItems(db, shipmentId, items) {
     let done = 0; const notfound = [], expandedNote = [];
     for (const it of items) {
       const code = String(it.code).trim();
@@ -1259,7 +1293,157 @@ app.post('/api/bulk-ship', auth, async (req, res) => {
       done++;
     }
     await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
-    return { status: 200, body: { ok: true, done, notfound, shipmentId, expanded: expandedNote } };
+    return { done, notfound, expanded: expandedNote };
+}
+
+// ============================================================
+// PACK BOXES (Ship to FBA → Pack boxes & print 2D labels). The floor scans
+// each unit into the open box; "Close box" validates the contents and hands
+// back the 2D barcode text (lib/pack.js) to print right away, so the label
+// goes on before the box goes on the pallet. "Finish shipment" deducts every
+// boxed unit once (applyShipItems, same as a pasted pack slip). Changes are
+// refused once the shipment is finished; each mutation locks the shipment row.
+// ============================================================
+async function packLock(db, sid) {
+  const r = await db.query('SELECT status, name FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sid]);
+  if (!r.rows.length) return { status: 404, body: { ok: false, error: `Shipment ${sid} isn't being packed. Start it first.` } };
+  if (r.rows[0].status !== 'packing') return { status: 409, body: { ok: false, error: `Shipment ${sid} is finished — its stock was already deducted. Nothing changed.` } };
+  return null;
+}
+const packNum = (v, max) => { const n = Number(v); return v === '' || v == null || !isFinite(n) ? null : (n > 0 && n <= max ? Math.round(n * 100) / 100 : undefined); };
+async function packBox(db, sid, boxNo, lock) {
+  await db.query('INSERT INTO inv_pack_boxes(shipment_id, box_no) VALUES($1,$2) ON CONFLICT (shipment_id, box_no) DO NOTHING', [sid, boxNo]);
+  return (await db.query(`SELECT * FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=$2${lock ? ' FOR UPDATE' : ''}`, [sid, boxNo])).rows[0];
+}
+async function packView(sid) {
+  const sh = (await pool.query('SELECT * FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
+  if (!sh) return null;
+  const boxes = (await pool.query('SELECT * FROM inv_pack_boxes WHERE shipment_id=$1 ORDER BY box_no', [sid])).rows;
+  const asins = [...new Set(boxes.flatMap(b => (b.items || []).map(i => i.asin)))];
+  const P = {}; if (asins.length) for (const r of (await pool.query('SELECT asin, name, image FROM inv_products WHERE asin = ANY($1)', [asins])).rows) P[r.asin] = r;
+  for (const b of boxes) {
+    b.items = (b.items || []).map(i => ({ ...i, name: P[i.asin] ? P[i.asin].name : i.asin, image: P[i.asin] ? P[i.asin].image : null }));
+    for (const k of ['weight_lb', 'len', 'wid', 'hgt']) b[k] = b[k] == null ? null : Number(b[k]);
+    const bc = pack.boxBarcode(sid, b.items);
+    b.barcode = bc.text || null; b.barcodeError = bc.error || null;
+    b.units = b.items.reduce((n, i) => n + i.qty, 0);
+    b.warnings = pack.boxWarnings(b);
+  }
+  return { ok: true, shipment: sh, boxes };
+}
+app.get('/api/pack/list', auth, async (req, res) => {
+  const r = await pool.query(`SELECT s.shipment_id, s.name, s.status, s.created_at, s.shipped_at,
+      COUNT(b.id) FILTER (WHERE jsonb_array_length(b.items) > 0)::int AS boxes
+    FROM inv_pack_shipments s LEFT JOIN inv_pack_boxes b ON b.shipment_id = s.shipment_id
+    GROUP BY s.shipment_id ORDER BY (s.status = 'packing') DESC, s.created_at DESC LIMIT 20`);
+  res.json({ ok: true, shipments: r.rows });
+});
+app.get('/api/pack/:sid', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.params.sid);
+  const v = sid && await packView(sid);
+  if (!v) return res.status(404).json({ ok: false, error: 'Not found' });
+  res.json(v);
+});
+app.post('/api/pack/start', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'Enter the shipment ID from Send to Amazon (it looks like FBA18XRL8GV5).' });
+  const posted = await pool.query('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [sid]);
+  await pool.query(`INSERT INTO inv_pack_shipments(shipment_id, name) VALUES($1,$2)
+    ON CONFLICT (shipment_id) DO UPDATE SET name = COALESCE(NULLIF($2,''), inv_pack_shipments.name)`, [sid, String(req.body.name || '').trim().slice(0, 120)]);
+  const v = await packView(sid);
+  res.json({ ...v, alreadyPosted: posted.rows[0].n });
+});
+app.post('/api/pack/scan', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10);
+  const q = req.body.qty == null || req.body.qty === '' ? 1 : parseInt(req.body.qty, 10);
+  if (!sid || !(boxNo >= 1 && boxNo <= 999)) return res.status(400).json({ ok: false, error: 'shipment + box number required' });
+  if (badQty(q)) return res.status(400).json({ ok: false, error: `Quantity must be 1–${MAX_QTY}.` });
+  const prod = await resolveCode(req.body.code || '');
+  if (!prod) return res.status(404).json({ ok: false, error: `Unknown barcode ${String(req.body.code || '').slice(0, 30)}` });
+  if (!prod.fnsku) return res.status(400).json({ ok: false, error: `${(prod.name || prod.asin).slice(0, 50)} has no FNSKU on file — the box label needs it. Add it on its On Hand card.` });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const box = await packBox(db, sid, boxNo, true);
+    if (box.status !== 'open') return { status: 409, body: { ok: false, error: `Box ${boxNo} is closed and labelled. Reopen it to change it (then reprint its label).` } };
+    const items = box.items || [];
+    const line = items.find(i => i.asin === prod.asin);
+    if (line) line.qty += q; else items.push({ asin: prod.asin, fnsku: prod.fnsku, qty: q });
+    if (pack.mergeItems(items).length > pack.MAX_SKUS_LABEL) return { status: 400, body: { ok: false, error: `Box ${boxNo} already has ${pack.MAX_SKUS_LABEL} different products — start a new box.` } };
+    await db.query('UPDATE inv_pack_boxes SET items=$3 WHERE shipment_id=$1 AND box_no=$2', [sid, boxNo, JSON.stringify(items)]);
+    return { status: 200, body: { ok: true, product: { asin: prod.asin, name: prod.name, fnsku: prod.fnsku }, qty: q, boxQty: (line ? line.qty : q) } };
+  });
+  res.status(out.status).json(out.body);
+});
+// Set a line's quantity in an open box (0 removes it).
+app.post('/api/pack/box/line', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10), q = parseInt(req.body.qty, 10);
+  if (!sid || !(boxNo >= 1) || !req.body.asin || !(q >= 0 && q <= MAX_QTY)) return res.status(400).json({ ok: false, error: 'bad request' });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const box = await packBox(db, sid, boxNo, true);
+    if (box.status !== 'open') return { status: 409, body: { ok: false, error: `Box ${boxNo} is closed. Reopen it first.` } };
+    const items = (box.items || []).map(i => i.asin === req.body.asin ? { ...i, qty: q } : i).filter(i => i.qty > 0);
+    await db.query('UPDATE inv_pack_boxes SET items=$3 WHERE shipment_id=$1 AND box_no=$2', [sid, boxNo, JSON.stringify(items)]);
+    return { status: 200, body: { ok: true } };
+  });
+  res.status(out.status).json(out.body);
+});
+// Pallet, weight and size — editable on open and closed boxes.
+app.post('/api/pack/box/meta', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10);
+  const pallet = req.body.pallet == null || req.body.pallet === '' ? null : parseInt(req.body.pallet, 10);
+  const w = packNum(req.body.weight, 150), l = packNum(req.body.len, 72), wd = packNum(req.body.wid, 72), h = packNum(req.body.hgt, 72);
+  if (!sid || !(boxNo >= 1) || [w, l, wd, h].includes(undefined) || (pallet != null && !(pallet >= 1 && pallet <= 99))) return res.status(400).json({ ok: false, error: 'Check the weight (lb), size (in) and pallet number.' });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    await packBox(db, sid, boxNo, true);
+    await db.query('UPDATE inv_pack_boxes SET pallet_no=$3, weight_lb=$4, len=$5, wid=$6, hgt=$7 WHERE shipment_id=$1 AND box_no=$2', [sid, boxNo, pallet, w, l, wd, h]);
+    return { status: 200, body: { ok: true } };
+  });
+  res.status(out.status).json(out.body);
+});
+app.post('/api/pack/box/close', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10);
+  if (!sid || !(boxNo >= 1)) return res.status(400).json({ ok: false, error: 'bad request' });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const box = await packBox(db, sid, boxNo, true);
+    const bc = pack.boxBarcode(sid, box.items);
+    if (bc.error) return { status: 400, body: { ok: false, error: bc.error } };
+    await db.query("UPDATE inv_pack_boxes SET status='closed', closed_at=COALESCE(closed_at, now()) WHERE shipment_id=$1 AND box_no=$2", [sid, boxNo]);
+    return { status: 200, body: { ok: true, barcode: bc.text, units: bc.units, skus: bc.skus } };
+  });
+  res.status(out.status).json(out.body);
+});
+app.post('/api/pack/box/reopen', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId), boxNo = parseInt(req.body.boxNo, 10);
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    await db.query("UPDATE inv_pack_boxes SET status='open', closed_at=NULL WHERE shipment_id=$1 AND box_no=$2", [sid, boxNo]);
+    return { status: 200, body: { ok: true } };
+  });
+  res.status(out.status).json(out.body);
+});
+// Deduct everything boxed, once. Refused while a box with units is still
+// open (its label hasn't been printed), or if this shipment was already
+// posted another way (pack slip / plan file).
+app.post('/api/pack/finish', auth, async (req, res) => {
+  const sid = pack.normShipmentId(req.body.shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'bad shipment id' });
+  const out = await withTx(async (db) => {
+    const bad = await packLock(db, sid); if (bad) return bad;
+    const boxes = (await db.query('SELECT box_no, status, items FROM inv_pack_boxes WHERE shipment_id=$1 ORDER BY box_no', [sid])).rows.filter(b => (b.items || []).length);
+    if (!boxes.length) return { status: 400, body: { ok: false, error: 'No boxes packed yet.' } };
+    const open = boxes.filter(b => b.status !== 'closed').map(b => b.box_no);
+    if (open.length) return { status: 409, body: { ok: false, error: `Box ${open.join(', ')} still open — close it and print its label first.` } };
+    const name = (await db.query('SELECT name FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0].name;
+    const already = await lockShipment(db, sid, name);
+    if (already > 0) return { status: 409, body: { ok: false, error: 'shipment_exists', message: `Shipment ${sid} already has ${already} units deducted (pack slip or plan file). Nothing changed.` } };
+    const tot = {}; for (const b of boxes) for (const i of b.items) tot[i.asin] = (tot[i.asin] || 0) + i.qty;
+    const r = await applyShipItems(db, sid, Object.entries(tot).map(([code, qty]) => ({ code, qty })));
+    if (r.notfound.length) throw new Error('Products no longer in the catalog: ' + r.notfound.join(', '));
+    await db.query("UPDATE inv_pack_shipments SET status='shipped', shipped_at=now() WHERE shipment_id=$1", [sid]);
+    return { status: 200, body: { ok: true, boxes: boxes.length, units: Object.values(tot).reduce((n, x) => n + x, 0), expanded: r.expanded } };
   });
   res.status(out.status).json(out.body);
 });
@@ -6353,6 +6537,12 @@ app.post('/api/prep/clear', ownerAuth, async (req, res) => {
 
 // serve the UI
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// Barcode drawing for the 2D box labels (PDF417), served from the app itself
+// so printing a label never depends on an outside CDN being reachable.
+app.get('/vendor/bwip-js.min.js', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=86400');
+  res.sendFile(path.join(__dirname, 'node_modules', 'bwip-js', 'dist', 'bwip-js-min.js'));
+});
 
 const PORT = process.env.PORT || 3000;
 initDb().then(() => {

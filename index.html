@@ -421,6 +421,14 @@
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
   <div id="ship" class="panel">
+    <div class="box" style="border:2px solid #127a7a">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><div style="font-weight:800;font-size:16px">📦 Pack boxes &amp; print 2D labels</div>
+        <div class="hint">Scan each unit into the box, close it, and its 2D box label prints right away — label it, stack it. Finish deducts the whole shipment once.</div></div>
+        <button class="action" onclick="packOpen()" style="background:#127a7a">Open packing</button>
+      </div>
+      <div id="packArea" style="display:none;margin-top:12px"></div>
+    </div>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">📄 Upload Amazon Shipment Plan (easiest)</div>
       <div class="hint" style="margin-bottom:10px">Download the shipment plan TSV from Seller Central and upload it here. It reads the Shipment ID, all items, and quantities automatically — then deducts from on-hand and clears those items from Prepped.</div>
@@ -913,6 +921,154 @@ function api(path, opts={}) {
   // A non-JSON reply (proxy error page, server restarting) rejects, so the
   // caller's .catch shows an error instead of a false "done".
   return fetch(path, opts).then(r => r.json().catch(() => { throw new Error('Server error ' + r.status); }));
+}
+// ---- PACK BOXES & 2D LABELS (Ship to FBA) ----
+// One box at a time: scan units in, enter pallet / weight / size, "Close box"
+// prints its 2D label (PDF417, Amazon's AMZN,PO:… format from the server,
+// lib/pack.js) so it's labelled before it goes on the pallet. The last box
+// size and pallet are remembered on this device.
+let _pack=null;
+function packOpen(){
+  const el=document.getElementById('packArea'); el.style.display='block';
+  if(_pack&&_pack.sid) return packLoad(_pack.sid);
+  api('/api/pack/list').then(d=>{
+    const open=((d&&d.shipments)||[]).filter(x=>x.status==='packing');
+    el.innerHTML='<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">'
+      +'<label style="flex:1;min-width:200px">Shipment ID (from Send to Amazon)<input id="packSid" placeholder="FBA18XRL8GV5" autocomplete="off" style="text-transform:uppercase"></label>'
+      +'<label style="flex:1;min-width:200px">Name (optional)<input id="packName" placeholder="Sept pallet 2" autocomplete="off"></label>'
+      +'<button class="action" onclick="packStart()" style="background:#127a7a">Start / resume</button></div>'
+      +(open.length?'<div class="hint" style="margin-top:8px">Packing now: '+open.map(x=>'<a href="#" onclick="event.preventDefault();packLoad(\''+esc(x.shipment_id)+'\')"><b>'+esc(x.shipment_id)+'</b></a>'+(x.name?' ('+esc(x.name)+')':'')+' · '+x.boxes+' box'+(x.boxes===1?'':'es')).join(' &nbsp; ')+'</div>':'');
+  }).catch(e=>{ el.innerHTML='<div class="hint" style="color:#c0392b">Could not load: '+esc(e.message)+'</div>'; });
+}
+function packStart(){
+  const sid=(document.getElementById('packSid').value||'').trim(), name=(document.getElementById('packName').value||'').trim();
+  api('/api/pack/start',{method:'POST',body:JSON.stringify({shipmentId:sid,name})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Could not start',true); return; }
+    if(d.alreadyPosted>0) alert('Heads up: '+d.shipment.shipment_id+' already has '+d.alreadyPosted+' units deducted (pack slip or plan file). You can print labels, but Finish will refuse to deduct it again.');
+    packShow(d);
+  }).catch(e=>toast('Could not start: '+e.message,true));
+}
+function packLoad(sid){
+  document.getElementById('packArea').style.display='block';
+  return api('/api/pack/'+encodeURIComponent(sid)).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not found',true); _pack=null; return packOpen(); } packShow(d); })
+    .catch(e=>toast('Could not load: '+e.message,true));
+}
+function packDefaults(){ try{ return JSON.parse(localStorage_get('packDefaults')||'{}'); }catch(e){ return {}; } }
+function packShow(d){
+  const sid=d.shipment.shipment_id, done=d.shipment.status!=='packing';
+  const boxes=d.boxes.filter(b=>b.items.length||b.status==='open');
+  // The box being packed: the first open box, else a new one after the last.
+  let cur=d.boxes.find(b=>b.status==='open');
+  const nextNo=(d.boxes.reduce((m,b)=>Math.max(m,b.box_no),0))+1;
+  _pack={sid, view:d, box: cur?cur.box_no:nextNo};
+  const dft=packDefaults(), cb=cur||{box_no:nextNo, items:[], pallet_no:dft.pallet||1, len:dft.len, wid:dft.wid, hgt:dft.hgt, weight_lb:null, units:0, warnings:[]};
+  const v=(x)=>x==null?'':x;
+  let h='<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">'
+    +'<div><b style="font-size:17px">'+esc(sid)+'</b> '+(d.shipment.name?'<span class="hint">'+esc(d.shipment.name)+'</span>':'')+(done?' <span class="badge received">Finished — stock deducted</span>':'')+'</div>'
+    +'<button class="action" onclick="_pack=null;packOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button></div>';
+  if(!done){
+    const lines=cb.items.map(i=>'<tr><td style="padding:5px 6px;border-top:1px solid #eef2f6">'+esc(String(i.name||i.asin).slice(0,70))+'<div class="hint" style="font-family:monospace">'+esc(i.fnsku)+'</div></td>'
+      +'<td style="padding:5px 6px;border-top:1px solid #eef2f6;text-align:right;white-space:nowrap"><input type="number" min="0" value="'+i.qty+'" onchange="packLine(\''+esc(i.asin)+'\',this.value)" style="width:70px;padding:6px;font-weight:800;text-align:center"> <button class="copybtn" title="Remove" onclick="packLine(\''+esc(i.asin)+'\',0)">✕</button></td></tr>').join('');
+    h+='<div style="background:#f4fbfb;border:2px solid #127a7a;border-radius:10px;padding:12px">'
+      +'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b style="font-size:20px">Box '+cb.box_no+'</b><span class="hint">'+cb.units+' unit'+(cb.units===1?'':'s')+' in this box</span></div>'
+      +'<div style="display:flex;gap:8px;margin-top:8px"><input id="packScan" placeholder="Scan FNSKU label (or type) → Enter" autocomplete="off" style="flex:1;font-size:17px;padding:12px" onkeydown="if(event.key===\'Enter\'){event.preventDefault();packScan();}">'
+      +'<input id="packQty" type="number" min="1" value="1" title="How many of this item (1 per scan)" style="width:80px;font-size:17px;padding:12px;text-align:center"></div>'
+      +(lines?'<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px">'+lines+'</table>':'<div class="hint" style="margin-top:8px">Empty — scan the first unit.</div>')
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:flex-end">'
+        +'<label style="width:80px">Pallet #<input id="packPallet" type="number" min="1" value="'+v(cb.pallet_no||dft.pallet||1)+'"></label>'
+        +'<label style="width:100px">Weight (lb)<input id="packW" type="number" min="0" step="0.1" value="'+v(cb.weight_lb)+'"></label>'
+        +'<label style="width:230px">Box size L × W × H (in)<span style="display:flex;gap:4px"><input id="packL" type="number" min="0" step="0.1" value="'+v(cb.len)+'"><input id="packWd" type="number" min="0" step="0.1" value="'+v(cb.wid)+'"><input id="packH" type="number" min="0" step="0.1" value="'+v(cb.hgt)+'"></span></label>'
+        +'<button class="action" onclick="packClose()" style="flex:1;min-width:200px;background:#127a7a;font-size:16px">✅ Close box '+cb.box_no+' &amp; print label</button></div>'
+      +'</div>';
+  }
+  const closed=d.boxes.filter(b=>b.status==='closed'&&b.items.length);
+  if(closed.length){
+    const pal={}; for(const b of closed){ const k=b.pallet_no||'—'; pal[k]=pal[k]||{boxes:0,lb:0,units:0}; pal[k].boxes++; pal[k].lb+=b.weight_lb||0; pal[k].units+=b.units; }
+    const tot={}; for(const b of closed) for(const i of b.items){ tot[i.fnsku]=tot[i.fnsku]||{name:i.name,qty:0}; tot[i.fnsku].qty+=i.qty; }
+    h+='<div style="margin-top:12px"><b>Boxes ('+closed.length+')</b> <span class="hint">'+Object.entries(pal).map(([k,p])=>'Pallet '+esc(k)+': '+p.boxes+' boxes, '+p.units+' units, '+Math.round(p.lb*10)/10+' lb').join(' · ')+'</span>'
+      +'<table style="width:100%;border-collapse:collapse;font-size:13px;margin-top:6px"><tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 6px">Box</td><td>Pallet</td><td>Contents</td><td style="text-align:right">Units</td><td style="text-align:right">Weight</td><td style="text-align:right">Size</td><td></td></tr>'
+      +closed.map(b=>'<tr><td style="padding:5px 6px;border-top:1px solid #eef2f6"><b>'+b.box_no+'</b></td><td style="border-top:1px solid #eef2f6">'+esc(v(b.pallet_no))+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;font-size:12px">'+b.items.map(i=>esc(String(i.name||i.asin).slice(0,32))+' <b>×'+i.qty+'</b>').join('<br>')+(b.warnings.length?'<div style="color:#b7791f">⚠ '+b.warnings.map(esc).join(' ')+'</div>':'')+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;text-align:right;font-weight:800">'+b.units+'</td><td style="border-top:1px solid #eef2f6;text-align:right">'+(b.weight_lb!=null?b.weight_lb+' lb':'—')+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;text-align:right;white-space:nowrap">'+(b.len?b.len+'×'+b.wid+'×'+b.hgt:'—')+'</td>'
+        +'<td style="border-top:1px solid #eef2f6;text-align:right;white-space:nowrap"><button class="action" onclick="packReprint('+b.box_no+')" style="padding:5px 9px;font-size:11px;background:#1a2b4a">🖨 Reprint</button>'
+        +(done?'':' <button class="action" onclick="packReopen('+b.box_no+')" style="padding:5px 9px;font-size:11px;background:#eef2f6;color:#1f2733">Reopen</button>')+'</td></tr>').join('')+'</table>'
+      +'<div class="hint" style="margin-top:6px">Shipment total: '+Object.entries(tot).map(([f,t])=>esc(String(t.name||f).slice(0,28))+' <b>'+t.qty+'</b>').join(' · ')+'</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'
+      +'<button class="action" onclick="packCopyBoxes()" style="background:#5a6472">📋 Copy box weights &amp; sizes (for Send to Amazon)</button>'
+      +(done?'':'<button class="action danger" onclick="packFinish()" style="flex:1;min-width:240px">Finish shipment — deduct '+closed.reduce((n,b)=>n+b.units,0)+' units from On Hand</button>')+'</div></div>';
+  }
+  document.getElementById('packArea').innerHTML=h;
+  const sc=document.getElementById('packScan'); if(sc) sc.focus();
+}
+function packScan(){
+  const el=document.getElementById('packScan'), code=(el.value||'').trim(), qty=parseInt(document.getElementById('packQty').value)||1;
+  if(!code) return;
+  el.value=''; el.disabled=true;
+  api('/api/pack/scan',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:_pack.sid, boxNo:_pack.box, code, qty})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast('NOT added: '+((d&&d.error)||'error'),true); el.disabled=false; el.focus(); return; }
+    toast('+'+d.qty+' '+String(d.product.name||'').slice(0,40)+' (now '+d.boxQty+' in box '+_pack.box+')');
+    document.getElementById('packQty').value=1;
+    packLoad(_pack.sid);
+  }).catch(e=>{ toast('NOT added — connection problem: '+e.message,true); el.disabled=false; el.focus(); });
+}
+function packLine(asin, qty){
+  api('/api/pack/box/line',{method:'POST',body:JSON.stringify({shipmentId:_pack.sid, boxNo:_pack.box, asin, qty:parseInt(qty)||0})}).then(d=>{
+    if(!d||d.ok===false){ toast('Not changed: '+((d&&d.error)||'error'),true); } packLoad(_pack.sid);
+  }).catch(e=>toast('Not changed: '+e.message,true));
+}
+function packClose(){
+  const g=id=>document.getElementById(id).value;
+  const meta={shipmentId:_pack.sid, boxNo:_pack.box, pallet:g('packPallet'), weight:g('packW'), len:g('packL'), wid:g('packWd'), hgt:g('packH')};
+  if(!meta.weight && !confirm('No weight entered for box '+_pack.box+'. Close it anyway?')) return;
+  if(Number(meta.weight)>50 && !confirm('Box '+_pack.box+' is over 50 lb — Amazon needs a Team Lift label (or split it). Close anyway?')) return;
+  api('/api/pack/box/meta',{method:'POST',body:JSON.stringify(meta)}).then(d=>{
+    if(!d||d.ok===false){ throw new Error((d&&d.error)||'could not save weight/size'); }
+    return api('/api/pack/box/close',{method:'POST',body:JSON.stringify({shipmentId:_pack.sid, boxNo:_pack.box})});
+  }).then(d=>{
+    if(!d||d.ok===false){ toast('Box NOT closed: '+((d&&d.error)||'error'),true); return; }
+    try{ localStorage_set('packDefaults', JSON.stringify({pallet:meta.pallet, len:meta.len, wid:meta.wid, hgt:meta.hgt})); }catch(e){}
+    const box=_pack.box;
+    return packLoad(_pack.sid).then(()=>packReprint(box));
+  }).catch(e=>toast('Box NOT closed: '+e.message,true));
+}
+function packReopen(n){
+  if(!confirm('Reopen box '+n+'? Change it, then close it again and put the NEW label over the old one.')) return;
+  api('/api/pack/box/reopen',{method:'POST',body:JSON.stringify({shipmentId:_pack.sid, boxNo:n})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); packLoad(_pack.sid); });
+}
+function packFinish(){
+  const v=_pack.view, closed=v.boxes.filter(b=>b.status==='closed'&&b.items.length), units=closed.reduce((n,b)=>n+b.units,0);
+  if(!confirm('Finish '+_pack.sid+'?\n\n'+closed.length+' boxes, '+units+' units move from On Hand to In Transit (duos count as their bottles). This happens once — boxes can\'t be changed after.')) return;
+  api('/api/pack/finish',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:_pack.sid})}).then(d=>{
+    if(!d||d.ok===false){ toast('NOT finished: '+((d&&(d.message||d.error))||'error'),true); return; }
+    toast('Done: '+d.units+' units in '+d.boxes+' boxes moved to In Transit'); packLoad(_pack.sid); try{ loadProducts(); }catch(e){}
+  }).catch(e=>toast('NOT finished — connection problem: '+e.message,true));
+}
+function packCopyBoxes(){
+  const rows=_pack.view.boxes.filter(b=>b.status==='closed'&&b.items.length).map(b=>['Box '+b.box_no, 'Pallet '+(b.pallet_no||''), (b.weight_lb||'')+' lb', b.len?b.len+' x '+b.wid+' x '+b.hgt+' in':'', b.units+' units'].join('\t'));
+  copyText(rows.join('\n'));
+}
+// 4×6 label: box number, pallet, weight/size, the PDF417, and what's inside.
+// PDF417 per Amazon: error correction level 6, rows 3 modules tall, module
+// width ≥ 0.020 in (drawn at 0.022 in so a 203 dpi printer can't round below).
+function packReprint(n){
+  const b=_pack.view.boxes.find(x=>x.box_no===n); if(!b||!b.barcode){ toast((b&&b.barcodeError)||'No label for that box',true); return; }
+  const w=window.open('','_blank','width=460,height=720'); if(!w){ toast('Popup blocked — allow popups to print',true); return; }
+  const list=b.items.map(i=>'<tr><td>'+esc(i.fnsku)+'</td><td>'+esc(String(i.name||'').slice(0,34))+'</td><td style="text-align:right"><b>'+i.qty+'</b></td></tr>').join('');
+  w.document.write('<!DOCTYPE html><html><head><title>Box '+n+' — '+esc(_pack.sid)+'</title>'
+    +'<script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
+    +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;width:4in;height:6in;padding:0.18in;display:flex;flex-direction:column;gap:0.06in}'
+    +'.top{display:flex;justify-content:space-between;align-items:baseline}.bx{font-size:30pt;font-weight:900}.pl{font-size:15pt;font-weight:800}.meta{font-size:9pt}#bc{display:flex;justify-content:center;margin:0.05in 0}'
+    +'table{width:100%;border-collapse:collapse;font-size:7.5pt}td{padding:1px 2px;border-top:1px solid #999;font-family:Arial}td:first-child{font-family:monospace;white-space:nowrap}.err{color:#c00;font-size:12pt}</style></head><body>'
+    +'<div class="top"><div class="bx">BOX '+n+'</div><div class="pl">'+(b.pallet_no?'PALLET '+b.pallet_no:'')+'</div></div>'
+    +'<div class="meta"><b>'+esc(_pack.sid)+'</b>'+(_pack.view.shipment.name?' · '+esc(_pack.view.shipment.name):'')+' · '+b.units+' units'+(b.weight_lb?' · '+b.weight_lb+' lb':'')+(b.len?' · '+b.len+'×'+b.wid+'×'+b.hgt+' in':'')+'</div>'
+    +'<div id="bc"></div><table>'+list+'</table>'
+    +'<script>(function(){try{var svg=bwipjs.toSVG({bcid:"pdf417",text:'+JSON.stringify(b.barcode)+',eclevel:6,columns:5,rowmult:3,scaleX:1,scaleY:1});'
+    +'var d=document.getElementById("bc");d.innerHTML=svg;var s=d.querySelector("svg");var vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");'
+    +'s.style.width=(vb.width*0.022)+"in";s.style.height=(vb.height*0.022)+"in";s.setAttribute("data-text",'+JSON.stringify(b.barcode)+');'
+    +'setTimeout(function(){window.print();},300);}catch(e){document.getElementById("bc").innerHTML="<div class=err>Could not draw the barcode: "+String(e.message||e).replace(/</g,"&lt;")+"</div>";}})();<\/script>'
+    +'</body></html>');
+  w.document.close();
 }
 // ---- OFFLINE QUEUE ----
 // When the warehouse Wi-Fi drops, a receive / ship / prep scan is kept on
