@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prod-four-extras-0927';
+const BUILD_ID = 'prod-duo-fields-0927';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1384,6 +1384,12 @@ async function packView(sid, opts = {}) {
       planned: it.qty, produced: made, left: Math.max(0, it.qty - made), over: Math.max(0, made - it.qty), expiration: it.expiration || null,
       unitWeight: p ? p.unit_weight_lb : null, weightSrc: p ? p.unit_weight_src : null, caseQty: p ? p.case_qty : null,
       len: p ? p.case_len : null, wid: p ? p.case_wid : null, hgt: p ? p.case_hgt : null });
+  }
+  // Duos (bundles) get a tint in the shipment list, like the rest of the app.
+  const planAsins = plan.map(r => r.asin).filter(Boolean);
+  if (planAsins.length) {
+    const duo = new Set((await pool.query('SELECT DISTINCT bundle_asin FROM inv_bundles WHERE bundle_asin = ANY($1)', [planAsins])).rows.map(r => r.bundle_asin));
+    for (const r of plan) r.isDuo = !!(r.asin && duo.has(r.asin));
   }
   // Packed but NOT in Amazon's shipment: a mistake to catch before it ships.
   for (const a of Object.keys(produced)) if (planItems.length && !inPlan.has(a)) plan.push({ asin: a, known: true, notInShipment: true, name: P[a] ? P[a].name : a, fnsku: P[a] && P[a].fnsku, planned: 0, produced: produced[a], left: 0, over: produced[a] });
