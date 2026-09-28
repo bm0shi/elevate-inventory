@@ -137,3 +137,13 @@ test('pack later: the floor\'s pallets become the freight pallets', () => {
   assert.strictEqual(p[0].weight, Math.ceil(2 * (20 + 1.5 + 0.5) + 70));
   assert.strictEqual(p[1].height, 30);   // tape-measured
 });
+
+test('prep owner: Amazon\'s refusal says which products need prep by seller (first real plan)', () => {
+  const msg = 'Amazon 400 on POST /inboundPlans: {"errors":[{"code":"BadRequest","message":"ERROR: 1S-RXVQ-W2YL requires prepOwner but NONE was assigned. Accepted values: [AMAZON, SELLER]","details":""},'
+    + '{"code":"BadRequest","message":"ERROR: TTS 16.9 does not require prepOwner but SELLER was assigned. Accepted values: [NONE]","details":""}]}';
+  assert.deepStrictEqual(ib.ownerFixes(msg, ['1S-RXVQ-W2YL', 'TTS 16.9', 'WP-N569-M1HX']),
+    { '1S-RXVQ-W2YL': { prepOwner: 'SELLER' }, 'TTS 16.9': { prepOwner: 'NONE' } });
+  assert.deepStrictEqual(ib.ownerFixes('Amazon 500: timeout', ['A']), {});
+  const body = ib.planBody({ items: [{ msku: 'A', qty: 1, prepOwner: 'SELLER' }, { msku: 'B', qty: 2 }], source: {}, marketplaceId: 'M', prepOwner: 'NONE' }).body;
+  assert.deepStrictEqual(body.items.map(i => i.prepOwner), ['SELLER', 'NONE']);
+});
