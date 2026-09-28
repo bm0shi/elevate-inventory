@@ -4148,17 +4148,30 @@ function ssAttackHtml(d, sellers, us){
     return {asin:r.asin, title:(l&&l.title)||r.title||(o&&o.name)||r.asin, brand:(l&&l.brand)||r.brand||'', units, rev, listRev, price, bb:bbc,
       ourUnits, ourRev, ourBB:ur&&ur.buyBoxPct!=null?Math.min(100,ur.buyBoxPct):null, carried, gap:rev!=null?rev-(ourRev||0):null};
   });
-  const tot=sl=>rowsOf(sl).reduce((t,r)=>t+(r.rev||0),0);
+  // Hidden ASINs / brands (saved for the owner) drop out of the list and the totals.
+  const H=d.hidden||{asins:[],brands:[]}, hA=new Set(H.asins||[]), hB=new Set(H.brands||[]);
+  const isHidden=r=>hA.has(r.asin)||hB.has(r.brand||'(no brand)');
+  const rowsVis=sl=>rowsOf(sl).filter(r=>!isHidden(r));
+  const tot=sl=>rowsVis(sl).reduce((t,r)=>t+(r.rev||0),0);
+  const brands=[...new Set(comp.flatMap(sl=>rowsOf(sl).map(r=>r.brand||'(no brand)')))].sort();
   let h='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-end">'
     +'<div><b style="font-size:17px">🎯 Attack list — one seller at a time</b><div class="hint">Their products, biggest monthly revenue first, with your sales right beside each. Go after the top of each list first.</div></div></div>'
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+comp.map(sl=>'<button class="action" onclick="window._ssAtk=window._ssSellers['+sellers.indexOf(sl)+'].seller;renderSmartScout()" style="padding:8px 14px;font-size:13px;border:2px solid '+sl.color+';background:'+(sl===sel?sl.color:'#fff')+';color:'+(sl===sel?'#fff':'#1f2733')+'">'+esc(sl.seller)+' <span style="opacity:0.8;font-weight:600">'+ssMoney(tot(sl))+'/mo</span></button>').join('')+'</div>';
-  const rows=ssSortRows('atk',rowsOf(sel),{title:r=>r.title,listRev:r=>r.listRev,rev:r=>r.rev,units:r=>r.units,bb:r=>r.bb,price:r=>r.price,ourUnits:r=>r.ourUnits,ourRev:r=>r.ourRev,ourBB:r=>r.ourBB,gap:r=>r.gap,carried:r=>r.carried?1:0},{k:'rev',d:-1});
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-top:10px"><span class="hint" style="font-weight:800">Brands:</span>'
+    +brands.map(b=>{ const off=hB.has(b); return '<button onclick="ssHideBrand(decodeURIComponent(\''+encodeURIComponent(b)+'\'))" title="'+(off?'Show':'Hide')+' every '+esc(b)+' product" style="cursor:pointer;border-radius:999px;padding:4px 11px;font-size:12px;font-weight:800;border:1.5px solid '+(off?'#cfd8e3':'#127a7a')+';background:'+(off?'#fff':'#e3f4f4')+';color:'+(off?'#9aa6b2':'#127a7a')+';text-decoration:'+(off?'line-through':'none')+'">'+(off?'':'✓ ')+esc(b)+'</button>'; }).join('')
+    +(hA.size?' <button onclick="window._ssShowHidden=!window._ssShowHidden;renderSmartScout()" style="cursor:pointer;margin-left:8px;border:1px solid #c0392b;color:#c0392b;background:#fff;border-radius:6px;padding:4px 10px;font-size:12px;font-weight:800">'+(window._ssShowHidden?'Done':'Hidden ('+hA.size+')')+'</button>':'')+'</div>';
+  if(window._ssShowHidden&&hA.size){
+    const nm={}; comp.forEach(sl=>rowsOf(sl).forEach(r=>nm[r.asin]=r.title));
+    h+='<div style="margin-top:8px;padding:10px;border:1px dashed #c0392b;border-radius:8px;background:#fff8f7"><b style="font-size:13px">Hidden products</b> <span class="hint">tap to bring one back</span>'
+      +[...hA].map(a=>'<div style="display:flex;gap:8px;align-items:center;margin-top:5px;font-size:12.5px"><button onclick="ssHideAsin(\''+esc(a)+'\',false)" style="cursor:pointer;border:1px solid #127a7a;color:#127a7a;background:#fff;border-radius:6px;padding:2px 8px;font-weight:800">↩ Restore</button> <span style="font-family:monospace">'+esc(a)+'</span> '+esc(String(nm[a]||'').slice(0,80))+'</div>').join('')+'</div>';
+  }
+  const rows=ssSortRows('atk',rowsVis(sel),{title:r=>r.title,listRev:r=>r.listRev,rev:r=>r.rev,units:r=>r.units,bb:r=>r.bb,price:r=>r.price,ourUnits:r=>r.ourUnits,ourRev:r=>r.ourRev,ourBB:r=>r.ourBB,gap:r=>r.gap,carried:r=>r.carried?1:0},{k:'rev',d:-1});
   const T=k=>rows.reduce((t,r)=>t+(r[k]||0),0);
   const td='padding:8px;border-top:1px solid #eef2f6;text-align:right;white-space:nowrap';
   h+='<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1200px;margin-top:12px;box-shadow:none;border-radius:0"><tr>'
     +'<th style="padding:9px 8px;background:#eef2f6;position:static;border-bottom:2px solid #1f2733;color:#1f2733;font-size:11px">#</th>'
     +ssTh('atk','title','PRODUCT','left')+ssTh('atk','listRev','LISTING REVENUE / MO')+ssTh('atk','rev','THEIR REVENUE / MO')+ssTh('atk','units','THEIR UNITS / MO')+ssTh('atk','bb','THEIR BUY BOX')+ssTh('atk','price','THEIR PRICE')
-    +ssTh('atk','ourUnits','YOUR UNITS / MO')+ssTh('atk','ourRev','YOUR REVENUE / MO')+ssTh('atk','ourBB','YOUR BUY BOX')+ssTh('atk','gap','GAP / MO')+ssTh('atk','carried','YOU SELL IT?','center')+'</tr>'
+    +ssTh('atk','ourUnits','YOUR UNITS / MO')+ssTh('atk','ourRev','YOUR REVENUE / MO')+ssTh('atk','ourBB','YOUR BUY BOX')+ssTh('atk','gap','GAP / MO')+ssTh('atk','carried','YOU SELL IT?','center')+'<th style="padding:9px 8px;background:#eef2f6;position:static;border-bottom:2px solid #1f2733;color:#1f2733;font-size:11px">HIDE</th></tr>'
     +rows.map((r,i)=>'<tr style="'+(r.carried?'':'background:#fbf7ff')+'"><td style="'+td+';text-align:center;color:#8a97a6;font-weight:800">'+(i+1)+'</td>'
       +'<td style="padding:8px;border-top:1px solid #eef2f6;min-width:280px">'+amzLink(r.asin,r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
       +'<td style="'+td+';color:#5a6472">'+ssMoney(r.listRev)+'</td><td style="'+td+';font-weight:900;font-size:14px;color:'+sel.color+'">'+ssMoney(r.rev)+'</td><td style="'+td+'">'+(r.units==null?'—':Math.round(r.units).toLocaleString())+'</td>'
@@ -4167,13 +4180,28 @@ function ssAttackHtml(d, sellers, us){
       +'<td style="'+td+';color:#127a7a;font-weight:800">'+(r.ourRev==null?(r.carried?'$0':'—'):ssMoney(r.ourRev))+'</td>'
       +'<td style="'+td+'">'+(r.ourBB==null?'—':r.ourBB.toFixed(1)+'%')+'</td>'
       +'<td style="'+td+';font-weight:800;color:'+(r.gap>0?'#c0392b':'#1e8449')+'">'+(r.gap==null?'—':(r.gap>0?'':'+')+ssMoney(Math.abs(r.gap)))+'</td>'
-      +'<td style="'+td+';text-align:center">'+(r.carried?'<span style="color:#1e8449;font-weight:800">✓ yes</span>':'<span style="color:#7a4fb5;font-weight:800">not yet</span>')+'</td></tr>').join('')
+      +'<td style="'+td+';text-align:center">'+(r.carried?'<span style="color:#1e8449;font-weight:800">✓ yes</span>':'<span style="color:#7a4fb5;font-weight:800">not yet</span>')+'</td>'
+      +'<td style="'+td+';text-align:center"><button onclick="ssHideAsin(\''+esc(r.asin)+'\',true)" title="Hide this product from the attack list (every seller)" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button></td></tr>').join('')
     +'<tr style="background:#f6f8fa"><td style="'+td+';border-top:2px solid #1f2733"></td><td style="padding:8px;border-top:2px solid #1f2733;font-weight:900">TOTAL · '+rows.length+' products</td>'
       +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:800;color:#5a6472">'+ssMoney(T('listRev'))+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:900;font-size:15px">'+ssMoney(T('rev'))+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:800">'+Math.round(T('units')).toLocaleString()+'</td><td style="'+td+';border-top:2px solid #1f2733"></td><td style="'+td+';border-top:2px solid #1f2733"></td>'
       +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#127a7a">'+Math.round(T('ourUnits')).toLocaleString()+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#127a7a">'+ssMoney(T('ourRev'))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td>'
-      +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#c0392b">'+ssMoney(rows.reduce((t,r)=>t+Math.max(0,r.gap||0),0))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td></tr>'
+      +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#c0392b">'+ssMoney(rows.reduce((t,r)=>t+Math.max(0,r.gap||0),0))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td><td style="'+td+';border-top:2px solid #1f2733"></td></tr>'
     +'</table><div class="hint" style="margin-top:6px">Their revenue is SmartScout\'s monthly estimate for that seller on the product (their Offers file); listing revenue is the whole listing (brand file: all sellers + Amazon); their units = listing units × their Buy Box %. Your units are your real sales (last '+d.salesDays+' days, per month); your revenue = your units × your price (from your own seller file when you\'ve uploaded one, else their price), so it\'s an estimate. Gap = their revenue − yours (red = they out-earn you). Purple rows are products you don\'t sell yet. Click any header to sort.</div></div>';
   return h;
+}
+// Hide / restore on the attack list; saved on the server for the owner.
+function ssSaveHidden(h){
+  window._ss.hidden=h; renderSmartScout();
+  ownerApi('/api/smartscout/hidden',{method:'POST',body:JSON.stringify(h)}).then(d=>{ if(!d||d.ok===false) toast('Not saved: '+((d&&d.error)||'error'),true); })
+    .catch(e=>toast('Not saved: '+e.message,true));
+}
+function ssHideAsin(asin, hide){
+  const h=Object.assign({asins:[],brands:[]}, window._ss.hidden||{}), s=new Set(h.asins);
+  hide?s.add(asin):s.delete(asin); h.asins=[...s]; if(!h.asins.length) window._ssShowHidden=false; ssSaveHidden(h);
+}
+function ssHideBrand(b){
+  const h=Object.assign({asins:[],brands:[]}, window._ss.hidden||{}), s=new Set(h.brands);
+  s.has(b)?s.delete(b):s.add(b); h.brands=[...s]; ssSaveHidden(h);
 }
 function renderSmartScout(){
   const d=window._ss, box=document.getElementById('ssBody');

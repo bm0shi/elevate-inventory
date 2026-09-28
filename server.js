@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = '3p-avg-onhand-0928';
+const BUILD_ID = 'ss-attack-hide-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6217,8 +6217,19 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
   // seller-by-seller view — seller files include listings no brand file has.
   const oursOnSellers = {};
   for (const s of Object.values(sellers)) for (const r of s.rows) if (ours[r.asin] && !oursOnSellers[r.asin]) oursOnSellers[r.asin] = ours[r.asin];
-  res.json({ ok: true, listings, sellers: Object.values(sellers), ours: oursOnSellers, salesDays: velDays,
+  const hid = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='ss_attack_hidden'")).rows[0];
+  const hidden = (hid && hid.data) || { asins: [], brands: [] };
+  res.json({ ok: true, listings, sellers: Object.values(sellers), ours: oursOnSellers, hidden, salesDays: velDays,
     asOf: { keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at } });
+});
+
+// Attack list: ASINs and brands the owner doesn't care about (e.g. sellers'
+// non-Paul Mitchell products). Hidden for every seller; can be restored.
+app.post('/api/smartscout/hidden', ownerAuth, async (req, res) => {
+  const clean = (a, re) => [...new Set((Array.isArray(a) ? a : []).map(x => String(x || '').trim()).filter(x => re.test(x)))].slice(0, 2000);
+  const data = { asins: clean(req.body.asins, /^[A-Z0-9]{10}$/i).map(x => x.toUpperCase()), brands: clean(req.body.brands, /^.{1,80}$/) };
+  await saveCache('ss_attack_hidden', data);
+  res.json({ ok: true, hidden: data });
 });
 
 // "Check with Amazon" for one product: ask Amazon about its SKUs right now
