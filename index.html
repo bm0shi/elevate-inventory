@@ -4113,9 +4113,79 @@ function ssSplit(l, sellers){
   return xs.map(x=>'<div style="white-space:nowrap'+(x.sl.isUs?';font-weight:800;color:#127a7a':'')+'"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+x.sl.color+'"></span> '
     +(x.r.buyBoxPct!=null?x.r.buyBoxPct.toFixed(1)+'%':'—')+' '+esc(x.sl.isUs?'You':x.sl.seller.slice(0,18))+(x.r.price!=null?' <span class="hint">$'+Number(x.r.price).toFixed(2)+'</span>':'')+'</div>').join('');
 }
+// Sortable Smart Scout tables: click a header to sort (biggest first), again
+// to flip. Blanks always sort last. State per table, kept for the session.
+function ssTh(tbl,key,label,al){
+  const s=(window._ssSorts||{})[tbl]||{}, on=s.k===key;
+  return '<th onclick="ssSortBy(\''+tbl+'\',\''+key+'\')" title="Sort" style="cursor:pointer;user-select:none;padding:9px 8px;font-weight:900;font-size:11px;letter-spacing:0.3px;color:'+(on?'#127a7a':'#1f2733')+';background:#eef2f6;position:static;white-space:nowrap;border-bottom:2px solid #1f2733;text-align:'+(al||'right')+'">'+label+(on?(s.d<0?' ▼':' ▲'):' <span style="color:#b6c0cb">↕</span>')+'</th>';
+}
+function ssSortBy(tbl,key){ const S=window._ssSorts=window._ssSorts||{}, s=S[tbl]; S[tbl]=s&&s.k===key?{k:key,d:-s.d}:{k:key,d:-1}; renderSmartScout(); }
+function ssSortRows(tbl,rows,get,def){
+  const S=window._ssSorts=window._ssSorts||{}; if(!S[tbl]) S[tbl]=def; const s=S[tbl], g=get[s.k]; if(!g) return rows;
+  return rows.sort((a,b)=>{ const x=g(a), y=g(b);
+    if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1;
+    return typeof x==='string'?-s.d*String(x).localeCompare(String(y)):s.d*(x-y); });
+}
+const ssMoney=v=>v==null||!isFinite(v)?'—':'$'+Math.round(v).toLocaleString();
+// One competitor's products, biggest earners first, with ours beside each:
+// where to attack first. Their revenue is SmartScout's; ours is our units
+// (Velocity) × our price (our seller file, else the listing price) — est.
+function ssAttackHtml(d, sellers, us){
+  const comp=sellers.filter(s=>!s.isUs); if(!comp.length) return '';
+  const all={}; d.listings.forEach(l=>all[l.asin]=l);
+  const sel=comp.find(s=>s.seller===window._ssAtk)||comp[0];
+  // In SmartScout's Offers export "Monthly Revenue" is the whole LISTING's
+  // (every seller's file shows the same number for an ASIN), so a seller's
+  // own revenue = listing revenue × their Buy Box %. Buy Box % sometimes
+  // comes through above 100 — capped.
+  const rowsOf=sl=>sl.rows.map(r=>{
+    const l=all[r.asin], price=r.price, bbc=r.buyBoxPct!=null?Math.min(100,r.buyBoxPct):null;
+    const listRev=r.revenue!=null?r.revenue:null;
+    const rev=listRev!=null?(bbc!=null?listRev*bbc/100:listRev):null;
+    const units=l&&l.pie&&bbc!=null?l.pie.units*bbc/100:(rev!=null&&price>0?rev/price:r.units);
+    const o=(d.ours||{})[r.asin], ourUnits=o?o.monthly:(l&&l.carried?l.ourMonthly:null), carried=!!o||!!(l&&l.carried);
+    const ur=us&&us.by[r.asin], ourPrice=(ur&&ur.price)||price||(l&&l.pie&&l.pie.price)||null;
+    const ourRev=ourUnits!=null&&ourPrice!=null?ourUnits*ourPrice:null;
+    return {asin:r.asin, title:(l&&l.title)||r.title||(o&&o.name)||r.asin, brand:(l&&l.brand)||r.brand||'', units, rev, listRev, price, bb:bbc,
+      ourUnits, ourRev, ourBB:ur&&ur.buyBoxPct!=null?Math.min(100,ur.buyBoxPct):null, carried, gap:rev!=null?rev-(ourRev||0):null};
+  });
+  const tot=sl=>rowsOf(sl).reduce((t,r)=>t+(r.rev||0),0);
+  let h='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-end">'
+    +'<div><b style="font-size:17px">🎯 Attack list — one seller at a time</b><div class="hint">Their products, biggest monthly revenue first, with your sales right beside each. Go after the top of each list first.</div></div></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+comp.map(sl=>'<button class="action" onclick="window._ssAtk=window._ssSellers['+sellers.indexOf(sl)+'].seller;renderSmartScout()" style="padding:8px 14px;font-size:13px;border:2px solid '+sl.color+';background:'+(sl===sel?sl.color:'#fff')+';color:'+(sl===sel?'#fff':'#1f2733')+'">'+esc(sl.seller)+' <span style="opacity:0.8;font-weight:600">'+ssMoney(tot(sl))+'/mo</span></button>').join('')+'</div>';
+  const rows=ssSortRows('atk',rowsOf(sel),{title:r=>r.title,listRev:r=>r.listRev,rev:r=>r.rev,units:r=>r.units,bb:r=>r.bb,price:r=>r.price,ourUnits:r=>r.ourUnits,ourRev:r=>r.ourRev,ourBB:r=>r.ourBB,gap:r=>r.gap,carried:r=>r.carried?1:0},{k:'rev',d:-1});
+  const T=k=>rows.reduce((t,r)=>t+(r[k]||0),0);
+  const td='padding:8px;border-top:1px solid #eef2f6;text-align:right;white-space:nowrap';
+  h+='<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:1200px;margin-top:12px;box-shadow:none;border-radius:0"><tr>'
+    +'<th style="padding:9px 8px;background:#eef2f6;position:static;border-bottom:2px solid #1f2733;color:#1f2733;font-size:11px">#</th>'
+    +ssTh('atk','title','PRODUCT','left')+ssTh('atk','listRev','LISTING REVENUE / MO')+ssTh('atk','rev','THEIR REVENUE / MO')+ssTh('atk','units','THEIR UNITS / MO')+ssTh('atk','bb','THEIR BUY BOX')+ssTh('atk','price','THEIR PRICE')
+    +ssTh('atk','ourUnits','YOUR UNITS / MO')+ssTh('atk','ourRev','YOUR REVENUE / MO')+ssTh('atk','ourBB','YOUR BUY BOX')+ssTh('atk','gap','GAP / MO')+ssTh('atk','carried','YOU SELL IT?','center')+'</tr>'
+    +rows.map((r,i)=>'<tr style="'+(r.carried?'':'background:#fbf7ff')+'"><td style="'+td+';text-align:center;color:#8a97a6;font-weight:800">'+(i+1)+'</td>'
+      +'<td style="padding:8px;border-top:1px solid #eef2f6;min-width:280px">'+amzLink(r.asin,r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
+      +'<td style="'+td+';color:#5a6472">'+ssMoney(r.listRev)+'</td><td style="'+td+';font-weight:900;font-size:14px;color:'+sel.color+'">'+ssMoney(r.rev)+'</td><td style="'+td+'">'+(r.units==null?'—':Math.round(r.units).toLocaleString())+'</td>'
+      +'<td style="'+td+'">'+(r.bb==null?'—':r.bb.toFixed(1)+'%')+'</td><td style="'+td+'">'+(r.price==null?'—':'$'+Number(r.price).toFixed(2))+'</td>'
+      +'<td style="'+td+';color:#127a7a;font-weight:800">'+(r.ourUnits==null?(r.carried?'0':'—'):Math.round(r.ourUnits).toLocaleString())+'</td>'
+      +'<td style="'+td+';color:#127a7a;font-weight:800">'+(r.ourRev==null?(r.carried?'$0':'—'):ssMoney(r.ourRev))+'</td>'
+      +'<td style="'+td+'">'+(r.ourBB==null?'—':r.ourBB.toFixed(1)+'%')+'</td>'
+      +'<td style="'+td+';font-weight:800;color:'+(r.gap>0?'#c0392b':'#1e8449')+'">'+(r.gap==null?'—':(r.gap>0?'':'+')+ssMoney(Math.abs(r.gap)))+'</td>'
+      +'<td style="'+td+';text-align:center">'+(r.carried?'<span style="color:#1e8449;font-weight:800">✓ yes</span>':'<span style="color:#7a4fb5;font-weight:800">not yet</span>')+'</td></tr>').join('')
+    +'<tr style="background:#f6f8fa"><td style="'+td+';border-top:2px solid #1f2733"></td><td style="padding:8px;border-top:2px solid #1f2733;font-weight:900">TOTAL · '+rows.length+' products</td>'
+      +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:800;color:#5a6472">'+ssMoney(T('listRev'))+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:900;font-size:15px">'+ssMoney(T('rev'))+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:800">'+Math.round(T('units')).toLocaleString()+'</td><td style="'+td+';border-top:2px solid #1f2733"></td><td style="'+td+';border-top:2px solid #1f2733"></td>'
+      +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#127a7a">'+Math.round(T('ourUnits')).toLocaleString()+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#127a7a">'+ssMoney(T('ourRev'))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td>'
+      +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#c0392b">'+ssMoney(rows.reduce((t,r)=>t+Math.max(0,r.gap||0),0))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td></tr>'
+    +'</table><div class="hint" style="margin-top:6px">Listing revenue is SmartScout\'s monthly revenue for the whole listing (all sellers + Amazon); their revenue = listing revenue × their Buy Box % (capped at 100%), their units = that ÷ their price. Your units are your real sales (last '+d.salesDays+' days, per month); your revenue = your units × your price (from your own seller file when you\'ve uploaded one, else their price), so it\'s an estimate. Gap = their revenue − yours (red = they out-earn you). Purple rows are products you don\'t sell yet. Click any header to sort.</div></div>';
+  return h;
+}
 function renderSmartScout(){
   const d=window._ss, box=document.getElementById('ssBody');
-  if(!d.listings.length){ box.innerHTML='<div class="box hint">No brand files yet. Upload the SmartScout "Products" export for each brand above.</div>'; return; }
+  if(!d.listings.length){
+    // No brand files: the attack list still works from the seller files alone.
+    const sl0=[...d.sellers].sort((a,b)=>(b.isUs-a.isUs)||a.seller.localeCompare(b.seller));
+    sl0.forEach((sl,i)=>{ sl.color=sl.isUs?SS_COLORS[0]:SS_COLORS[1+((i-(sl0[0]&&sl0[0].isUs?1:0))%(SS_COLORS.length-1))]; sl.by={}; sl.rows.forEach(r=>sl.by[r.asin]=r); });
+    window._ssSellers=sl0;
+    box.innerHTML='<div class="box hint">No brand files yet. Upload the SmartScout "Products" export for each brand above for the pie and listing views.</div>'+ssAttackHtml(d, sl0, sl0.find(x=>x.isUs));
+    return;
+  }
   const n=v=>Math.round(v||0).toLocaleString(), pct=v=>(v==null||!isFinite(v))?'—':(v<0.1?(v*100).toFixed(1):Math.round(v*100))+'%';
   const mine=d.listings.filter(l=>l.carried && l.pie);
   const sum=(arr,f)=>arr.reduce((t,x)=>t+(f(x)||0),0);
@@ -4168,16 +4238,15 @@ function renderSmartScout(){
       }).join('')+'</table><div class="hint" style="margin-top:6px">"Share of pie" = their units on your listings ÷ the pie on those listings. "Avg Buy Box %" is their share of the whole listing, Amazon included.</div></div>';
   }
 
-  // Your slice by listing
-  const rows=mine.map(l=>{ const ours=l.ourMonthly||0; return Object.assign({},l,{ours, share:l.pie.pie>0?ours/l.pie.pie:null, missing:l.pie.fair-ours}); });
-  const sk=window._ssSort||'missing', SORT={missing:r=>r.missing, pie:r=>r.pie.pie, share:r=>r.share==null?9:r.share, units:r=>r.pie.units};
-  rows.sort((a,b)=>sk==='share'?SORT[sk](a)-SORT[sk](b):SORT[sk](b)-SORT[sk](a));
+  h+=ssAttackHtml(d, sellers, us);
+
+  // Your slice by listing (click a header to sort)
+  const rows=ssSortRows('slice', mine.map(l=>{ const ours=l.ourMonthly||0; return Object.assign({},l,{ours, share:l.pie.pie>0?ours/l.pie.pie:null, missing:l.pie.fair-ours}); }),
+    {title:r=>r.title||r.asin, units:r=>r.pie.units, amz:r=>r.pie.amazonPct, pie:r=>r.pie.pie, s3p:r=>r.pie.sellers3P, fair:r=>r.pie.fair, you:r=>r.ourMonthly, share:r=>r.share, missing:r=>r.missing, price:r=>r.pie.price}, {k:'missing',d:-1});
   const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
-  const so=(v,t)=>'<option value="'+v+'"'+(sk===v?' selected':'')+'>'+t+'</option>';
-  h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center"><b>Your slice, listing by listing</b>'
-    +'<label class="hint">Sort by <select onchange="window._ssSort=this.value;renderSmartScout()" style="padding:5px">'+so('missing','Most missing vs fair share')+so('pie','Biggest pie')+so('share','Smallest share')+so('units','Listing sales')+'</select></label></div>'
-    +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px;margin-top:6px"><tr class="hint" style="text-transform:uppercase;font-size:11px">'
-    +'<td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Listing sells / mo</td><td style="padding:6px 8px;text-align:right">Amazon</td><td style="padding:6px 8px;text-align:right">Pie / mo</td><td style="padding:6px 8px;text-align:right">3P sellers</td><td style="padding:6px 8px;text-align:right">Fair / mo</td><td style="padding:6px 8px;text-align:right">You / mo</td><td style="padding:6px 8px;text-align:right">Your share</td><td style="padding:6px 8px;text-align:right">Missing / mo</td><td style="padding:6px 8px;text-align:right">Price</td>'+(sellers.length?'<td style="padding:6px 8px">Buy Box split</td>':'')+'</tr>'
+  h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;align-items:center"><b>Your slice, listing by listing</b><span class="hint">Click any header to sort</span></div>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:900px;margin-top:6px;box-shadow:none;border-radius:0"><tr>'
+    +ssTh('slice','title','LISTING','left')+ssTh('slice','units','LISTING SELLS / MO')+ssTh('slice','amz','AMAZON')+ssTh('slice','pie','PIE / MO')+ssTh('slice','s3p','3P SELLERS')+ssTh('slice','fair','FAIR / MO')+ssTh('slice','you','YOU / MO')+ssTh('slice','share','YOUR SHARE')+ssTh('slice','missing','MISSING / MO')+ssTh('slice','price','PRICE')+(sellers.length?'<th style="padding:9px 8px;background:#eef2f6;position:static;border-bottom:2px solid #1f2733;color:#1f2733;font-size:11px;text-align:left">BUY BOX SPLIT</th>':'')+'</tr>'
     +rows.map(r=>{
       const fairPct=1/r.pie.sellers3P, sc=r.share==null?'#8a97a6':r.share>=fairPct?'#1e8449':r.share>=fairPct/2?'#b7791f':'#c0392b';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+amzLink(r.asin, r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'

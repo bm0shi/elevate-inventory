@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ship-replace-cancel-0928';
+const BUILD_ID = 'ss-attack-list-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6211,9 +6211,13 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
   for (const u of sel.rows) {
     // Latest file per seller wins (names compared loosely).
     sellers[smartscout.sellerKey(u.seller)] = { seller: u.seller, isUs: smartscout.sellerKey(u.seller) === usKey, filename: u.filename, uploadedAt: u.uploaded_at,
-      rows: (u.rows || []).map(r => ({ asin: r.asin, units: r.sellerUnits ?? null, revenue: r.sellerRevenue ?? null, buyBoxPct: r.buyBoxPct ?? null, price: r.price ?? null, fba: r.fba ?? null })) };
+      rows: (u.rows || []).map(r => ({ asin: r.asin, title: r.title ?? null, brand: r.brand ?? null, units: r.sellerUnits ?? null, revenue: r.sellerRevenue ?? null, buyBoxPct: r.buyBoxPct ?? null, price: r.price ?? null, fba: r.fba ?? null })) };
   }
-  res.json({ ok: true, listings, sellers: Object.values(sellers), salesDays: velDays,
+  // Our sales (and name/photo) on every product a seller file lists, for the
+  // seller-by-seller view — seller files include listings no brand file has.
+  const oursOnSellers = {};
+  for (const s of Object.values(sellers)) for (const r of s.rows) if (ours[r.asin] && !oursOnSellers[r.asin]) oursOnSellers[r.asin] = ours[r.asin];
+  res.json({ ok: true, listings, sellers: Object.values(sellers), ours: oursOnSellers, salesDays: velDays,
     asOf: { keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at } });
 });
 
