@@ -1057,17 +1057,17 @@ function nsRender(){
     +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
-    h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('UNITS PER BOX')+prodTh('BOXES')+prodTh('BOX SIZE (IN)')+prodTh('BOX LB')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
+    h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('UNITS PER BOX')+prodTh('BOXES')+prodTh('BOX SIZE L × W × H (IN)')+prodTh('UNIT LB')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
       +rows.map((r,i)=>{ const per=parseInt(r.perBox)||0, q=parseInt(r.qty)||0, bx=per>0&&q>0?Math.ceil(q/per):0, ok=per>0&&r.len>0&&r.unitLb>0;
         return '<tr>'+prodTd('<b>'+esc(String(r.name||r.asin).slice(0,70))+'</b><div class="hint" style="font-family:monospace">'+esc(r.fnsku||'')+' · '+esc(r.sku||'no SKU')+'</div>','left')
           +prodTd('<input type="number" min="1" value="'+(r.qty||'')+'" oninput="_ns.items['+i+'].qty=this.value;nsTotals()" style="width:90px;text-align:center;font-size:17px;font-weight:800;padding:6px">')
           +prodTd('<input type="number" min="1" value="'+(r.perBox||'')+'" oninput="_ns.items['+i+'].perBox=this.value;nsTotals()" style="width:70px;text-align:center;font-size:15px;padding:6px">')
           +prodTd('<b id="nsBx'+i+'" style="font-size:16px">'+(bx||'—')+'</b>'+(bx&&q%per?'<div class="hint" style="font-size:11px">last box '+(q%per)+'</div>':''))
-          +prodTd(r.len?r.len+'×'+r.wid+'×'+r.hgt:'<span style="color:#c0392b;font-weight:800">missing</span>','center','white-space:nowrap')
-          +prodTd(r.unitLb&&per?(Math.round(per*r.unitLb*10)/10)+'':'<span style="color:#c0392b;font-weight:800">missing</span>')
+          +prodTd(['len','wid','hgt'].map(k=>'<input type="number" min="1" step="0.1" placeholder="'+({len:'L',wid:'W',hgt:'H'})[k]+'" value="'+(r[k]||'')+'" oninput="_ns.items['+i+'].'+k+'=+this.value||null;nsTotals()" style="width:52px;text-align:center;padding:6px;'+(r[k]?'':'border:2px solid #c0392b')+'">').join(' '),'center','white-space:nowrap')
+          +prodTd('<input type="number" min="0.01" step="0.01" placeholder="lb" value="'+(r.unitLb||'')+'" oninput="_ns.items['+i+'].unitLb=+this.value||null;nsTotals()" title="Weight of one unit (lb)" style="width:64px;text-align:center;padding:6px;'+(r.unitLb?'':'border:2px solid #c0392b')+'"><div class="hint" id="nsLb'+i+'" style="font-size:11px">'+(r.unitLb&&per?(Math.round(per*r.unitLb*10)/10)+' lb/box':'per unit')+'</div>')
           +prodTd('<input placeholder="09/26/2029" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value" style="width:110px;text-align:center;padding:6px">')
           +prodTd('<button onclick="_ns.items.splice('+i+',1);nsRender()" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>'
-          +(ok?'':'<tr><td colspan="8" style="padding:0 10px 10px"><div style="color:#c0392b;font-size:13px;font-weight:800">⚠️ Needs units per box, box size and unit weight — build one box of it in 2D Production once (they\'re saved), then add it again.</div></td></tr>'); }).join('')
+          +(ok?'':'<tr><td colspan="8" style="padding:0 10px 10px"><div style="color:#c0392b;font-size:13px;font-weight:800">⚠️ Fill in units per box, box size and unit weight — Amazon needs the box plan before it quotes. They\'re saved to the product for next time.</div></td></tr>'); }).join('')
       +'</table><div id="nsTot" style="margin-top:10px;font-size:16px;font-weight:800"></div>';
   }
   h+='<button class="action" id="nsGo" onclick="nsCreate()" style="width:100%;margin-top:14px;font-size:19px;padding:15px;background:#127a7a"'+(rows.length?'':' disabled')+'>Create plan with Amazon &amp; get destinations →</button></div>';
@@ -1075,7 +1075,8 @@ function nsRender(){
 }
 function nsTotals(){
   const t=document.getElementById('nsTot'); if(!t) return;
-  let u=0,b=0; _ns.items.forEach((r,i)=>{ const q=parseInt(r.qty)||0, per=parseInt(r.perBox)||0; u+=q; const bx=per>0&&q>0?Math.ceil(q/per):0; b+=bx; const e=document.getElementById('nsBx'+i); if(e) e.textContent=bx||'—'; });
+  let u=0,b=0; _ns.items.forEach((r,i)=>{ const q=parseInt(r.qty)||0, per=parseInt(r.perBox)||0; u+=q; const bx=per>0&&q>0?Math.ceil(q/per):0; b+=bx; const e=document.getElementById('nsBx'+i); if(e) e.textContent=bx||'—';
+    const l=document.getElementById('nsLb'+i); if(l) l.textContent=r.unitLb&&per?(Math.round(per*r.unitLb*10)/10)+' lb/box':'per unit'; });
   t.innerHTML='Total: '+u.toLocaleString()+' units · '+b+' boxes';
 }
 function nsSearch(q){
@@ -1135,7 +1136,7 @@ function nsDelAddr(){
 }
 function nsCreate(){
   const name=(document.getElementById('nsName')||{}).value||'';
-  const items=_ns.items.map(r=>({asin:r.asin, qty:parseInt(r.qty)||0, perBox:parseInt(r.perBox)||0, exp:r.exp||null}));
+  const items=_ns.items.map(r=>({asin:r.asin, qty:parseInt(r.qty)||0, perBox:parseInt(r.perBox)||0, len:r.len||null, wid:r.wid||null, hgt:r.hgt||null, unitLb:r.unitLb||null, exp:r.exp||null}));
   if(items.some(i=>!(i.qty>0))){ toast('Every product needs a quantity',true); return; }
   if(!confirm('Create this shipment plan at Amazon?\n\n'+items.length+' products · '+items.reduce((t,i)=>t+i.qty,0)+' units\n\nThis is free and can be cancelled. Amazon then shows the destination options and fees; nothing is charged until you confirm.')) return;
   const b=document.getElementById('nsGo'); if(b){ b.disabled=true; b.textContent='Sending to Amazon…'; }

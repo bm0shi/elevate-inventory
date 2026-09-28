@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'new-shipment-part2b-0928';
+const BUILD_ID = 'new-shipment-typed-box-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1981,13 +1981,24 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
     const p = by[i.asin];
     if (!p) { problems.push(`${i.asin} isn't in the catalog.`); continue; }
     if (!p.sku) { problems.push(`${p.name || p.asin}: no seller SKU on file.`); continue; }
-    const perBox = parseInt(i.perBox, 10) || p.case_qty;
-    if (!(perBox > 0 && p.len > 0 && p.wid > 0 && p.hgt > 0 && p.unit_lb > 0)) { problems.push(`${p.name || p.asin}: needs units per box, box size and unit weight (build one box of it in 2D Production once, or fill them in).`); continue; }
+    // Typed on the New shipment screen, else what 2D Production saved. Amazon
+    // needs the box plan before it quotes destinations and freight.
+    const num = (v, max) => { const n = Number(v); return n > 0 && n <= max ? Math.round(n * 100) / 100 : null; };
+    const perBox = parseInt(i.perBox, 10) > 0 && parseInt(i.perBox, 10) <= 999 ? parseInt(i.perBox, 10) : p.case_qty;
+    const len = num(i.len, 60) || p.len, wid = num(i.wid, 60) || p.wid, hgt = num(i.hgt, 60) || p.hgt, unitLb = num(i.unitLb, 60) || p.unit_lb;
+    if (!(perBox > 0 && len > 0 && wid > 0 && hgt > 0 && unitLb > 0)) { problems.push(`${p.name || p.asin}: needs units per box, box size (L × W × H) and unit weight.`); continue; }
     const exp = i.exp ? pack.normExp(i.exp) : null;
     if (i.exp && !exp) { problems.push(`${p.name || p.asin}: expiration isn't a real date.`); continue; }
-    items.push({ asin: p.asin, msku: p.sku, fnsku: p.fnsku, name: p.name, qty: parseInt(i.qty, 10), perBox, len: p.len, wid: p.wid, hgt: p.hgt, unitLb: p.unit_lb, exp });
+    items.push({ asin: p.asin, msku: p.sku, fnsku: p.fnsku, name: p.name, qty: parseInt(i.qty, 10), perBox, len, wid, hgt, unitLb, exp, _typedLb: unitLb !== p.unit_lb });
   }
   if (problems.length) return res.status(400).json({ ok: false, error: problems.join(' ') });
+  // Remember them for next time (here and in 2D Production), like building a box does.
+  for (const it of items) {
+    await pool.query(`UPDATE inv_products SET case_qty=$2, case_len=$3, case_wid=$4, case_hgt=$5,
+        unit_weight_src = CASE WHEN $7 THEN 'manual' ELSE unit_weight_src END, unit_weight_lb=$6 WHERE asin=$1`,
+      [it.asin, it.perBox, it.len, it.wid, it.hgt, it.unitLb, it._typedLb]);
+    delete it._typedLb;
+  }
   const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
   const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner, ship_from) VALUES($1,$2,$3,$4) RETURNING id', [String(b.name || '').trim().slice(0, 40) || null, JSON.stringify(items), prep, JSON.stringify(from)]);
   const id = r.rows[0].id;
