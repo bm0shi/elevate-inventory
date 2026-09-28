@@ -253,12 +253,13 @@
         <option value="nostock">Out of stock first</option>
         <option value="name">Name A→Z</option>
         <option value="name_desc">Name Z→A</option>
+        <option value="loc_asc">Location: A-1 → last</option>
         <option value="transit_desc">In Transit: high→low</option>
         <option value="rank">Best Sales Rank (hottest)</option>
-        <option value="sold_desc">Most Sold/mo</option>
-        <option value="cover_asc">Lowest Days Cover (prep first!)</option>
+        <option value="sold_desc">Most Sold / mo</option>
+        <option value="cover_asc">Prep first: lowest FBA cover, in stock</option>
         <option value="duos_desc">Duos buildable: high→low</option>
-        <option value="fba_asc">Lowest at FBA (send these!)</option>
+        <option value="fba_asc">Lowest at Amazon (send these!)</option>
         <option value="fbacover_asc">Lowest FBA days cover</option>
       </select>
       <select id="filterOnhand" onchange="renderOnhand()" style="padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px;background:#fff">
@@ -8474,8 +8475,10 @@ function prepDuo(duoAsin, i, max){
 // counts each listing separately, so this is the split the app's own transit
 // figure (bottles only) can't give. Used to decide what the next shipment
 // needs: singles, duos, or both.
-function amazonSplit(p){
-  if(!p.fba_as_of) return '';
+// The listings a bottle sells through (single + each duo it's in), with what
+// Amazon holds of each. Shared by the card's table and the On Hand sorts, so
+// a sort always uses the numbers the card shows.
+function listingRows(p){
   const byAsin=a=>(products||[]).find(x=>x.asin===a)||{};
   const onh=x=>Math.max(x.fba_onhand||0, x.fba_fulfillable||0), inb=x=>x.fba_inbound||0;
   const rows=[];
@@ -8489,6 +8492,18 @@ function amazonSplit(p){
     rows.push({label:'Duo', asin:pt.bundle_asin, per, at:onh(d), way:inb(d), name:d.name, sold:d.monthlySold});
   }
   if(p.is_bundle) rows.push({label:'Duo', asin:p.asin, per:1, at:onh(p), way:inb(p), sold:p.monthlySold});
+  return rows;
+}
+// Bottle totals across a product's listings: at Amazon, on the way, sold / mo
+// (Keepa, as in the Sold / mo column) and the best-estimate sales rate (FBA cover).
+function listingTotals(p){
+  const rows=listingRows(p);
+  return { rows, at:rows.reduce((n,r)=>n+r.at*r.per,0), way:rows.reduce((n,r)=>n+r.way*r.per,0),
+    sold:rows.reduce((n,r)=>n+(Number(r.sold)||0)*r.per,0), rate:rows.reduce((n,r)=>n+demandRate(r.asin, r.sold).mo*r.per,0) };
+}
+function amazonSplit(p){
+  if(!p.fba_as_of) return '';
+  const rows=listingRows(p);
   if(!rows.length) return '';
   const tAt=rows.reduce((n,r)=>n+r.at*r.per,0), tWay=rows.reduce((n,r)=>n+r.way*r.per,0);
   const cell='padding:4px 8px;text-align:right;font-weight:800';
@@ -8577,9 +8592,23 @@ function renderOnhand(){
   // prep and prepped), not raw on hand, or items just sent to prep kept
   // their old place and 0-available cards sat above 300+ ones.
   const av=p=>Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0));
+  // Every option in the Sort menu has a case here; an option without one
+  // used to fall through to A→Z silently (Most Sold / mo, rank, cover, FBA…).
+  const T=new Map(); const tot=p=>{ if(!T.has(p.asin)) T.set(p.asin, listingTotals(p)); return T.get(p.asin); };
+  const fbaCover=p=>{ const t=tot(p); return t.rate>0 ? (t.at+t.way)/(t.rate/30) : null; };
+  const nullsLast=(x,y)=>(x==null)-(y==null) || (x==null?0:x-y);
   list.sort((a,b)=>{
     switch(sort){
       case 'name_desc': return b.name.localeCompare(a.name);
+      case 'loc_asc': return locOrder(a.location)-locOrder(b.location) || String(a.location||'').localeCompare(String(b.location||''),undefined,{numeric:true}) || a.name.localeCompare(b.name);
+      case 'rank': return nullsLast(a.salesRank, b.salesRank) || a.name.localeCompare(b.name);
+      case 'sold_desc': return tot(b).sold-tot(a).sold || a.name.localeCompare(b.name);
+      case 'duos_desc': return duosBuildable(b)-duosBuildable(a) || a.name.localeCompare(b.name);
+      case 'fba_asc': return tot(a).at-tot(b).at || tot(b).rate-tot(a).rate || a.name.localeCompare(b.name);
+      case 'fbacover_asc': return nullsLast(fbaCover(a), fbaCover(b)) || a.name.localeCompare(b.name);
+      // Prep first: lowest FBA cover among what can be prepped now (bottles
+      // available in the warehouse); nothing available → bottom.
+      case 'cover_asc': return (av(a)>0?0:1)-(av(b)>0?0:1) || nullsLast(fbaCover(a), fbaCover(b)) || a.name.localeCompare(b.name);
       case 'onhand_desc': return av(b)-av(a) || a.name.localeCompare(b.name);
       case 'onhand_asc': return av(a)-av(b) || a.name.localeCompare(b.name);
       case 'transit_desc': return tr(b)-tr(a) || a.name.localeCompare(b.name);
