@@ -7766,21 +7766,10 @@ function drawShipments(list,b){
         ${shipCostBlock(s.shipment_id, totalSent)}
       </div>`;
     }).join('');
-    const d=window._shipCosts;
-    if(d && d.unlinked && d.unlinked.length){
-      b.innerHTML = '<div class="box" style="border:2px solid #b7791f;background:#fffdf7">'
-        +'<b style="color:#b7791f;font-size:15px">⚠ '+d.unlinked.length+' inbound fee(s) from Amazon with no shipment attached</b>'
-        +'<div class="hint">Amazon billed these but did not say which shipment. Pick one and the charge moves onto it as the actual cost.</div>'
-        +d.unlinked.map(f=>'<div style="display:flex;gap:9px;align-items:center;padding:7px 0;border-bottom:1px solid #f0ead9;flex-wrap:wrap">'
-          +'<span style="flex:1;min-width:190px;font-size:12.5px">'+(esc(f.description||'fee'))
-          +'<div style="font-size:11px;color:#8a97a6">'+(f.posted_date?String(f.posted_date).slice(0,10):'')+' · settlement '+(f.settlement_id||'—')+'</div></span>'
-          +'<b style="white-space:nowrap">$'+Math.abs(Number(f.amount)).toFixed(2)+'</b>'
-          +'<select onchange="linkShipFee('+f.id+',this.value)" style="padding:7px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12.5px">'
-          +'<option value="">— attach to shipment —</option>'
-          +list.map(s=>'<option value="'+s.shipment_id+'">'+(esc(s.shipment_name||s.shipment_id))+'</option>').join('')
-          +'</select></div>').join('')
-        +'</div>' + b.innerHTML;
-    }
+    // The "inbound fees with no shipment attached" list used to sit here. The
+    // owner doesn't want to hand-match fees (dozens a month): those fees are
+    // already counted in the P&L from the settlements; attaching one only
+    // moved it onto a shipment's per-unit cost. Removed from the screen.
   }
 }
 
