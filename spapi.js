@@ -95,8 +95,11 @@ function requeue(list, asin) {
 }
 
 // List inbound shipments updated recently, filtered to RECEIVED/CLOSED
+// CHECKED_IN is included: Seller Central says "Checked in" there, before
+// RECEIVING starts (sometimes a day or more). Asking only for RECEIVING/CLOSED
+// missed a checked-in shipment and the report said "0 checked in".
 async function getReceivedShipments(sinceDays = 45) {
-  return listInboundShipments(sinceDays, ['RECEIVING', 'CLOSED']);
+  return listInboundShipments(sinceDays, ['CHECKED_IN', 'RECEIVING', 'CLOSED']);
 }
 
 async function listInboundShipments(sinceDays, statuses) {
