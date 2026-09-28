@@ -1682,7 +1682,7 @@ function demandRate(asin, keepaSold){
   if(a && a.avg>0) return {mo:a.avg, est:true, note:'No best estimate yet: other sellers\' Smart Scout average'};
   return {mo:keepaSold||0, est:!!keepaSold, note:'No best estimate or Smart Scout average: Keepa listing sales (all sellers, includes Amazon)'};
 }
-let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo, for On Hand → Smart Scout selections
+let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo (On Hand "3P Avg / Mo", Pending Prep)
 function loadSsAvg(){
   if(loadSsAvg._busy) return Promise.resolve(); loadSsAvg._busy=true;
   return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
@@ -4134,15 +4134,14 @@ function ssAttackHtml(d, sellers, us){
   const comp=sellers.filter(s=>!s.isUs); if(!comp.length) return '';
   const all={}; d.listings.forEach(l=>all[l.asin]=l);
   const sel=comp.find(s=>s.seller===window._ssAtk)||comp[0];
-  // In SmartScout's Offers export "Monthly Revenue" is the whole LISTING's
-  // (every seller's file shows the same number for an ASIN), so a seller's
-  // own revenue = listing revenue × their Buy Box %. Buy Box % sometimes
-  // comes through above 100 — capped.
+  // An Offers export's "Monthly Revenue" is that SELLER's own revenue on the
+  // product (checked against the brand file: ours read $19.9k on a $136k/mo
+  // listing at a 12.7% Buy Box). Listing revenue comes from the brand file.
   const rowsOf=sl=>sl.rows.map(r=>{
     const l=all[r.asin], price=r.price, bbc=r.buyBoxPct!=null?Math.min(100,r.buyBoxPct):null;
-    const listRev=r.revenue!=null?r.revenue:null;
-    const rev=listRev!=null?(bbc!=null?listRev*bbc/100:listRev):null;
-    const units=l&&l.pie&&bbc!=null?l.pie.units*bbc/100:(rev!=null&&price>0?rev/price:r.units);
+    const listRev=l&&l.revenue!=null?l.revenue:null;
+    const units=l&&l.pie?ssSellerUnits(l,r):r.units;
+    const rev=r.revenue!=null?r.revenue:(units!=null&&price!=null?units*price:null);
     const o=(d.ours||{})[r.asin], ourUnits=o?o.monthly:(l&&l.carried?l.ourMonthly:null), carried=!!o||!!(l&&l.carried);
     const ur=us&&us.by[r.asin], ourPrice=(ur&&ur.price)||price||(l&&l.pie&&l.pie.price)||null;
     const ourRev=ourUnits!=null&&ourPrice!=null?ourUnits*ourPrice:null;
@@ -4173,7 +4172,7 @@ function ssAttackHtml(d, sellers, us){
       +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:800;color:#5a6472">'+ssMoney(T('listRev'))+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:900;font-size:15px">'+ssMoney(T('rev'))+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:800">'+Math.round(T('units')).toLocaleString()+'</td><td style="'+td+';border-top:2px solid #1f2733"></td><td style="'+td+';border-top:2px solid #1f2733"></td>'
       +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#127a7a">'+Math.round(T('ourUnits')).toLocaleString()+'</td><td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#127a7a">'+ssMoney(T('ourRev'))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td>'
       +'<td style="'+td+';border-top:2px solid #1f2733;font-weight:900;color:#c0392b">'+ssMoney(rows.reduce((t,r)=>t+Math.max(0,r.gap||0),0))+'</td><td style="'+td+';border-top:2px solid #1f2733"></td></tr>'
-    +'</table><div class="hint" style="margin-top:6px">Listing revenue is SmartScout\'s monthly revenue for the whole listing (all sellers + Amazon); their revenue = listing revenue × their Buy Box % (capped at 100%), their units = that ÷ their price. Your units are your real sales (last '+d.salesDays+' days, per month); your revenue = your units × your price (from your own seller file when you\'ve uploaded one, else their price), so it\'s an estimate. Gap = their revenue − yours (red = they out-earn you). Purple rows are products you don\'t sell yet. Click any header to sort.</div></div>';
+    +'</table><div class="hint" style="margin-top:6px">Their revenue is SmartScout\'s monthly estimate for that seller on the product (their Offers file); listing revenue is the whole listing (brand file: all sellers + Amazon); their units = listing units × their Buy Box %. Your units are your real sales (last '+d.salesDays+' days, per month); your revenue = your units × your price (from your own seller file when you\'ve uploaded one, else their price), so it\'s an estimate. Gap = their revenue − yours (red = they out-earn you). Purple rows are products you don\'t sell yet. Click any header to sort.</div></div>';
   return h;
 }
 function renderSmartScout(){
@@ -8154,9 +8153,10 @@ function amazonSplit(p){
     return '<td style="'+cell+';color:'+(d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449')+'"'+(d!=null?' title="'+esc('Selling ~'+Math.round(mo).toLocaleString()+'/mo · '+(note||''))+'"':'')+'>'+(d==null?'—':d+'d'+(est?'*':''))+'</td>';
   };
   const tRate=rows.reduce((n,r)=>n+rate(r).mo*r.per,0), tEst=rows.some(r=>rate(r).est);
-  // ⭐ Smart Scout selections view: AVG of the other sellers after Sold / mo.
-  const showAvg=((document.getElementById('filterOnhand')||{}).value)==='sspicks';
-  const avgTd=r=>{ if(!showAvg) return ''; const v=avgOf(r.asin); return '<td style="'+cell+';color:#7a4fb5"'+(v?' title="Average of '+v.n+' other seller'+(v.n===1?'':'s')+'"':'')+'>'+(v?'~'+Math.round(v.avg).toLocaleString():'—')+'</td>'; };
+  // 3P Avg / Mo (every view): the other sellers' average monthly sales on the
+  // listing, from their SmartScout seller files — right after Sold / mo.
+  const showAvg=true;
+  const avgTd=r=>{ if(!showAvg) return ''; const v=avgOf(r.asin); return '<td style="'+cell+';color:#c0392b;font-weight:900"'+(v?' title="Average of '+v.n+' other seller'+(v.n===1?'':'s')+'"':'')+'>'+(v?'~'+Math.round(v.avg).toLocaleString():'—')+'</td>'; };
   const tr=r=>'<tr style="border-top:1px solid #eef2f6"><td style="padding:4px 8px"><b style="color:'+(r.label==='Duo'?'#c0392b':'#1a2b4a')+'">'+r.label+'</b> <a href="https://www.amazon.com/dp/'+encodeURIComponent(r.asin)+'" target="_blank" rel="noopener" title="Open on Amazon" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">'+esc(r.asin)+'</a>'+(r.per>1?' <span class="hint">×'+r.per+' bottles</span>':'')+'</td>'
     +'<td style="'+cell+';color:#5a6472">'+(r.sold!=null?'~'+Number(r.sold).toLocaleString():'—')+'</td>'+avgTd(r)
     +'<td style="'+cell+';color:'+(r.at>0?'#127a7a':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td>'+coverTd(r.at+r.way, rate(r).mo, rate(r).est, rate(r).note)+'</tr>';
@@ -8165,7 +8165,7 @@ function amazonSplit(p){
     +'<div style="display:flex;justify-content:space-between;align-items:center;padding:0 8px 2px"><span style="font-size:10.5px;font-weight:800;letter-spacing:0.5px;color:#8a97a6">AT AMAZON BY LISTING</span>'
     +'<a href="#" onclick="amazonCheck(\''+esc(p.asin)+'\');return false" style="font-size:11.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a></div>'
     +(p.fba_amazon_asin?'<div class="hint" style="padding:0 8px 4px;color:#b7791f">Amazon files this SKU under ASIN <b>'+esc(p.fba_amazon_asin)+'</b>, not '+esc(p.asin)+' — numbers matched by SKU.</div>':'')
-    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td>'+(showAvg?'<td style="padding:2px 8px;text-align:right" title="SmartScout: average sells / mo of the other sellers'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+' — not you">AVG</td>':'')+'<td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td><td style="padding:2px 8px;text-align:right" title="Days the stock at Amazon plus on the way lasts at the best-estimate sales rate (same as Send Next). Hover a number to see what it leans on. * = rough fallback">FBA cover</td></tr>'
+    +'<table style="width:100%;border-collapse:collapse;font-size:12.5px"><tr style="font-size:10.5px;color:#8a97a6"><td style="padding:2px 8px"></td><td style="padding:2px 8px;text-align:right" title="Keepa: units bought on this listing in the past month (all sellers)">Sold / mo</td>'+(showAvg?'<td style="padding:2px 8px;text-align:right" title="SmartScout: average sells / mo of the other sellers'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+' — not you">3P Avg / Mo</td>':'')+'<td style="padding:2px 8px;text-align:right">At Amazon</td><td style="padding:2px 8px;text-align:right">On the way</td><td style="padding:2px 8px;text-align:right" title="Days the stock at Amazon plus on the way lasts at the best-estimate sales rate (same as Send Next). Hover a number to see what it leans on. * = rough fallback">FBA cover</td></tr>'
     +rows.map(tr).join('')
     +(multi?'<tr style="border-top:2px solid #d8dee6"><td style="padding:4px 8px;font-weight:800">Total bottles</td><td></td>'+(showAvg?'<td></td>':'')+'<td style="'+cell+'">'+tAt+'</td><td style="'+cell+'">'+tWay+'</td>'+coverTd(tAt+tWay, tRate, tEst, 'all listings together, bottles')+'</tr>':'')
     +'</table></div>';
@@ -8272,7 +8272,9 @@ function renderOnhand(){
               ? `<div style="display:flex;align-items:center;gap:8px;margin-top:6px">${dp.image?`<img src="${esc(dp.image)}" onerror="this.style.display='none'" style="width:48px;height:48px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid #e2e8f0">`:''}${dp.fnsku?`<span style="font-size:10px;font-weight:800;color:#8a97a6">FNSKU</span><span onclick="copyText('${esc(dp.fnsku)}',this)" title="Tap to copy" style="cursor:pointer;font-family:monospace;font-weight:800;font-size:13px">${esc(dp.fnsku)}</span>`:''}</div>` : ''; })()}
             ${(()=>{ const dp=(products||[]).find(x=>x.asin===pt.bundle_asin)||{};
               // This duo listing's monthly sales (Keepa, all sellers) — same figure as the table below.
-              return `<div style="margin-top:5px;font-size:12px;color:#5a6472"><span style="font-size:10px;font-weight:800;color:#8a97a6">SOLD / MO</span> <b style="color:#1a2b4a;font-size:13px">${dp.monthlySold!=null?'~'+Number(dp.monthlySold).toLocaleString():'—'}</b></div>`; })()}
+              const av=ssAvg&&ssAvg.avg&&ssAvg.avg[pt.bundle_asin];
+              return `<div style="margin-top:5px;font-size:12px;color:#5a6472"><span style="font-size:10px;font-weight:800;color:#8a97a6">SOLD / MO</span> <b style="color:#1a2b4a;font-size:13px">${dp.monthlySold!=null?'~'+Number(dp.monthlySold).toLocaleString():'—'}</b>`
+                +` <span style="margin-left:10px;font-size:10px;font-weight:800;color:#c0392b" title="SmartScout: average monthly sales of the other sellers on this duo listing (not you)">3P AVG / MO</span> <b style="color:#c0392b;font-size:13px;font-weight:900">${av&&av.avg!=null?'~'+Math.round(av.avg).toLocaleString():'—'}</b></div>`; })()}
           </div>`;
         }).join('');
       }

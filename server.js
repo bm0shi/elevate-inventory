@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ss-attack-list-0928';
+const BUILD_ID = '3p-avg-onhand-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6201,7 +6201,7 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
   const brand = await ssBrandRows();
   const sellerFiles = await ssSellerFiles();
   const listings = Object.values(brand).map(ss => ({
-    asin: ss.asin, title: ss.title, brand: ss.brand, subcategory: ss.subcategory, parentAsin: ss.parentAsin,
+    asin: ss.asin, title: ss.title, brand: ss.brand, subcategory: ss.subcategory, parentAsin: ss.parentAsin, revenue: ss.revenue ?? null,
     carried: !!ours[ss.asin], ourMonthly: ours[ss.asin] ? ours[ss.asin].monthly : null,
     pie: ssListing(ss, mkt[ss.asin], sellerFiles, !!ours[ss.asin]),
   }));
