@@ -78,3 +78,17 @@ test('parseCosmoInvoice reads the new format (description on the line above) and
   assert.equal(r.items[0].qty_shipped, 12);
   assert.match(r.items[0].description, /Awapuhi/);
 });
+
+test('invoice lines flagged Y parse like N (570366 Awapuhi gallon, 9/17/26 invoice)', () => {
+  const text = `9/17/26  Beauty Systems Group\nFOR ORDER NUMBER: 261964502\n  ITEM  DESCRIPTION  ORDERED  PRICE  SHIPPED  EXTENDED\n`
+    + `    570364    PM AWAPUHI SHAMPOO             LITER          240        15.58      240      3,739.20     N\n`
+    + `    570366    PM AWAPUHI SHAMPOO             GAL             90        50.42       90      4,537.80     Y\n`
+    + `    570941    COLOR PROTECT CONDITIONER LITERLITER          180        15.58\n`;
+  const o = parseInvoiceText(text).get('261964502');
+  assert.deepStrictEqual(o.rejected, []);
+  const gal = o.items.find(i => i.cosmo_num === '570366');
+  assert.strictEqual(gal.qty_shipped, 90); assert.strictEqual(gal.unit_cost, 50.42);
+  const bo = o.items.find(i => i.cosmo_num === '570941');
+  assert.strictEqual(bo.not_shipped, true); assert.strictEqual(bo.qty_shipped, 0);   // ordered, not shipped
+  assert.ok(parseCosmoInvoice(text).items.some(i => i.cosmo_num === '570366' && i.qty_shipped === 90));
+});
