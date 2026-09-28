@@ -162,3 +162,16 @@ test('expiration: Amazon\'s "Expiration date required" names the SKUs (first rea
   assert.deepStrictEqual(ib.expiryNeeded(msg, ['1S-RXVQ-W2YL', 'WP-N569-M1HX', 'OTHER']), ['1S-RXVQ-W2YL', 'WP-N569-M1HX']);
   assert.deepStrictEqual(ib.expiryNeeded('Amazon 500', ['A']), []);
 });
+
+test('freight estimate: pallets guessed from saved cases, or Amazon package size in a standard carton', () => {
+  const e = ib.estimatePallets([
+    { msku: 'A', units: 60, unitLb: 2, perBox: 6, len: 12, wid: 10, hgt: 8 },        // 10 saved cases
+    { msku: 'B', units: 100, unitLb: 1, cuft: 0.035 },                                // 1.75 cu ft × 80% / 0.035 = 40 per carton → 3
+    { msku: 'C', units: 5 }]);                                                        // no weight: can't estimate
+  assert.deepStrictEqual(e.missing, ['C']);
+  assert.strictEqual(e.pallets.length, 1);
+  assert.strictEqual(e.pallets[0].boxes, 13);
+  assert.strictEqual(e.pallets[0].weight, Math.ceil(60 * 2 + 100 + 13 * 1.5 + 160 * 0.05 + 70));
+  // Heavy enough for two pallets under the 1,450 lb safe limit.
+  assert.strictEqual(ib.estimatePallets([{ msku: 'H', units: 1200, unitLb: 2, perBox: 12, len: 12, wid: 10, hgt: 8 }]).pallets.length, 2);
+});

@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'new-shipment-auto-prep-0928';
+const BUILD_ID = 'new-shipment-freight-estimate-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1958,9 +1958,83 @@ async function planPart1(id, step) {
       }
     }
     await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
+    p.placement = opts;
   }
+  if (p.placement.some(o => !o.estimate)) await estimateFreight(id, step);
   await pool.query("UPDATE inv_inbound_plans SET status='placement', step=NULL, updated_at=now() WHERE id=$1", [id]);
 }
+// Freight ESTIMATE for every destination option, so a split (lower placement
+// fee) can be weighed against one warehouse (more freight, or less) before
+// confirming. Nothing is built yet, so the pallets are guessed per shipment
+// (inboundLib.estimatePallets) and Amazon quotes its partnered LTL on them.
+// Getting quotes is free and books nothing; the real quote comes at the end
+// from the floor's pallets. One option failing doesn't stop the others.
+async function estimateFreight(id, step) {
+  const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  const S = await packSettings();
+  const cols = 'asin, sku, unit_weight_lb::float AS unit_lb, cuft::float AS cuft, case_qty, case_len::float AS len, case_wid::float AS wid, case_hgt::float AS hgt';
+  let prods = (await pool.query(`SELECT ${cols} FROM inv_products WHERE asin = ANY($1)`, [p.items.map(i => i.asin)])).rows;
+  const need = prods.filter(r => !(r.unit_lb > 0) || !(r.cuft > 0)).map(r => r.asin);
+  if (need.length) {
+    await step('Getting product sizes from Amazon…');
+    try {
+      const dims = await getItemDimensions(need);
+      for (const a of need) {
+        const r = dims[a] || {}; if (r.error) continue;
+        const cf = capacity.cubicFeet(r.dimensions), lb = capacity.unitWeightLb(r.dimensions);
+        if (cf) await pool.query('UPDATE inv_products SET cuft=$2, cuft_at=now(), cuft_error=NULL WHERE asin=$1', [a, cf]);
+        if (lb) await pool.query("UPDATE inv_products SET unit_weight_lb=$2, unit_weight_src='amazon' WHERE asin=$1 AND COALESCE(unit_weight_src,'') <> 'manual'", [a, lb]);
+      }
+      prods = (await pool.query(`SELECT ${cols} FROM inv_products WHERE asin = ANY($1)`, [p.items.map(i => i.asin)])).rows;
+    } catch (e) { console.error(`[Inbound] plan ${id} sizes:`, e.message); }
+  }
+  const bySku = {}; for (const i of p.items) { const r = prods.find(x => x.asin === i.asin); if (r) bySku[i.msku] = r; }
+  const c = p.ship_from || {};
+  const start = new Date(Date.now() + 86400000); start.setUTCHours(16, 0, 0, 0);   // tomorrow 9 AM Arizona
+  const opts = p.placement || [];
+  for (let k = 0; k < opts.length; k++) {
+    const o = opts[k];
+    await step(`Estimating freight for option ${k + 1} of ${opts.length} (${o.shipments} warehouse${o.shipments === 1 ? '' : 's'})…`);
+    try {
+      const ships = [];
+      for (const shId of o.shipmentIds) {
+        const items = await amzInbound.listShipmentItems(p.plan_id, shId);
+        const lines = items.map(it => { const r = bySku[it.msku] || {}; return { msku: it.msku, units: Number(it.quantity) || 0, unitLb: r.unit_lb, cuft: r.cuft, perBox: r.case_qty, len: r.len, wid: r.wid, hgt: r.hgt }; });
+        const est = inboundLib.estimatePallets(lines, S);
+        if (est.missing.length) throw new Error('No weight or size on file for ' + est.missing.join(', '));
+        ships.push({ shipmentId: shId, units: lines.reduce((t, l) => t + l.units, 0), pallets: est.pallets });
+      }
+      const conf = ships.map(sh => ({ shipmentId: sh.shipmentId, readyToShipWindow: { start: start.toISOString() },
+        contactInformation: { name: c.contactName, phoneNumber: String(c.phone || '').replace(/[^\d+]/g, ''), ...(c.email ? { email: c.email } : {}) },
+        pallets: inboundLib.palletsBody(sh.pallets, false) }));
+      const g = await amzInbound.generateTransportationOptions(p.plan_id, { placementOptionId: o.placementOptionId, shipmentTransportationConfigurations: conf });
+      await amzInbound.waitOperation(g.operationId, { onProgress: step });
+      const all = inboundLib.transportSummary(await amzInbound.listTransportationOptions(p.plan_id, o.placementOptionId));
+      let freight = 0;
+      for (const sh of ships) {
+        const best = all.filter(q => q.shipmentId === sh.shipmentId && q.partnered && q.cost != null && !q.preconditions.length)[0];
+        if (!best) throw new Error('Amazon gave no partnered LTL quote for one of the shipments.');
+        sh.freight = best.cost; freight += best.cost;
+      }
+      o.estimate = { freight: Math.round(freight * 100) / 100, pallets: ships.reduce((t, sh) => t + sh.pallets.length, 0),
+        weight: ships.reduce((t, sh) => t + sh.pallets.reduce((u, x) => u + x.weight, 0), 0), ships, at: new Date().toISOString() };
+    } catch (e) {
+      o.estimate = { error: String(e.message).slice(0, 300), at: new Date().toISOString() };
+    }
+    await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
+  }
+}
+// Estimate again (e.g. after the first try failed, or quotes went stale).
+app.post('/api/inbound/plans/:id/estimate', ownerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const p = (await pool.query('SELECT status, placement FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (p.status !== 'placement') return res.status(409).json({ ok: false, error: 'Estimates are only for picking a destination.' });
+  const opts = (p.placement || []).map(o => { const x = { ...o }; delete x.estimate; return x; });
+  await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
+  const started = runPlanJob(id, 'Estimating freight…', (step) => planPart1(id, step), 'part1');
+  res.json({ ok: true, started });
+});
 app.get('/api/inbound/setup', ownerAuth, async (req, res) => { res.json({ ok: true, ...(await inboundSetup()) }); });
 app.post('/api/inbound/setup', ownerAuth, async (req, res) => {
   const b = req.body || {};
