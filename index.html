@@ -1054,14 +1054,14 @@ function nsRender(){
   h+='</div>';
   const rows=_ns.items;
   h+='<div class="box"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'+inp('nsName','SHIPMENT NAME (optional)',_ns.name,2)
-    +'<label style="flex:1;min-width:200px;font-size:11px;font-weight:900;color:#5a6472" title="All prep is done by us. If Amazon says a product requires prep, pick We prep.">PREP (always by us)<select id="nsPrep" onchange="_ns.prep=this.value" style="width:100%;margin-top:3px;padding:8px;font-size:14px"><option value="NONE"'+(_ns.prep==='NONE'?' selected':'')+'>No prep needed</option><option value="SELLER"'+(_ns.prep==='SELLER'?' selected':'')+'>We prep (by seller: bag / bubble)</option></select></label></div>'
+    +'<div class="hint" style="flex:2;min-width:220px;padding-bottom:8px">Prep is set for you: the app asks Amazon which products need prep and marks those as prepped by us; the rest go as no prep.</div></div>'
     +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
     h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
       +rows.map((r,i)=>'<tr>'+prodTd('<b>'+esc(String(r.name||r.asin).slice(0,70))+'</b><div class="hint" style="font-family:monospace">'+esc(r.fnsku||'')+' · '+esc(r.sku||'no SKU')+'</div>','left')
           +prodTd('<input type="number" min="1" value="'+(r.qty||'')+'" oninput="_ns.items['+i+'].qty=this.value;nsTotals()" style="width:100px;text-align:center;font-size:17px;font-weight:800;padding:6px">')
-          +prodTd('<input placeholder="09/26/2029" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value" style="width:110px;text-align:center;padding:6px">')
+          +prodTd('<input placeholder="MM/DD/YYYY" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value;this.style.borderColor=this.value?\'\':\'#c0392b\'" style="width:110px;text-align:center;padding:6px;'+(r.needsExp&&!r.exp?'border:2px solid #c0392b':'')+'">'+(r.needsExp?'<div class="hint" style="font-size:11px;color:#c0392b;font-weight:800">Amazon requires it</div>':''))
           +prodTd('<button onclick="_ns.items.splice('+i+',1);nsRender()" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>').join('')
       +'</table><div id="nsTot" style="margin-top:10px;font-size:16px;font-weight:800"></div>';
   }
@@ -1087,7 +1087,7 @@ function nsAdd(code){
     if(!d||d.ok===false){ scanError(); toast((d&&d.error)||'Unknown product',true); return; }
     const p=d.product;
     if(_ns.items.some(x=>x.asin===p.asin)){ toast('Already on the list'); }
-    else { scanFeedback(); _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:'', exp:''}); }
+    else { scanFeedback(); _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:'', exp:'', needsExp:!!p.amz_needs_exp}); }
     _ns.name=(document.getElementById('nsName')||{}).value||_ns.name; nsRender();
     const q=document.querySelectorAll('#prodArea input[type=number]'); if(q.length) q[q.length-1].focus();
   });
@@ -1105,7 +1105,7 @@ function nsFromPending(btn){
     return Promise.all(asins.map(a=>api('/api/pack/product/'+encodeURIComponent(a)).catch(()=>null))).then(rs=>{
       let added=0;
       rs.forEach((r,k)=>{ if(!r||r.ok===false) return; const p=r.product; added++;
-        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:want[asins[k]], exp:''}); });
+        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:want[asins[k]], exp:'', needsExp:!!p.amz_needs_exp}); });
       const skipped=Object.keys(want).length-asins.length;
       toast('Added '+added+' from Pending Prep'+(skipped?' · '+skipped+' already on the list':''));
       nsRender();
@@ -1132,9 +1132,10 @@ function nsCreate(){
   const name=(document.getElementById('nsName')||{}).value||'';
   const items=_ns.items.map(r=>({asin:r.asin, qty:parseInt(r.qty)||0, exp:r.exp||null}));
   if(items.some(i=>!(i.qty>0))){ toast('Every product needs a quantity',true); return; }
+  const noExp=_ns.items.filter(r=>r.needsExp&&!r.exp); if(noExp.length){ toast('Amazon requires an expiration date for: '+noExp.map(r=>r.name||r.asin).join(', '),true); return; }
   if(!confirm('Create this shipment plan at Amazon?\n\n'+items.length+' products · '+items.reduce((t,i)=>t+i.qty,0)+' units\n\nThis is free and can be cancelled. Amazon then shows the destination options and their fees.')) return;
   const b=document.getElementById('nsGo'); if(b){ b.disabled=true; b.textContent='Sending to Amazon…'; }
-  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, prepOwner:_ns.prep, addressId:_ns.addressId})}).then(d=>{
+  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, addressId:_ns.addressId})}).then(d=>{
     if(!d||d.ok===false){ toast((d&&d.error)||'Not created',true); if(b){ b.disabled=false; b.textContent='Create plan with Amazon & get destinations →'; } return; }
     nsPlan(d.id);
   }).catch(e=>{ toast('Not created: '+e.message,true); if(b) b.disabled=false; });
@@ -1159,8 +1160,12 @@ function nsPlan(id){
       +'<div style="display:flex;gap:6px"><button class="action" onclick="clearTimeout(_nsPoll);_ns=null;prodOpen()" style="background:#5a6472">← Back</button>'
       +'<button class="action" onclick="nsCancel('+p.id+')" style="background:#fdecea;color:#c0392b">Cancel plan</button></div></div>';
     if(p.status==='working'||p.status==='new') h+='<div class="box" style="border:2px solid #2563a8;background:#f3f8fd;font-size:16px;font-weight:800;color:#2563a8">⏳ '+esc(p.step||'Working…')+'<div class="hint" style="font-weight:600">This page updates by itself. Each Amazon step can take up to a minute.</div></div>';
+    const needExp=p.status==='error'&&!p.plan_id?p.items.filter(i=>i.needsExp):[];
     if(p.status==='error') h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Amazon stopped at this step</b><div style="margin-top:6px;font-size:14px;white-space:pre-wrap">'+esc(p.error||'')+'</div>'
-      +'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button></div>';
+      +(needExp.length?needExp.map(i=>'<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap"><b style="flex:1;min-width:220px">'+esc(String(i.name||i.msku).slice(0,70))+' <span class="hint" style="font-family:monospace">'+esc(i.msku)+'</span></b>'
+          +'<label style="font-size:11px;font-weight:900;color:#5a6472">EXPIRATION<input class="nsExp" data-msku="'+esc(i.msku)+'" placeholder="MM/DD/YYYY" value="'+esc(i.exp?expText(i.exp):'')+'" style="display:block;margin-top:3px;width:130px;padding:8px;font-size:15px;text-align:center;border:2px solid #c0392b"></label></div>').join('')
+        +'<button class="action" onclick="nsSaveExp('+p.id+')" style="margin-top:12px;background:#c0392b">Save dates &amp; retry →</button>'
+        :'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button>')+'</div>';
     h+='<div class="box"><b style="font-size:16px">Steps</b>'+stepRow(done('plan'),'1. Plan created at Amazon')
       +stepRow(done('place'),'2. Destination confirmed → FBA ID',chosen&&p.placement_confirmed_at?(esc(SH.map(x=>x.fba+(x.fc?' → '+x.fc:'')).join(' · '))+' · placement fee '+(chosen.fee>0?$$(chosen.fee):'none')):'')
       +stepRow(done('floor'),'3. Boxes built & labelled, Finish pressed in 2D Production')
@@ -1267,6 +1272,11 @@ function nsConfirm(id, total){
   if(t==null) return;
   if(Math.abs(parseFloat(String(t).replace(/[$,]/g,''))-total)>0.009){ toast('Amount didn\'t match — nothing was bought',true); return; }
   ownerApi('/api/inbound/plans/'+id+'/confirm',{method:'POST',body:JSON.stringify({selections:(window._nsSel||{}).sel||{}, total})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not confirmed',true); } nsPlan(id); });
+}
+function nsSaveExp(id){
+  const exp={}; document.querySelectorAll('.nsExp').forEach(x=>{ exp[x.dataset.msku]=x.value.trim(); });
+  if(Object.values(exp).some(v=>!v)){ toast('Type every expiration date',true); return; }
+  ownerApi('/api/inbound/plans/'+id+'/exp',{method:'POST',body:JSON.stringify({exp})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'Not saved',true); nsPlan(id); });
 }
 function nsRetry(id){ ownerApi('/api/inbound/plans/'+id+'/retry',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
 function nsCancel(id){
@@ -1415,7 +1425,7 @@ function prodRender(){
         +fld('TOTAL BOXES',num('prodCount',P._count||1,1,100))
         +fld('UNIT WEIGHT (LB)<br><span style="font-weight:600;color:#5a6472">'+(P.unit_weight_src==='manual'?'typed in':P.unit_weight_src==='amazon'?'from Amazon':'not on file yet')+'</span>',num('prodW',P.unit_weight_lb||'',0.01,120))
         +fld('BOX SIZE (IN)<div style="display:flex;gap:6px;margin-top:4px">'+['L','W','H'].map(x=>'<span style="width:74px;text-align:center">'+x+'</span>').join('')+'</div>','<div style="display:flex;gap:6px">'+num('prodL',P.case_len||'',0.1,74)+num('prodWd',P.case_wid||'',0.1,74)+num('prodH',P.case_hgt||'',0.1,74)+'</div>')
-        +fld('EXPIRATION<br><span style="font-weight:600;color:#5a6472">optional</span>','<input id="prodExp" placeholder="09/26/2029" value="'+esc(prodExpDefault(row))+'" style="'+fi+';width:160px">')+'</div>'
+        +fld('EXPIRATION<br><span style="font-weight:600;color:#5a6472">optional</span>','<input id="prodExp" placeholder="MM/DD/YYYY" value="'+esc(prodExpDefault(row))+'" style="'+fi+';width:160px">')+'</div>'
         +'<div id="prodPrev" style="margin-top:12px;font-size:16px"></div>'
         +'<button class="action" id="prodMakeBtn" onclick="prodMake()" style="width:100%;margin-top:8px;font-size:18px;padding:14px;background:#127a7a">Create boxes &amp; print labels</button>';
     }

@@ -147,3 +147,18 @@ test('prep owner: Amazon\'s refusal says which products need prep by seller (fir
   const body = ib.planBody({ items: [{ msku: 'A', qty: 1, prepOwner: 'SELLER' }, { msku: 'B', qty: 2 }], source: {}, marketplaceId: 'M', prepOwner: 'NONE' }).body;
   assert.deepStrictEqual(body.items.map(i => i.prepOwner), ['SELLER', 'NONE']);
 });
+
+test('prep: Amazon\'s prep data decides — prep needed → SELLER (we do it), none → NONE', () => {
+  const o = ib.ownersFromPrepDetails([
+    { msku: 'A', prepCategory: 'FRAGILE', prepTypes: ['ITEM_BUBBLEWRAP'], prepOwnerConstraint: 'AMAZON_OR_SELLER' },
+    { msku: 'B', prepCategory: 'NONE', prepTypes: ['ITEM_NO_PREP'] },
+    { msku: 'C', prepCategory: 'UNKNOWN', prepTypes: [] },
+    { msku: 'D', prepTypes: ['ITEM_POLYBAGGING'], prepOwnerConstraint: 'AMAZON_ONLY', labelOwnerConstraint: 'AMAZON_ONLY' }]);
+  assert.deepStrictEqual(o, { A: { prepOwner: 'SELLER' }, B: { prepOwner: 'NONE' }, D: { prepOwner: 'AMAZON', labelOwner: 'AMAZON' } });
+});
+
+test('expiration: Amazon\'s "Expiration date required" names the SKUs (first real plan)', () => {
+  const msg = "Amazon refused it — FBA_INB_0180: ERROR: Expiration date required (There's an input error with the resource 'WP-N569-M1HX'.) · FBA_INB_0180: ERROR: Expiration date required (There's an input error with the resource '1S-RXVQ-W2YL'.)";
+  assert.deepStrictEqual(ib.expiryNeeded(msg, ['1S-RXVQ-W2YL', 'WP-N569-M1HX', 'OTHER']), ['1S-RXVQ-W2YL', 'WP-N569-M1HX']);
+  assert.deepStrictEqual(ib.expiryNeeded('Amazon 500', ['A']), []);
+});
