@@ -240,6 +240,42 @@ test('2D production delete: removes only the packing record, never stock', { ski
   assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [SID])).n, 0);
 });
 
+test('Amazon re-created a shipment under a new ID: the record moves, stock is not deducted twice', { skip }, async () => {
+  const OLD = 'FBAREPLOLD01', NEW = 'FBAREPLNEW01';
+  await post('/api/receive', { asin: 'TSTA', qty: 20 });
+  assert.strictEqual((await post('/api/bulk-ship', { shipmentId: OLD, items: [{ code: 'TSTA', qty: 5 }] })).status, 200);
+  await post('/api/pack/start', { shipmentId: OLD });
+  await confirmDest(OLD);
+  assert.strictEqual((await post('/api/pack/boxes', { shipmentId: OLD, asin: 'TSTA', qtyPerBox: 5, count: 1, pallet: 1, unitWeight: 1, len: 10, wid: 10, hgt: 10 })).status, 200);
+  const A = await stock('TSTA');
+  // Staff can't do it
+  assert.notStrictEqual((await post('/api/shipments/replace-id', { from: OLD, to: NEW })).status, 200);
+  const [r1, r2] = await Promise.all([post('/api/shipments/replace-id', { from: OLD, to: NEW }, { owner: true }), post('/api/shipments/replace-id', { from: OLD, to: NEW }, { owner: true })]);
+  assert.deepStrictEqual([r1.status, r2.status].sort(), [200, 404]);
+  assert.deepStrictEqual(await stock('TSTA'), A);   // no stock change
+  assert.strictEqual((await one('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [NEW])).n, 5);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_shipments WHERE shipment_id=$1', [OLD])).n, 0);
+  assert.strictEqual((await one("SELECT status FROM inv_shipments WHERE shipment_id=$1", [NEW])).status, 'in_transit');
+  // 2D Production followed it; the destination must be confirmed again before labels
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [NEW])).n, 1);
+  assert.strictEqual((await one('SELECT dest_confirmed_at FROM inv_pack_shipments WHERE shipment_id=$1', [NEW])).dest_confirmed_at, null);
+  // Posting the new ID's pack slip now is refused (already deducted)
+  assert.strictEqual((await post('/api/bulk-ship', { shipmentId: NEW, items: [{ code: 'TSTA', qty: 5 }] })).status, 409);
+  assert.deepStrictEqual(await stock('TSTA'), A);
+});
+
+test('a cancelled shipment with no replacement: deleted once, units back on hand', { skip }, async () => {
+  const SID = 'FBACANCEL001';
+  const A0 = await stock('TSTA'), B0 = await stock('TSTB');
+  await post('/api/bulk-ship', { shipmentId: SID, items: [{ code: 'TSTA', qty: 2 }, { code: 'TSTDUO', qty: 1 }] });
+  assert.deepStrictEqual(await stock('TSTA'), { onhand: A0.onhand - 3, transit: A0.transit + 3 });
+  const [c1, c2] = await Promise.all([post('/api/shipments/cancel', { shipmentId: SID }, { owner: true }), post('/api/shipments/cancel', { shipmentId: SID }, { owner: true })]);
+  assert.deepStrictEqual([c1.status, c2.status].sort(), [200, 404]);
+  assert.deepStrictEqual(await stock('TSTA'), A0);
+  assert.deepStrictEqual(await stock('TSTB'), B0);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_shipments WHERE shipment_id=$1', [SID])).n, 0);
+});
+
 test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {
   const SID = 'FBAPACKTEST3';
   await post('/api/pack/start', { shipmentId: SID });
