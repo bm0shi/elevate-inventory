@@ -421,6 +421,7 @@
       <input type="text" id="prepSearch" placeholder="Search prepped..." onkeyup="renderPrepList()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
     </div>
     <div id="prepListBox"></div>
+    <button class="action full" onclick="prepToProduction()" style="margin-top:10px;background:#127a7a;font-size:17px;padding:14px" title="Opens New shipment in 2D Production filled with everything prepped. Owner password needed. No stock changes until Finish.">🏷️ Send to production → (new shipment from everything prepped)</button>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
   <div id="prod" class="panel"><div id="prodArea"></div></div>
@@ -1004,6 +1005,7 @@ function prodHome(d){
   // owner password had been typed in this visit (e.g. by pressing Cancel), so
   // it looked empty. Reuse the owner login from Admin for this session, else
   // offer a button.
+  if(window._nsFromPreppedNext){ window._nsFromPreppedNext=false; nsOpen(()=>nsFromPrepped(null)); return; }
   if(!OWNER_PW && sessionStorage_get('adminUnlocked')==='1') OWNER_PW=sessionStorage_get('adminPw')||'';
   if(OWNER_PW) nsPlansBox();
   else { const b=document.getElementById('nsPlans'); if(b) b.innerHTML='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:16px">Shipments being created</b><div class="hint">Owner only — enter the owner password to see them.</div></div><button class="action" onclick="nsOwner().then(ok=>{ if(ok) nsPlansBox(); })" style="background:#1a2b4a">🔒 Show them</button></div>'; }
@@ -1035,10 +1037,10 @@ function nsPlansBox(){
         +prodTd('<button onclick="event.stopPropagation();nsRemove('+p.id+')" title="Remove from the app (nothing sent to Amazon)" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>').join('')+'</table></div>';
   }).catch(()=>{});
 }
-function nsOpen(){
+function nsOpen(then){
   nsOwner().then(ok=>{ if(!ok) return;
     _ns={items:[], name:'', prep:'NONE'};
-    ownerApi('/api/inbound/setup').then(d=>{ _ns.setup=d||{}; nsRender(); }).catch(e=>toast('Could not load: '+e.message,true));
+    ownerApi('/api/inbound/setup').then(d=>{ _ns.setup=d||{}; nsRender(); if(then) then(); }).catch(e=>toast('Could not load: '+e.message,true));
   });
 }
 function nsRender(){
@@ -1068,7 +1070,7 @@ function nsRender(){
   const rows=_ns.items;
   h+='<div class="box"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'+inp('nsName','SHIPMENT NAME (optional)',_ns.name,2)
     +'<div class="hint" style="flex:2;min-width:220px;padding-bottom:8px">Prep is set for you: the app asks Amazon which products need prep and marks those as prepped by us; the rest go as no prep.</div></div>'
-    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
+    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPrepped(this)" style="background:#127a7a;margin-right:8px" title="Adds everything on Prepped &amp; Ready with its prepped quantity (singles and duos as scanned). No stock changes until Finish in 2D Production.">📦 Add from Prepped &amp; Ready</button><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
     h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
@@ -1104,6 +1106,43 @@ function nsAdd(code){
     _ns.name=(document.getElementById('nsName')||{}).value||_ns.name; nsRender();
     const q=document.querySelectorAll('#prodArea input[type=number]'); if(q.length) q[q.length-1].focus();
   });
+}
+// Everything on Prepped & Ready → rows here with the prepped quantity, as
+// scanned (a single under its ASIN, a duo under the duo ASIN). Nothing moves
+// stock: bottles leave On Hand only at Finish in 2D Production, so a wrong
+// line is just removed here (or the plan cancelled). Warns when a product is
+// already on another open plan, so the same prepped units aren't pulled twice.
+function nsFromPrepped(btn){
+  _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
+  if(btn){ btn.disabled=true; btn.textContent='Adding…'; }
+  Promise.all([api('/api/prep/list'), ownerApi('/api/inbound/plans').catch(()=>null)]).then(([d,pl])=>{
+    const items=((d&&d.items)||[]).filter(i=>i.prepped>0);
+    if(!items.length){ toast('Nothing on Prepped & Ready',true); nsRender(); return; }
+    const open={}; ((pl&&pl.plans)||[]).filter(p=>['new','working','placement','building','error'].includes(p.status)).forEach(p=>(p.asins||[]).forEach(a=>{ (open[a]=open[a]||[]).push(p.name||('Plan '+p.id)); }));
+    const clash=items.filter(i=>open[i.asin]);
+    const lines=items.map(i=>'  '+i.prepped+' × '+String(i.name||i.asin).slice(0,45)+(i.isBundle?' (duo)':'')).join('\n');
+    if(!confirm('Add everything on Prepped & Ready to this shipment?\n\n'+lines
+      +(clash.length?'\n\n⚠️ Already on another open shipment: '+clash.map(i=>String(i.name||i.asin).slice(0,30)+' ('+open[i.asin].join(', ')+')').join('; ')+' — make sure the same units aren\'t sent twice.':'')
+      +'\n\nNo stock changes now — only at Finish in 2D Production. You can change quantities or remove lines before creating the plan.')){ nsRender(); return; }
+    const todo=items.filter(i=>!_ns.items.some(x=>x.asin===i.asin));
+    const same=items.filter(i=>_ns.items.some(x=>x.asin===i.asin));
+    same.forEach(i=>{ const x=_ns.items.find(y=>y.asin===i.asin); x.qty=i.prepped; });
+    return Promise.all(todo.map(i=>api('/api/pack/product/'+encodeURIComponent(i.asin)).catch(()=>null))).then(rs=>{
+      let added=0;
+      rs.forEach((r,k)=>{ if(!r||r.ok===false) return; const p=r.product; added++;
+        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:todo[k].prepped, exp:'', needsExp:!!p.amz_needs_exp}); });
+      toast('Added '+added+' from Prepped & Ready'+(same.length?' · '+same.length+' already on the list set to the prepped qty':''));
+      nsRender();
+    });
+  }).catch(e=>{ toast('Could not read Prepped & Ready: '+e.message,true); nsRender(); });
+}
+// Prepped & Ready → "Send to production": opens New shipment already filled.
+function prepToProduction(){
+  const t=[...document.querySelectorAll('.tab')].find(x=>/2D Production/.test(x.textContent));
+  // Opened once the 2D Production start page has drawn (prodHome), so that
+  // page can't land on top of New shipment.
+  _prod=null; window._nsFromPreppedNext=true;
+  if(t) t.click(); else prodOpen();
 }
 // Pending Prep items ticked "added to the shipment plan" → rows here, with
 // their quantities (same product twice is summed). Only when the button is

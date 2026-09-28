@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'dest-sorted-plans-visible-0928';
+const BUILD_ID = 'ns-from-prepped-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2066,8 +2066,11 @@ app.post('/api/inbound/setup', ownerAuth, async (req, res) => {
   res.json({ ok: true, ...(await inboundSetup()) });
 });
 app.get('/api/inbound/plans', ownerAuth, async (req, res) => {
+  // asins: what each plan holds, so New shipment can warn before the same
+  // prepped units are pulled into a second open plan.
   const r = await pool.query(`SELECT id, name, status, step, error, plan_id, created_at, updated_at,
-      (SELECT COALESCE(SUM((i->>'qty')::int),0) FROM jsonb_array_elements(items) i)::int AS units, jsonb_array_length(items) AS skus
+      (SELECT COALESCE(SUM((i->>'qty')::int),0) FROM jsonb_array_elements(items) i)::int AS units, jsonb_array_length(items) AS skus,
+      (SELECT COALESCE(jsonb_agg(i->>'asin'),'[]'::jsonb) FROM jsonb_array_elements(items) i) AS asins
     FROM inv_inbound_plans WHERE status <> 'cancelled' ORDER BY created_at DESC LIMIT 100`);
   res.json({ ok: true, plans: r.rows });
 });
