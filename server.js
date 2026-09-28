@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'onhand-sorts-all-views-0928';
+const BUILD_ID = 'dest-city-pallet-guess-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1952,29 +1952,41 @@ async function planPart1(id, step) {
     if (!opts.length) throw new Error('Amazon offered no destination option for this plan.');
     // Where each option sends the boxes (warehouse codes) — one read per shipment.
     for (const o of opts) {
-      o.destinations = [];
-      for (const shId of o.shipmentIds.slice(0, 6)) {
-        try { const sh = await amzInbound.getShipment(p.plan_id, shId); o.destinations.push((sh.destination && sh.destination.warehouseId) || '?'); } catch (e) { o.destinations.push('?'); }
+      // Warehouse code plus its city/state (the owner can't place "IAH3"),
+      // remembered with the other warehouse addresses for next time.
+      o.destinations = []; o.places = [];
+      for (const shId of o.shipmentIds.slice(0, 8)) {
+        try {
+          const sh = await amzInbound.getShipment(p.plan_id, shId);
+          const d = sh.destination || {}, a = d.address || {};
+          o.destinations.push(d.warehouseId || '?');
+          o.places.push({ fc: d.warehouseId || '?', city: a.city || '', state: a.stateOrProvinceCode || '' });
+          if (d.warehouseId && a.addressLine1) {
+            const mem = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fc_addresses'")).rows[0];
+            const m = (mem && mem.data) || {};
+            if (!m[d.warehouseId]) await saveCache('fc_addresses', Object.assign(m, { [d.warehouseId]: { name: a.name || '', line1: a.addressLine1, line2: a.addressLine2 || '', city: a.city || '', state: a.stateOrProvinceCode || '', zip: a.postalCode || '', country: a.countryCode || 'US' } }));
+          }
+        } catch (e) { o.destinations.push('?'); o.places.push({ fc: '?', city: '', state: '' }); }
       }
     }
     await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
     p.placement = opts;
   }
-  if (p.placement.some(o => !o.estimate)) await estimateFreight(id, step);
+  if (p.placement.some(o => !o.guess)) await guessPallets(id, step);
   await pool.query("UPDATE inv_inbound_plans SET status='placement', step=NULL, updated_at=now() WHERE id=$1", [id]);
 }
-// Freight ESTIMATE for every destination option, so a split (lower placement
-// fee) can be weighed against one warehouse (more freight, or less) before
-// confirming. Nothing is built yet, so the pallets are guessed per shipment
-// (inboundLib.estimatePallets) and Amazon quotes its partnered LTL on them.
-// Getting quotes is free and books nothing; the real quote comes at the end
-// from the floor's pallets. One option failing doesn't stop the others.
-async function estimateFreight(id, step) {
+// Pallet GUESS for each destination option, so a 5-warehouse split can be
+// seen as 5+ small pallets next to one big shipment before confirming. Our
+// own math only (inboundLib.estimatePallets: each product's saved case or
+// Amazon package size + unit weight, the floor's pallet limits); nothing is
+// sent to Amazon. The real pallets come from the floor at the end.
+async function guessPallets(id, step) {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   const S = await packSettings();
   const cols = 'asin, sku, unit_weight_lb::float AS unit_lb, cuft::float AS cuft, case_qty, case_len::float AS len, case_wid::float AS wid, case_hgt::float AS hgt';
-  let prods = (await pool.query(`SELECT ${cols} FROM inv_products WHERE asin = ANY($1)`, [p.items.map(i => i.asin)])).rows;
-  const need = prods.filter(r => !(r.unit_lb > 0) || !(r.cuft > 0)).map(r => r.asin);
+  const load = async () => (await pool.query(`SELECT ${cols} FROM inv_products WHERE asin = ANY($1)`, [p.items.map(i => i.asin)])).rows;
+  let prods = await load();
+  const need = prods.filter(r => !(r.unit_lb > 0) || !(r.cuft > 0 || (r.case_qty > 0 && r.len > 0))).map(r => r.asin);
   if (need.length) {
     await step('Getting product sizes from Amazon…');
     try {
@@ -1985,56 +1997,38 @@ async function estimateFreight(id, step) {
         if (cf) await pool.query('UPDATE inv_products SET cuft=$2, cuft_at=now(), cuft_error=NULL WHERE asin=$1', [a, cf]);
         if (lb) await pool.query("UPDATE inv_products SET unit_weight_lb=$2, unit_weight_src='amazon' WHERE asin=$1 AND COALESCE(unit_weight_src,'') <> 'manual'", [a, lb]);
       }
-      prods = (await pool.query(`SELECT ${cols} FROM inv_products WHERE asin = ANY($1)`, [p.items.map(i => i.asin)])).rows;
+      prods = await load();
     } catch (e) { console.error(`[Inbound] plan ${id} sizes:`, e.message); }
   }
   const bySku = {}; for (const i of p.items) { const r = prods.find(x => x.asin === i.asin); if (r) bySku[i.msku] = r; }
-  const c = p.ship_from || {};
-  const start = new Date(Date.now() + 86400000); start.setUTCHours(16, 0, 0, 0);   // tomorrow 9 AM Arizona
   const opts = p.placement || [];
   for (let k = 0; k < opts.length; k++) {
     const o = opts[k];
-    await step(`Estimating freight for option ${k + 1} of ${opts.length} (${o.shipments} warehouse${o.shipments === 1 ? '' : 's'})…`);
+    await step(`Working out pallets for option ${k + 1} of ${opts.length}…`);
     try {
       const ships = [];
       for (const shId of o.shipmentIds) {
         const items = await amzInbound.listShipmentItems(p.plan_id, shId);
         const lines = items.map(it => { const r = bySku[it.msku] || {}; return { msku: it.msku, units: Number(it.quantity) || 0, unitLb: r.unit_lb, cuft: r.cuft, perBox: r.case_qty, len: r.len, wid: r.wid, hgt: r.hgt }; });
         const est = inboundLib.estimatePallets(lines, S);
-        if (est.missing.length) throw new Error('No weight or size on file for ' + est.missing.join(', '));
-        ships.push({ shipmentId: shId, units: lines.reduce((t, l) => t + l.units, 0), pallets: est.pallets });
+        ships.push({ units: lines.reduce((t, l) => t + l.units, 0), pallets: est.pallets.length, weight: est.pallets.reduce((t, x) => t + x.weight, 0), missing: est.missing });
       }
-      const conf = ships.map(sh => ({ shipmentId: sh.shipmentId, readyToShipWindow: { start: start.toISOString() },
-        contactInformation: { name: c.contactName, phoneNumber: String(c.phone || '').replace(/[^\d+]/g, ''), ...(c.email ? { email: c.email } : {}) },
-        pallets: inboundLib.palletsBody(sh.pallets, false) }));
-      const g = await amzInbound.generateTransportationOptions(p.plan_id, { placementOptionId: o.placementOptionId, shipmentTransportationConfigurations: conf });
-      await amzInbound.waitOperation(g.operationId, { onProgress: step });
-      const all = inboundLib.transportSummary(await amzInbound.listTransportationOptions(p.plan_id, o.placementOptionId));
-      let freight = 0;
-      for (const sh of ships) {
-        const best = all.filter(q => q.shipmentId === sh.shipmentId && q.partnered && q.cost != null && !q.preconditions.length)[0];
-        if (!best) throw new Error('Amazon gave no partnered LTL quote for one of the shipments.');
-        sh.freight = best.cost; freight += best.cost;
-      }
-      o.estimate = { freight: Math.round(freight * 100) / 100, pallets: ships.reduce((t, sh) => t + sh.pallets.length, 0),
-        weight: ships.reduce((t, sh) => t + sh.pallets.reduce((u, x) => u + x.weight, 0), 0), ships, at: new Date().toISOString() };
-    } catch (e) {
-      o.estimate = { error: String(e.message).slice(0, 300), at: new Date().toISOString() };
-    }
+      o.guess = { ships, pallets: ships.reduce((t, x) => t + x.pallets, 0), weight: ships.reduce((t, x) => t + x.weight, 0), missing: [...new Set(ships.flatMap(x => x.missing))] };
+    } catch (e) { o.guess = { error: String(e.message).slice(0, 200) }; }
     await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
   }
 }
-// Estimate again (e.g. after the first try failed, or quotes went stale).
-app.post('/api/inbound/plans/:id/estimate', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/guess', ownerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
-  const p = (await pool.query('SELECT status, placement FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  const p = (await pool.query('SELECT status FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
-  if (p.status !== 'placement') return res.status(409).json({ ok: false, error: 'Estimates are only for picking a destination.' });
-  const opts = (p.placement || []).map(o => { const x = { ...o }; delete x.estimate; return x; });
-  await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
-  const started = runPlanJob(id, 'Estimating freight…', (step) => planPart1(id, step), 'part1');
-  res.json({ ok: true, started });
+  if (p.status !== 'placement') return res.status(409).json({ ok: false, error: 'Only while picking a destination.' });
+  res.json({ ok: true, started: runPlanJob(id, 'Working out pallets…', (step) => planPart1(id, step), 'part1') });
 });
+// No freight estimate per destination option: Amazon only quotes freight
+// after a placement option is confirmed (FBA_INB_0344 "No placement option
+// was confirmed" on the owner's first real plan), and confirming locks the
+// destination. Freight is quoted at the end, from the floor's pallets.
 app.get('/api/inbound/setup', ownerAuth, async (req, res) => { res.json({ ok: true, ...(await inboundSetup()) }); });
 app.post('/api/inbound/setup', ownerAuth, async (req, res) => {
   const b = req.body || {};
@@ -2055,6 +2049,12 @@ app.get('/api/inbound/plans', ownerAuth, async (req, res) => {
 app.get('/api/inbound/plans/:id', ownerAuth, async (req, res) => {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  // City/state for each warehouse code (plans made before it was stored, and
+  // the confirmed shipments), from the remembered warehouse addresses.
+  const fcMem = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fc_addresses'")).rows[0] || {}).data || {};
+  const place = (fc) => ({ fc, city: (fcMem[fc] || {}).city || '', state: (fcMem[fc] || {}).state || '' });
+  for (const o of p.placement || []) if (!o.places || o.places.some(x => !x.city)) o.places = (o.destinations || []).map((fc, k) => (o.places && o.places[k] && o.places[k].city) ? o.places[k] : place(fc));
+  for (const sh of p.shipments || []) if (sh.fc) { const x = place(sh.fc); sh.city = x.city; sh.state = x.state; }
   // While the floor builds: each shipment's progress in 2D Production.
   if (p.status === 'building' || (p.status === 'error' && p.stage === 'boxes')) {
     for (const sh of p.shipments || []) {
