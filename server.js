@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'hide-fee-matching-0928';
+const BUILD_ID = 'ship-replace-cancel-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1798,6 +1798,77 @@ app.get('/api/all-shipments', auth, async (req, res) => {
   }
   const out = ships.rows.map(s => ({ ...s, items: byShip[s.shipment_id] || [] }));
   res.json(out);
+});
+
+// ---- Amazon cancelled a shipment ----
+// Amazon sometimes cancels a shipment on its side and re-creates the same
+// units under a NEW shipment ID (FBA19PXHJ001 → FBA19R908TWY). Stock was
+// deducted once under the old ID; posting the new one would deduct it
+// again. "Replace ID" moves the whole record (units, costs, 2D Production
+// boxes) onto the new ID with no stock change. Only while in transit.
+const shipIdOk = (v) => /^[A-Z0-9]{8,20}$/.test(String(v || '').trim().toUpperCase()) ? String(v).trim().toUpperCase() : null;
+app.post('/api/shipments/replace-id', ownerAuth, async (req, res) => {
+  const from = shipIdOk(req.body.from), to = shipIdOk(req.body.to);
+  if (!from || !to || from === to) return res.status(400).json({ ok: false, error: 'Enter the cancelled shipment ID and the new one Amazon created.' });
+  const out = await withTx(async (db) => {
+    const s = (await db.query('SELECT * FROM inv_shipments WHERE shipment_id=$1 FOR UPDATE', [from])).rows[0];
+    if (!s) return { status: 404, body: { ok: false, error: `${from} isn't in the app (already replaced?). Nothing changed.` } };
+    if (s.status !== 'in_transit') return { status: 409, body: { ok: false, error: `${from} was already checked in by Amazon — it can't be swapped. Nothing changed.` } };
+    const taken = (await db.query('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [to])).rows[0].n;
+    if (taken > 0) return { status: 409, body: { ok: false, error: `${to} already has ${taken} units in the app — it was posted separately. Nothing changed.` } };
+    const packTo = (await db.query("SELECT (SELECT COUNT(*) FROM inv_pack_boxes WHERE shipment_id=$1 AND jsonb_array_length(items) > 0)::int AS n", [to])).rows[0].n;
+    if (packTo > 0) return { status: 409, body: { ok: false, error: `${to} already has boxes in 2D Production. Nothing changed.` } };
+    // New row first (items point at it), then move everything, then drop the old row.
+    await db.query('DELETE FROM inv_shipments WHERE shipment_id=$1', [to]);
+    await db.query(`INSERT INTO inv_shipments(shipment_id, shipment_name, created_at, status, received_at, has_discrepancy)
+      VALUES($1,$2,$3,'in_transit',NULL,false)`, [to, s.shipment_name, s.created_at]);
+    const items = await db.query('UPDATE inv_shipment_items SET shipment_id=$2 WHERE shipment_id=$1', [from, to]);
+    await db.query('DELETE FROM inv_shipment_costs WHERE shipment_id=$1', [to]);
+    await db.query('UPDATE inv_shipment_costs SET shipment_id=$2 WHERE shipment_id=$1', [from, to]);
+    await db.query('UPDATE inv_unlinked_fees SET linked_shipment_id=$2 WHERE linked_shipment_id=$1', [from, to]);
+    await db.query('DELETE FROM inv_shipments WHERE shipment_id=$1', [from]);
+    // 2D Production: same boxes and pallets under the new ID. Amazon may send
+    // the new one to a different warehouse, so the destination is pulled and
+    // confirmed again before any label prints (every box label carries the ID).
+    await db.query('DELETE FROM inv_pack_boxes WHERE shipment_id=$1', [to]);
+    await db.query('DELETE FROM inv_pack_shipments WHERE shipment_id=$1', [to]);
+    const pk = await db.query(`UPDATE inv_pack_shipments SET shipment_id=$2, amz=NULL, amz_error=NULL, amz_at=NULL, fc=NULL, ship_to=NULL,
+        dest_confirmed_at=NULL, amz_status=NULL, amz_status_at=NULL WHERE shipment_id=$1`, [from, to]);
+    await db.query('UPDATE inv_pack_boxes SET shipment_id=$2 WHERE shipment_id=$1', [from, to]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['checkin', '', 'Shipment ' + from + ' → ' + to, 0, 'Amazon cancelled ' + from + ' and re-created it as ' + to + ' — same units, no stock change']);
+    return { status: 200, body: { ok: true, from, to, items: items.rowCount, pack: pk.rowCount > 0 } };
+  });
+  res.status(out.status).json(out.body);
+});
+// Cancelled with no replacement: the units never left, so they go back from
+// In Transit to On Hand (as singles; duos were recorded as their bottles and
+// come back as bottles, not as prepped duos) and the shipment is removed.
+app.post('/api/shipments/cancel', ownerAuth, async (req, res) => {
+  const sid = shipIdOk(req.body.shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'bad shipment id' });
+  const out = await withTx(async (db) => {
+    const s = (await db.query('SELECT status FROM inv_shipments WHERE shipment_id=$1 FOR UPDATE', [sid])).rows[0];
+    if (!s) return { status: 404, body: { ok: false, error: `${sid} isn't in the app (already deleted?). Nothing changed.` } };
+    if (s.status !== 'in_transit') return { status: 409, body: { ok: false, error: `${sid} was already checked in by Amazon — its units are at Amazon. Nothing changed.` } };
+    const items = (await db.query(`SELECT si.asin, SUM(si.qty)::int AS qty, MAX(p.name) AS name FROM inv_shipment_items si
+      LEFT JOIN inv_products p ON p.asin = si.asin WHERE si.shipment_id=$1 AND si.asin IS NOT NULL GROUP BY si.asin`, [sid])).rows;
+    let units = 0;
+    for (const it of items) {
+      await db.query('UPDATE inv_stock SET onhand = onhand + $1, transit = GREATEST(0, transit - $1) WHERE asin=$2', [it.qty, it.asin]);
+      await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+        ['in', it.asin, it.name || it.asin, it.qty, 'Shipment ' + sid + ' cancelled — back on hand']);
+      units += it.qty;
+    }
+    await db.query('DELETE FROM inv_shipment_items WHERE shipment_id=$1', [sid]);
+    await db.query('DELETE FROM inv_shipment_costs WHERE shipment_id=$1', [sid]);
+    await db.query('UPDATE inv_unlinked_fees SET linked_shipment_id=NULL WHERE linked_shipment_id=$1', [sid]);
+    await db.query('DELETE FROM inv_shipments WHERE shipment_id=$1', [sid]);
+    await db.query('DELETE FROM inv_pack_boxes WHERE shipment_id=$1', [sid]);
+    await db.query('DELETE FROM inv_pack_shipments WHERE shipment_id=$1', [sid]);
+    return { status: 200, body: { ok: true, units } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // How long Amazon takes to start receiving our shipments (lib/checkin.js).

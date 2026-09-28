@@ -7696,6 +7696,27 @@ function alertTest(btn){
     if(bad.length) toast('Problem: '+bad.map(([k,v])=>k+' '+v).join(' · '),true); else toast('Test alert sent — check your phone');
   }).catch(e=>{ btn.disabled=false; toast('Not sent: '+e.message,true); });
 }
+// Amazon cancelled a shipment and re-created the same units under a new ID:
+// move the record over (no stock change, so nothing is deducted twice).
+function shipReplace(oldId, units){
+  const to=(prompt('Amazon cancelled '+oldId+' and re-created it.\n\nType the NEW shipment ID from Send to Amazon:')||'').trim().toUpperCase();
+  if(!to) return;
+  if(!confirm('Move '+oldId+' ('+units+' units) to '+to+'?\n\n• No stock changes — the units were already deducted once and stay that way.\n• '+oldId+' disappears; '+to+' shows in its place (Shipments, In Transit, 2D Production).\n• In 2D Production, refresh '+to+' from Amazon, confirm the destination, then REPRINT the box labels (every label carries the shipment ID).')) return;
+  ownerApi('/api/shipments/replace-id',{method:'POST',body:JSON.stringify({from:oldId,to})}).then(d=>{
+    if(!d||d.ok===false){ toast('NOT changed: '+((d&&d.error)||'error'),true); return; }
+    toast(oldId+' → '+to+': moved, no stock change'); renderShipments(); try{ loadProducts(); }catch(e){}
+  }).catch(e=>toast('NOT changed: '+e.message,true));
+}
+// Cancelled for good: the units come back from In Transit to On Hand.
+function shipCancel(id, units){
+  const typed=prompt('Delete '+id+' and put its '+units+' units back ON HAND?\n\nOnly for a shipment Amazon cancelled with NO replacement. If Amazon re-created it under a new ID, use "Amazon cancelled it & made a new ID" instead.\n\nDuos come back as their bottles (not as prepped duos).\n\nType the shipment ID to confirm:');
+  if(typed==null) return;
+  if(typed.trim().toUpperCase()!==id){ toast('ID didn\'t match — nothing changed',true); return; }
+  ownerApi('/api/shipments/cancel',{method:'POST',body:JSON.stringify({shipmentId:id})}).then(d=>{
+    if(!d||d.ok===false){ toast('NOT changed: '+((d&&d.error)||'error'),true); return; }
+    toast(id+' deleted — '+d.units+' units back on hand'); renderShipments(); try{ loadProducts(); }catch(e){}
+  }).catch(e=>toast('NOT changed: '+e.message,true));
+}
 function shipCostBlock(shipId, units){
   const d=window._shipCosts;
   if(!d) return '';   // not the owner, or costs unavailable
@@ -7764,6 +7785,9 @@ function drawShipments(list,b){
         </div>
         <div class="ship-items" id="si${i}">${rows||'<div class="ship-item-row">No items</div>'}</div>
         ${shipCostBlock(s.shipment_id, totalSent)}
+        ${s.status==='in_transit'?`<div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 14px;border-top:1px solid #eef2f6;background:#fafbfc">
+          <button class="action" onclick="shipReplace('${esc(s.shipment_id)}',${totalSent})" style="padding:7px 12px;font-size:12px;background:#2563a8">🔁 Amazon cancelled it &amp; made a new ID</button>
+          <button class="action" onclick="shipCancel('${esc(s.shipment_id)}',${totalSent})" style="padding:7px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Cancelled, no replacement: delete &amp; put units back</button></div>`:''}
       </div>`;
     }).join('');
     // The "inbound fees with no shipment attached" list used to sit here. The
