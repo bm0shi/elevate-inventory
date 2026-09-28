@@ -59,3 +59,42 @@ test('placement options: fee net of discounts, cheapest first', () => {
     { placementOptionId: 'p1', shipmentIds: ['s1'], fees: [{ value: { amount: 412.5 } }], discounts: [{ value: { amount: 12.5 } }] }]);
   assert.deepStrictEqual(s.map(x => [x.placementOptionId, x.fee, x.shipments]), [['p2', 0, 3], ['p1', 400, 1]]);
 });
+
+test('palletize: boxes stack by the floor\'s limits; pallets come out rounded up', () => {
+  const box = { weight: { value: 31.7, unit: 'LB' }, dimensions: { length: 12, width: 12, height: 10, unitOfMeasurement: 'IN' }, items: [{ msku: 'A', quantity: 12 }], quantity: 60 };
+  const p = ib.palletize([box], {});
+  assert.strictEqual(p.reduce((t, x) => t + x.boxes, 0), 60);
+  assert.ok(p.length >= 2, 'one pallet can\'t hold 60 × 31.7 lb under 1,450 lb');
+  assert.ok(p.every(x => x.weight <= 1450 && x.height <= 60));
+  const body = ib.palletsBody(p, false);
+  assert.strictEqual(body[0].stackability, 'NON_STACKABLE');
+  assert.deepStrictEqual(body[0].dimensions, { length: 48, width: 40, height: p[0].height, unitOfMeasurement: 'IN' });
+});
+
+test('freight options: partnered carrier first, then cheapest', () => {
+  const s = ib.transportSummary([
+    { transportationOptionId: 't1', shipmentId: 's', shippingSolution: 'USE_YOUR_OWN_CARRIER', shippingMode: 'FREIGHT_LTL', quote: { cost: { amount: 100 } } },
+    { transportationOptionId: 't2', shipmentId: 's', shippingSolution: 'AMAZON_PARTNERED_CARRIER', shippingMode: 'FREIGHT_LTL', carrier: { name: 'Estes' }, quote: { cost: { amount: 480.114 } } },
+    { transportationOptionId: 't3', shipmentId: 's', shippingSolution: 'AMAZON_PARTNERED_CARRIER', shippingMode: 'FREIGHT_LTL', carrier: { name: 'XPO' }, quote: { cost: { amount: 455 } } }]);
+  assert.deepStrictEqual(s.map(x => x.transportationOptionId), ['t3', 't2', 't1']);
+  assert.strictEqual(s[1].cost, 480.11);
+});
+
+test('Amazon\'s box numbers: the floor gets the numbers Amazon gave that product', () => {
+  const map = ib.amazonBoxMap([
+    { boxId: 'FBA19R908TWYU000002', items: [{ msku: 'SKU-B', quantity: 6 }] },
+    { boxId: 'FBA19R908TWYU000001', items: [{ msku: 'SKU-A', quantity: 12 }] },
+    { boxId: 'FBA19R908TWYU000003', items: [{ msku: 'SKU-A', quantity: 12 }] },
+    { boxId: 'FBA19R908TWYU000004', items: [{ msku: 'SKU-A', quantity: 6 }] }], { 'SKU-A': 'A', 'SKU-B': 'B' });
+  assert.deepStrictEqual(map.map(b => b.box_no), [1, 2, 3, 4]);
+  assert.deepStrictEqual(ib.pickAmazonBoxes(map, 'A', 12, 2, []), { boxes: [1, 3], short: 0 });
+  assert.deepStrictEqual(ib.pickAmazonBoxes(map, 'A', 12, 2, [1]), { boxes: [3], short: 1 });
+  assert.deepStrictEqual(ib.pickAmazonBoxes(map, 'A', 6, 1, []), { boxes: [4], short: 0 });   // the partial box
+  assert.deepStrictEqual(ib.pickAmazonBoxes(map, 'B', 12, 1, []), { boxes: [], short: 1 });  // wrong units per box
+});
+
+test('palletize doesn\'t count the box packaging twice (planned weights already include it)', () => {
+  const planned = ib.planBoxes([{ msku: 'A', qty: 24, perBox: 12, len: 12, wid: 12, hgt: 10, unitLb: 2.5 }], { boxPackLb: 1.5, unitPackLb: 0.05 }).boxes;
+  const p = ib.palletize(planned.map(b => ({ weight: { value: b.weight_lb, unit: 'LB' }, dimensions: { length: 12, width: 12, height: 10 }, items: [{ msku: 'A', quantity: 12 }] })), {});
+  assert.strictEqual(p[0].weight, Math.ceil(24 * 2.5 + 2 * 1.5 + 24 * 0.05 + 70));
+});
