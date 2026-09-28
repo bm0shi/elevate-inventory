@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'dest-city-pallet-guess-0928';
+const BUILD_ID = 'dest-freight-est-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1853,6 +1853,7 @@ app.get('/api/all-shipments', auth, async (req, res) => {
 // Owner only: it leads to placement and freight charges.
 // ============================================================
 const inboundLib = require('./lib/inbound');
+const freightEst = require('./lib/freight-est');
 const planJobs = new Set();
 function runPlanJob(id, label, fn, stage, args) {
   if (planJobs.has(id)) return false;
@@ -1972,7 +1973,7 @@ async function planPart1(id, step) {
     await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
     p.placement = opts;
   }
-  if (p.placement.some(o => !o.guess)) await guessPallets(id, step);
+  if (p.placement.some(o => !o.guess || o.guess.freight === undefined)) await guessPallets(id, step);
   await pool.query("UPDATE inv_inbound_plans SET status='placement', step=NULL, updated_at=now() WHERE id=$1", [id]);
 }
 // Pallet GUESS for each destination option, so a 5-warehouse split can be
@@ -2001,22 +2002,46 @@ async function guessPallets(id, step) {
     } catch (e) { console.error(`[Inbound] plan ${id} sizes:`, e.message); }
   }
   const bySku = {}; for (const i of p.items) { const r = prods.find(x => x.asin === i.asin); if (r) bySku[i.msku] = r; }
+  const cal = await freightCalibration(S);
+  const from = { city: (p.ship_from || {}).city, state: (p.ship_from || {}).state };
   const opts = p.placement || [];
   for (let k = 0; k < opts.length; k++) {
     const o = opts[k];
     await step(`Working out pallets for option ${k + 1} of ${opts.length}…`);
     try {
       const ships = [];
-      for (const shId of o.shipmentIds) {
-        const items = await amzInbound.listShipmentItems(p.plan_id, shId);
+      for (let j = 0; j < o.shipmentIds.length; j++) {
+        const items = await amzInbound.listShipmentItems(p.plan_id, o.shipmentIds[j]);
         const lines = items.map(it => { const r = bySku[it.msku] || {}; return { msku: it.msku, units: Number(it.quantity) || 0, unitLb: r.unit_lb, cuft: r.cuft, perBox: r.case_qty, len: r.len, wid: r.wid, hgt: r.hgt }; });
         const est = inboundLib.estimatePallets(lines, S);
-        ships.push({ units: lines.reduce((t, l) => t + l.units, 0), pallets: est.pallets.length, weight: est.pallets.reduce((t, x) => t + x.weight, 0), missing: est.missing });
+        const fr = freightEst.estimate(est.pallets, from, (o.places || [])[j] || {}, cal.k);
+        ships.push({ units: lines.reduce((t, l) => t + l.units, 0), pallets: est.pallets.length, weight: est.pallets.reduce((t, x) => t + x.weight, 0), missing: est.missing,
+          freight: fr ? fr.cost : null, miles: fr ? fr.miles : null });
       }
-      o.guess = { ships, pallets: ships.reduce((t, x) => t + x.pallets, 0), weight: ships.reduce((t, x) => t + x.weight, 0), missing: [...new Set(ships.flatMap(x => x.missing))] };
+      o.guess = { ships, pallets: ships.reduce((t, x) => t + x.pallets, 0), weight: ships.reduce((t, x) => t + x.weight, 0), missing: [...new Set(ships.flatMap(x => x.missing))],
+        freight: ships.every(x => x.freight != null) ? ships.reduce((t, x) => t + x.freight, 0) : null, calibratedOn: cal.n };
     } catch (e) { o.guess = { error: String(e.message).slice(0, 200) }; }
     await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
   }
+}
+// Our own shipments' real freight (settlement, per shipment) against the
+// rough rate model, so the estimate leans on what we actually pay: 2D
+// Production shipments with a known warehouse, their boxes on pallets.
+async function freightCalibration(S) {
+  try {
+    const rows = (await pool.query(`SELECT ps.shipment_id, ps.ship_to, ps.ship_from, ps.pallets AS measured, c.amount::float AS actual
+      FROM inv_pack_shipments ps JOIN inv_shipment_costs c ON c.shipment_id = ps.shipment_id AND c.kind = 'freight' AND c.amount > 0
+      WHERE ps.ship_to IS NOT NULL ORDER BY ps.created_at DESC LIMIT 60`)).rows;
+    const samples = [];
+    for (const r of rows) {
+      const boxes = (await pool.query("SELECT pallet_no, weight_lb::float AS weight_lb, len::float AS len, wid::float AS wid, hgt::float AS hgt, items FROM inv_pack_boxes WHERE shipment_id=$1 AND jsonb_array_length(items) > 0", [r.shipment_id])).rows;
+      if (!boxes.length) continue;
+      const mi = freightEst.miles({ city: (r.ship_from || {}).city, state: (r.ship_from || {}).state }, { city: r.ship_to.city, state: r.ship_to.state });
+      if (mi == null) continue;
+      samples.push({ actual: r.actual, miles: mi, pallets: inboundLib.floorPallets(boxes, S, r.measured) });
+    }
+    return freightEst.calibrate(samples);
+  } catch (e) { console.error('[Inbound] freight calibration:', e.message); return { k: 1, n: 0 }; }
 }
 app.post('/api/inbound/plans/:id/guess', ownerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
@@ -2119,6 +2144,16 @@ app.post('/api/inbound/plans/:id/exp', ownerAuth, async (req, res) => {
   await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
   runPlanJob(id, 'Sending the plan again…', (step) => planPart1(id, step), 'part1');
   res.json({ ok: true });
+});
+// Remove a plan from the app only: for one already cancelled or deleted in
+// Seller Central after its destination was confirmed (Cancel here refuses
+// then, since it would call Amazon). No Amazon call, no stock change; its
+// shipments stay in 2D Production (delete them there if wanted).
+app.post('/api/inbound/plans/:id/remove', ownerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan — wait for it to finish.' });
+  const r = await pool.query("UPDATE inv_inbound_plans SET status='cancelled', step=NULL, error=COALESCE(error,'') || ' [removed from the app by the owner]', updated_at=now() WHERE id=$1 AND status <> 'cancelled' RETURNING id", [id]);
+  res.json({ ok: true, removed: r.rowCount });
 });
 app.post('/api/inbound/plans/:id/retry', ownerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
