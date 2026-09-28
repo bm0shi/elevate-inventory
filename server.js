@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'new-shipment-prep-owner-0928';
+const BUILD_ID = 'new-shipment-auto-prep-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1013,7 +1013,8 @@ async function initDb() {
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS transport_confirmed_at TIMESTAMPTZ;
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS confirmed JSONB;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_prep_owner TEXT;    -- prep owner Amazon requires for this product (learned from a refused plan)
-      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_label_owner TEXT;         -- what was bought: fee, freight, total, FBA IDs
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_label_owner TEXT;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_needs_exp BOOLEAN;   -- Amazon requires an expiration date on inbound plans         -- what was bought: fee, freight, total, FBA IDs
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_status_at TIMESTAMPTZ;
       ALTER TABLE inv_pack_boxes ADD COLUMN IF NOT EXISTS exp TEXT;
     `);
@@ -1563,7 +1564,7 @@ app.post('/api/pack/confirm', auth, async (req, res) => {
 app.get('/api/pack/product/:code', auth, async (req, res) => {
   const prod = await resolveCode(req.params.code || '');
   if (!prod) return res.status(404).json({ ok: false, error: `Unknown barcode ${String(req.params.code || '').slice(0, 30)}` });
-  let p = (await pool.query('SELECT asin, name, image, sku, fnsku, unit_weight_lb::float AS unit_weight_lb, unit_weight_src, case_qty, case_len::float AS case_len, case_wid::float AS case_wid, case_hgt::float AS case_hgt FROM inv_products WHERE asin=$1', [prod.asin])).rows[0];
+  let p = (await pool.query('SELECT asin, name, image, sku, fnsku, unit_weight_lb::float AS unit_weight_lb, unit_weight_src, case_qty, case_len::float AS case_len, case_wid::float AS case_wid, case_hgt::float AS case_hgt, amz_needs_exp FROM inv_products WHERE asin=$1', [prod.asin])).rows[0];
   if (!(p.unit_weight_lb > 0)) {
     try {
       const d = (await getItemDimensions([p.asin]))[p.asin] || {};
@@ -1889,6 +1890,23 @@ async function planPart1(id, step) {
   if (!p.plan_id) {
     const src = inboundLib.sourceAddress(p.ship_from, p.ship_from);
     if (src.error) throw new Error(src.error);
+    // Ask Amazon which products need prep (we do it all, so: prep needed →
+    // SELLER, none → NONE). If Amazon's lookup fails, the refusal fix below
+    // still catches any product that needed it.
+    if (!p.items.some(i => i.prepChecked)) {
+      await step('Checking which products need prep…');
+      try {
+        const mp = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER', det = [];
+        const mskus = [...new Set(p.items.map(i => i.msku))];
+        for (let k = 0; k < mskus.length; k += 100) det.push(...((await amzInbound.listPrepDetails(mp, mskus.slice(k, k + 100))).mskuPrepDetails || []));
+        const own = inboundLib.ownersFromPrepDetails(det);
+        for (const i of p.items) {
+          i.prepChecked = true;
+          if (own[i.msku]) Object.assign(i, own[i.msku]);
+        }
+        await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+      } catch (e) { console.error(`[Inbound] plan ${id} prep lookup failed:`, e.message); }
+    }
     // Up to 3 tries: Amazon names each product whose prep/label owner it won't
     // accept (inboundLib.ownerFixes); those are corrected, remembered on the
     // product for next time, and the plan is sent again.
@@ -1906,6 +1924,15 @@ async function planPart1(id, step) {
         p.plan_id = r.inboundPlanId;
         break;
       } catch (e) {
+        // Expiration dates only the owner can give: mark the products (here and
+        // on the product, so the New shipment screen asks next time) and stop.
+        const needExp = inboundLib.expiryNeeded(e.message, p.items.map(i => i.msku));
+        if (needExp.length) {
+          const miss = p.items.filter(i => needExp.includes(i.msku));
+          for (const i of miss) { i.needsExp = true; await pool.query('UPDATE inv_products SET amz_needs_exp=true WHERE asin=$1', [i.asin]); }
+          await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+          throw new Error('Amazon needs the expiration date for: ' + miss.map(i => (i.name || i.msku).slice(0, 60) + ' (' + i.msku + ')').join(', ') + '. Type it below and press Save & retry.');
+        }
         const fix = inboundLib.ownerFixes(e.message, p.items.map(i => i.msku));
         const hit = p.items.filter(i => fix[i.msku]);
         if (!hit.length || attempt >= 3) throw e;
@@ -1975,7 +2002,7 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
   const from = setup.addresses.find(a => a.id === b.addressId) || setup.addresses[0];
   const src = inboundLib.sourceAddress(from, from);
   if (src.error) return res.status(400).json({ ok: false, error: src.error });
-  const prods = (await pool.query(`SELECT asin, name, sku, fnsku, amz_prep_owner, amz_label_owner FROM inv_products WHERE asin = ANY($1)`, [want.map(i => i.asin)])).rows;
+  const prods = (await pool.query(`SELECT asin, name, sku, fnsku, amz_prep_owner, amz_label_owner, amz_needs_exp FROM inv_products WHERE asin = ANY($1)`, [want.map(i => i.asin)])).rows;
   const by = {}; prods.forEach(p => by[p.asin] = p);
   const items = [], problems = [];
   for (const i of want) {
@@ -1985,16 +2012,39 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
     // Boxes are built later (pack later), so only the product and quantity are needed here.
     const exp = i.exp ? pack.normExp(i.exp) : null;
     if (i.exp && !exp) { problems.push(`${p.name || p.asin}: expiration isn't a real date.`); continue; }
+    if (!exp && p.amz_needs_exp) { problems.push(`${p.name || p.asin}: Amazon requires an expiration date for this product.`); continue; }
     // Prep/label owner Amazon insisted on last time for this product (see planPart1).
     items.push({ asin: p.asin, msku: p.sku, fnsku: p.fnsku, name: p.name, qty: parseInt(i.qty, 10), exp,
       ...(p.amz_prep_owner ? { prepOwner: p.amz_prep_owner } : {}), ...(p.amz_label_owner ? { labelOwner: p.amz_label_owner } : {}) });
   }
   if (problems.length) return res.status(400).json({ ok: false, error: problems.join(' ') });
+  // Prep owner is worked out per product (Amazon's prep data, planPart1); NONE is only the default.
   const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
   const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner, ship_from) VALUES($1,$2,$3,$4) RETURNING id', [String(b.name || '').trim().slice(0, 40) || null, JSON.stringify(items), prep, JSON.stringify(from)]);
   const id = r.rows[0].id;
   runPlanJob(id, 'Starting…', (step) => planPart1(id, step));
   res.json({ ok: true, id });
+});
+// Expiration dates Amazon asked for on a plan that stopped before it was
+// created; saved, then the plan is sent again.
+app.post('/api/inbound/plans/:id/exp', ownerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
+  const p = (await pool.query('SELECT status, plan_id, items FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (p.status !== 'error' || p.plan_id) return res.status(409).json({ ok: false, error: 'Expiration dates can only be changed before Amazon accepts the plan.' });
+  const given = (req.body && req.body.exp) || {};
+  for (const i of p.items) {
+    if (given[i.msku] == null || given[i.msku] === '') continue;
+    const e = pack.normExp(given[i.msku]);
+    if (!e) return res.status(400).json({ ok: false, error: `${i.name || i.msku}: "${String(given[i.msku]).slice(0, 20)}" isn't a real date (use MM/DD/YYYY).` });
+    i.exp = e;
+  }
+  const still = p.items.filter(i => i.needsExp && !i.exp);
+  if (still.length) return res.status(400).json({ ok: false, error: 'Still needs a date: ' + still.map(i => i.name || i.msku).join(', ') });
+  await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+  runPlanJob(id, 'Sending the plan again…', (step) => planPart1(id, step), 'part1');
+  res.json({ ok: true });
 });
 app.post('/api/inbound/plans/:id/retry', ownerAuth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
