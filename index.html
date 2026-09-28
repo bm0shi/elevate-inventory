@@ -1009,7 +1009,7 @@ function nsOwner(){
   return fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(r=>r.json())
     .then(d=>{ if(d.ok){ OWNER_PW=pw; return true; } toast('Wrong owner password',true); return false; });
 }
-const NS_STATUS={new:['STARTING','#5a6472','#eef0f3'],working:['AMAZON WORKING…','#2563a8','#e6effa'],placement:['PICK DESTINATION','#b45309','#fff3dc'],error:['NEEDS ATTENTION','#c0392b','#fdecea']};
+const NS_STATUS={new:['STARTING','#5a6472','#eef0f3'],working:['AMAZON WORKING…','#2563a8','#e6effa'],placement:['PICK DESTINATION','#b45309','#fff3dc'],pallets:['CHECK PALLETS','#b45309','#fff3dc'],quotes:['PICK FREIGHT & CONFIRM','#b45309','#fff3dc'],confirmed:['CONFIRMED','#1e8449','#e7f6ec'],error:['NEEDS ATTENTION','#c0392b','#fdecea']};
 const nsPill=st=>{ const x=NS_STATUS[st]||[String(st||'').toUpperCase(),'#5a6472','#eef0f3']; return '<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;color:'+x[1]+';background:'+x[2]+'">'+x[0]+'</span>'; };
 function nsPlansBox(){
   const el=document.getElementById('nsPlans'); if(!el) return;
@@ -1028,19 +1028,34 @@ function nsOpen(){
   });
 }
 function nsRender(){
-  const el=document.getElementById('prodArea'), S=_ns.setup||{}, f=S.shipFrom||{}, c=S.contact||{};
+  const el=document.getElementById('prodArea'), A=(_ns.setup&&_ns.setup.addresses)||[];
+  if(!_ns.addressId||!A.find(x=>x.id===_ns.addressId)) _ns.addressId=A[0]&&A[0].id;
+  const cur=A.find(x=>x.id===_ns.addressId)||{};
   const inp=(id,label,val,w)=>'<label style="display:block;flex:'+(w||1)+';min-width:120px;font-size:11px;font-weight:900;color:#5a6472;letter-spacing:0.3px">'+label+'<input id="'+id+'" value="'+esc(val||'')+'" style="width:100%;box-sizing:border-box;margin-top:3px;padding:8px;font-size:14px"></label>';
-  const srcOk=f.name&&f.line1&&f.city&&f.state&&f.zip&&c.phone;
-  let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">➕ New shipment</b><div class="hint">Pick products and quantities. The app plans the boxes from each product\'s saved units per box, box size and weight, then asks Amazon for destinations and fees. Nothing is charged until you confirm (next step).</div></div>'
+  let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">➕ New shipment</b><div class="hint">Pick products and quantities. The app plans the boxes from each product\'s saved units per box, box size and weight, then asks Amazon for destinations and fees. Nothing is charged until you confirm.</div></div>'
     +'<button class="action" onclick="_ns=null;prodOpen()" style="background:#5a6472">← Back</button></div>';
-  h+='<details class="box"'+(srcOk?'':' open')+'><summary style="cursor:pointer;font-weight:900">Ship-from &amp; contact '+(srcOk?'<span style="color:#1e8449">✓ '+esc(f.name)+', '+esc(f.city)+'</span>':'<span style="color:#c0392b">— needed (Amazon requires a phone number)</span>')+'</summary>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+inp('nsFName','BUSINESS NAME',f.name,2)+inp('nsFLine1','STREET',f.line1,2)+inp('nsFCity','CITY',f.city)+inp('nsFState','STATE',f.state)+inp('nsFZip','ZIP',f.zip)+'</div>'
-    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsCName','CONTACT NAME',c.name)+inp('nsCPhone','PHONE',c.phone)+inp('nsCEmail','EMAIL',c.email,2)+'</div>'
-    +'<button class="action" onclick="nsSaveSetup()" style="margin-top:10px;background:#1a2b4a">Save</button></details>';
+  h+='<div class="box"><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end"><label style="flex:2;min-width:280px;font-size:11px;font-weight:900;color:#5a6472;letter-spacing:0.3px">SHIP FROM'
+    +'<select onchange="_ns.addressId=this.value;_ns.editAddr=null;nsRender()" style="width:100%;margin-top:3px;padding:10px;font-size:15px;font-weight:700">'
+    +A.map(x=>'<option value="'+esc(x.id)+'"'+(x.id===_ns.addressId?' selected':'')+'>'+esc(x.name)+' — '+esc(x.line1)+(x.line2?' '+esc(x.line2):'')+', '+esc(x.city)+'</option>').join('')+'</select></label>'
+    +'<button class="action" onclick="_ns.editAddr=\''+esc(_ns.addressId)+'\';nsRender()" style="background:#eef2f6;color:#1f2733">✎ Edit</button>'
+    +'<button class="action" onclick="_ns.editAddr=\'new\';nsRender()" style="background:#eef2f6;color:#1f2733">➕ Add address</button></div>'
+    +'<div style="margin-top:8px;font-size:14px;line-height:1.45">'+esc(cur.name||'')+'<br>'+esc(cur.line1||'')+(cur.line2?', '+esc(cur.line2):'')+'<br>'+esc(cur.city||'')+', '+esc(cur.state||'')+' '+esc(cur.zip||'')
+    +'<div style="margin-top:4px"><b>Contact:</b> '+esc(cur.contactName||'—')+' · '+esc(cur.phone||'—')+(cur.email?' · '+esc(cur.email):'')+'</div></div>';
+  if(_ns.editAddr){
+    const e=_ns.editAddr==='new'?{}:(A.find(x=>x.id===_ns.editAddr)||{});
+    h+='<div style="margin-top:12px;padding:12px;border:1px dashed #127a7a;border-radius:10px;background:#f7fbfb"><b>'+(_ns.editAddr==='new'?'New ship-from address':'Edit this address')+'</b>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsAName','NAME',e.name,2)+inp('nsALine1','STREET',e.line1,2)+inp('nsALine2','SUITE',e.line2)+'</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACity','CITY',e.city)+inp('nsAState','STATE',e.state)+inp('nsAZip','ZIP',e.zip)+'</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACName','CONTACT NAME',e.contactName)+inp('nsAPhone','CONTACT PHONE',e.phone)+inp('nsAEmail','CONTACT EMAIL (optional)',e.email,2)+'</div>'
+      +'<div style="display:flex;gap:8px;margin-top:10px"><button class="action" onclick="nsSaveAddr()" style="background:#127a7a">Save address</button><button class="action" onclick="_ns.editAddr=null;nsRender()" style="background:#eef2f6;color:#1f2733">Cancel</button>'
+      +(_ns.editAddr!=='new'&&A.length>1?'<button class="action" onclick="nsDelAddr()" style="background:#fdecea;color:#c0392b;margin-left:auto">Remove</button>':'')+'</div></div>';
+  }
+  h+='</div>';
   const rows=_ns.items;
   h+='<div class="box"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'+inp('nsName','SHIPMENT NAME (optional)',_ns.name,2)
-    +'<label style="flex:1;min-width:200px;font-size:11px;font-weight:900;color:#5a6472">PREP<select id="nsPrep" onchange="_ns.prep=this.value" style="width:100%;margin-top:3px;padding:8px;font-size:14px"><option value="NONE"'+(_ns.prep==='NONE'?' selected':'')+'>No prep needed</option><option value="SELLER"'+(_ns.prep==='SELLER'?' selected':'')+'>We prep (bag / bubble)</option></select></label></div>'
-    +'<div style="margin-top:14px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
+    +'<label style="flex:1;min-width:200px;font-size:11px;font-weight:900;color:#5a6472" title="All prep is done by us. If Amazon says a product requires prep, pick We prep.">PREP (always by us)<select id="nsPrep" onchange="_ns.prep=this.value" style="width:100%;margin-top:3px;padding:8px;font-size:14px"><option value="NONE"'+(_ns.prep==='NONE'?' selected':'')+'>No prep needed</option><option value="SELLER"'+(_ns.prep==='SELLER'?' selected':'')+'>We prep (by seller: bag / bubble)</option></select></label></div>'
+    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
+    +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
     h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('UNITS PER BOX')+prodTh('BOXES')+prodTh('BOX SIZE (IN)')+prodTh('BOX LB')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
       +rows.map((r,i)=>{ const per=parseInt(r.perBox)||0, q=parseInt(r.qty)||0, bx=per>0&&q>0?Math.ceil(q/per):0, ok=per>0&&r.len>0&&r.unitLb>0;
@@ -1082,10 +1097,41 @@ function nsAdd(code){
     const q=document.querySelectorAll('#prodArea input[type=number]'); if(q.length) (q[q.length-2]||q[0]).focus();
   });
 }
-function nsSaveSetup(){
-  const g=id=>(document.getElementById(id)||{}).value||'';
-  ownerApi('/api/inbound/setup',{method:'POST',body:JSON.stringify({shipFrom:{name:g('nsFName'),line1:g('nsFLine1'),city:g('nsFCity'),state:g('nsFState'),zip:g('nsFZip'),country:'US'},contact:{name:g('nsCName'),phone:g('nsCPhone'),email:g('nsCEmail')}})})
-    .then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; } _ns.setup=d; toast('Saved'); _ns.name=g('nsName'); nsRender(); });
+// Pending Prep items ticked "added to the shipment plan" → rows here, with
+// their quantities (same product twice is summed). Only when the button is
+// pressed; rows already on the list are left as they are.
+function nsFromPending(btn){
+  _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
+  if(btn){ btn.disabled=true; btn.textContent='Adding…'; }
+  api('/api/pending-prep/list').then(d=>{
+    const want={}; ((d&&d.items)||[]).filter(i=>i.in_plan).forEach(i=>{ want[i.asin]=(want[i.asin]||0)+(i.qty||0); });
+    const asins=Object.keys(want).filter(a=>!_ns.items.some(x=>x.asin===a));
+    if(!Object.keys(want).length){ toast('Nothing is ticked on Pending Prep',true); nsRender(); return; }
+    return Promise.all(asins.map(a=>api('/api/pack/product/'+encodeURIComponent(a)).catch(()=>null))).then(rs=>{
+      let added=0;
+      rs.forEach((r,k)=>{ if(!r||r.ok===false) return; const p=r.product; added++;
+        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:want[asins[k]], perBox:p.case_qty||'', len:p.case_len, wid:p.case_wid, hgt:p.case_hgt, unitLb:p.unit_weight_lb, exp:''}); });
+      const skipped=Object.keys(want).length-asins.length;
+      toast('Added '+added+' from Pending Prep'+(skipped?' · '+skipped+' already on the list':''));
+      nsRender();
+    });
+  }).catch(e=>{ toast('Could not read Pending Prep: '+e.message,true); nsRender(); });
+}
+function nsSaveAddresses(list, pickId){
+  _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
+  ownerApi('/api/inbound/setup',{method:'POST',body:JSON.stringify({addresses:list})})
+    .then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; } _ns.setup=d; _ns.editAddr=null; if(pickId) _ns.addressId=pickId; toast('Saved'); nsRender(); });
+}
+function nsSaveAddr(){
+  const g=id=>((document.getElementById(id)||{}).value||'').trim();
+  const A=((_ns.setup&&_ns.setup.addresses)||[]).slice(), isNew=_ns.editAddr==='new';
+  const a={id:isNew?('a'+Date.now().toString(36)):_ns.editAddr, name:g('nsAName'), line1:g('nsALine1'), line2:g('nsALine2'), city:g('nsACity'), state:g('nsAState'), zip:g('nsAZip'), country:'US', contactName:g('nsACName'), phone:g('nsAPhone'), email:g('nsAEmail')};
+  if(isNew) A.push(a); else A.splice(A.findIndex(x=>x.id===a.id),1,a);
+  nsSaveAddresses(A, a.id);
+}
+function nsDelAddr(){
+  if(!confirm('Remove this ship-from address?')) return;
+  nsSaveAddresses(((_ns.setup&&_ns.setup.addresses)||[]).filter(x=>x.id!==_ns.editAddr), null);
 }
 function nsCreate(){
   const name=(document.getElementById('nsName')||{}).value||'';
@@ -1093,7 +1139,7 @@ function nsCreate(){
   if(items.some(i=>!(i.qty>0))){ toast('Every product needs a quantity',true); return; }
   if(!confirm('Create this shipment plan at Amazon?\n\n'+items.length+' products · '+items.reduce((t,i)=>t+i.qty,0)+' units\n\nThis is free and can be cancelled. Amazon then shows the destination options and fees; nothing is charged until you confirm.')) return;
   const b=document.getElementById('nsGo'); if(b){ b.disabled=true; b.textContent='Sending to Amazon…'; }
-  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, prepOwner:_ns.prep})}).then(d=>{
+  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, prepOwner:_ns.prep, addressId:_ns.addressId})}).then(d=>{
     if(!d||d.ok===false){ toast((d&&d.error)||'Not created',true); if(b){ b.disabled=false; b.textContent='Create plan with Amazon & get destinations →'; } return; }
     nsPlan(d.id);
   }).catch(e=>{ toast('Not created: '+e.message,true); if(b) b.disabled=false; });
@@ -1105,7 +1151,9 @@ function nsPlan(id){
     if(!d||!d.ok){ toast((d&&d.error)||'Not found',true); return; }
     const p=d.plan, el=document.getElementById('prodArea');
     if(!el||(_prod&&_prod.v)) return;
-    const done=k=>({plan:!!p.plan_id, pack:!!p.packing_groups, boxes:!!p.boxes, place:!!p.placement})[k];
+    const done=k=>({plan:!!p.plan_id, pack:!!p.packing_groups, boxes:!!p.boxes, place:!!p.placement_id, freight:!!p.freight, conf:p.status==='confirmed'})[k];
+    const $$=v=>'$'+Number(v||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+    const chosen=(p.placement||[]).find(o=>o.placementOptionId===p.placement_id);
     const stepRow=(ok,t,sub)=>'<div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-top:1px solid #eef2f6"><span style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;background:'+(ok?'#1e8449':'#e2e8f0')+';color:'+(ok?'#fff':'#8a97a6')+'">'+(ok?'✓':'•')+'</span><div><b>'+t+'</b>'+(sub?'<div class="hint">'+sub+'</div>':'')+'</div></div>';
     const units=p.items.reduce((t,i)=>t+i.qty,0), nb=(p.boxes||[]).length;
     let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+nsPill(p.status)
@@ -1116,24 +1164,92 @@ function nsPlan(id){
     if(p.status==='error') h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Amazon stopped at this step</b><div style="margin-top:6px;font-size:14px;white-space:pre-wrap">'+esc(p.error||'')+'</div>'
       +'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button></div>';
     h+='<div class="box"><b style="font-size:16px">Steps</b>'+stepRow(done('plan'),'1. Plan created at Amazon')+stepRow(done('pack'),'2. Packing option taken',p.packing_groups?(p.packing_groups.length+' packing group'+(p.packing_groups.length===1?'':'s')):'')
-      +stepRow(done('boxes'),'3. Box plan sent',nb?nb+' boxes, planned from your saved units per box':'')+stepRow(done('place'),'4. Destinations & fees from Amazon')
-      +stepRow(false,'5. Freight quotes (Amazon partnered carrier)','next update')+stepRow(false,'6. Confirm → FBA shipment ID, then build & label in 2D Production','next update')+'</div>';
-    if(p.placement&&p.placement.length) h+='<div class="box"><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest first. The fee is Amazon\'s placement fee for that option (charged only when confirmed).</div>'
-      +p.placement.map((o,i)=>'<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:14px 16px;border-radius:12px;border:2px solid '+(i===0?'#127a7a':'#e2e8f0')+';background:'+(i===0?'#f2fafa':'#fff')+'">'
-        +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(i===0?' <span style="font-size:12px;color:#127a7a">· cheapest</span>':'')+'</div><div style="font-size:14px;color:#2563a8;font-weight:800">'+esc((o.destinations||[]).join(' · ')||'')+'</div></div>'
-        +'<div style="font-size:24px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?'$'+o.fee.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'No fee')+'</div></div>').join('')
-      +'<div class="hint" style="margin-top:10px">Next update: pick one here, get Amazon\'s partnered freight quotes for your pallets, and confirm.</div></div>';
+      +stepRow(done('boxes'),'3. Box plan sent',nb?nb+' boxes, planned from your saved units per box':'')+stepRow(done('place'),'4. Destination picked',chosen?(esc((chosen.destinations||[]).join(' · '))+' · '+(chosen.fee>0?$$(chosen.fee)+' fee':'no fee')):'')
+      +stepRow(done('freight'),'5. Freight quotes from Amazon\'s partnered carriers')+stepRow(done('conf'),'6. Confirmed → build & label in 2D Production',p.confirmed?esc((p.confirmed.shipments||[]).join(' · ')):'')+'</div>';
+    // 4. Pick a destination
+    if(p.placement&&p.placement.length&&!p.placement_confirmed_at) h+='<div class="box"><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest first. The fee is Amazon\'s placement fee for that option (charged only when you confirm at the end).</div>'
+      +p.placement.map((o,i)=>{ const on=o.placementOptionId===p.placement_id;
+        return '<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:14px 16px;border-radius:12px;border:'+(on?'3px solid #127a7a':'2px solid #e2e8f0')+';background:'+(on?'#f2fafa':'#fff')+'">'
+        +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(i===0?' <span style="font-size:12px;color:#127a7a">· cheapest</span>':'')+(on?' <span style="font-size:12px;color:#127a7a">· ✓ picked</span>':'')+'</div><div style="font-size:14px;color:#2563a8;font-weight:800">'+esc((o.destinations||[]).join(' · ')||'')+'</div></div>'
+        +'<div style="display:flex;gap:14px;align-items:center"><div style="font-size:24px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?$$(o.fee):'No fee')+'</div>'
+        +(p.status==='working'?'':'<button class="action" onclick="nsPick('+p.id+',\''+esc(o.placementOptionId)+'\')" style="background:'+(on?'#5a6472':'#127a7a')+'">'+(on?'Re-read':'Pick this →')+'</button>')+'</div></div>'; }).join('')+'</div>';
+    // 5. Pallets → freight quotes
+    if(p.shipments&&(p.status==='pallets'||p.status==='quotes')){
+      const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(p.shipments.map(sh=>[sh.shipmentId,sh.pallets]))))};
+      const ready=(p.freight&&p.freight.readyDate)||new Date(Date.now()+86400000).toISOString().slice(0,10);
+      h+='<div class="box"><b style="font-size:16px">Pallets for the freight quote</b><div class="hint">Worked out from the planned boxes with your pallet limits. Change them if you stack differently; the quote uses these.</div>'
+        +p.shipments.map(sh=>'<div style="margin-top:12px;padding:12px;border:1px solid #e2e8f0;border-radius:10px"><b style="font-size:15px">→ '+esc(sh.fc||sh.shipmentId)+'</b> <span class="hint">'+sh.boxes+' boxes · '+(sh.units||0).toLocaleString()+' units</span>'
+          +'<table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PALLET')+prodTh('BOXES')+prodTh('WEIGHT (LB)')+prodTh('HEIGHT (IN)')+prodTh('')+'</tr>'
+          +(P.pal[sh.shipmentId]||[]).map((x,k)=>'<tr>'+prodTd('#'+(k+1))+prodTd(x.boxes||'—')
+            +prodTd('<input type="number" value="'+x.weight+'" oninput="_nsPal.pal[\''+sh.shipmentId+'\']['+k+'].weight=+this.value" style="width:90px;text-align:center;padding:6px;font-weight:800">')
+            +prodTd('<input type="number" value="'+x.height+'" oninput="_nsPal.pal[\''+sh.shipmentId+'\']['+k+'].height=+this.value" style="width:80px;text-align:center;padding:6px;font-weight:800">')
+            +prodTd((P.pal[sh.shipmentId].length>1?'<button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].splice('+k+',1);nsPlan('+p.id+')" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px">✕</button>':''))+'</tr>').join('')
+          +'</table><button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].push({weight:500,height:40});nsPlan('+p.id+')" style="margin-top:6px;cursor:pointer;border:1px solid #127a7a;color:#127a7a;background:#fff;border-radius:6px;padding:4px 10px;font-weight:800">+ Add pallet</button></div>').join('')
+        +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:11px;font-weight:900;color:#5a6472">READY TO SHIP<input id="nsReady" type="date" value="'+ready+'" style="display:block;margin-top:3px;padding:8px;font-size:15px"></label>'
+        +'<label style="font-size:14px;font-weight:700;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0"><input id="nsStack" type="checkbox"'+(p.freight&&p.freight.stackable?' checked':'')+' style="width:20px;height:20px"> Pallets can be stacked</label>'
+        +(p.status==='working'?'':'<button class="action" onclick="nsQuote('+p.id+')" style="background:#127a7a;font-size:16px;padding:12px 20px">'+(p.freight?'↻ Get new quotes':'Get freight quotes →')+'</button>')+'</div></div>';
+    }
+    // 6. Freight options + confirm
+    if(p.status==='quotes'&&p.freight){
+      const S=window._nsSel=window._nsSel&&window._nsSel.id===p.id?window._nsSel:{id:p.id, sel:{}};
+      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">Amazon partnered carriers first, cheapest first. Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
+      let freight=0, all=true;
+      for(const sh of p.shipments){
+        const q=(p.freight.quotes[sh.shipmentId]||[]).filter(o=>o.cost!=null&&!o.preconditions.length);
+        if(!S.sel[sh.shipmentId]&&q[0]) S.sel[sh.shipmentId]=q[0].transportationOptionId;
+        const pick=q.find(o=>o.transportationOptionId===S.sel[sh.shipmentId]); if(pick) freight+=pick.cost; else all=false;
+        h+='<div style="margin-top:12px"><b>→ '+esc(sh.fc||sh.shipmentId)+'</b>'+(q.length?'':' <span style="color:#c0392b;font-weight:800">no quote came back — change the pallets or date and get new quotes</span>')
+          +q.map(o=>'<label style="display:flex;gap:10px;align-items:center;margin-top:6px;padding:10px 12px;border-radius:10px;cursor:pointer;text-transform:none;letter-spacing:0;border:2px solid '+(S.sel[sh.shipmentId]===o.transportationOptionId?'#127a7a':'#e2e8f0')+'">'
+            +'<input type="radio" name="nsq_'+esc(sh.shipmentId)+'"'+(S.sel[sh.shipmentId]===o.transportationOptionId?' checked':'')+' onchange="_nsSel.sel[\''+sh.shipmentId+'\']=\''+o.transportationOptionId+'\';nsPlan('+p.id+')" style="width:18px;height:18px">'
+            +'<div style="flex:1"><b style="font-size:15px">'+esc(o.carrier||'Carrier')+'</b> <span class="hint">'+esc(o.mode.replace('FREIGHT_','').replace(/_/g,' '))+(o.partnered?' · Amazon partnered':' · your own carrier')+(o.expiration?' · quote good until '+new Date(o.expiration).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'')+'</span></div>'
+            +'<b style="font-size:18px">'+$$(o.cost)+'</b></label>').join('')+'</div>';
+      }
+      const fee=(chosen&&chosen.fee)||0, total=Math.round((fee+freight)*100)/100;
+      h+='<div style="margin-top:16px;padding:16px;border-radius:12px;background:#0f1b2d;color:#fff;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">'
+        +'<div style="font-size:15px">Placement fee <b>'+$$(fee)+'</b> + freight <b>'+$$(freight)+'</b></div><div style="font-size:26px;font-weight:900">Total '+$$(total)+'</div></div>'
+        +'<button class="action" onclick="nsConfirm('+p.id+','+total+')"'+(all?'':' disabled')+' style="width:100%;margin-top:12px;font-size:19px;padding:16px;background:#c0392b">Confirm with Amazon — charge '+$$(total)+'</button>'
+        +'<div class="hint" style="margin-top:6px">This books the destination and freight with Amazon and charges your account. Then each shipment appears in 2D Production with its FBA ID, ready to build and label.</div></div>';
+    }
+    if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Confirmed with Amazon</b>'
+      +'<div style="margin-top:6px;font-size:15px">Charged: placement '+$$(p.confirmed.placementFee)+' + freight '+$$(p.confirmed.freight)+' = <b>'+$$(p.confirmed.total)+'</b></div>'
+      +(p.confirmed.shipments||[]).map(f=>'<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-family:monospace;font-size:18px">'+esc(f)+'</b><button class="action" onclick="clearTimeout(_nsPoll);prodLoad(\''+esc(f)+'\')" style="background:#127a7a">Open in 2D Production → build & label</button></div>').join('')+'</div>';
     h+='<div class="box" style="overflow-x:auto"><b>Products</b><table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('SKU','left')+prodTh('UNITS')+prodTh('UNITS PER BOX')+prodTh('BOXES')+prodTh('EXPIRATION')+'</tr>'
       +p.items.map(i=>'<tr>'+prodTd(esc(String(i.name||i.asin).slice(0,80)),'left')+prodTd(esc(i.msku),'left','font-family:monospace')+prodTd('<b>'+i.qty+'</b>')+prodTd(i.perBox)+prodTd(Math.ceil(i.qty/i.perBox))+prodTd(i.exp?expText(i.exp):'—')+'</tr>').join('')+'</table></div>';
     el.innerHTML=h;
     if(p.status==='working'||p.status==='new'||d.plan.running) _nsPoll=setTimeout(()=>nsPlan(id),3000);
+    if(p.placement_confirmed_at){ const c=el.querySelector('button[onclick^="nsCancel"]'); if(c) c.remove(); }
   }); });
 }
 const expText=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'/'+e.slice(4,6)+'/20'+e.slice(0,2):(e||'');
+function nsPick(id, optId){ window._nsPal=null; window._nsSel=null; ownerApi('/api/inbound/plans/'+id+'/pick',{method:'POST',body:JSON.stringify({placementOptionId:optId})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
+function nsQuote(id){
+  const readyDate=(document.getElementById('nsReady')||{}).value, stackable=!!(document.getElementById('nsStack')||{}).checked;
+  window._nsSel=null;
+  ownerApi('/api/inbound/plans/'+id+'/quote',{method:'POST',body:JSON.stringify({readyDate, stackable, pallets:(window._nsPal||{}).pal})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); });
+}
+// The purchase: typed amount must match what's shown; the server checks it
+// against the quotes on file again.
+function nsConfirm(id, total){
+  const t=prompt('This CHARGES your Amazon account $'+total.toFixed(2)+' (placement fee + freight) and books the shipment.\n\nType the total to confirm (e.g. '+total.toFixed(2)+'):');
+  if(t==null) return;
+  if(Math.abs(parseFloat(String(t).replace(/[$,]/g,''))-total)>0.009){ toast('Amount didn\'t match — nothing was bought',true); return; }
+  ownerApi('/api/inbound/plans/'+id+'/confirm',{method:'POST',body:JSON.stringify({selections:(window._nsSel||{}).sel||{}, total})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not confirmed',true); } nsPlan(id); });
+}
 function nsRetry(id){ ownerApi('/api/inbound/plans/'+id+'/retry',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
 function nsCancel(id){
   if(!confirm('Cancel this shipment plan? Amazon\'s copy is cancelled too. Nothing has been charged.')) return;
   ownerApi('/api/inbound/plans/'+id+'/cancel',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not cancelled',true); return; } toast('Plan cancelled'); clearTimeout(_nsPoll); prodOpen(); });
+}
+// Amazon's own paperwork for the shipment: pallet labels (4 per pallet) and,
+// for partnered freight, the bill of lading once the carrier is assigned.
+function prodPaper(kind){
+  let pallets=null;
+  if(kind==='pallet'){ const n=Object.keys(_prod.v.pallets||{}).length||1; const t=prompt('How many pallets?', n); if(t==null) return; pallets=parseInt(t); }
+  const w=window.open('about:blank','_blank');
+  api('/api/inbound/paperwork',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), kind, pallets})}).then(d=>{
+    if(!d||d.ok===false||!d.url){ if(w) w.close(); toast((d&&d.error)||'Amazon returned nothing',true); return; }
+    if(w) w.location=d.url; else window.open(d.url,'_blank');
+  }).catch(e=>{ if(w) w.close(); toast('Could not get it: '+e.message,true); });
 }
 function prodRefreshList(btn){
   if(btn){ btn.disabled=true; btn.textContent='Asking Amazon…'; }
@@ -1205,6 +1321,8 @@ function prodRender(){
     +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(done?'':'<button class="action" id="prodRefreshBtn" onclick="prodStart(true)" style="padding:6px 12px;font-size:12px;background:#2563a8">↻ Refresh from Amazon</button>')
     +'<button class="action" onclick="prodBigToggle()" style="padding:6px 12px;font-size:12px;background:#1a2b4a">📺 Big screen</button>'
+    +'<button class="action" onclick="prodPaper(\'pallet\')" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">📄 Amazon pallet labels</button>'
+    +'<button class="action" onclick="prodPaper(\'bol\')" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">📄 Bill of lading</button>'
     +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
@@ -1302,8 +1420,9 @@ function prodRender(){
         +prodTd('','center','border-top:2px solid #1f2733')+prodTd('','center','border-top:2px solid #1f2733')+prodTd('','center','border-top:2px solid #1f2733')+'</tr>'
       +'</table></div>';
   }
-  // Mixed box
-  if(!done) h+=prodMixedHtml();
+  // Mixed box (not for shipments created from the app: Amazon already has their box plan)
+  if(!done&&!sh.amz_boxes) h+=prodMixedHtml();
+  if(sh.amz_boxes&&!done) h+='<div class="box hint" style="font-size:13px">📋 Created from the app: Amazon already has this shipment\'s box plan, so each "Create boxes" takes the box numbers Amazon gave that product (it refuses boxes that aren\'t in the plan).</div>';
   // Boxes by pallet
   const closed=v.boxes.filter(b=>b.status==='closed'&&b.items.length);
   if(closed.length){

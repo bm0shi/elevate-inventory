@@ -995,6 +995,26 @@ const inbound = {
   generatePlacementOptions: (planId) => inbWrite('POST', `/inboundPlans/${planId}/placementOptions`, {}),
   listPlacementOptions: (planId) => listAll(`/inboundPlans/${planId}/placementOptions`, 'placementOptions'),
   getShipment: (planId, shipmentId) => inbRead(`/inboundPlans/${planId}/shipments/${shipmentId}`),
+  listShipmentBoxes: (planId, shipmentId) => listAll(`/inboundPlans/${planId}/shipments/${shipmentId}/boxes`, 'boxes', { pageSize: 100 }),
+  listShipmentItems: (planId, shipmentId) => listAll(`/inboundPlans/${planId}/shipments/${shipmentId}/items`, 'items', { pageSize: 100 }),
+  // Freight quotes for one placement option: body.shipmentTransportationConfigurations
+  // carries each shipment's pallets, ready date and contact.
+  generateTransportationOptions: (planId, body) => inbWrite('POST', `/inboundPlans/${planId}/transportationOptions`, body),
+  listTransportationOptions: (planId, placementOptionId) => listAll(`/inboundPlans/${planId}/transportationOptions`, 'transportationOptions', { placementOptionId }),
+  // The two calls that CHARGE the account (placement fee, freight).
+  confirmPlacementOption: (planId, placementOptionId) => inbWrite('POST', `/inboundPlans/${planId}/placementOptions/${placementOptionId}/confirmation`),
+  confirmTransportationOptions: (planId, selections) => inbWrite('POST', `/inboundPlans/${planId}/transportationOptions/confirmation`, { transportationSelections: selections }),
+  // Paperwork (older API, by the FBA shipment ID): pallet labels and the bill of lading → a download URL.
+  palletLabels: async (fbaId, pallets) => {
+    const r = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${encodeURIComponent(fbaId)}/labels`, { params: { MarketplaceId: MARKETPLACE_ID, PageType: 'PackageLabel_Letter_4', LabelType: 'PALLET', NumberOfPallets: pallets } })
+      .catch(e => { throw new Error(`Amazon ${e.response?.status || ''}: ${JSON.stringify(e.response?.data || e.message).slice(0, 300)}`); });
+    return r.data.payload && r.data.payload.DownloadURL;
+  },
+  billOfLading: async (fbaId) => {
+    const r = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${encodeURIComponent(fbaId)}/billOfLading`)
+      .catch(e => { throw new Error(`Amazon ${e.response?.status || ''}: ${JSON.stringify(e.response?.data || e.message).slice(0, 300)}`); });
+    return r.data.payload && r.data.payload.DownloadURL;
+  },
   waitOperation,
 };
 

@@ -276,6 +276,23 @@ test('a cancelled shipment with no replacement: deleted once, units back on hand
   assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_shipments WHERE shipment_id=$1', [SID])).n, 0);
 });
 
+test('shipment created from the app: boxes take Amazon\'s box numbers; two taps can\'t take the same boxes', { skip }, async () => {
+  const SID = 'FBAAPPPLAN01';
+  const plan = [1, 2, 3].map(n => ({ box_no: n, items: [{ msku: 'SKU-A', asin: 'TSTA', qty: 6 }] })).concat([{ box_no: 4, items: [{ msku: 'SKU-B', asin: 'TSTB', qty: 6 }] }]);
+  await pool.query(`INSERT INTO inv_pack_shipments(shipment_id, name, dest_confirmed_at, amz_boxes) VALUES($1,'app plan',now(),$2)`, [SID, JSON.stringify(plan)]);
+  const mk = (asin, per, count) => post('/api/pack/boxes', { shipmentId: SID, asin, qtyPerBox: per, count, pallet: 1, unitWeight: 1, len: 10, wid: 10, hgt: 10, override: true });
+  const b = await mk('TSTB', 6, 1);
+  assert.strictEqual(b.status, 200); assert.deepStrictEqual(b.body.boxes, [4]);
+  // 3 boxes of A in the plan: two simultaneous requests for 2 each → one gets 2, the other is refused
+  const [r1, r2] = await Promise.all([mk('TSTA', 6, 2), mk('TSTA', 6, 2)]);
+  assert.deepStrictEqual([r1.status, r2.status].sort(), [200, 409]);
+  assert.deepStrictEqual((r1.status === 200 ? r1 : r2).body.boxes, [1, 2]);
+  assert.strictEqual((await mk('TSTA', 12, 1)).status, 409);   // not in Amazon's plan at 12 per box
+  assert.deepStrictEqual((await mk('TSTA', 6, 1)).body.boxes, [3]);
+  assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 9, code: 'TSTA' })).status, 409);   // no mixed boxes
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [SID])).n, 4);
+});
+
 test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {
   const SID = 'FBAPACKTEST3';
   await post('/api/pack/start', { shipmentId: SID });
