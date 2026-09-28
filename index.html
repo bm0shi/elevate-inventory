@@ -1172,11 +1172,23 @@ function nsPlan(id){
       +stepRow(done('boxes'),'4. Box info sent to Amazon',sent?SH.map(x=>x.boxes+' boxes'+(x.boxCheck&&!x.boxCheck.ok?' · ⚠️ box numbers differ':'')).join(' · '):'')
       +stepRow(done('freight'),'5. Freight quotes from the floor\'s pallets')+stepRow(done('conf'),'6. Freight booked → bill of lading & pallet labels',p.confirmed?esc((p.confirmed.shipments||[]).join(' · ')):'')+'</div>';
     // 2. Pick + confirm a destination
-    if(p.placement&&p.placement.length&&!p.placement_confirmed_at&&p.status!=='working') h+='<div class="box"><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest first. The fee is Amazon\'s placement fee for that option. Confirming gives the shipment its FBA ID so the floor can start building and labelling; freight is booked at the very end.</div>'
-      +p.placement.map((o,i)=>'<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:14px 16px;border-radius:12px;border:2px solid #e2e8f0;background:#fff">'
-        +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(i===0?' <span style="font-size:12px;color:#127a7a">· cheapest</span>':'')+'</div><div style="font-size:14px;color:#2563a8;font-weight:800">'+esc((o.destinations||[]).join(' · ')||'')+'</div></div>'
-        +'<div style="display:flex;gap:14px;align-items:center"><div style="font-size:24px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?$$(o.fee):'No fee')+'</div>'
-        +(p.status==='placement'?'<button class="action" onclick="nsPlace('+p.id+',\''+esc(o.placementOptionId)+'\','+(o.fee||0)+',\''+esc((o.destinations||[]).join(', '))+'\')" style="background:#127a7a">Confirm this destination →</button>':'')+'</div></div>').join('')+'</div>';
+    if(p.placement&&p.placement.length&&!p.placement_confirmed_at&&p.status!=='working'){
+      // Estimated total = placement fee + Amazon's partnered LTL quote on guessed pallets.
+      const tot=o=>o.estimate&&o.estimate.freight!=null?Math.round(((o.fee||0)+o.estimate.freight)*100)/100:null;
+      const best=Math.min(...p.placement.map(o=>tot(o)).filter(x=>x!=null));
+      h+='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap"><div><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Placement fee is Amazon\'s fee for that option. Est. freight is Amazon\'s partnered LTL quote on the pallets the app expects (from each product\'s weight and size) — the real quote comes at the end from the floor\'s pallets. Confirming gives the FBA ID; freight is booked at the very end.</div></div>'
+        +(p.status==='placement'?'<button class="action" onclick="nsEstimate('+p.id+')" style="background:#eef2f6;color:#1f2733;font-size:13px;padding:8px 12px">↻ Re-estimate freight</button>':'')+'</div>'
+        +p.placement.map(o=>{ const e=o.estimate||{}, t=tot(o), win=t!=null&&t===best&&p.placement.length>1;
+          return '<div style="margin-top:10px;padding:14px 16px;border-radius:12px;border:'+(win?'3px solid #1e8449':'2px solid #e2e8f0')+';background:'+(win?'#f0faf4':'#fff')+'"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">'
+          +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(win?' <span style="font-size:12px;color:#1e8449">· 💰 lowest estimated total</span>':'')+'</div><div style="font-size:14px;color:#2563a8;font-weight:800">'+esc((o.destinations||[]).join(' · ')||'')+'</div></div>'
+          +'<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">'
+            +'<div style="text-align:center"><div style="font-size:11px;font-weight:900;color:#5a6472">PLACEMENT FEE</div><div style="font-size:20px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?$$(o.fee):'$0')+'</div></div>'
+            +'<div style="text-align:center"><div style="font-size:11px;font-weight:900;color:#5a6472">EST. FREIGHT</div><div style="font-size:20px;font-weight:900">'+(e.freight!=null?$$(e.freight):'—')+'</div>'+(e.freight!=null?'<div class="hint" style="font-size:11px">~'+e.pallets+' pallet'+(e.pallets===1?'':'s')+' · '+Number(e.weight||0).toLocaleString()+' lb</div>':'')+'</div>'
+            +'<div style="text-align:center;padding-left:14px;border-left:2px solid #e2e8f0"><div style="font-size:11px;font-weight:900;color:#5a6472">EST. TOTAL</div><div style="font-size:24px;font-weight:900;color:'+(win?'#1e8449':'#1f2733')+'">'+(t!=null?$$(t):'—')+'</div></div>'
+            +(p.status==='placement'?'<button class="action" onclick="nsPlace('+p.id+',\''+esc(o.placementOptionId)+'\','+(o.fee||0)+',\''+esc((o.destinations||[]).join(', '))+'\')" style="background:#127a7a">Confirm this destination →</button>':'')+'</div></div>'
+          +(e.error?'<div style="margin-top:6px;font-size:13px;color:#b45309;font-weight:700">No freight estimate: '+esc(e.error)+'</div>':'')
+          +(e.ships&&e.ships.length>1?'<div class="hint" style="margin-top:6px">'+e.ships.map((sh,k)=>esc((o.destinations||[])[k]||'')+' '+$$(sh.freight)+' ('+sh.pallets.length+' pal.)').join(' · ')+'</div>':'')+'</div>'; }).join('')+'</div>';
+    }
     // 3. The floor builds (progress per shipment), then 4. send the boxes
     if(SH.length&&(p.status==='building'||(p.status==='error'&&p.stage==='boxes'))){
       const allDone=SH.every(x=>x.floor&&x.floor.finished);
@@ -1249,6 +1261,7 @@ function nsPlace(id, optId, fee, where){
   window._nsPal=null; window._nsSel=null;
   ownerApi('/api/inbound/plans/'+id+'/place',{method:'POST',body:JSON.stringify({placementOptionId:optId, fee})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'Not confirmed',true); nsPlan(id); });
 }
+function nsEstimate(id){ ownerApi('/api/inbound/plans/'+id+'/estimate',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
 function nsSendBoxes(id, force){
   if(!force&&!confirm('Send the built boxes (contents, size, weight) to Amazon?')) return;
   window._nsPal=null; window._nsSel=null;
