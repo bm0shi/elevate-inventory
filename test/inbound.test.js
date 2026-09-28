@@ -98,3 +98,42 @@ test('palletize doesn\'t count the box packaging twice (planned weights already 
   const p = ib.palletize(planned.map(b => ({ weight: { value: b.weight_lb, unit: 'LB' }, dimensions: { length: 12, width: 12, height: 10 }, items: [{ msku: 'A', quantity: 12 }] })), {});
   assert.strictEqual(p[0].weight, Math.ceil(24 * 2.5 + 2 * 1.5 + 24 * 0.05 + 70));
 });
+
+test('pack later: built boxes go to Amazon one by one in box-number order, packaging added to the weight', () => {
+  const boxes = [
+    { box_no: 2, items: [{ asin: 'B', msku: 'SKU-B', qty: 6 }], weight_lb: 12, len: 12, wid: 10, hgt: 8 },
+    { box_no: 1, items: [{ asin: 'A', msku: 'SKU-A', qty: 12, exp: '290926' }], weight_lb: 30, len: 12, wid: 10, hgt: 8 },
+    { box_no: 3, items: [{ asin: 'A', msku: 'SKU-A', qty: 12 }], weight_lb: 30, len: 12, wid: 10, hgt: 8 }];
+  const r = ib.shipmentBoxesBody('sh1', boxes, { boxPackLb: 1.5, unitPackLb: 0.05 });
+  assert.deepStrictEqual(r.problems, []);
+  const g = r.body.packageGroupings;
+  assert.strictEqual(g.length, 1); assert.strictEqual(g[0].shipmentId, 'sh1');
+  assert.deepStrictEqual(g[0].boxes.map(b => [b.items[0].msku, b.quantity]), [['SKU-A', 1], ['SKU-B', 1], ['SKU-A', 1]]);   // not merged: numbering must follow the labels
+  assert.strictEqual(g[0].boxes[0].weight.value, 30 + 1.5 + 0.6);
+  assert.strictEqual(g[0].boxes[0].items[0].expiration, '2029-09-26');
+});
+
+test('pack later: a gap in box numbers or a box with no size stops the send', () => {
+  const r = ib.shipmentBoxesBody('sh1', [
+    { box_no: 1, items: [{ msku: 'A', qty: 1 }], weight_lb: 1, len: 1, wid: 1, hgt: 1 },
+    { box_no: 3, items: [{ msku: 'A', qty: 1 }], weight_lb: 1, len: 0, wid: 1, hgt: 1 }], {});
+  assert.ok(r.problems.some(p => /no gaps/.test(p)));
+  assert.ok(r.problems.some(p => /Box 3 has no weight or size/.test(p)));
+  assert.strictEqual(r.body, undefined);
+});
+
+test('pack later: Amazon\'s box numbers checked against the labels', () => {
+  const ours = [{ box_no: 1, items: [{ msku: 'A', qty: 12 }] }, { box_no: 2, items: [{ msku: 'B', qty: 6 }] }];
+  const amzOk = [{ boxId: 'FBA1U000001', items: [{ msku: 'A', quantity: 12 }] }, { boxId: 'FBA1U000002', items: [{ msku: 'B', quantity: 6 }] }];
+  assert.strictEqual(ib.checkBoxIds(ours, amzOk).ok, true);
+  const swapped = [{ boxId: 'FBA1U000001', items: [{ msku: 'B', quantity: 6 }] }, { boxId: 'FBA1U000002', items: [{ msku: 'A', quantity: 12 }] }, { boxId: 'FBA1U000003', items: [] }];
+  assert.deepStrictEqual(ib.checkBoxIds(ours, swapped), { ok: false, wrong: [1, 2], missing: [], extra: [3] });
+});
+
+test('pack later: the floor\'s pallets become the freight pallets', () => {
+  const box = (n, pal) => ({ box_no: n, pallet_no: pal, items: [{ qty: 10 }], weight_lb: 20, len: 12, wid: 12, hgt: 12 });
+  const p = ib.floorPallets([box(1, 1), box(2, 1), box(3, 2)], {}, { 2: { h: 30, count: 1 } });
+  assert.deepStrictEqual(p.map(x => [x.pallet, x.boxes]), [[1, 2], [2, 1]]);
+  assert.strictEqual(p[0].weight, Math.ceil(2 * (20 + 1.5 + 0.5) + 70));
+  assert.strictEqual(p[1].height, 30);   // tape-measured
+});
