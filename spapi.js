@@ -7,7 +7,8 @@
 const axios = require('axios');
 const qs = require('querystring');
 
-const SP_API_BASE = 'https://sellingpartnerapi-na.amazon.com';
+// Overridable only for local testing against a fake Amazon; never set in Railway.
+const SP_API_BASE = process.env.SPAPI_BASE_URL || 'https://sellingpartnerapi-na.amazon.com';
 const MARKETPLACE_ID = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
 
 let tokenCache = null;
@@ -41,7 +42,7 @@ async function getAccessToken() {
     return tokenCache.token;
   }
   const c = credentials();
-  const resp = await http.post('https://api.amazon.com/auth/o2/token',
+  const resp = await http.post(process.env.LWA_TOKEN_URL || 'https://api.amazon.com/auth/o2/token',
     qs.stringify({
       grant_type: 'refresh_token',
       client_id: c.clientId,
@@ -935,6 +936,68 @@ async function findInboundShipment(confirmationId, { days = 90, onProgress } = {
            note: 'Amazon\'s older API gives the warehouse code but not its street address.' };
 }
 
+// ============================================================
+// CREATING SHIPMENTS (Fulfillment Inbound v2024-03-20), the Send to Amazon
+// steps done from the app. Each write returns an operationId; waitOperation
+// polls it until Amazon finishes. Nothing here spends money except the two
+// confirm calls at the end (placement and transportation), which the server
+// only makes after the owner confirms the amount on screen.
+// ============================================================
+async function inbWrite(method, path, body) {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const r = await http.request({ method, url: INB + path, data: body || {}, headers: { 'Content-Type': 'application/json' } });
+      return r.data;
+    } catch (e) {
+      const st = e.response?.status;
+      if (st === 429 && attempt < 4) { await sleep(2000 * (attempt + 1)); continue; }
+      const body = e.response?.data ? JSON.stringify(e.response.data).slice(0, 600) : e.message;
+      throw new Error(`Amazon ${st || ''} on ${method} ${path}: ${body}`);
+    }
+  }
+}
+const inbRead = (path, params) => inbGet(path, null, params);
+// Wait for an operation; throws with Amazon's own problem messages on failure.
+async function waitOperation(operationId, { timeoutMs = 180000, onProgress } = {}) {
+  const t0 = Date.now();
+  let wait = 1500;
+  for (;;) {
+    const op = await inbRead(`/operations/${encodeURIComponent(operationId)}`);
+    const st = String(op.operationStatus || '').toUpperCase();
+    if (st === 'SUCCESS') return op;
+    if (st === 'FAILED') {
+      const probs = (op.operationProblems || []).map(p => `${p.code || ''}: ${p.message || ''}${p.details ? ' (' + p.details + ')' : ''}`).join(' · ');
+      throw new Error(`Amazon refused it — ${probs || 'no reason given'}`);
+    }
+    if (Date.now() - t0 > timeoutMs) throw new Error('Amazon is still working on it (over 3 minutes). Check again in a moment.');
+    if (onProgress) onProgress(`Amazon is working… (${Math.round((Date.now() - t0) / 1000)} s)`);
+    await sleep(wait); wait = Math.min(wait * 1.5, 8000);
+  }
+}
+async function listAll(path, key, params) {
+  const out = []; let tok = null, pages = 0;
+  do {
+    const d = await inbRead(path, { pageSize: 20, ...(params || {}), ...(tok ? { paginationToken: tok } : {}) });
+    out.push(...(d[key] || []));
+    tok = (d.pagination && d.pagination.nextToken) || null; pages++;
+  } while (tok && pages < 25);
+  return out;
+}
+const inbound = {
+  createPlan: (body) => inbWrite('POST', '/inboundPlans', body),                                  // → { inboundPlanId, operationId }
+  cancelPlan: (planId) => inbWrite('PUT', `/inboundPlans/${planId}/cancellation`),
+  getPlan: (planId) => inbRead(`/inboundPlans/${planId}`),
+  generatePackingOptions: (planId) => inbWrite('POST', `/inboundPlans/${planId}/packingOptions`),
+  listPackingOptions: (planId) => listAll(`/inboundPlans/${planId}/packingOptions`, 'packingOptions'),
+  confirmPackingOption: (planId, optId) => inbWrite('POST', `/inboundPlans/${planId}/packingOptions/${optId}/confirmation`),
+  listPackingGroupItems: (planId, groupId) => listAll(`/inboundPlans/${planId}/packingGroups/${groupId}/items`, 'items', { pageSize: 100 }),
+  setPackingInformation: (planId, body) => inbWrite('POST', `/inboundPlans/${planId}/packingInformation`, body),
+  generatePlacementOptions: (planId) => inbWrite('POST', `/inboundPlans/${planId}/placementOptions`, {}),
+  listPlacementOptions: (planId) => listAll(`/inboundPlans/${planId}/placementOptions`, 'placementOptions'),
+  getShipment: (planId, shipmentId) => inbRead(`/inboundPlans/${planId}/shipments/${shipmentId}`),
+  waitOperation,
+};
+
 // Current Amazon status (WORKING, SHIPPED, IN_TRANSIT, DELIVERED, CHECKED_IN,
 // RECEIVING, CLOSED, CANCELLED…) for the given shipment IDs → { id: status }.
 // Only the shipments the app built are asked about. Errors are thrown, not
@@ -960,4 +1023,4 @@ async function getShipmentStatuses(ids) {
   return out;
 }
 
-module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses };
+module.exports = { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, inbound };

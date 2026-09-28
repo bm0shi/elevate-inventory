@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ss-attack-hide-0928';
+const BUILD_ID = 'new-shipment-part1-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -990,6 +990,18 @@ async function initDb() {
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS current_pallet INTEGER DEFAULT 1;
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS pallets JSONB DEFAULT '{}';
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_status TEXT;
+      -- Shipments created from the app (lib/inbound.js): one row per Amazon inbound plan.
+      CREATE TABLE IF NOT EXISTS inv_inbound_plans (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        status TEXT NOT NULL DEFAULT 'new',   -- new, working, placement, cancelled, error
+        step TEXT, error TEXT,
+        plan_id TEXT,                          -- Amazon inboundPlanId
+        items JSONB NOT NULL DEFAULT '[]',     -- [{asin,msku,fnsku,name,qty,perBox,len,wid,hgt,unitLb,exp}]
+        prep_owner TEXT DEFAULT 'NONE',
+        boxes JSONB, packing_option_id TEXT, packing_groups JSONB, placement JSONB,
+        created_at TIMESTAMPTZ DEFAULT now(), updated_at TIMESTAMPTZ DEFAULT now()
+      );
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_status_at TIMESTAMPTZ;
       ALTER TABLE inv_pack_boxes ADD COLUMN IF NOT EXISTS exp TEXT;
     `);
@@ -1798,6 +1810,176 @@ app.get('/api/all-shipments', auth, async (req, res) => {
   }
   const out = ships.rows.map(s => ({ ...s, items: byShip[s.shipment_id] || [] }));
   res.json(out);
+});
+
+// ============================================================
+// NEW SHIPMENT FROM THE APP (no Send to Amazon). lib/inbound.js has the
+// order of steps. Part 1 here: create the plan, take Amazon's packing
+// option, send the PLANNED boxes (from each product's saved units per box,
+// size and weight), and fetch the placement options with their fees. None
+// of this spends money; the plan can be cancelled until it's confirmed.
+// Each Amazon step is an operation that can take a minute, so it runs in
+// the background and the screen polls the plan row (status / step / error).
+// Owner only: it leads to placement and freight charges.
+// ============================================================
+const inboundLib = require('./lib/inbound');
+const planJobs = new Set();
+function runPlanJob(id, label, fn) {
+  if (planJobs.has(id)) return false;
+  planJobs.add(id);
+  (async () => {
+    const step = async (t) => { await pool.query('UPDATE inv_inbound_plans SET step=$2, updated_at=now() WHERE id=$1', [id, t]); };
+    try {
+      await pool.query("UPDATE inv_inbound_plans SET status='working', error=NULL, step=$2, updated_at=now() WHERE id=$1", [id, label]);
+      await fn(step);
+    } catch (e) {
+      console.error(`[Inbound] plan ${id} ${label} failed:`, e.message);
+      await pool.query("UPDATE inv_inbound_plans SET status='error', error=$2, updated_at=now() WHERE id=$1", [id, String(e.message).slice(0, 2000)]).catch(() => {});
+    } finally { planJobs.delete(id); }
+  })();
+  return true;
+}
+async function inboundSetup() {
+  const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'");
+  const d = (r.rows[0] && r.rows[0].data) || {};
+  return { shipFrom: d.shipFrom || null, contact: d.contact || null };
+}
+// The whole part-1 run, resuming from whatever is already done (so Retry
+// after an error continues instead of creating a second plan).
+async function planPart1(id, step) {
+  let p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  const S = await packSettings();
+  if (!p.plan_id) {
+    const setup = await inboundSetup();
+    const src = inboundLib.sourceAddress(setup.shipFrom, setup.contact);
+    if (src.error) throw new Error(src.error);
+    const pb = inboundLib.planBody({ name: p.name, items: p.items.map(i => ({ msku: i.msku, qty: i.qty, expiration: i.exp ? '20' + i.exp.slice(0, 2) + '-' + i.exp.slice(2, 4) + '-' + i.exp.slice(4, 6) : null })),
+      source: src.address, marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER', prepOwner: p.prep_owner });
+    if (pb.error) throw new Error(pb.error);
+    await step('Creating the shipment plan at Amazon…');
+    const r = await amzInbound.createPlan(pb.body);
+    await pool.query('UPDATE inv_inbound_plans SET plan_id=$2 WHERE id=$1', [id, r.inboundPlanId]);
+    // A plan Amazon refused at creation is dead: forget it so Retry makes a new one.
+    try { await amzInbound.waitOperation(r.operationId, { onProgress: step }); }
+    catch (e) { await pool.query('UPDATE inv_inbound_plans SET plan_id=NULL WHERE id=$1', [id]); throw e; }
+    p.plan_id = r.inboundPlanId;
+  }
+  if (!p.packing_groups) {
+    await step('Asking Amazon how to group the products…');
+    const g = await amzInbound.generatePackingOptions(p.plan_id);
+    await amzInbound.waitOperation(g.operationId, { onProgress: step });
+    const opts = (await amzInbound.listPackingOptions(p.plan_id)).filter(o => String(o.status || 'OFFERED').toUpperCase() !== 'EXPIRED');
+    if (!opts.length) throw new Error('Amazon offered no packing option for this plan.');
+    // Fewest packing groups = fewest ways the products are split up.
+    const opt = opts.sort((a, b) => (a.packingGroups || []).length - (b.packingGroups || []).length)[0];
+    await step('Taking Amazon\'s packing option…');
+    const c = await amzInbound.confirmPackingOption(p.plan_id, opt.packingOptionId);
+    await amzInbound.waitOperation(c.operationId, { onProgress: step });
+    const groups = [];
+    for (const gid of opt.packingGroups || []) {
+      const items = await amzInbound.listPackingGroupItems(p.plan_id, gid);
+      groups.push({ packingGroupId: gid, mskus: items.map(i => i.msku) });
+    }
+    await pool.query('UPDATE inv_inbound_plans SET packing_option_id=$2, packing_groups=$3 WHERE id=$1', [id, opt.packingOptionId, JSON.stringify(groups)]);
+    p.packing_groups = groups;
+  }
+  if (!p.placement) {
+    const planned = inboundLib.planBoxes(p.items.map(i => ({ msku: i.msku, qty: i.qty, perBox: i.perBox, len: i.len, wid: i.wid, hgt: i.hgt, unitLb: i.unitLb, exp: i.exp })), S);
+    if (planned.problems.length) throw new Error(planned.problems.join(' '));
+    const pk = inboundLib.packingBody(p.packing_groups, planned.boxes, { prepOwner: p.prep_owner });
+    if (pk.problems.length) throw new Error(pk.problems.join(' '));
+    await step(`Sending the box plan (${planned.boxes.length} boxes) to Amazon…`);
+    const sp = await amzInbound.setPackingInformation(p.plan_id, pk.body);
+    await amzInbound.waitOperation(sp.operationId, { onProgress: step });
+    await pool.query('UPDATE inv_inbound_plans SET boxes=$2 WHERE id=$1', [id, JSON.stringify(planned.boxes)]);
+    await step('Getting destination options and fees from Amazon…');
+    const gp = await amzInbound.generatePlacementOptions(p.plan_id);
+    await amzInbound.waitOperation(gp.operationId, { onProgress: step });
+    const opts = inboundLib.placementSummary(await amzInbound.listPlacementOptions(p.plan_id));
+    // Where each option sends the boxes (warehouse codes) — one read per shipment.
+    for (const o of opts) {
+      o.destinations = [];
+      for (const shId of o.shipmentIds.slice(0, 6)) {
+        try { const sh = await amzInbound.getShipment(p.plan_id, shId); o.destinations.push((sh.destination && sh.destination.warehouseId) || '?'); } catch (e) { o.destinations.push('?'); }
+      }
+    }
+    await pool.query('UPDATE inv_inbound_plans SET placement=$2 WHERE id=$1', [id, JSON.stringify(opts)]);
+  }
+  await pool.query("UPDATE inv_inbound_plans SET status='placement', step=NULL, updated_at=now() WHERE id=$1", [id]);
+}
+app.get('/api/inbound/setup', ownerAuth, async (req, res) => { res.json({ ok: true, ...(await inboundSetup()) }); });
+app.post('/api/inbound/setup', ownerAuth, async (req, res) => {
+  const b = req.body || {};
+  const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'")).rows[0];
+  const data = Object.assign({}, prev ? prev.data : {});
+  if (b.shipFrom && typeof b.shipFrom === 'object') data.shipFrom = packAddr(b.shipFrom);
+  if (b.contact && typeof b.contact === 'object') data.contact = { name: String(b.contact.name || '').slice(0, 80), phone: String(b.contact.phone || '').slice(0, 30), email: String(b.contact.email || '').slice(0, 120) };
+  await saveCache('pack_settings', data);
+  res.json({ ok: true, ...(await inboundSetup()) });
+});
+app.get('/api/inbound/plans', ownerAuth, async (req, res) => {
+  const r = await pool.query(`SELECT id, name, status, step, error, plan_id, created_at, updated_at,
+      (SELECT COALESCE(SUM((i->>'qty')::int),0) FROM jsonb_array_elements(items) i)::int AS units, jsonb_array_length(items) AS skus
+    FROM inv_inbound_plans WHERE status <> 'cancelled' ORDER BY created_at DESC LIMIT 100`);
+  res.json({ ok: true, plans: r.rows });
+});
+app.get('/api/inbound/plans/:id', ownerAuth, async (req, res) => {
+  const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  res.json({ ok: true, plan: { ...p, running: planJobs.has(p.id) } });
+});
+// items: [{ asin, qty, exp? }]; each product needs a seller SKU and its
+// saved units per box, box size and unit weight (2D Production saves them).
+app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
+  const b = req.body || {};
+  const want = (Array.isArray(b.items) ? b.items : []).filter(i => i && i.asin && parseInt(i.qty, 10) > 0);
+  if (!want.length) return res.status(400).json({ ok: false, error: 'Add at least one product with a quantity.' });
+  for (const i of want) if (badQty(parseInt(i.qty, 10))) return res.status(400).json({ ok: false, error: `${i.asin}: quantity ${i.qty} isn't valid.` });
+  const setup = await inboundSetup();
+  const src = inboundLib.sourceAddress(setup.shipFrom, setup.contact);
+  if (src.error) return res.status(400).json({ ok: false, error: src.error });
+  const prods = (await pool.query(`SELECT asin, name, sku, fnsku, case_qty, case_len::float AS len, case_wid::float AS wid, case_hgt::float AS hgt, unit_weight_lb::float AS unit_lb
+    FROM inv_products WHERE asin = ANY($1)`, [want.map(i => i.asin)])).rows;
+  const by = {}; prods.forEach(p => by[p.asin] = p);
+  const items = [], problems = [];
+  for (const i of want) {
+    const p = by[i.asin];
+    if (!p) { problems.push(`${i.asin} isn't in the catalog.`); continue; }
+    if (!p.sku) { problems.push(`${p.name || p.asin}: no seller SKU on file.`); continue; }
+    const perBox = parseInt(i.perBox, 10) || p.case_qty;
+    if (!(perBox > 0 && p.len > 0 && p.wid > 0 && p.hgt > 0 && p.unit_lb > 0)) { problems.push(`${p.name || p.asin}: needs units per box, box size and unit weight (build one box of it in 2D Production once, or fill them in).`); continue; }
+    const exp = i.exp ? pack.normExp(i.exp) : null;
+    if (i.exp && !exp) { problems.push(`${p.name || p.asin}: expiration isn't a real date.`); continue; }
+    items.push({ asin: p.asin, msku: p.sku, fnsku: p.fnsku, name: p.name, qty: parseInt(i.qty, 10), perBox, len: p.len, wid: p.wid, hgt: p.hgt, unitLb: p.unit_lb, exp });
+  }
+  if (problems.length) return res.status(400).json({ ok: false, error: problems.join(' ') });
+  const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
+  const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner) VALUES($1,$2,$3) RETURNING id', [String(b.name || '').trim().slice(0, 40) || null, JSON.stringify(items), prep]);
+  const id = r.rows[0].id;
+  runPlanJob(id, 'Starting…', (step) => planPart1(id, step));
+  res.json({ ok: true, id });
+});
+app.post('/api/inbound/plans/:id/retry', ownerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const p = (await pool.query('SELECT status FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (p.status !== 'error') return res.status(409).json({ ok: false, error: 'Nothing to retry.' });
+  const started = runPlanJob(id, 'Retrying…', (step) => planPart1(id, step));
+  res.json({ ok: true, started });
+});
+// Cancel: free until the plan is confirmed. Amazon's copy is cancelled too.
+app.post('/api/inbound/plans/:id/cancel', ownerAuth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan — wait for it to finish, then cancel.' });
+  const p = (await pool.query('SELECT plan_id, status FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (p.status === 'cancelled') return res.json({ ok: true, already: true });
+  if (p.plan_id) {
+    try { const c = await amzInbound.cancelPlan(p.plan_id); if (c && c.operationId) await amzInbound.waitOperation(c.operationId); }
+    catch (e) { return res.status(502).json({ ok: false, error: 'Amazon didn\'t cancel it: ' + e.message }); }
+  }
+  await pool.query("UPDATE inv_inbound_plans SET status='cancelled', step=NULL, updated_at=now() WHERE id=$1", [id]);
+  res.json({ ok: true });
 });
 
 // ---- Amazon cancelled a shipment ----
