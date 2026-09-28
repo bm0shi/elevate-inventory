@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'new-shipment-pack-later-0928';
+const BUILD_ID = 'new-shipment-prep-owner-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1011,7 +1011,9 @@ async function initDb() {
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS freight JSONB;           -- {readyDate, stackable, quotes:{shipmentId:[..]}}
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS placement_confirmed_at TIMESTAMPTZ;
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS transport_confirmed_at TIMESTAMPTZ;
-      ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS confirmed JSONB;         -- what was bought: fee, freight, total, FBA IDs
+      ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS confirmed JSONB;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_prep_owner TEXT;    -- prep owner Amazon requires for this product (learned from a refused plan)
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_label_owner TEXT;         -- what was bought: fee, freight, total, FBA IDs
       ALTER TABLE inv_pack_shipments ADD COLUMN IF NOT EXISTS amz_status_at TIMESTAMPTZ;
       ALTER TABLE inv_pack_boxes ADD COLUMN IF NOT EXISTS exp TEXT;
     `);
@@ -1887,16 +1889,33 @@ async function planPart1(id, step) {
   if (!p.plan_id) {
     const src = inboundLib.sourceAddress(p.ship_from, p.ship_from);
     if (src.error) throw new Error(src.error);
-    const pb = inboundLib.planBody({ name: p.name, items: p.items.map(i => ({ msku: i.msku, qty: i.qty, expiration: i.exp ? '20' + i.exp.slice(0, 2) + '-' + i.exp.slice(2, 4) + '-' + i.exp.slice(4, 6) : null })),
-      source: src.address, marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER', prepOwner: p.prep_owner });
-    if (pb.error) throw new Error(pb.error);
-    await step('Creating the shipment plan at Amazon…');
-    const r = await amzInbound.createPlan(pb.body);
-    await pool.query('UPDATE inv_inbound_plans SET plan_id=$2 WHERE id=$1', [id, r.inboundPlanId]);
-    // A plan Amazon refused at creation is dead: forget it so Retry makes a new one.
-    try { await amzInbound.waitOperation(r.operationId, { onProgress: step }); }
-    catch (e) { await pool.query('UPDATE inv_inbound_plans SET plan_id=NULL WHERE id=$1', [id]); throw e; }
-    p.plan_id = r.inboundPlanId;
+    // Up to 3 tries: Amazon names each product whose prep/label owner it won't
+    // accept (inboundLib.ownerFixes); those are corrected, remembered on the
+    // product for next time, and the plan is sent again.
+    for (let attempt = 1; ; attempt++) {
+      const pb = inboundLib.planBody({ name: p.name, items: p.items.map(i => ({ msku: i.msku, qty: i.qty, prepOwner: i.prepOwner, labelOwner: i.labelOwner, expiration: i.exp ? '20' + i.exp.slice(0, 2) + '-' + i.exp.slice(2, 4) + '-' + i.exp.slice(4, 6) : null })),
+        source: src.address, marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER', prepOwner: p.prep_owner });
+      if (pb.error) throw new Error(pb.error);
+      await step(attempt > 1 ? 'Sending the plan again with the prep Amazon asked for…' : 'Creating the shipment plan at Amazon…');
+      try {
+        const r = await amzInbound.createPlan(pb.body);
+        await pool.query('UPDATE inv_inbound_plans SET plan_id=$2 WHERE id=$1', [id, r.inboundPlanId]);
+        // A plan Amazon refused at creation is dead: forget it so Retry makes a new one.
+        try { await amzInbound.waitOperation(r.operationId, { onProgress: step }); }
+        catch (e) { await pool.query('UPDATE inv_inbound_plans SET plan_id=NULL WHERE id=$1', [id]); throw e; }
+        p.plan_id = r.inboundPlanId;
+        break;
+      } catch (e) {
+        const fix = inboundLib.ownerFixes(e.message, p.items.map(i => i.msku));
+        const hit = p.items.filter(i => fix[i.msku]);
+        if (!hit.length || attempt >= 3) throw e;
+        for (const i of hit) {
+          Object.assign(i, fix[i.msku]);
+          await pool.query('UPDATE inv_products SET amz_prep_owner=COALESCE($2, amz_prep_owner), amz_label_owner=COALESCE($3, amz_label_owner) WHERE asin=$1', [i.asin, fix[i.msku].prepOwner || null, fix[i.msku].labelOwner || null]);
+        }
+        await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+      }
+    }
   }
   if (!p.placement) {
     await step('Getting destination options and fees from Amazon…');
@@ -1956,7 +1975,7 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
   const from = setup.addresses.find(a => a.id === b.addressId) || setup.addresses[0];
   const src = inboundLib.sourceAddress(from, from);
   if (src.error) return res.status(400).json({ ok: false, error: src.error });
-  const prods = (await pool.query(`SELECT asin, name, sku, fnsku FROM inv_products WHERE asin = ANY($1)`, [want.map(i => i.asin)])).rows;
+  const prods = (await pool.query(`SELECT asin, name, sku, fnsku, amz_prep_owner, amz_label_owner FROM inv_products WHERE asin = ANY($1)`, [want.map(i => i.asin)])).rows;
   const by = {}; prods.forEach(p => by[p.asin] = p);
   const items = [], problems = [];
   for (const i of want) {
@@ -1966,7 +1985,9 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
     // Boxes are built later (pack later), so only the product and quantity are needed here.
     const exp = i.exp ? pack.normExp(i.exp) : null;
     if (i.exp && !exp) { problems.push(`${p.name || p.asin}: expiration isn't a real date.`); continue; }
-    items.push({ asin: p.asin, msku: p.sku, fnsku: p.fnsku, name: p.name, qty: parseInt(i.qty, 10), exp });
+    // Prep/label owner Amazon insisted on last time for this product (see planPart1).
+    items.push({ asin: p.asin, msku: p.sku, fnsku: p.fnsku, name: p.name, qty: parseInt(i.qty, 10), exp,
+      ...(p.amz_prep_owner ? { prepOwner: p.amz_prep_owner } : {}), ...(p.amz_label_owner ? { labelOwner: p.amz_label_owner } : {}) });
   }
   if (problems.length) return res.status(400).json({ ok: false, error: problems.join(' ') });
   const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
@@ -2068,7 +2089,8 @@ async function planSendBoxes(id, args, step) {
     const items = (ps && ps.amz && ps.amz.items) || [];
     const boxes = await floorBoxes(sh.fba, items);
     if (!sh.boxesSentAt) {
-      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner });
+      const owners = {}; for (const i of p.items) owners[i.msku] = { prepOwner: i.prepOwner, labelOwner: i.labelOwner };
+      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner, owners });
       if (body.problems.length) throw new Error(sh.fba + ': ' + body.problems.join(' '));
       await step(`Sending ${boxes.length} boxes for ${sh.fba} to Amazon…`);
       const r = await amzInbound.setPackingInformation(p.plan_id, body.body);
