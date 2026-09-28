@@ -8365,7 +8365,27 @@ function renderDuoBuilder(body, q){
   }
   const rows=_bundles.filter(b=>!q || String(b.bundle_name||'').toLowerCase().includes(q) || b.bundle_asin.toLowerCase().includes(q))
     .map(b=>({ b, ...duoBuildInfo(b), prod:(products||[]).find(x=>x.asin===b.bundle_asin)||{} }));
-  const ready=rows.filter(r=>r.buildable>0).sort((a,b)=>b.buildable-a.buildable);
+  // The On Hand Sort menu applies here too, on the duo listing's own numbers;
+  // sorts that don't fit a duo (available, transit, stock) keep most-buildable first.
+  const sort=(document.getElementById('sortOnhand')||{}).value||'onhand_desc';
+  const dName=r=>String(r.b.bundle_name||r.prod.name||r.b.bundle_asin||'');
+  const dLoc=r=>Math.min(...r.comps.map(c=>locOrder(c.location)), 1e9);
+  const dAt=r=>Math.max(r.prod.fba_onhand||0, r.prod.fba_fulfillable||0), dWay=r=>r.prod.fba_inbound||0;
+  const dRate=r=>demandRate(r.b.bundle_asin, r.prod.monthlySold).mo;
+  const dCover=r=>dRate(r)>0 ? (dAt(r)+dWay(r))/(dRate(r)/30) : null;
+  const nl=(x,y)=>(x==null)-(y==null) || (x==null?0:x-y);
+  const ready=rows.filter(r=>r.buildable>0).sort((a,b)=>{
+    switch(sort){
+      case 'name': return dName(a).localeCompare(dName(b));
+      case 'name_desc': return dName(b).localeCompare(dName(a));
+      case 'loc_asc': return dLoc(a)-dLoc(b) || dName(a).localeCompare(dName(b));
+      case 'rank': return nl(a.prod.salesRank, b.prod.salesRank) || b.buildable-a.buildable;
+      case 'sold_desc': return (b.prod.monthlySold||0)-(a.prod.monthlySold||0) || b.buildable-a.buildable;
+      case 'fba_asc': return dAt(a)-dAt(b) || b.buildable-a.buildable;
+      case 'cover_asc': case 'fbacover_asc': return nl(dCover(a), dCover(b)) || b.buildable-a.buildable;
+      default: return b.buildable-a.buildable || dName(a).localeCompare(dName(b));
+    }
+  });
   // Compact / Big (per device, same switch as the rest of On Hand): both are
   // card grids like the product cards; Compact packs more per row.
   paintViewToggles();
@@ -8578,7 +8598,7 @@ function renderOnhand(){
   if(!ssAvg) loadSsAvg();   // FBA cover uses the other sellers' average
   // filter
   let list=products.filter(p=>{
-    if(q && !p.name.toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;
+    if(q && !String(p.name||'').toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;
     if(stockFilter==='instock' && (p.onhand||0)<=0) return false;
     if(stockFilter==='outstock' && (p.onhand||0)>0) return false;
     if(stockFilter==='duoonly' && !(p.is_component||p.is_bundle)) return false;
@@ -8597,23 +8617,26 @@ function renderOnhand(){
   const T=new Map(); const tot=p=>{ if(!T.has(p.asin)) T.set(p.asin, listingTotals(p)); return T.get(p.asin); };
   const fbaCover=p=>{ const t=tot(p); return t.rate>0 ? (t.at+t.way)/(t.rate/30) : null; };
   const nullsLast=(x,y)=>(x==null)-(y==null) || (x==null?0:x-y);
+  // A product with no name (it happens) must not break the sort: a thrown
+  // compare left the old order on screen, so sorts "didn't work" in Show all.
+  const byName=(x,y)=>String(x.name||x.asin||'').localeCompare(String(y.name||y.asin||''));
   list.sort((a,b)=>{
     switch(sort){
-      case 'name_desc': return b.name.localeCompare(a.name);
-      case 'loc_asc': return locOrder(a.location)-locOrder(b.location) || String(a.location||'').localeCompare(String(b.location||''),undefined,{numeric:true}) || a.name.localeCompare(b.name);
-      case 'rank': return nullsLast(a.salesRank, b.salesRank) || a.name.localeCompare(b.name);
-      case 'sold_desc': return tot(b).sold-tot(a).sold || a.name.localeCompare(b.name);
-      case 'duos_desc': return duosBuildable(b)-duosBuildable(a) || a.name.localeCompare(b.name);
-      case 'fba_asc': return tot(a).at-tot(b).at || tot(b).rate-tot(a).rate || a.name.localeCompare(b.name);
-      case 'fbacover_asc': return nullsLast(fbaCover(a), fbaCover(b)) || a.name.localeCompare(b.name);
+      case 'name_desc': return byName(b,a);
+      case 'loc_asc': return locOrder(a.location)-locOrder(b.location) || String(a.location||'').localeCompare(String(b.location||''),undefined,{numeric:true}) || byName(a,b);
+      case 'rank': return nullsLast(a.salesRank, b.salesRank) || byName(a,b);
+      case 'sold_desc': return tot(b).sold-tot(a).sold || byName(a,b);
+      case 'duos_desc': return duosBuildable(b)-duosBuildable(a) || byName(a,b);
+      case 'fba_asc': return tot(a).at-tot(b).at || tot(b).rate-tot(a).rate || byName(a,b);
+      case 'fbacover_asc': return nullsLast(fbaCover(a), fbaCover(b)) || byName(a,b);
       // Prep first: lowest FBA cover among what can be prepped now (bottles
       // available in the warehouse); nothing available → bottom.
-      case 'cover_asc': return (av(a)>0?0:1)-(av(b)>0?0:1) || nullsLast(fbaCover(a), fbaCover(b)) || a.name.localeCompare(b.name);
-      case 'onhand_desc': return av(b)-av(a) || a.name.localeCompare(b.name);
-      case 'onhand_asc': return av(a)-av(b) || a.name.localeCompare(b.name);
-      case 'transit_desc': return tr(b)-tr(a) || a.name.localeCompare(b.name);
-      case 'nostock': return (av(a)>0?1:0)-(av(b)>0?1:0) || a.name.localeCompare(b.name);
-      default: return a.name.localeCompare(b.name);
+      case 'cover_asc': return (av(a)>0?0:1)-(av(b)>0?0:1) || nullsLast(fbaCover(a), fbaCover(b)) || byName(a,b);
+      case 'onhand_desc': return av(b)-av(a) || byName(a,b);
+      case 'onhand_asc': return av(a)-av(b) || byName(a,b);
+      case 'transit_desc': return tr(b)-tr(a) || byName(a,b);
+      case 'nostock': return (av(a)>0?1:0)-(av(b)>0?1:0) || byName(a,b);
+      default: return byName(a,b);
     }
   });
   paintViewToggles();
