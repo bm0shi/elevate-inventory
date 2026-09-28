@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prod-home-status-0927';
+const BUILD_ID = 'checkin-status-fix-0928';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1902,7 +1902,7 @@ async function reconcileInTransit() {
     if (seen.rows.length) continue;
     if (!firstTime && known.rows[0].status !== 'received') continue;
 
-    // RECEIVING means Amazon is still counting. The units have left our
+    // CHECKED_IN / RECEIVING mean Amazon has it and is still counting. The units have left our
     // transit either way, but the received counts are partial: finalising
     // then flagged shortages that weren't real and never looked again. Keep
     // re-reading until CLOSED; only then judge discrepancies.
@@ -1969,7 +1969,7 @@ async function reconcileInTransit() {
       const closedLine = !closed ? '' : shorts.length
         ? `\nAmazon CLOSED it SHORT — file a claim:\n• ${shorts.join('\n• ')}` : '\nAmazon closed it: all units received.';
       if (firstTime) sendAlert(`Shipment ${label} checked in`,
-        `📦 Amazon started receiving ${label}: ${units} units, ${days != null ? Math.round(days) + ' days' : '?'} after it was sent (${sent}).${closedLine}`, { tags: 'package' });
+        `📦 Amazon ${String(s.ShipmentStatus || '').toUpperCase() === 'CHECKED_IN' ? 'checked in' : 'started receiving'} ${label}: ${units} units, ${days != null ? Math.round(days) + ' days' : '?'} after it was sent (${sent}).${closedLine}`, { tags: 'package' });
       else if (closed) sendAlert(`Shipment ${label} closed${shorts.length ? ' SHORT' : ''}`,
         `${shorts.length ? '⚠' : '✅'} ${label}${closedLine}`, { tags: shorts.length ? 'warning' : 'white_check_mark' });
     } catch (e) { console.error('[Alert] check-in alert skipped:', e.message); }
