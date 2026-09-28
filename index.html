@@ -1023,9 +1023,10 @@ function nsPlansBox(){
   ownerApi('/api/inbound/plans').then(d=>{
     if(!d||!d.ok||!d.plans.length){ el.innerHTML=''; return; }
     el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:14px 20px;border-bottom:1px solid #eef2f6"><div style="font-size:18px;font-weight:900">Shipments being created</div><div class="hint">Made in the app. Click one to continue it.</div></div>'
-      +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('NAME','left')+prodTh('PRODUCTS')+prodTh('UNITS')+prodTh('CREATED')+prodTh('STATUS')+'</tr>'
+      +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('NAME','left')+prodTh('PRODUCTS')+prodTh('UNITS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
       +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b>'+esc(p.name||('Plan '+p.id))+'</b>'+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd(p.skus)+prodTd('<b>'+p.units.toLocaleString()+'</b>')
-        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472')+prodTd(nsPill(p.status))+'</tr>').join('')+'</table></div>';
+        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472')+prodTd(nsPill(p.status))
+        +prodTd('<button onclick="event.stopPropagation();nsRemove('+p.id+')" title="Remove from the app (nothing sent to Amazon)" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>').join('')+'</table></div>';
   }).catch(()=>{});
 }
 function nsOpen(){
@@ -1179,16 +1180,22 @@ function nsPlan(id){
       +stepRow(done('freight'),'5. Freight quotes from the floor\'s pallets')+stepRow(done('conf'),'6. Freight booked → bill of lading & pallet labels',p.confirmed?esc((p.confirmed.shipments||[]).join(' · ')):'')+'</div>';
     // 2. Pick + confirm a destination
     if(p.placement&&p.placement.length&&!p.placement_confirmed_at&&p.status!=='working'){
-      h+='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap"><div><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest placement fee first. Est. pallets is our own guess from each product\'s weight and size (nothing sent to Amazon). Amazon only quotes freight after a destination is confirmed, so freight is quoted at the end from the floor\'s real pallets.</div></div>'
-        +(p.status==='placement'&&p.placement.some(o=>!o.guess)?'<button class="action" onclick="nsGuess('+p.id+')" style="background:#eef2f6;color:#1f2733;font-size:13px;padding:8px 12px">Work out pallets</button>':'')+'</div>'
-        +p.placement.map((o,i)=>'<div style="margin-top:10px;padding:14px 16px;border-radius:12px;border:2px solid #e2e8f0;background:#fff"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">'
-          +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(i===0&&p.placement.length>1?' <span style="font-size:12px;color:#127a7a">· cheapest</span>':'')+'</div>'
-            +'<div style="margin-top:3px;display:flex;flex-direction:column;gap:2px">'+nsPlaces(o).map((x,k)=>{ const g=o.guess&&o.guess.ships&&o.guess.ships[k]; return '<div style="font-size:14px"><b style="color:#2563a8;font-family:monospace">'+esc(x.fc)+'</b> <span style="color:#1f2733;font-weight:700">'+esc(x.city?x.city+', '+x.state:'')+'</span>'+(g&&g.pallets?' <span class="hint">· '+g.units.toLocaleString()+' units · ~'+g.pallets+' pallet'+(g.pallets===1?'':'s')+' · ~'+Number(g.weight).toLocaleString()+' lb</span>':'')+'</div>'; }).join('')+'</div>'
+      const tots=p.placement.map(o=>o.guess&&o.guess.freight!=null?(o.fee||0)+o.guess.freight:null), lo=Math.min(...tots.filter(x=>x!=null));
+      // Only call a winner when it beats the next one by 20%+: the estimate is ±25–35%.
+      const sorted=tots.filter(x=>x!=null).sort((x,y)=>x-y), clear=sorted.length>1&&sorted[0]<=sorted[1]*0.8;
+      p.placement.forEach((o,i)=>{ o._best=clear&&tots[i]!=null&&tots[i]===lo; });
+      h+='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap"><div><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest placement fee first. Est. pallets and est. freight are our own estimates (weight, size and distance; nothing sent to Amazon), ±25–35%. Amazon only quotes real freight after a destination is confirmed, so the real quote comes at the end from the floor\'s pallets.</div></div>'
+        +(p.status==='placement'&&p.placement.some(o=>!o.guess||o.guess.freight===undefined)?'<button class="action" onclick="nsGuess('+p.id+')" style="background:#eef2f6;color:#1f2733;font-size:13px;padding:8px 12px">Work out pallets &amp; freight</button>':'')+'</div>'
+        +p.placement.map((o,i)=>'<div style="margin-top:10px;padding:14px 16px;border-radius:12px;border:'+(o._best?'3px solid #1e8449':'2px solid #e2e8f0')+';background:'+(o._best?'#f0faf4':'#fff')+'"><div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">'
+          +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(i===0&&p.placement.length>1?' <span style="font-size:12px;color:#127a7a">· lowest fee</span>':'')+(o._best?' <span style="font-size:12px;color:#1e8449">· 💰 lowest est. total</span>':'')+'</div>'
+            +'<div style="margin-top:3px;display:flex;flex-direction:column;gap:2px">'+nsPlaces(o).map((x,k)=>{ const g=o.guess&&o.guess.ships&&o.guess.ships[k]; return '<div style="font-size:14px"><b style="color:#2563a8;font-family:monospace">'+esc(x.fc)+'</b> <span style="color:#1f2733;font-weight:700">'+esc(x.city?x.city+', '+x.state:'')+'</span>'+(g&&g.pallets?' <span class="hint">· '+g.units.toLocaleString()+' units · ~'+g.pallets+' pallet'+(g.pallets===1?'':'s')+' · ~'+Number(g.weight).toLocaleString()+' lb'+(g.miles!=null?' · ~'+g.miles.toLocaleString()+' mi':'')+(g.freight!=null?' · <b style="color:#1f2733">~$'+g.freight.toLocaleString()+'</b>':'')+'</span>':'')+'</div>'; }).join('')+'</div>'
             +(o.guess&&o.guess.missing&&o.guess.missing.length?'<div style="font-size:12px;color:#b45309;font-weight:700;margin-top:4px">No weight/size on file for '+esc(o.guess.missing.join(', '))+' — left out of the pallet guess</div>':'')
             +(o.guess&&o.guess.error?'<div style="font-size:12px;color:#b45309;font-weight:700;margin-top:4px">No pallet guess: '+esc(o.guess.error)+'</div>':'')+'</div>'
           +'<div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">'
             +(o.guess&&o.guess.pallets?'<div style="text-align:center" title="Our guess from each product\'s weight and box / package size, with your pallet limits. The real pallets come from the floor at the end."><div style="font-size:11px;font-weight:900;color:#5a6472">EST. PALLETS</div><div style="font-size:24px;font-weight:900;color:#1f2733">~'+o.guess.pallets+'</div><div class="hint" style="font-size:11px">~'+Number(o.guess.weight).toLocaleString()+' lb</div></div>':'')
             +'<div style="text-align:center"><div style="font-size:11px;font-weight:900;color:#5a6472">PLACEMENT FEE</div><div style="font-size:24px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?$$(o.fee):'$0')+'</div></div>'
+            +(o.guess&&o.guess.freight!=null?'<div style="text-align:center" title="Our own rough estimate: distance to each warehouse × a per-pallet LTL rate'+(o.guess.calibratedOn?', adjusted to what your last '+o.guess.calibratedOn+' shipment'+(o.guess.calibratedOn===1?'':'s')+' really cost':' (no freight history yet: generic rates)')+'. Not Amazon\'s quote."><div style="font-size:11px;font-weight:900;color:#5a6472">EST. FREIGHT</div><div style="font-size:24px;font-weight:900;color:#1f2733">~'+$$(o.guess.freight).replace('.00','')+'</div><div class="hint" style="font-size:11px">±25–35%</div></div>'
+              +'<div style="text-align:center;padding-left:14px;border-left:2px solid #e2e8f0"><div style="font-size:11px;font-weight:900;color:#5a6472">EST. TOTAL</div><div style="font-size:26px;font-weight:900;color:'+(o._best?'#1e8449':'#1f2733')+'">~'+$$((o.fee||0)+o.guess.freight).replace('.00','')+'</div><div class="hint" style="font-size:11px">fee + est. freight</div></div>':'')
             +(p.status==='placement'?'<button class="action" onclick="nsPlace('+p.id+',\''+esc(o.placementOptionId)+'\','+(o.fee||0)+',\''+esc(nsPlaces(o).map(x=>x.fc+(x.city?' ('+x.city+', '+x.state+')':'')).join(', ').replace(/'/g,''))+'\')" style="background:#127a7a">Confirm this destination →</button>':'')+'</div></div></div>').join('')+'</div>';
     }
     // 3. The floor builds (progress per shipment), then 4. send the boxes
@@ -1254,7 +1261,9 @@ function nsPlan(id){
     el.innerHTML=h;
     if(p.status==='working'||p.status==='new'||d.plan.running) _nsPoll=setTimeout(()=>nsPlan(id),3000);
     else if(p.status==='building') _nsPoll=setTimeout(()=>nsPlan(id),15000);   // floor progress
-    if(p.placement_confirmed_at){ const c=el.querySelector('button[onclick^="nsCancel"]'); if(c) c.remove(); }
+    // After the destination is confirmed, Cancel would need Amazon; offer an
+    // app-only removal instead (for a plan deleted in Seller Central).
+    if(p.placement_confirmed_at){ const c=el.querySelector('button[onclick^="nsCancel"]'); if(c){ c.textContent='Remove from app'; c.setAttribute('onclick','nsRemove('+p.id+')'); } }
   }); });
 }
 const expText=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'/'+e.slice(4,6)+'/20'+e.slice(0,2):(e||'');
@@ -1295,6 +1304,10 @@ function nsSaveExp(id){
   const exp={}; document.querySelectorAll('.nsExp').forEach(x=>{ exp[x.dataset.msku]=x.value.trim(); });
   if(Object.values(exp).some(v=>!v)){ toast('Type every expiration date',true); return; }
   ownerApi('/api/inbound/plans/'+id+'/exp',{method:'POST',body:JSON.stringify({exp})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'Not saved',true); nsPlan(id); });
+}
+function nsRemove(id){
+  if(!confirm('Remove this plan from the app?\n\nUse this when it was cancelled or deleted in Seller Central. Nothing is sent to Amazon and no stock changes. Its FBA shipments stay in 2D Production — delete them there too if you want them gone.')) return;
+  ownerApi('/api/inbound/plans/'+id+'/remove',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not removed',true); return; } toast('Removed from the app'); clearTimeout(_nsPoll); _ns=null; prodOpen(); });
 }
 function nsRetry(id){ ownerApi('/api/inbound/plans/'+id+'/retry',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
 function nsCancel(id){
