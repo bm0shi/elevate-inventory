@@ -1000,7 +1000,13 @@ function prodHome(d){
   h+='</div>';
   el.innerHTML=h;
   const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
+  // Plans being created are owner-only. The list used to load only once the
+  // owner password had been typed in this visit (e.g. by pressing Cancel), so
+  // it looked empty. Reuse the owner login from Admin for this session, else
+  // offer a button.
+  if(!OWNER_PW && sessionStorage_get('adminUnlocked')==='1') OWNER_PW=sessionStorage_get('adminPw')||'';
   if(OWNER_PW) nsPlansBox();
+  else { const b=document.getElementById('nsPlans'); if(b) b.innerHTML='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:16px">Shipments being created</b><div class="hint">Owner only — enter the owner password to see them.</div></div><button class="action" onclick="nsOwner().then(ok=>{ if(ok) nsPlansBox(); })" style="background:#1a2b4a">🔒 Show them</button></div>'; }
 }
 // ============================================================
 // NEW SHIPMENT FROM THE APP (lib/inbound.js). Owner only. "Pack later", like
@@ -1014,7 +1020,7 @@ function nsOwner(){
   if(OWNER_PW) return Promise.resolve(true);
   const pw=prompt('Creating shipments needs the owner password:'); if(!pw) return Promise.resolve(false);
   return fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(r=>r.json())
-    .then(d=>{ if(d.ok){ OWNER_PW=pw; return true; } toast('Wrong owner password',true); return false; });
+    .then(d=>{ if(d.ok){ OWNER_PW=pw; sessionStorage_set('adminUnlocked','1'); sessionStorage_set('adminPw',pw); return true; } toast('Wrong owner password',true); return false; });
 }
 const NS_STATUS={new:['STARTING','#5a6472','#eef0f3'],working:['AMAZON WORKING…','#2563a8','#e6effa'],placement:['PICK DESTINATION','#b45309','#fff3dc'],building:['BUILDING ON THE FLOOR','#2563a8','#e6effa'],pallets:['CHECK PALLETS','#b45309','#fff3dc'],quotes:['PICK FREIGHT & BOOK','#b45309','#fff3dc'],confirmed:['FREIGHT BOOKED','#1e8449','#e7f6ec'],error:['NEEDS ATTENTION','#c0392b','#fdecea']};
 const nsPill=st=>{ const x=NS_STATUS[st]||[String(st||'').toUpperCase(),'#5a6472','#eef0f3']; return '<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;color:'+x[1]+';background:'+x[2]+'">'+x[0]+'</span>'; };
@@ -1183,7 +1189,11 @@ function nsPlan(id){
       const tots=p.placement.map(o=>o.guess&&o.guess.freight!=null?(o.fee||0)+o.guess.freight:null), lo=Math.min(...tots.filter(x=>x!=null));
       // Only call a winner when it beats the next one by 20%+: the estimate is ±25–35%.
       const sorted=tots.filter(x=>x!=null).sort((x,y)=>x-y), clear=sorted.length>1&&sorted[0]<=sorted[1]*0.8;
-      p.placement.forEach((o,i)=>{ o._best=clear&&tots[i]!=null&&tots[i]===lo; });
+      p.placement.forEach((o,i)=>{ o._best=clear&&tots[i]!=null&&tots[i]===lo; o._tot=tots[i]; });
+      // Cheapest estimated total (fee + freight) at the top; options without an
+      // estimate go last, by fee.
+      const minFee=Math.min(...p.placement.map(o=>o.fee||0));
+      const opts=p.placement.slice().sort((a,b)=>(a._tot==null)-(b._tot==null) || (a._tot??0)-(b._tot??0) || (a.fee||0)-(b.fee||0));
       const money=v=>'~$'+Math.round(v).toLocaleString();
       // One table for every option so the same numbers sit in the same
       // column all the way down (the owner's standing ask: centered and aligned).
@@ -1199,19 +1209,19 @@ function nsPlan(id){
         +(o.guess&&o.guess.missing&&o.guess.missing.length?'<div style="font-size:12px;color:#b45309;font-weight:700;margin-top:4px">No weight/size on file for '+esc(o.guess.missing.join(', '))+' — left out of the estimate</div>':'')
         +(o.guess&&o.guess.error?'<div style="font-size:12px;color:#b45309;font-weight:700;margin-top:4px">No estimate: '+esc(o.guess.error)+'</div>':'');
       const col='text-align:center;vertical-align:middle;padding:12px 10px;white-space:nowrap';
-      h+='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap"><div><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Lowest placement fee first. Est. pallets and est. freight are our own estimates (weight, size and distance; nothing sent to Amazon), ±25–35%. The real freight quote comes at the end from the floor\'s pallets.</div></div>'
+      h+='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap"><div><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest estimated total (placement fee + freight) first. Est. pallets and est. freight are our own estimates (weight, size and distance; nothing sent to Amazon), ±25–35%. The real freight quote comes at the end from the floor\'s pallets.</div></div>'
         +(p.status==='placement'&&p.placement.some(o=>!o.guess||o.guess.freight===undefined)?'<button class="action" onclick="nsGuess('+p.id+')" style="background:#eef2f6;color:#1f2733;font-size:13px;padding:8px 12px">Work out pallets &amp; freight</button>':'')+'</div>'
         +'<div style="overflow-x:auto;margin-top:10px"><table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'
           +prodTh('OPTION','left')+prodTh('EST. PALLETS')+prodTh('PLACEMENT FEE')+prodTh('EST. FREIGHT<br><span style="font-weight:600;color:#8a97a6">±25–35%</span>')+prodTh('EST. TOTAL<br><span style="font-weight:600;color:#8a97a6">fee + freight</span>')+prodTh('')+'</tr>'
-        +p.placement.map((o,i)=>{ const g=o.guess||{}, bg=o._best?'background:#f0faf4;':'';
+        +opts.map((o,i)=>{ const g=o.guess||{}, bg=o._best?'background:#f0faf4;':'';
           const bl=o._best?'border-top:3px solid #1e8449;border-bottom:3px solid #1e8449;':'border-top:2px solid #e2e8f0;';
           return '<tr>'
             +'<td style="padding:12px 10px;vertical-align:top;'+bg+bl+(o._best?'border-left:3px solid #1e8449;':'')+'"><div style="font-size:17px;font-weight:900;margin-bottom:4px">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')
-              +(i===0&&p.placement.length>1?' <span style="font-size:12px;color:#127a7a">· lowest fee</span>':'')+(o._best?' <span style="font-size:12px;color:#1e8449">· 💰 lowest est. total</span>':'')+'</div>'+whTable(o)+'</td>'
+              +((o.fee||0)===minFee&&p.placement.length>1?' <span style="font-size:12px;color:#127a7a">· lowest fee</span>':'')+(o._best?' <span style="font-size:12px;color:#1e8449">· 💰 lowest est. total</span>':'')+'</div>'+whTable(o)+'</td>'
             +'<td style="'+col+';'+bg+bl+'"><div style="font-size:22px;font-weight:900">'+(g.pallets?'~'+g.pallets:'—')+'</div>'+(g.weight?sub('~'+Number(g.weight).toLocaleString()+' lb'):'')+'</td>'
             +'<td style="'+col+';'+bg+bl+'"><div style="font-size:22px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?$$(o.fee):'$0')+'</div></td>'
             +'<td style="'+col+';'+bg+bl+'"><div style="font-size:22px;font-weight:900">'+(g.freight!=null?money(g.freight):'—')+'</div></td>'
-            +'<td style="'+col+';'+bg+bl+'"><div style="font-size:24px;font-weight:900;color:'+(o._best?'#1e8449':'#1f2733')+'">'+(tots[i]!=null?money(tots[i]):'—')+'</div></td>'
+            +'<td style="'+col+';'+bg+bl+'"><div style="font-size:24px;font-weight:900;color:'+(o._best?'#1e8449':'#1f2733')+'">'+(o._tot!=null?money(o._tot):'—')+'</div></td>'
             +'<td style="'+col+';'+bg+bl+(o._best?'border-right:3px solid #1e8449;':'')+'">'+(p.status==='placement'?'<button class="action" onclick="nsPlace('+p.id+',\''+esc(o.placementOptionId)+'\','+(o.fee||0)+',\''+esc(nsPlaces(o).map(x=>x.fc+(x.city?' ('+x.city+', '+x.state+')':'')).join(', ').replace(/'/g,''))+'\')" style="background:#127a7a">Confirm this destination →</button>':'')+'</td></tr>'; }).join('')
         +'</table></div></div>';
     }
