@@ -972,7 +972,9 @@ function prodHome(d){
     +'<div style="background:#fff;padding:20px 28px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">'
       +'<div style="flex:1;min-width:260px"><div style="font-size:12px;font-weight:900;letter-spacing:0.4px;color:#5a6472;margin-bottom:6px">SHIPMENT ID</div>'
       +'<input id="prodSidIn" placeholder="FBA19R87QYJJ" autocomplete="off" style="width:100%;box-sizing:border-box;text-transform:uppercase;font-size:22px;font-weight:800;letter-spacing:1px;padding:12px 16px;border:2px solid #cfd8e3;border-radius:10px;font-family:monospace" onkeydown="if(event.key===\'Enter\')prodStart()"></div>'
-      +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#127a7a;font-size:17px;padding:14px 26px;border-radius:10px">Load from Amazon →</button></div></div>';
+      +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#127a7a;font-size:17px;padding:14px 26px;border-radius:10px">Load from Amazon →</button>'
+      +'<button class="action" onclick="nsOpen()" style="background:#1a2b4a;font-size:17px;padding:14px 26px;border-radius:10px">➕ New shipment (no Send to Amazon)</button></div></div>'
+      +'<div id="nsPlans"></div>';
   h+='<div class="box" style="padding:0;overflow:hidden"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid #eef2f6">'
     +'<div><div style="font-size:18px;font-weight:900">Shipments</div><div class="hint">Every shipment built in this app. Status from Amazon, updated '+ago(d&&d.statusAt)+(d&&d.statusError?' · <span style="color:#c0392b">Amazon: '+esc(d.statusError).slice(0,120)+'</span>':'')+'</div></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+Object.values(counts).map(c=>'<span style="font-size:12px;font-weight:800;color:'+c.st.c+';background:'+c.st.bg+';padding:4px 10px;border-radius:999px">'+c.n+' '+c.st.t.toLowerCase()+'</span>').join('')
@@ -992,6 +994,146 @@ function prodHome(d){
   h+='</div></div>';
   el.innerHTML=h;
   const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
+  if(OWNER_PW) nsPlansBox();
+}
+// ============================================================
+// NEW SHIPMENT FROM THE APP (lib/inbound.js). Owner only. Part 1: pick
+// products + quantities → Amazon plan → packing option → the planned boxes
+// (from each product's saved units per box, size, weight) → destination
+// options with their fees. Freight quotes and confirming are part 2.
+// ============================================================
+let _ns=null;
+function nsOwner(){
+  if(OWNER_PW) return Promise.resolve(true);
+  const pw=prompt('Creating shipments needs the owner password:'); if(!pw) return Promise.resolve(false);
+  return fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(r=>r.json())
+    .then(d=>{ if(d.ok){ OWNER_PW=pw; return true; } toast('Wrong owner password',true); return false; });
+}
+const NS_STATUS={new:['STARTING','#5a6472','#eef0f3'],working:['AMAZON WORKING…','#2563a8','#e6effa'],placement:['PICK DESTINATION','#b45309','#fff3dc'],error:['NEEDS ATTENTION','#c0392b','#fdecea']};
+const nsPill=st=>{ const x=NS_STATUS[st]||[String(st||'').toUpperCase(),'#5a6472','#eef0f3']; return '<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;color:'+x[1]+';background:'+x[2]+'">'+x[0]+'</span>'; };
+function nsPlansBox(){
+  const el=document.getElementById('nsPlans'); if(!el) return;
+  ownerApi('/api/inbound/plans').then(d=>{
+    if(!d||!d.ok||!d.plans.length){ el.innerHTML=''; return; }
+    el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:14px 20px;border-bottom:1px solid #eef2f6"><div style="font-size:18px;font-weight:900">Shipments being created</div><div class="hint">Made in the app, not confirmed with Amazon yet.</div></div>'
+      +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('NAME','left')+prodTh('PRODUCTS')+prodTh('UNITS')+prodTh('CREATED')+prodTh('STATUS')+'</tr>'
+      +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b>'+esc(p.name||('Plan '+p.id))+'</b>'+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd(p.skus)+prodTd('<b>'+p.units.toLocaleString()+'</b>')
+        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472')+prodTd(nsPill(p.status))+'</tr>').join('')+'</table></div>';
+  }).catch(()=>{});
+}
+function nsOpen(){
+  nsOwner().then(ok=>{ if(!ok) return;
+    _ns={items:[], name:'', prep:'NONE'};
+    ownerApi('/api/inbound/setup').then(d=>{ _ns.setup=d||{}; nsRender(); }).catch(e=>toast('Could not load: '+e.message,true));
+  });
+}
+function nsRender(){
+  const el=document.getElementById('prodArea'), S=_ns.setup||{}, f=S.shipFrom||{}, c=S.contact||{};
+  const inp=(id,label,val,w)=>'<label style="display:block;flex:'+(w||1)+';min-width:120px;font-size:11px;font-weight:900;color:#5a6472;letter-spacing:0.3px">'+label+'<input id="'+id+'" value="'+esc(val||'')+'" style="width:100%;box-sizing:border-box;margin-top:3px;padding:8px;font-size:14px"></label>';
+  const srcOk=f.name&&f.line1&&f.city&&f.state&&f.zip&&c.phone;
+  let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">➕ New shipment</b><div class="hint">Pick products and quantities. The app plans the boxes from each product\'s saved units per box, box size and weight, then asks Amazon for destinations and fees. Nothing is charged until you confirm (next step).</div></div>'
+    +'<button class="action" onclick="_ns=null;prodOpen()" style="background:#5a6472">← Back</button></div>';
+  h+='<details class="box"'+(srcOk?'':' open')+'><summary style="cursor:pointer;font-weight:900">Ship-from &amp; contact '+(srcOk?'<span style="color:#1e8449">✓ '+esc(f.name)+', '+esc(f.city)+'</span>':'<span style="color:#c0392b">— needed (Amazon requires a phone number)</span>')+'</summary>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">'+inp('nsFName','BUSINESS NAME',f.name,2)+inp('nsFLine1','STREET',f.line1,2)+inp('nsFCity','CITY',f.city)+inp('nsFState','STATE',f.state)+inp('nsFZip','ZIP',f.zip)+'</div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsCName','CONTACT NAME',c.name)+inp('nsCPhone','PHONE',c.phone)+inp('nsCEmail','EMAIL',c.email,2)+'</div>'
+    +'<button class="action" onclick="nsSaveSetup()" style="margin-top:10px;background:#1a2b4a">Save</button></details>';
+  const rows=_ns.items;
+  h+='<div class="box"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'+inp('nsName','SHIPMENT NAME (optional)',_ns.name,2)
+    +'<label style="flex:1;min-width:200px;font-size:11px;font-weight:900;color:#5a6472">PREP<select id="nsPrep" onchange="_ns.prep=this.value" style="width:100%;margin-top:3px;padding:8px;font-size:14px"><option value="NONE"'+(_ns.prep==='NONE'?' selected':'')+'>No prep needed</option><option value="SELLER"'+(_ns.prep==='SELLER'?' selected':'')+'>We prep (bag / bubble)</option></select></label></div>'
+    +'<div style="margin-top:14px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
+  if(rows.length){
+    h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('UNITS PER BOX')+prodTh('BOXES')+prodTh('BOX SIZE (IN)')+prodTh('BOX LB')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
+      +rows.map((r,i)=>{ const per=parseInt(r.perBox)||0, q=parseInt(r.qty)||0, bx=per>0&&q>0?Math.ceil(q/per):0, ok=per>0&&r.len>0&&r.unitLb>0;
+        return '<tr>'+prodTd('<b>'+esc(String(r.name||r.asin).slice(0,70))+'</b><div class="hint" style="font-family:monospace">'+esc(r.fnsku||'')+' · '+esc(r.sku||'no SKU')+'</div>','left')
+          +prodTd('<input type="number" min="1" value="'+(r.qty||'')+'" oninput="_ns.items['+i+'].qty=this.value;nsTotals()" style="width:90px;text-align:center;font-size:17px;font-weight:800;padding:6px">')
+          +prodTd('<input type="number" min="1" value="'+(r.perBox||'')+'" oninput="_ns.items['+i+'].perBox=this.value;nsTotals()" style="width:70px;text-align:center;font-size:15px;padding:6px">')
+          +prodTd('<b id="nsBx'+i+'" style="font-size:16px">'+(bx||'—')+'</b>'+(bx&&q%per?'<div class="hint" style="font-size:11px">last box '+(q%per)+'</div>':''))
+          +prodTd(r.len?r.len+'×'+r.wid+'×'+r.hgt:'<span style="color:#c0392b;font-weight:800">missing</span>','center','white-space:nowrap')
+          +prodTd(r.unitLb&&per?(Math.round(per*r.unitLb*10)/10)+'':'<span style="color:#c0392b;font-weight:800">missing</span>')
+          +prodTd('<input placeholder="09/26/2029" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value" style="width:110px;text-align:center;padding:6px">')
+          +prodTd('<button onclick="_ns.items.splice('+i+',1);nsRender()" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>'
+          +(ok?'':'<tr><td colspan="8" style="padding:0 10px 10px"><div style="color:#c0392b;font-size:13px;font-weight:800">⚠️ Needs units per box, box size and unit weight — build one box of it in 2D Production once (they\'re saved), then add it again.</div></td></tr>'); }).join('')
+      +'</table><div id="nsTot" style="margin-top:10px;font-size:16px;font-weight:800"></div>';
+  }
+  h+='<button class="action" id="nsGo" onclick="nsCreate()" style="width:100%;margin-top:14px;font-size:19px;padding:15px;background:#127a7a"'+(rows.length?'':' disabled')+'>Create plan with Amazon &amp; get destinations →</button></div>';
+  el.innerHTML=h; nsTotals();
+}
+function nsTotals(){
+  const t=document.getElementById('nsTot'); if(!t) return;
+  let u=0,b=0; _ns.items.forEach((r,i)=>{ const q=parseInt(r.qty)||0, per=parseInt(r.perBox)||0; u+=q; const bx=per>0&&q>0?Math.ceil(q/per):0; b+=bx; const e=document.getElementById('nsBx'+i); if(e) e.textContent=bx||'—'; });
+  t.innerHTML='Total: '+u.toLocaleString()+' units · '+b+' boxes';
+}
+function nsSearch(q){
+  const el=document.getElementById('nsResults'); q=String(q||'').trim().toLowerCase();
+  if(q.length<2){ el.innerHTML=''; return; }
+  const hits=(products||[]).filter(p=>[p.name,p.asin,p.sku,p.fnsku].some(v=>v&&String(v).toLowerCase().includes(q))).slice(0,8);
+  el.innerHTML=hits.length?'<div style="position:absolute;z-index:50;left:0;right:0;background:#fff;border:1px solid #cfd8e3;border-radius:8px;box-shadow:0 6px 18px rgba(15,27,45,0.15);max-height:360px;overflow:auto">'
+    +hits.map(p=>'<div onclick="nsAdd(\''+esc(p.asin)+'\')" style="display:flex;gap:10px;align-items:center;padding:8px 12px;cursor:pointer;border-bottom:1px solid #eef2f6" onmouseover="this.style.background=\'#f3f7fa\'" onmouseout="this.style.background=\'\'">'
+      +(p.image?'<img src="'+esc(p.image)+'" style="width:40px;height:40px;object-fit:contain" onerror="this.style.display=\'none\'">':'')+'<div><b>'+esc(String(p.name||'').slice(0,80))+'</b><div class="hint">'+esc(p.asin)+(p.fnsku?' · '+esc(p.fnsku):'')+' · on hand '+(p.onhand||0)+'</div></div></div>').join('')+'</div>':'';
+}
+function nsAdd(code){
+  code=String(code||'').trim(); if(!code) return;
+  api('/api/pack/product/'+encodeURIComponent(code)).then(d=>{
+    if(!d||d.ok===false){ scanError(); toast((d&&d.error)||'Unknown product',true); return; }
+    const p=d.product;
+    if(_ns.items.some(x=>x.asin===p.asin)){ toast('Already on the list'); }
+    else { scanFeedback(); _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:'', perBox:p.case_qty||'', len:p.case_len, wid:p.case_wid, hgt:p.case_hgt, unitLb:p.unit_weight_lb, exp:''}); }
+    _ns.name=(document.getElementById('nsName')||{}).value||_ns.name; nsRender();
+    const q=document.querySelectorAll('#prodArea input[type=number]'); if(q.length) (q[q.length-2]||q[0]).focus();
+  });
+}
+function nsSaveSetup(){
+  const g=id=>(document.getElementById(id)||{}).value||'';
+  ownerApi('/api/inbound/setup',{method:'POST',body:JSON.stringify({shipFrom:{name:g('nsFName'),line1:g('nsFLine1'),city:g('nsFCity'),state:g('nsFState'),zip:g('nsFZip'),country:'US'},contact:{name:g('nsCName'),phone:g('nsCPhone'),email:g('nsCEmail')}})})
+    .then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; } _ns.setup=d; toast('Saved'); _ns.name=g('nsName'); nsRender(); });
+}
+function nsCreate(){
+  const name=(document.getElementById('nsName')||{}).value||'';
+  const items=_ns.items.map(r=>({asin:r.asin, qty:parseInt(r.qty)||0, perBox:parseInt(r.perBox)||0, exp:r.exp||null}));
+  if(items.some(i=>!(i.qty>0))){ toast('Every product needs a quantity',true); return; }
+  if(!confirm('Create this shipment plan at Amazon?\n\n'+items.length+' products · '+items.reduce((t,i)=>t+i.qty,0)+' units\n\nThis is free and can be cancelled. Amazon then shows the destination options and fees; nothing is charged until you confirm.')) return;
+  const b=document.getElementById('nsGo'); if(b){ b.disabled=true; b.textContent='Sending to Amazon…'; }
+  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, prepOwner:_ns.prep})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not created',true); if(b){ b.disabled=false; b.textContent='Create plan with Amazon & get destinations →'; } return; }
+    nsPlan(d.id);
+  }).catch(e=>{ toast('Not created: '+e.message,true); if(b) b.disabled=false; });
+}
+let _nsPoll=null;
+function nsPlan(id){
+  clearTimeout(_nsPoll);
+  nsOwner().then(ok=>{ if(!ok) return; ownerApi('/api/inbound/plans/'+id).then(d=>{
+    if(!d||!d.ok){ toast((d&&d.error)||'Not found',true); return; }
+    const p=d.plan, el=document.getElementById('prodArea');
+    if(!el||(_prod&&_prod.v)) return;
+    const done=k=>({plan:!!p.plan_id, pack:!!p.packing_groups, boxes:!!p.boxes, place:!!p.placement})[k];
+    const stepRow=(ok,t,sub)=>'<div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-top:1px solid #eef2f6"><span style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;background:'+(ok?'#1e8449':'#e2e8f0')+';color:'+(ok?'#fff':'#8a97a6')+'">'+(ok?'✓':'•')+'</span><div><b>'+t+'</b>'+(sub?'<div class="hint">'+sub+'</div>':'')+'</div></div>';
+    const units=p.items.reduce((t,i)=>t+i.qty,0), nb=(p.boxes||[]).length;
+    let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+nsPill(p.status)
+      +'<div class="hint">'+p.items.length+' products · '+units.toLocaleString()+' units'+(p.plan_id?' · Amazon plan '+esc(p.plan_id):'')+'</div></div>'
+      +'<div style="display:flex;gap:6px"><button class="action" onclick="clearTimeout(_nsPoll);_ns=null;prodOpen()" style="background:#5a6472">← Back</button>'
+      +'<button class="action" onclick="nsCancel('+p.id+')" style="background:#fdecea;color:#c0392b">Cancel plan</button></div></div>';
+    if(p.status==='working'||p.status==='new') h+='<div class="box" style="border:2px solid #2563a8;background:#f3f8fd;font-size:16px;font-weight:800;color:#2563a8">⏳ '+esc(p.step||'Working…')+'<div class="hint" style="font-weight:600">This page updates by itself. Each Amazon step can take up to a minute.</div></div>';
+    if(p.status==='error') h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Amazon stopped at this step</b><div style="margin-top:6px;font-size:14px;white-space:pre-wrap">'+esc(p.error||'')+'</div>'
+      +'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button></div>';
+    h+='<div class="box"><b style="font-size:16px">Steps</b>'+stepRow(done('plan'),'1. Plan created at Amazon')+stepRow(done('pack'),'2. Packing option taken',p.packing_groups?(p.packing_groups.length+' packing group'+(p.packing_groups.length===1?'':'s')):'')
+      +stepRow(done('boxes'),'3. Box plan sent',nb?nb+' boxes, planned from your saved units per box':'')+stepRow(done('place'),'4. Destinations & fees from Amazon')
+      +stepRow(false,'5. Freight quotes (Amazon partnered carrier)','next update')+stepRow(false,'6. Confirm → FBA shipment ID, then build & label in 2D Production','next update')+'</div>';
+    if(p.placement&&p.placement.length) h+='<div class="box"><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest first. The fee is Amazon\'s placement fee for that option (charged only when confirmed).</div>'
+      +p.placement.map((o,i)=>'<div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-top:10px;padding:14px 16px;border-radius:12px;border:2px solid '+(i===0?'#127a7a':'#e2e8f0')+';background:'+(i===0?'#f2fafa':'#fff')+'">'
+        +'<div><div style="font-size:18px;font-weight:900">'+o.shipments+' warehouse'+(o.shipments===1?'':'s')+(i===0?' <span style="font-size:12px;color:#127a7a">· cheapest</span>':'')+'</div><div style="font-size:14px;color:#2563a8;font-weight:800">'+esc((o.destinations||[]).join(' · ')||'')+'</div></div>'
+        +'<div style="font-size:24px;font-weight:900;color:'+(o.fee>0?'#c0392b':'#1e8449')+'">'+(o.fee>0?'$'+o.fee.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'No fee')+'</div></div>').join('')
+      +'<div class="hint" style="margin-top:10px">Next update: pick one here, get Amazon\'s partnered freight quotes for your pallets, and confirm.</div></div>';
+    h+='<div class="box" style="overflow-x:auto"><b>Products</b><table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('SKU','left')+prodTh('UNITS')+prodTh('UNITS PER BOX')+prodTh('BOXES')+prodTh('EXPIRATION')+'</tr>'
+      +p.items.map(i=>'<tr>'+prodTd(esc(String(i.name||i.asin).slice(0,80)),'left')+prodTd(esc(i.msku),'left','font-family:monospace')+prodTd('<b>'+i.qty+'</b>')+prodTd(i.perBox)+prodTd(Math.ceil(i.qty/i.perBox))+prodTd(i.exp?expText(i.exp):'—')+'</tr>').join('')+'</table></div>';
+    el.innerHTML=h;
+    if(p.status==='working'||p.status==='new'||d.plan.running) _nsPoll=setTimeout(()=>nsPlan(id),3000);
+  }); });
+}
+const expText=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'/'+e.slice(4,6)+'/20'+e.slice(0,2):(e||'');
+function nsRetry(id){ ownerApi('/api/inbound/plans/'+id+'/retry',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
+function nsCancel(id){
+  if(!confirm('Cancel this shipment plan? Amazon\'s copy is cancelled too. Nothing has been charged.')) return;
+  ownerApi('/api/inbound/plans/'+id+'/cancel',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not cancelled',true); return; } toast('Plan cancelled'); clearTimeout(_nsPoll); prodOpen(); });
 }
 function prodRefreshList(btn){
   if(btn){ btn.disabled=true; btn.textContent='Asking Amazon…'; }
