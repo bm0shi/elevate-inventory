@@ -959,7 +959,9 @@ function prodStatus(x){
   return {key:k, t:S[k][0], c:S[k][1], bg:S[k][2]};
 }
 function prodHome(d){
-  const el=document.getElementById('prodArea'), list=(d&&d.shipments)||[];
+  const el=document.getElementById('prodArea'), all=(d&&d.shipments)||[];
+  // Cancelled ones go in a closed section at the bottom so they don't crowd the working list.
+  const list=all.filter(x=>prodStatus(x).key!=='CANCELLED'), cancelled=all.filter(x=>prodStatus(x).key==='CANCELLED');
   const pill=st=>'<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:0.4px;color:'+st.c+';background:'+st.bg+';border:1px solid '+st.c+'33;white-space:nowrap">'+st.t+'</span>';
   const counts={}; list.forEach(x=>{ const st=prodStatus(x); (counts[st.t]=counts[st.t]||{n:0,st}).n++; });
   const ago=t=>{ if(!t) return 'not yet'; const m=Math.round((Date.now()-new Date(t))/60000); return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'; };
@@ -979,9 +981,8 @@ function prodHome(d){
     +'<div><div style="font-size:18px;font-weight:900">Shipments</div><div class="hint">Every shipment built in this app. Status from Amazon, updated '+ago(d&&d.statusAt)+(d&&d.statusError?' · <span style="color:#c0392b">Amazon: '+esc(d.statusError).slice(0,120)+'</span>':'')+'</div></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+Object.values(counts).map(c=>'<span style="font-size:12px;font-weight:800;color:'+c.st.c+';background:'+c.st.bg+';padding:4px 10px;border-radius:999px">'+c.n+' '+c.st.t.toLowerCase()+'</span>').join('')
     +'<button class="action" onclick="prodRefreshList(this)" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">↻ Refresh</button></div></div>';
-  if(!list.length) h+='<div style="padding:30px;text-align:center;color:#5a6472">No shipments yet. Enter a shipment ID above to start the first one.</div>';
-  else h+='<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('SHIPMENT','left')+prodTh('DESTINATION')+prodTh('BOXES')+prodTh('UNITS BUILT')+prodTh('PALLETS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
-    +list.map(x=>{ const st=prodStatus(x), pct=x.planned?Math.min(100,Math.round(x.built/x.planned*100)):0;
+  const table=rows=>'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('SHIPMENT','left')+prodTh('DESTINATION')+prodTh('BOXES')+prodTh('UNITS BUILT')+prodTh('PALLETS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
+    +rows.map(x=>{ const st=prodStatus(x), pct=x.planned?Math.min(100,Math.round(x.built/x.planned*100)):0;
       return '<tr style="cursor:pointer" onmouseover="this.style.background=\'#f6f9fc\'" onmouseout="this.style.background=\'\'" onclick="prodLoad(\''+esc(x.shipment_id)+'\')">'
         +prodTd('<div style="font-family:monospace;font-size:16px;font-weight:900;color:#0f1b2d">'+esc(x.shipment_id)+'</div><div class="hint" style="font-size:12px">'+esc(x.name||'')+'</div>','left')
         +prodTd(x.fc?'<b style="color:#2563a8;font-size:15px">'+esc(x.fc)+'</b>':'—')
@@ -991,7 +992,11 @@ function prodHome(d){
         +prodTd(new Date(x.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),'center','white-space:nowrap;color:#5a6472')
         +prodTd(pill(st)+(x.has_discrepancy?'<div style="margin-top:4px;font-size:11px;font-weight:900;color:#c0392b">⚠ units short</div>':''))
         +prodTd('<span style="font-size:20px;color:#9aa6b2">›</span>')+'</tr>'; }).join('')+'</table>';
-  h+='</div></div>';
+  if(!list.length) h+='<div style="padding:30px;text-align:center;color:#5a6472">'+(cancelled.length?'No active shipments.':'No shipments yet. Enter a shipment ID above to start the first one.')+'</div>';
+  else h+=table(list);
+  h+='</div>';
+  if(cancelled.length) h+='<details class="box" style="padding:0;overflow:hidden"><summary style="cursor:pointer;padding:14px 20px;font-size:15px;font-weight:800;color:#5a6472">Cancelled shipments ('+cancelled.length+')</summary>'+table(cancelled)+'</details>';
+  h+='</div>';
   el.innerHTML=h;
   const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
   if(OWNER_PW) nsPlansBox();
