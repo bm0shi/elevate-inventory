@@ -66,6 +66,9 @@
   .hint { font-size: 12px; color: #5a6472; margin-top: 8px; line-height: 1.5; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1e8449; color: #fff; padding: 12px 24px; border-radius: 8px; font-weight: 600; opacity: 0; transition: opacity 0.3s; z-index: 100; }
   .toast.show { opacity: 1; } .toast.err { background: #c0392b; }
+  /* A hidden toast still covered the bottom-center of the screen and ate clicks
+     ("Delete This Invoice" at the bottom of Order Check-In did nothing). */
+  .toast { pointer-events: none; }
   .mini { background:#fff; border:1px solid #cfd8e3; color:#1a2a3a; border-radius:6px; padding:5px 10px; font-size:12px; font-weight:700; cursor:pointer; font-family:inherit; }
   .mini:hover { background:#f1f5f9; border-color:#9db0c9; }
   .cards { display: flex; gap: 12px; margin-bottom: 16px; }
