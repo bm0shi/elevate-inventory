@@ -22,14 +22,21 @@ test('the owner\'s flat 100 lb under-counted a full pallet: 47 boxes of 12 is ~1
   assert.strictEqual(st.status, 'full');   // 1377 lb of product + 169 = 1546 > 1450 safe limit
 });
 
-test('height is estimated from volume over 48×40 at 85%, plus the deck; a measured height wins', () => {
-  const b = Array.from({ length: 20 }, () => box(28.8));   // 20 × 1728 in³
-  near(palletStats(b).height, 5 + 20 * 1728 / (48 * 40 * 0.85));
-  assert.strictEqual(palletStats(b, {}, 44).height, 44);
-  assert.strictEqual(palletStats(b, {}, 44).measured, true);
-  // measured at 44" with 20 boxes on; 5 more added since
-  const more = b.concat(Array.from({ length: 5 }, () => box(28.8)));
-  near(palletStats(more, {}, { h: 44, count: 20 }).height, 44 + 5 * 1728 / (48 * 40 * 0.85));
+test('height is counted in layers on 48×40 plus the 6-inch pallet; a started layer counts its full height', () => {
+  const b = (n, h = 10) => Array.from({ length: n }, () => box(28.8, 12, 12, h, 12));
+  // The owner's pallet: 12×12×10 boxes, 12 to a layer, the second layer
+  // started. The tape said 26 in; the old volume estimate said 19.8.
+  near(palletStats(b(17)).height, 6 + 10 + 10);
+  near(palletStats(b(12)).height, 6 + 10);    // one full layer
+  near(palletStats(b(13)).height, 6 + 20);    // one box on layer 2 makes it 26 in tall
+  near(palletStats(b(25)).height, 6 + 30);
+  // 10×14 boxes fit 12 a layer the other way round (3 × 4)
+  near(palletStats(Array.from({ length: 12 }, () => box(20, 10, 14, 10))).height, 16);
+  // A measured height wins; boxes added since add what they add to the layers
+  assert.strictEqual(palletStats(b(17), {}, 27).height, 27);
+  assert.strictEqual(palletStats(b(17), {}, 27).measured, true);
+  near(palletStats(b(20), {}, { h: 27, count: 17 }).height, 27);          // still on layer 2
+  near(palletStats(b(25), {}, { h: 27, count: 17 }).height, 27 + 10);     // layer 3 started
 });
 
 test('warning at 90%, full at 100%, whichever limit is closer', () => {
@@ -44,7 +51,7 @@ test('how many more fit: weight and height both checked', () => {
   const st = palletStats(Array.from({ length: 30 }, () => box(30)), BARE);   // 1000 lb
   const f = boxesThatFit(st, box(30), BARE);
   assert.strictEqual(f.byWeight, 16);   // (1500 − 1000) / 30
-  assert.strictEqual(f.byHeight, 21);   // 36.8" of 60" used
+  assert.strictEqual(f.byHeight, 18);   // 12-in boxes, 12 a layer: 30 = 2.5 layers (42 in); 6 finish layer 3, 12 more reach 54
   assert.strictEqual(f.n, 16);
   assert.strictEqual(f.limitedBy, 'weight');
   // Light, tall boxes: height binds long before weight
