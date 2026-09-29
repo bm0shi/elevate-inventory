@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pp-select-all-0929';
+const BUILD_ID = 'fill-blank-skus-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2094,6 +2094,21 @@ app.get('/api/inbound/plans/:id', ownerAuth, async (req, res) => {
   }
   res.json({ ok: true, plan: { ...p, running: planJobs.has(p.id) } });
 });
+// Fill blank seller SKUs from Amazon's FBA inventory rows (sku, asin,
+// fnSku). The sync saved FNSKUs from these rows but never the SKU, so a
+// product could have its FNSKU and still read "no seller SKU on file" and
+// block a new shipment (Tea Tree Special Color Conditioner, X005APN7H9).
+// Only blanks are filled; the FNSKU match wins when an ASIN has several SKUs.
+async function fillBlankSkus(fba) {
+  let n = 0;
+  for (const sku in fba) {
+    const f = fba[sku]; if (!sku) continue;
+    let r = f.fnSku ? await pool.query("UPDATE inv_products SET sku=$1 WHERE (sku IS NULL OR sku='') AND UPPER(fnsku)=UPPER($2) RETURNING asin", [sku, f.fnSku]) : { rowCount: 0 };
+    if (!r.rowCount && f.asin) r = await pool.query("UPDATE inv_products SET sku=$1 WHERE (sku IS NULL OR sku='') AND asin=$2 AND NOT EXISTS (SELECT 1 FROM inv_products WHERE sku=$1) RETURNING asin", [sku, f.asin]);
+    n += r.rowCount;
+  }
+  return n;
+}
 // items: [{ asin, qty, exp? }]; each product needs a seller SKU.
 app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
   const b = req.body || {};
@@ -2105,12 +2120,21 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
   const src = inboundLib.sourceAddress(from, from);
   if (src.error) return res.status(400).json({ ok: false, error: src.error });
   const prods = (await pool.query(`SELECT asin, name, sku, fnsku, amz_prep_owner, amz_label_owner, amz_needs_exp FROM inv_products WHERE asin = ANY($1)`, [want.map(i => i.asin)])).rows;
+  // A product without a seller SKU: ask Amazon for it once before refusing.
+  if (prods.some(p => !p.sku)) {
+    try {
+      if (await fillBlankSkus(await getFbaInventory())) {
+        const again = (await pool.query(`SELECT asin, sku FROM inv_products WHERE asin = ANY($1)`, [prods.map(p => p.asin)])).rows;
+        for (const p of prods) { const x = again.find(y => y.asin === p.asin); if (x && x.sku) p.sku = x.sku; }
+      }
+    } catch (e) { console.error('[Inbound] SKU lookup failed:', e.message); }
+  }
   const by = {}; prods.forEach(p => by[p.asin] = p);
   const items = [], problems = [];
   for (const i of want) {
     const p = by[i.asin];
     if (!p) { problems.push(`${i.asin} isn't in the catalog.`); continue; }
-    if (!p.sku) { problems.push(`${p.name || p.asin}: no seller SKU on file.`); continue; }
+    if (!p.sku) { problems.push(`${p.name || p.asin}: no seller SKU on file, and Amazon's FBA inventory doesn't list one for it. Add the SKU on its On Hand card (or check the listing exists in Seller Central).`); continue; }
     // Boxes are built later (pack later), so only the product and quantity are needed here.
     const exp = i.exp ? pack.normExp(i.exp) : null;
     if (i.exp && !exp) { problems.push(`${p.name || p.asin}: expiration isn't a real date.`); continue; }
@@ -4953,6 +4977,7 @@ app.post('/api/sync-fnskus', auth, async (req, res) => {
     if (r.rowCount > 0) matched++;
     else unmatched.push({ sku, asin: f.asin, fnsku: f.fnSku });
   }
+  try { await fillBlankSkus(fba); } catch (e) { console.error('[FBA] SKU fill failed:', e.message); }
   console.log(`[FNSKU Sync] Matched ${matched}, unmatched ${unmatched.length}`);
   res.json({ ok: true, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0,30) });
 });
@@ -6185,6 +6210,7 @@ async function pullFbaInventory(onProgress) {
       if (ur.rowCount > 0) fnskusSaved++;
     }
   }
+  try { const k = await fillBlankSkus(fba); if (k) console.log(`[FBA] Filled ${k} blank seller SKU(s).`); } catch (e) { console.error('[FBA] SKU fill failed:', e.message); }
   console.log(`[FBA] Captured/updated ${fnskusSaved} FNSKUs. ${Object.keys(fba).length} SKUs collapsed to ${Object.keys(fbaByAsin).length} ASINs.`);
 
   // ---- ON THE WAY, from the open shipments themselves ----
@@ -7368,6 +7394,18 @@ app.get('/api/fnsku-lookup/:fnsku', auth, async (req, res) => {
 });
 
 // Re-map an FNSKU to the correct product (clears it from any wrong product first)
+// Type a seller SKU for a product that has none (when Amazon's inventory
+// doesn't list it yet). Only fills a blank; a SKU already used by another
+// product is refused.
+app.post('/api/products/set-sku', auth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim().toUpperCase(), sku = String((req.body && req.body.sku) || '').trim().slice(0, 40);
+  if (!/^[A-Z0-9]{10}$/.test(asin) || !sku) return res.status(400).json({ ok: false, error: 'ASIN and SKU are needed.' });
+  const other = (await pool.query('SELECT asin, name FROM inv_products WHERE sku=$1 AND asin<>$2', [sku, asin])).rows[0];
+  if (other) return res.status(409).json({ ok: false, error: `SKU ${sku} already belongs to ${other.name || other.asin}.` });
+  const r = await pool.query("UPDATE inv_products SET sku=$2 WHERE asin=$1 AND (sku IS NULL OR sku='') RETURNING asin", [asin, sku]);
+  if (!r.rowCount) return res.status(409).json({ ok: false, error: 'This product already has a SKU (or isn\'t in the catalog). Nothing changed.' });
+  res.json({ ok: true });
+});
 app.post('/api/remap-fnsku', auth, async (req, res) => {
   const { fnsku, asin } = req.body;
   const fn = (fnsku||'').trim();
