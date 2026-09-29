@@ -172,7 +172,7 @@
     <span class="flowlabel">WAREHOUSE FLOW</span>
     <button class="tab active" onclick="showTab('pendingprep',event)"><b>1</b> Pending Prep</button>
     <button class="tab" onclick="showTab('prep',event)"><b>2</b> Prepped &amp; Ready</button>
-    <button class="tab" onclick="showTab('prod',event)"><b>3</b> 2D Production</button>
+    <button class="tab" onclick="showTab('prod',event)"><b>3</b> Shipment Production</button>
     <button class="tab" onclick="showTab('ship',event)"><b>4</b> Ship to FBA</button>
     <span class="flowdiv"></span>
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
@@ -375,7 +375,7 @@
       </select>
       <button class="action" onclick="ppTickAll(true)" style="padding:11px 14px;font-size:14px;background:#1e8449" title="Tick every job showing (search and filter apply)">☑ Select all</button>
       <button class="action" onclick="ppTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every job showing">Clear</button>
-      <button class="action" onclick="ppToProduction()" style="padding:11px 14px;font-size:14px;background:#127a7a" title="Opens New shipment in 2D Production with every ticked job. No stock changes until Finish.">🏷️ Send ticked to production →</button>
+      <button class="action" onclick="ppToProduction()" style="padding:11px 14px;font-size:14px;background:#127a7a" title="Opens New shipment in Shipment Production with every ticked job. No stock changes until Finish.">🏷️ Send ticked to production →</button>
       <span class="viewtoggle" id="vt_pp"><button onclick="setPpList(false);setView('pp',false)">Compact</button><button onclick="setPpList(false);setView('pp',true)">Big</button><button onclick="setPpList(true)" title="One tight row per item — best on small screens like the Surface">List</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
@@ -427,12 +427,12 @@
       <input type="text" id="prepSearch" placeholder="Search prepped..." onkeyup="renderPrepList()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
     </div>
     <div id="prepListBox"></div>
-    <button class="action full" onclick="prepToProduction()" style="margin-top:10px;background:#127a7a;font-size:17px;padding:14px" title="Opens New shipment in 2D Production filled with everything prepped. No stock changes until Finish.">🏷️ Send to production → (new shipment from everything prepped)</button>
+    <button class="action full" onclick="prepToProduction()" style="margin-top:10px;background:#127a7a;font-size:17px;padding:14px" title="Opens New shipment in Shipment Production filled with everything prepped. No stock changes until Finish.">🏷️ Send to production → (new shipment from everything prepped)</button>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
   <div id="prod" class="panel"><div id="prodArea"></div></div>
   <div id="ship" class="panel">
-    <div class="box hint" style="border:1px dashed #127a7a">📦 Packing boxes and printing 2D box labels moved to its own tab: <a href="#" onclick="event.preventDefault();[...document.querySelectorAll('.tab')].find(b=>(b.getAttribute('onclick')||'').includes('prod')).click()"><b>2D Production</b></a>. Finishing a shipment there deducts it — don't also post it here.</div>
+    <div class="box hint" style="border:1px dashed #127a7a">📦 Packing boxes and printing 2D box labels moved to its own tab: <a href="#" onclick="event.preventDefault();[...document.querySelectorAll('.tab')].find(b=>(b.getAttribute('onclick')||'').includes('prod')).click()"><b>Shipment Production</b></a>. Finishing a shipment there deducts it — don't also post it here.</div>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">📄 Upload Amazon Shipment Plan (easiest)</div>
       <div class="hint" style="margin-bottom:10px">Download the shipment plan TSV from Seller Central and upload it here. It reads the Shipment ID, all items, and quantities automatically — then deducts from on-hand and clears those items from Prepped.</div>
@@ -973,12 +973,11 @@ function prodHome(d){
   const pill=st=>'<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;letter-spacing:0.4px;color:'+st.c+';background:'+st.bg+';border:1px solid '+st.c+'33;white-space:nowrap">'+st.t+'</span>';
   const counts={}; list.forEach(x=>{ const st=prodStatus(x); (counts[st.t]=counts[st.t]||{n:0,st}).n++; });
   const ago=t=>{ if(!t) return 'not yet'; const m=Math.round((Date.now()-new Date(t))/60000); return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'; };
-  const step=(n,t)=>'<div style="display:flex;align-items:center;gap:8px"><span style="width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px">'+n+'</span><span style="font-size:13px;font-weight:700">'+t+'</span></div>';
   let h='<div id="prodHome"><div style="border-radius:16px;overflow:hidden;box-shadow:0 2px 10px rgba(15,27,45,0.10);margin-bottom:18px">'
     +'<div style="background:linear-gradient(120deg,#0f1b2d 0%,#16395a 60%,#127a7a 100%);color:#fff;padding:26px 28px;text-align:center">'
       +'<div style="font-size:28px;font-weight:900;letter-spacing:0.3px">🏷️ Shipment Production 📦</div>'
       +'<div style="margin-top:6px;font-size:14px;opacity:0.85">Build boxes, print Amazon 2D box labels and track every pallet, from creating the shipment to checked in.</div>'
-      +'<div style="display:flex;gap:22px;flex-wrap:wrap;justify-content:center;margin-top:16px;opacity:0.95">'+step(1,'Create the shipment (New shipment or Send to Amazon)')+step(2,'Load it here')+step(3,'Build boxes & print labels')+step(4,'Finish')+'</div></div>'
+      +'</div>'
     +'<div style="background:#fff;padding:20px 28px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">'
       +'<div style="flex:1;min-width:260px"><div style="font-size:12px;font-weight:900;letter-spacing:0.4px;color:#5a6472;margin-bottom:6px">SHIPMENT ID</div>'
       +'<input id="prodSidIn" placeholder="FBA19R87QYJJ" autocomplete="off" style="width:100%;box-sizing:border-box;text-transform:uppercase;font-size:22px;font-weight:800;letter-spacing:1px;padding:12px 16px;border:2px solid #cfd8e3;border-radius:10px;font-family:monospace" onkeydown="if(event.key===\'Enter\')prodStart()"></div>'
@@ -1072,7 +1071,7 @@ function nsRender(){
   const rows=_ns.items;
   h+='<div class="box"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'+inp('nsName','SHIPMENT NAME (optional)',_ns.name,2)
     +'<div class="hint" style="flex:2;min-width:220px;padding-bottom:8px">Prep is set for you: the app asks Amazon which products need prep and marks those as prepped by us; the rest go as no prep.</div></div>'
-    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPrepped(this)" style="background:#127a7a;margin-right:8px" title="Adds everything on Prepped &amp; Ready with its prepped quantity (singles and duos as scanned). No stock changes until Finish in 2D Production.">📦 Add from Prepped &amp; Ready</button><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
+    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPrepped(this)" style="background:#127a7a;margin-right:8px" title="Adds everything on Prepped &amp; Ready with its prepped quantity (singles and duos as scanned). No stock changes until Finish in Shipment Production.">📦 Add from Prepped &amp; Ready</button><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
     h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
@@ -1170,7 +1169,7 @@ function nsFromPrepped(btn){
     const lines=items.map(i=>'  '+i.prepped+' × '+String(i.name||i.asin).slice(0,45)+(i.isBundle?' (duo)':'')).join('\n');
     if(!confirm('Add everything on Prepped & Ready to this shipment?\n\n'+lines
       +(clash.length?'\n\n⚠️ Already on another open shipment: '+clash.map(i=>String(i.name||i.asin).slice(0,30)+' ('+open[i.asin].join(', ')+')').join('; ')+' — make sure the same units aren\'t sent twice.':'')
-      +'\n\nNo stock changes now — only at Finish in 2D Production. You can change quantities or remove lines before creating the plan.')){ nsRender(); return; }
+      +'\n\nNo stock changes now — only at Finish in Shipment Production. You can change quantities or remove lines before creating the plan.')){ nsRender(); return; }
     const todo=items.filter(i=>!_ns.items.some(x=>x.asin===i.asin));
     const same=items.filter(i=>_ns.items.some(x=>x.asin===i.asin));
     same.forEach(i=>{ const x=_ns.items.find(y=>y.asin===i.asin); x.qty=i.prepped; });
@@ -1185,7 +1184,7 @@ function nsFromPrepped(btn){
 }
 // Prepped & Ready → "Send to production": opens New shipment already filled.
 function prepToProduction(){
-  const t=[...document.querySelectorAll('.tab')].find(x=>/2D Production/.test(x.textContent));
+  const t=[...document.querySelectorAll('.tab')].find(x=>(x.getAttribute('onclick')||'').includes("'prod'"));
   // Opened once the 2D Production start page has drawn (prodHome), so that
   // page can't land on top of New shipment.
   _prod=null; window._nsFromPreppedNext=true;
@@ -1253,7 +1252,7 @@ function nsPlan(id){
     const chosen=(p.placement||[]).find(o=>o.placementOptionId===p.placement_id);
     const stepRow=(ok,t,sub)=>'<div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-top:1px solid #eef2f6"><span style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;background:'+(ok?'#1e8449':'#e2e8f0')+';color:'+(ok?'#fff':'#8a97a6')+'">'+(ok?'✓':'•')+'</span><div><b>'+t+'</b>'+(sub?'<div class="hint">'+sub+'</div>':'')+'</div></div>';
     const units=p.items.reduce((t,i)=>t+i.qty,0);
-    const openBtn=f=>'<button class="action" onclick="clearTimeout(_nsPoll);prodLoad(\''+esc(f)+'\')" style="background:#127a7a">Open in 2D Production →</button>';
+    const openBtn=f=>'<button class="action" onclick="clearTimeout(_nsPoll);prodLoad(\''+esc(f)+'\')" style="background:#127a7a">Open in Shipment Production →</button>';
     let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+nsPill(p.status)
       +'<div class="hint">'+p.items.length+' products · '+units.toLocaleString()+' units'+(p.plan_id?' · Amazon plan '+esc(p.plan_id):'')+'</div></div>'
       +'<div style="display:flex;gap:6px"><button class="action" onclick="clearTimeout(_nsPoll);_ns=null;prodOpen()" style="background:#5a6472">← Back</button>'
@@ -1267,7 +1266,7 @@ function nsPlan(id){
         :'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button>')+'</div>';
     h+='<div class="box"><b style="font-size:16px">Steps</b>'+stepRow(done('plan'),'1. Plan created at Amazon')
       +stepRow(done('place'),'2. Destination confirmed → FBA ID',chosen&&p.placement_confirmed_at?(SH.map(x=>esc(x.fba)+(x.fc?' → '+nsWhere(x):'')).join(' · ')+' · placement fee '+(chosen.fee>0?$$(chosen.fee):'none')):'')
-      +stepRow(done('floor'),'3. Boxes built & labelled, Finish pressed in 2D Production')
+      +stepRow(done('floor'),'3. Boxes built & labelled, Finish pressed in Shipment Production')
       +stepRow(done('boxes'),'4. Box info sent to Amazon',sent?SH.map(x=>x.boxes+' boxes'+(x.boxCheck&&!x.boxCheck.ok?' · ⚠️ box numbers differ':'')).join(' · '):'')
       +stepRow(done('freight'),'5. Freight quotes from the floor\'s pallets')+stepRow(done('conf'),'6. Freight booked → bill of lading & pallet labels',p.confirmed?esc((p.confirmed.shipments||[]).join(' · ')):'')+'</div>';
     // 2. Pick + confirm a destination
@@ -1314,14 +1313,14 @@ function nsPlan(id){
     // 3. The floor builds (progress per shipment), then 4. send the boxes
     if(SH.length&&(p.status==='building'||(p.status==='error'&&p.stage==='boxes'))){
       const allDone=SH.every(x=>x.floor&&x.floor.finished);
-      h+='<div class="box"><b style="font-size:16px">On the floor</b><div class="hint">Build and label the boxes in 2D Production like any shipment (pick the product, units per box, number of boxes, print). Press Finish there when it\'s all built, then send the box info here.</div>'
+      h+='<div class="box"><b style="font-size:16px">On the floor</b><div class="hint">Build and label the boxes in Shipment Production like any shipment (pick the product, units per box, number of boxes, print). Press Finish there when it\'s all built, then send the box info here.</div>'
         +SH.map(x=>{ const f=x.floor||{};
           return '<div style="margin-top:12px;padding:12px;border:2px solid '+(f.finished?'#1e8449':'#e2e8f0')+';border-radius:10px;background:'+(f.finished?'#f0faf4':'#fff')+'"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><div><b style="font-family:monospace;font-size:18px">'+esc(x.fba)+'</b> <span class="hint">→ '+nsWhere(x)+' · '+(f.boxes||0)+' boxes built</span> '
-            +(f.missing?'<b style="color:#c0392b">deleted from 2D Production</b>':f.finished?'<b style="color:#1e8449">✅ Finished</b>':'<b style="color:#b45309">building…</b>')+'</div>'+openBtn(x.fba)+'</div>'
+            +(f.missing?'<b style="color:#c0392b">deleted from Shipment Production</b>':f.finished?'<b style="color:#1e8449">✅ Finished</b>':'<b style="color:#b45309">building…</b>')+'</div>'+openBtn(x.fba)+'</div>'
             +(f.rows&&f.rows.length?'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0"><tr>'+prodTh('SKU','left')+prodTh('AMAZON EXPECTS')+prodTh('BUILT')+prodTh('LEFT')+'</tr>'
               +f.rows.map(r=>{ const left=r.planned-r.boxed; return '<tr style="background:'+(left===0?'#eefaf1':'#fdf2f2')+'">'+prodTd(esc(r.msku),'left','font-family:monospace')+prodTd('<b>'+r.planned+'</b>')+prodTd('<b>'+r.boxed+'</b>')+prodTd('<b style="color:'+(left===0?'#1e8449':'#c0392b')+'">'+(left===0?'✓':left)+'</b>')+'</tr>'; }).join('')+'</table>':'')+'</div>'; }).join('')
         +'<button class="action" onclick="nsSendBoxes('+p.id+')"'+(allDone&&p.status==='building'?'':' disabled')+' style="width:100%;margin-top:14px;font-size:18px;padding:15px;background:#127a7a">📦 Send box info to Amazon →</button>'
-        +(allDone?'':'<div class="hint" style="margin-top:6px">Unlocks once every shipment above is Finished in 2D Production.</div>')+'</div>';
+        +(allDone?'':'<div class="hint" style="margin-top:6px">Unlocks once every shipment above is Finished in Shipment Production.</div>')+'</div>';
     }
     // Amazon's box numbers vs the labels already on the boxes
     const bad=SH.filter(x=>x.boxCheck&&!x.boxCheck.ok);
@@ -1333,7 +1332,7 @@ function nsPlan(id){
     if(SH.length&&(p.status==='pallets'||p.status==='quotes')){
       const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(SH.map(sh=>[sh.shipmentId,sh.pallets||[]]))))};
       const ready=(p.freight&&p.freight.readyDate)||new Date(Date.now()+86400000).toISOString().slice(0,10);
-      h+='<div class="box"><b style="font-size:16px">Pallets for the freight quote</b><div class="hint">From the pallets in 2D Production (same weights and heights as the floor screen). Change them if you weighed or measured differently; the quote uses these.</div>'
+      h+='<div class="box"><b style="font-size:16px">Pallets for the freight quote</b><div class="hint">From the pallets in Shipment Production (same weights and heights as the floor screen). Change them if you weighed or measured differently; the quote uses these.</div>'
         +SH.map(sh=>'<div style="margin-top:12px;padding:12px;border:1px solid #e2e8f0;border-radius:10px"><b style="font-size:15px">'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b> <span class="hint">'+(sh.boxes||0)+' boxes · '+(sh.units||0).toLocaleString()+' units</span>'
           +'<table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PALLET')+prodTh('BOXES')+prodTh('WEIGHT (LB)')+prodTh('HEIGHT (IN)')+prodTh('')+'</tr>'
           +(P.pal[sh.shipmentId]||[]).map((x,k)=>'<tr>'+prodTd('#'+(k+1))+prodTd(x.boxes||'—')
@@ -1364,7 +1363,7 @@ function nsPlan(id){
       h+='<div style="margin-top:16px;padding:16px;border-radius:12px;background:#0f1b2d;color:#fff;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">'
         +'<div style="font-size:15px">Freight'+(SH.length>1?' for '+SH.length+' shipments':'')+'</div><div style="font-size:26px;font-weight:900">'+$$(total)+'</div></div>'
         +'<button class="action" onclick="nsConfirm('+p.id+','+total+')"'+(all?'':' disabled')+' style="width:100%;margin-top:12px;font-size:19px;padding:16px;background:#c0392b">Book freight with Amazon — charge '+$$(total)+'</button>'
-        +'<div class="hint" style="margin-top:6px">This books the carrier and charges your account. The bill of lading and pallet labels come next (in 2D Production, on the shipment).</div></div>';
+        +'<div class="hint" style="margin-top:6px">This books the carrier and charges your account. The bill of lading and pallet labels come next (in Shipment Production, on the shipment).</div></div>';
     }
     if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon</b>'
       +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): '+$$(p.confirmed.placementFee)+'</div>'
@@ -1419,7 +1418,7 @@ function nsSaveExp(id){
   ownerApi('/api/inbound/plans/'+id+'/exp',{method:'POST',body:JSON.stringify({exp})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'Not saved',true); nsPlan(id); });
 }
 function nsRemove(id){
-  if(!confirm('Remove this plan from the app?\n\nUse this when it was cancelled or deleted in Seller Central. Nothing is sent to Amazon and no stock changes. Its FBA shipments stay in 2D Production — delete them there too if you want them gone.')) return;
+  if(!confirm('Remove this plan from the app?\n\nUse this when it was cancelled or deleted in Seller Central. Nothing is sent to Amazon and no stock changes. Its FBA shipments stay in Shipment Production — delete them there too if you want them gone.')) return;
   ownerApi('/api/inbound/plans/'+id+'/remove',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not removed',true); return; } toast('Removed from the app'); clearTimeout(_nsPoll); _ns=null; prodOpen(); });
 }
 function nsRetry(id){ ownerApi('/api/inbound/plans/'+id+'/retry',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
@@ -1811,13 +1810,13 @@ function prodMove(n){
 // Stock is never changed; typing the ID guards against deleting the wrong one.
 function prodDelete(){
   const sid=prodSid(), done=_prod.v.shipment.status!=='packing', n=_prod.v.boxes.filter(b=>b.items.length).length;
-  const typed=prompt('Delete '+sid+' from 2D Production?\n\nThis removes its '+n+' box'+(n===1?'':'es')+', pallets and labels here. It does NOT change any stock'
+  const typed=prompt('Delete '+sid+' from Shipment Production?\n\nThis removes its '+n+' box'+(n===1?'':'es')+', pallets and labels here. It does NOT change any stock'
     +(done?' — the units deducted when it was finished stay deducted, and the shipment stays on Ship to FBA':'')+'.\n\nType the shipment ID to confirm:');
   if(typed==null) return;
   if(typed.trim().toUpperCase()!==sid){ toast('ID didn\'t match — nothing deleted',true); return; }
   api('/api/pack/delete',{method:'POST',body:JSON.stringify({shipmentId:sid})}).then(d=>{
     if(!d||d.ok===false){ toast((d&&d.error)||'Could not delete',true); return; }
-    toast(sid+' deleted from 2D Production'); _prod=null; prodOpen();
+    toast(sid+' deleted from Shipment Production'); _prod=null; prodOpen();
   }).catch(e=>toast('Could not delete: '+e.message,true));
 }
 function prodVoid(n){
@@ -5343,7 +5342,7 @@ function ppTickAll(on){
 function ppToProduction(){
   const d=window._pendingPrepData;
   if(!d||!d.items.some(i=>i.in_plan)){ toast('Tick the jobs to send first (☑ Select all)',true); return; }
-  const t=[...document.querySelectorAll('.tab')].find(x=>/2D Production/.test(x.textContent));
+  const t=[...document.querySelectorAll('.tab')].find(x=>(x.getAttribute('onclick')||'').includes("'prod'"));
   _prod=null; window._nsNext='pending';
   if(t) t.click(); else prodOpen();
 }
@@ -8265,7 +8264,7 @@ function alertTest(btn){
 function shipReplace(oldId, units){
   const to=(prompt('Amazon cancelled '+oldId+' and re-created it.\n\nType the NEW shipment ID from Send to Amazon:')||'').trim().toUpperCase();
   if(!to) return;
-  if(!confirm('Move '+oldId+' ('+units+' units) to '+to+'?\n\n• No stock changes — the units were already deducted once and stay that way.\n• '+oldId+' disappears; '+to+' shows in its place (Shipments, In Transit, 2D Production).\n• In 2D Production, refresh '+to+' from Amazon, confirm the destination, then REPRINT the box labels (every label carries the shipment ID).')) return;
+  if(!confirm('Move '+oldId+' ('+units+' units) to '+to+'?\n\n• No stock changes — the units were already deducted once and stay that way.\n• '+oldId+' disappears; '+to+' shows in its place (Shipments, In Transit, Shipment Production).\n• In Shipment Production, refresh '+to+' from Amazon, confirm the destination, then REPRINT the box labels (every label carries the shipment ID).')) return;
   ownerApi('/api/shipments/replace-id',{method:'POST',body:JSON.stringify({from:oldId,to})}).then(d=>{
     if(!d||d.ok===false){ toast('NOT changed: '+((d&&d.error)||'error'),true); return; }
     toast(oldId+' → '+to+': moved, no stock change'); renderShipments(); try{ loadProducts(); }catch(e){}
