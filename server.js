@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fill-blank-skus-0929';
+const BUILD_ID = 'new-shipment-no-owner-pw-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1850,7 +1850,9 @@ app.get('/api/all-shipments', auth, async (req, res) => {
 // plan can be cancelled free until the destination is confirmed.
 // Each Amazon step is an operation that can take a minute, so it runs in
 // the background and the screen polls the plan row (status / step / error).
-// Owner only: it leads to placement and freight charges.
+// Warehouse login, by the owner's choice (it used to be owner only, since it
+// leads to placement and freight charges; the owner found the extra password
+// unnecessary). The charges still need the amount typed and re-checked.
 // ============================================================
 const inboundLib = require('./lib/inbound');
 const freightEst = require('./lib/freight-est');
@@ -2043,7 +2045,7 @@ async function freightCalibration(S) {
     return freightEst.calibrate(samples);
   } catch (e) { console.error('[Inbound] freight calibration:', e.message); return { k: 1, n: 0 }; }
 }
-app.post('/api/inbound/plans/:id/guess', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/guess', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const p = (await pool.query('SELECT status FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
@@ -2054,8 +2056,8 @@ app.post('/api/inbound/plans/:id/guess', ownerAuth, async (req, res) => {
 // after a placement option is confirmed (FBA_INB_0344 "No placement option
 // was confirmed" on the owner's first real plan), and confirming locks the
 // destination. Freight is quoted at the end, from the floor's pallets.
-app.get('/api/inbound/setup', ownerAuth, async (req, res) => { res.json({ ok: true, ...(await inboundSetup()) }); });
-app.post('/api/inbound/setup', ownerAuth, async (req, res) => {
+app.get('/api/inbound/setup', auth, async (req, res) => { res.json({ ok: true, ...(await inboundSetup()) }); });
+app.post('/api/inbound/setup', auth, async (req, res) => {
   const b = req.body || {};
   if (!Array.isArray(b.addresses) || !b.addresses.length || b.addresses.length > 20) return res.status(400).json({ ok: false, error: 'Send the list of ship-from addresses.' });
   const list = b.addresses.map(cleanShipFrom);
@@ -2065,7 +2067,7 @@ app.post('/api/inbound/setup', ownerAuth, async (req, res) => {
   await saveCache('pack_settings', Object.assign({}, prev ? prev.data : {}, { inboundAddresses: list }));
   res.json({ ok: true, ...(await inboundSetup()) });
 });
-app.get('/api/inbound/plans', ownerAuth, async (req, res) => {
+app.get('/api/inbound/plans', auth, async (req, res) => {
   // asins: what each plan holds, so New shipment can warn before the same
   // prepped units are pulled into a second open plan.
   const r = await pool.query(`SELECT id, name, status, step, error, plan_id, created_at, updated_at,
@@ -2074,7 +2076,7 @@ app.get('/api/inbound/plans', ownerAuth, async (req, res) => {
     FROM inv_inbound_plans WHERE status <> 'cancelled' ORDER BY created_at DESC LIMIT 100`);
   res.json({ ok: true, plans: r.rows });
 });
-app.get('/api/inbound/plans/:id', ownerAuth, async (req, res) => {
+app.get('/api/inbound/plans/:id', auth, async (req, res) => {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
   // City/state for each warehouse code (plans made before it was stored, and
@@ -2110,7 +2112,7 @@ async function fillBlankSkus(fba) {
   return n;
 }
 // items: [{ asin, qty, exp? }]; each product needs a seller SKU.
-app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans', auth, async (req, res) => {
   const b = req.body || {};
   const want = (Array.isArray(b.items) ? b.items : []).filter(i => i && i.asin && parseInt(i.qty, 10) > 0);
   if (!want.length) return res.status(400).json({ ok: false, error: 'Add at least one product with a quantity.' });
@@ -2153,7 +2155,7 @@ app.post('/api/inbound/plans', ownerAuth, async (req, res) => {
 });
 // Expiration dates Amazon asked for on a plan that stopped before it was
 // created; saved, then the plan is sent again.
-app.post('/api/inbound/plans/:id/exp', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/exp', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
   const p = (await pool.query('SELECT status, plan_id, items FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
@@ -2176,13 +2178,13 @@ app.post('/api/inbound/plans/:id/exp', ownerAuth, async (req, res) => {
 // Seller Central after its destination was confirmed (Cancel here refuses
 // then, since it would call Amazon). No Amazon call, no stock change; its
 // shipments stay in 2D Production (delete them there if wanted).
-app.post('/api/inbound/plans/:id/remove', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/remove', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan — wait for it to finish.' });
   const r = await pool.query("UPDATE inv_inbound_plans SET status='cancelled', step=NULL, error=COALESCE(error,'') || ' [removed from the app by the owner]', updated_at=now() WHERE id=$1 AND status <> 'cancelled' RETURNING id", [id]);
   res.json({ ok: true, removed: r.rowCount });
 });
-app.post('/api/inbound/plans/:id/retry', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/retry', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const p = (await pool.query('SELECT status FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
@@ -2196,7 +2198,7 @@ app.post('/api/inbound/plans/:id/retry', ownerAuth, async (req, res) => {
   res.json({ ok: true, started });
 });
 // Cancel: free until the destination is confirmed. Amazon's copy is cancelled too.
-app.post('/api/inbound/plans/:id/cancel', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/cancel', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan — wait for it to finish, then cancel.' });
   const p = (await pool.query('SELECT plan_id, status FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
@@ -2331,7 +2333,7 @@ async function planConfirm(id, args, step) {
     [id, JSON.stringify({ placementFee: fee, freight: args.freight || null, total: args.freight || null, shipments: (p.shipments || []).map(s => s.fba) })]);
 }
 // Confirm a destination. The owner saw its fee; it must still be the fee on file.
-app.post('/api/inbound/plans/:id/place', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/place', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const out = await withTx(async (db) => {
     const p = (await db.query('SELECT status, stage, placement, placement_confirmed_at FROM inv_inbound_plans WHERE id=$1 FOR UPDATE', [id])).rows[0];
@@ -2353,7 +2355,7 @@ app.post('/api/inbound/plans/:id/place', ownerAuth, async (req, res) => {
 });
 // Send the built boxes (every shipment of the plan must be finished in 2D
 // Production). Built units that differ from Amazon's shipment need `force`.
-app.post('/api/inbound/plans/:id/boxes', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
@@ -2372,7 +2374,7 @@ app.post('/api/inbound/plans/:id/boxes', ownerAuth, async (req, res) => {
   runPlanJob(id, 'Sending the boxes to Amazon…', (step) => planSendBoxes(id, args, step), 'boxes', args);
   res.json({ ok: true });
 });
-app.post('/api/inbound/plans/:id/quote', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/quote', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const p = (await pool.query('SELECT status, shipments FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
@@ -2392,7 +2394,7 @@ app.post('/api/inbound/plans/:id/quote', ownerAuth, async (req, res) => {
 });
 // Booking the freight: the owner saw (and typed) the total; it must still
 // match the quotes on file, and every shipment needs one of its quoted options.
-app.post('/api/inbound/plans/:id/confirm', ownerAuth, async (req, res) => {
+app.post('/api/inbound/plans/:id/confirm', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const out = await withTx(async (db) => {
     const p = (await db.query('SELECT * FROM inv_inbound_plans WHERE id=$1 FOR UPDATE', [id])).rows[0];

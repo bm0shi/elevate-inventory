@@ -375,7 +375,7 @@
       </select>
       <button class="action" onclick="ppTickAll(true)" style="padding:11px 14px;font-size:14px;background:#1e8449" title="Tick every job showing (search and filter apply)">☑ Select all</button>
       <button class="action" onclick="ppTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every job showing">Clear</button>
-      <button class="action" onclick="ppToProduction()" style="padding:11px 14px;font-size:14px;background:#127a7a" title="Opens New shipment in 2D Production with every ticked job (owner password). No stock changes until Finish.">🏷️ Send ticked to production →</button>
+      <button class="action" onclick="ppToProduction()" style="padding:11px 14px;font-size:14px;background:#127a7a" title="Opens New shipment in 2D Production with every ticked job. No stock changes until Finish.">🏷️ Send ticked to production →</button>
       <span class="viewtoggle" id="vt_pp"><button onclick="setPpList(false);setView('pp',false)">Compact</button><button onclick="setPpList(false);setView('pp',true)">Big</button><button onclick="setPpList(true)" title="One tight row per item — best on small screens like the Surface">List</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
@@ -427,7 +427,7 @@
       <input type="text" id="prepSearch" placeholder="Search prepped..." onkeyup="renderPrepList()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
     </div>
     <div id="prepListBox"></div>
-    <button class="action full" onclick="prepToProduction()" style="margin-top:10px;background:#127a7a;font-size:17px;padding:14px" title="Opens New shipment in 2D Production filled with everything prepped. Owner password needed. No stock changes until Finish.">🏷️ Send to production → (new shipment from everything prepped)</button>
+    <button class="action full" onclick="prepToProduction()" style="margin-top:10px;background:#127a7a;font-size:17px;padding:14px" title="Opens New shipment in 2D Production filled with everything prepped. No stock changes until Finish.">🏷️ Send to production → (new shipment from everything prepped)</button>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
   <div id="prod" class="panel"><div id="prodArea"></div></div>
@@ -1007,30 +1007,23 @@ function prodHome(d){
   h+='</div>';
   el.innerHTML=h;
   const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
-  // Plans being created are owner-only. The list used to load only once the
-  // owner password had been typed in this visit (e.g. by pressing Cancel), so
-  // it looked empty. Reuse the owner login from Admin for this session, else
-  // offer a button.
+  // Plans being created: warehouse login is enough (owner's choice), so the
+  // list always loads here.
   if(window._nsFromPreppedNext){ window._nsFromPreppedNext=false; nsOpen(()=>nsFromPrepped(null)); return; }
   if(window._nsNext==='pending'){ window._nsNext=null; nsOpen(()=>nsFromPending(null)); return; }
-  if(!OWNER_PW && sessionStorage_get('adminUnlocked')==='1') OWNER_PW=sessionStorage_get('adminPw')||'';
-  if(OWNER_PW) nsPlansBox();
-  else { const b=document.getElementById('nsPlans'); if(b) b.innerHTML='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:16px">Shipments being created</b><div class="hint">Owner only — enter the owner password to see them.</div></div><button class="action" onclick="nsOwner().then(ok=>{ if(ok) nsPlansBox(); })" style="background:#1a2b4a">🔒 Show them</button></div>'; }
+  nsPlansBox();
 }
 // ============================================================
-// NEW SHIPMENT FROM THE APP (lib/inbound.js). Owner only. "Pack later", like
+// NEW SHIPMENT FROM THE APP (lib/inbound.js). Warehouse login. "Pack later", like
 // Source Correct: products + quantities → Amazon plan → destination options
 // with fees → confirm one (FBA ID; the floor builds and labels in 2D
 // Production as usual) → send the built boxes → freight quotes from the
 // floor's pallets → book the freight (the charge) → BOL.
 // ============================================================
 let _ns=null;
-function nsOwner(){
-  if(OWNER_PW) return Promise.resolve(true);
-  const pw=prompt('Creating shipments needs the owner password:'); if(!pw) return Promise.resolve(false);
-  return fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})}).then(r=>r.json())
-    .then(d=>{ if(d.ok){ OWNER_PW=pw; sessionStorage_set('adminUnlocked','1'); sessionStorage_set('adminPw',pw); return true; } toast('Wrong owner password',true); return false; });
-}
+// New shipment used to need the owner password; the owner found it
+// unnecessary, so the warehouse login is enough (server: auth, not ownerAuth).
+function nsOwner(){ return Promise.resolve(true); }
 const NS_STATUS={new:['STARTING','#5a6472','#eef0f3'],working:['AMAZON WORKING…','#2563a8','#e6effa'],placement:['PICK DESTINATION','#b45309','#fff3dc'],building:['BUILDING ON THE FLOOR','#2563a8','#e6effa'],pallets:['CHECK PALLETS','#b45309','#fff3dc'],quotes:['PICK FREIGHT & BOOK','#b45309','#fff3dc'],confirmed:['FREIGHT BOOKED','#1e8449','#e7f6ec'],error:['NEEDS ATTENTION','#c0392b','#fdecea']};
 const nsPill=st=>{ const x=NS_STATUS[st]||[String(st||'').toUpperCase(),'#5a6472','#eef0f3']; return '<span style="display:inline-block;padding:5px 11px;border-radius:999px;font-size:12px;font-weight:900;color:'+x[1]+';background:'+x[2]+'">'+x[0]+'</span>'; };
 function nsPlansBox(){
