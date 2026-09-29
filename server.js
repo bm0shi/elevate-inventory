@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ticked-both-0930';
+const BUILD_ID = 'prep-to-boxes-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7183,7 +7183,24 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     for (const x of out) x.crew = [];
   }
 
-  res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount });
+  // Open shipments in Shipment Production that include each product, so a job
+  // being prepped can jump straight to building its boxes (owner's ask).
+  // Keyed by ASIN as on the shipment (a duo under the duo ASIN, like the job).
+  const openShipments = {};
+  try {
+    const os = await pool.query(
+      `WITH planned AS (
+         SELECT s.shipment_id, s.name, s.fc, s.created_at, i->>'asin' AS asin, SUM((i->>'qty')::int)::int AS planned
+         FROM inv_pack_shipments s, jsonb_array_elements(COALESCE(s.amz->'items','[]'::jsonb)) i
+         WHERE s.status='packing' AND COALESCE(s.amz_status,'') NOT IN ('CANCELLED','CLOSED','DELETED')
+         GROUP BY s.shipment_id, s.name, s.fc, s.created_at, i->>'asin')
+       SELECT p.*, COALESCE((SELECT SUM((bi->>'qty')::int) FROM inv_pack_boxes b, jsonb_array_elements(b.items) bi
+                   WHERE b.shipment_id=p.shipment_id AND b.status='closed' AND bi->>'asin'=p.asin),0)::int AS built
+       FROM planned p ORDER BY p.created_at DESC`);
+    for (const r of os.rows) (openShipments[r.asin] = openShipments[r.asin] || []).push({ shipmentId: r.shipment_id, name: r.name, fc: r.fc, planned: r.planned, built: r.built });
+  } catch (e) { console.error('[Pending prep] open shipments:', e.message); }
+
+  res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount, openShipments });
 });
 
 // Tick / untick many jobs at once (Pending Prep "Select all"). Only the
