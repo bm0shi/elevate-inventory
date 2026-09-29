@@ -373,6 +373,9 @@
         <option value="notinplan">Not in shipment plan yet</option>
         <option value="inplan">Already in shipment plan</option>
       </select>
+      <button class="action" onclick="ppTickAll(true)" style="padding:11px 14px;font-size:14px;background:#1e8449" title="Tick every job showing (search and filter apply)">☑ Select all</button>
+      <button class="action" onclick="ppTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every job showing">Clear</button>
+      <button class="action" onclick="ppToProduction()" style="padding:11px 14px;font-size:14px;background:#127a7a" title="Opens New shipment in 2D Production with every ticked job (owner password). No stock changes until Finish.">🏷️ Send ticked to production →</button>
       <span class="viewtoggle" id="vt_pp"><button onclick="setPpList(false);setView('pp',false)">Compact</button><button onclick="setPpList(false);setView('pp',true)">Big</button><button onclick="setPpList(true)" title="One tight row per item — best on small screens like the Surface">List</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
@@ -1009,6 +1012,7 @@ function prodHome(d){
   // it looked empty. Reuse the owner login from Admin for this session, else
   // offer a button.
   if(window._nsFromPreppedNext){ window._nsFromPreppedNext=false; nsOpen(()=>nsFromPrepped(null)); return; }
+  if(window._nsNext==='pending'){ window._nsNext=null; nsOpen(()=>nsFromPending(null)); return; }
   if(!OWNER_PW && sessionStorage_get('adminUnlocked')==='1') OWNER_PW=sessionStorage_get('adminPw')||'';
   if(OWNER_PW) nsPlansBox();
   else { const b=document.getElementById('nsPlans'); if(b) b.innerHTML='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:16px">Shipments being created</b><div class="hint">Owner only — enter the owner password to see them.</div></div><button class="action" onclick="nsOwner().then(ok=>{ if(ok) nsPlansBox(); })" style="background:#1a2b4a">🔒 Show them</button></div>'; }
@@ -5106,6 +5110,7 @@ function renderPendingPrep(){
     if(ppFilter==='inplan' && !x.in_plan) return false;
     return true;
   });
+  window._ppShown=items.map(x=>x.id);
   // DEFAULT ('active_first'): anything a worker has claimed floats to the top,
   // longest-running first, so the floor sees live jobs without scrolling.
   // Everything not started falls back to quantity high->low underneath.
@@ -5283,6 +5288,25 @@ function updateElapsed(){
   });
 }
 setInterval(updateElapsed, 1000);
+// Select all / Clear: tick or untick every job showing (search + filter).
+function ppTickAll(on){
+  const d=window._pendingPrepData, ids=(window._ppShown||[]).filter(id=>{ const it=d&&d.items.find(i=>i.id===id); return it&&!!it.in_plan!==on; });
+  if(!ids.length){ toast(on?'Everything showing is already ticked':'Nothing ticked'); return; }
+  api('/api/pending-prep/in-plan-many',{method:'POST',body:JSON.stringify({ids, inPlan:on})}).then(r=>{
+    if(!r||r.ok===false){ toast((r&&r.error)||'Not saved',true); return; }
+    ids.forEach(id=>{ const it=d.items.find(i=>i.id===id); if(it){ it.in_plan=on; it.in_plan_at=on?new Date().toISOString():null; } });
+    toast((on?'Ticked ':'Unticked ')+ids.length+' job'+(ids.length===1?'':'s'));
+    renderPendingPrep();
+  }).catch(e=>toast('Not saved: '+e.message,true));
+}
+// Pending Prep → New shipment with every ticked job (same as the button there).
+function ppToProduction(){
+  const d=window._pendingPrepData;
+  if(!d||!d.items.some(i=>i.in_plan)){ toast('Tick the jobs to send first (☑ Select all)',true); return; }
+  const t=[...document.querySelectorAll('.tab')].find(x=>/2D Production/.test(x.textContent));
+  _prod=null; window._nsNext='pending';
+  if(t) t.click(); else prodOpen();
+}
 function toggleInPlan(id, on){
   api('/api/pending-prep/in-plan',{method:'POST',body:JSON.stringify({id,inPlan:on})}).then(d=>{
     if(d.error){ toast(d.error,true); return; }
