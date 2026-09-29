@@ -165,6 +165,27 @@ test('a cycle count sets on hand to what was counted plus what is prepped (bottl
   assert.strictEqual((await post('/api/count/apply', { location: 'A-1', counts: [{ asin: 'TSTB', counted: -3 }] })).status, 400);
 });
 
+test('On Hand fix count: missing units come off once, are logged, can be undone, and never go below prepped', { skip }, async () => {
+  await post('/api/receive', { asin: 'TSTA', qty: 30 });
+  const before = (await stock('TSTA')).onhand;
+  const a = await post('/api/onhand/adjust', { asin: 'TSTA', delta: -12 }, { idem: 'fix-1' });
+  const b = await post('/api/onhand/adjust', { asin: 'TSTA', delta: -12 }, { idem: 'fix-1' });   // double tap
+  assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+  assert.strictEqual(b.status, 200);
+  assert.strictEqual((await stock('TSTA')).onhand, before - 12);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_shrink WHERE asin=$1', ['TSTA'])).n, 1);
+  // Undo puts the units back and drops the log line.
+  assert.strictEqual((await post('/api/undo/' + a.body.undoId, {})).status, 200);
+  assert.strictEqual((await stock('TSTA')).onhand, before);
+  assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_shrink WHERE asin=$1', ['TSTA'])).n, 0);
+  // Nonsense and too many are refused, nothing changes.
+  assert.strictEqual((await post('/api/onhand/adjust', { asin: 'TSTA', delta: 0 })).status, 400);
+  assert.strictEqual((await post('/api/onhand/adjust', { asin: 'TSTA', delta: -850000123456 })).status, 400);
+  assert.strictEqual((await post('/api/onhand/adjust', { asin: 'TSTA', delta: -(before + 1) })).status, 400);
+  assert.strictEqual((await post('/api/onhand/adjust', { asin: 'NOPE', delta: -1 })).status, 404);
+  assert.strictEqual((await stock('TSTA')).onhand, before);
+});
+
 // No Amazon keys in tests, so the destination is entered by hand, as the
 // floor would when Amazon's lookup can't give the street address.
 async function confirmDest(SID) {

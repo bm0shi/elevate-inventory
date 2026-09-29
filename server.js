@@ -59,7 +59,8 @@ async function pendingInvoiceOnly(req, res, next) {
 // button for 10 seconds. Safer than asking staff to fix counts by hand.
 // ops: { t:'stock', asin, onhand, transit } adds the deltas;
 //      { t:'prepped', asin, qty } adds to Prepped & Ready;
-//      { t:'pending', id, asin, is_duo, qty } puts qty back on a work order.
+//      { t:'pending', id, asin, is_duo, qty } puts qty back on a work order;
+//      { t:'shrink', id } removes an On Hand correction's log row.
 const UNDO_WINDOW_MIN = 10;
 async function recordUndo(db, kind, label, ops) {
   const r = await db.query('INSERT INTO inv_undo(kind, label, ops) VALUES($1,$2,$3) RETURNING id', [kind, label, JSON.stringify(ops)]);
@@ -79,6 +80,8 @@ async function applyUndo(db, id) {
     } else if (op.t === 'prepped') {
       await db.query('UPDATE inv_prepped SET qty = GREATEST(0, qty + $2), updated_at=now() WHERE asin=$1', [op.asin, op.qty]);
       await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
+    } else if (op.t === 'shrink') {
+      await db.query('DELETE FROM inv_shrink WHERE id=$1', [op.id]);
     } else if (op.t === 'pending' && op.qty > 0) {
       const up = await db.query('UPDATE inv_pending_prep SET qty = qty + $2 WHERE id=$1', [op.id, op.qty]);
       if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [op.asin, op.qty, !!op.is_duo]);
@@ -409,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'amazon-colors-0929';
+const BUILD_ID = 'onhand-missing-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -564,6 +567,17 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT now(),
       undone_at TIMESTAMPTZ
     );
+    -- On Hand corrected by hand (units missing on the floor, or found again).
+    -- Kept per product so its card can show the dates and a running tally.
+    CREATE TABLE IF NOT EXISTS inv_shrink (
+      id SERIAL PRIMARY KEY,
+      asin TEXT NOT NULL,
+      delta INTEGER NOT NULL,
+      before_qty INTEGER,
+      after_qty INTEGER,
+      created_at TIMESTAMPTZ DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_shrink_asin ON inv_shrink(asin);
     -- Cycle counts: what was counted at a rack location, and the adjustments made.
     CREATE TABLE IF NOT EXISTS inv_counts (
       id SERIAL PRIMARY KEY,
@@ -1142,7 +1156,8 @@ app.get('/api/products', auth, async (req, res) => {
         + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
-      EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle
+      EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle,
+      (SELECT json_agg(json_build_object('at', x.created_at, 'delta', x.delta) ORDER BY x.id) FROM inv_shrink x WHERE x.asin=p.asin) AS shrink
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
      ORDER BY p.name`);
 
@@ -7529,6 +7544,41 @@ app.post('/api/count/apply', auth, async (req, res) => {
     return lines;
   });
   res.json({ ok: true, location: loc, lines: out, adjusted: out.filter(l => l.delta !== 0).length });
+});
+
+// ============================================================
+// ON HAND CORRECTION: units missing on the floor (delta < 0), or found again
+// (delta > 0). Changes On Hand by exactly delta, logged in Activity and in
+// inv_shrink so the product's card shows the dates and the tally. Undoable.
+// On Hand can't drop below what is prepped: those units are in staging, so
+// the prepped count has to be corrected first.
+// ============================================================
+app.post('/api/onhand/adjust', auth, async (req, res) => {
+  const asin = String(req.body.asin || '').trim();
+  const delta = Number(req.body.delta);
+  if (!asin || !Number.isInteger(delta) || delta === 0 || badQty(Math.abs(delta))) {
+    return res.status(400).json({ ok: false, error: `Type how many units (1–${MAX_QTY}).` });
+  }
+  const out = await withTx(async (db) => {
+    const p = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
+    if (!p.rows.length) return { status: 404, body: { ok: false, error: 'Unknown product ' + asin } };
+    await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($1,0) ON CONFLICT (asin) DO NOTHING', [asin]);
+    const st = await db.query('SELECT onhand FROM inv_stock WHERE asin=$1 FOR UPDATE', [asin]);
+    const before = st.rows[0].onhand || 0, after = before + delta;
+    const staged = await componentCommitted(asin);
+    if (after < staged) {
+      return { status: 400, body: { ok: false, error: `Only ${before} on hand and ${staged} of them are prepped: On Hand can't go to ${after}. Fix the prepped count first.` } };
+    }
+    const name = p.rows[0].name || asin;
+    await db.query('UPDATE inv_stock SET onhand=$2 WHERE asin=$1', [asin, after]);
+    const sh = await db.query('INSERT INTO inv_shrink(asin, delta, before_qty, after_qty) VALUES($1,$2,$3,$4) RETURNING id', [asin, delta, before, after]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['adjust', asin, name, delta, `${delta < 0 ? 'Missing' : 'Found'} ${Math.abs(delta)}: on hand ${before} → ${after}`]);
+    const undoId = await recordUndo(db, 'adjust', `${delta < 0 ? 'Missing' : 'Found'} ${Math.abs(delta)} × ${name.slice(0, 40)}`,
+      [{ t: 'stock', asin, onhand: -delta }, { t: 'shrink', id: sh.rows[0].id, asin }]);
+    return { status: 200, body: { ok: true, asin, before, after, delta, undoId } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 app.post('/api/undo/:id', auth, async (req, res) => {

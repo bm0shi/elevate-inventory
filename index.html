@@ -2111,6 +2111,36 @@ function findCode(code){
   return api('/api/find/'+encodeURIComponent(code)).catch(e=>{ if(isNetworkError(e)) return localFind(code); throw e; });
 }
 
+// On Hand correction (units missing on the floor, or found again). The card
+// keeps a small red log once anything has ever gone missing: each date and
+// qty, and the running tally (owner's ask).
+function ohAdjust(asin){
+  const prod=(products||[]).find(x=>x.asin===asin)||{};
+  const v=prompt('Fix the count for:\n'+(prod.name||asin)+'\n\nIn warehouse now: '+(prod.onhand||0)+'\n\nHow many units are MISSING? (e.g. 12)\nIf some turned up again, type + first (e.g. +3).','');
+  if(v===null) return;
+  const t=String(v).trim().replace(/\s+/g,'');
+  if(!/^\+?\d+$/.test(t)){ toast('Type a number, like 12 (missing) or +3 (found)',true); return; }
+  const n=parseInt(t.replace('+',''),10); if(!n){ toast('Nothing to change',true); return; }
+  const delta=t.startsWith('+')?n:-n, after=(prod.onhand||0)+delta;
+  if(!confirm((delta<0?n+' MISSING':n+' FOUND')+'\n\n'+(prod.name||asin)+'\nIn warehouse: '+(prod.onhand||0)+' → '+after+'\n\nSave?')) return;
+  api('/api/onhand/adjust',{method:'POST',idem:newIdem(),body:JSON.stringify({asin,delta})}).then(d=>{
+    if(!d || d.ok===false || d.error){ toast((d&&d.error)||'Could not save',true); return; }
+    toast((delta<0?'Logged '+n+' missing':'Logged '+n+' found')+' · in warehouse '+d.before+' → '+d.after);
+    showUndo(d.undoId,(delta<0?'Missing ':'Found ')+n+' × '+String(prod.name||asin).slice(0,26));
+    loadProducts();
+  }).catch(e=>toast('Could not save: '+e.message,true));
+}
+// The red log on the card: only once something has ever been marked missing.
+function shrinkNote(p){
+  const L=Array.isArray(p.shrink)?p.shrink:[];
+  if(!L.some(x=>x.delta<0)) return '';
+  const d=t=>{ const x=new Date(t); return (x.getMonth()+1)+'/'+x.getDate()+'/'+String(x.getFullYear()).slice(2); };
+  const net=-L.reduce((a,x)=>a+x.delta,0);
+  return '<div style="margin-top:6px;padding:5px 8px;border-left:3px solid #c0392b;background:#fdf2f1;border-radius:0 6px 6px 0;font-size:11px;line-height:1.45;color:#c0392b;text-align:left">'
+    +L.map(x=>'<div>'+d(x.at)+' - '+Math.abs(x.delta)+' unit'+(Math.abs(x.delta)===1?'':'s')+' '+(x.delta<0?'missing':'<span style="color:#1e8449">found</span>')+'</div>').join('')
+    +'<div style="font-weight:900;margin-top:2px">Total missing: '+Math.max(0,net)+'</div></div>';
+}
+
 // Undo: shown for 10 seconds after a receive, ship or prep scan.
 let _undo=null, _undoTimer=null;
 function showUndo(id, text){
@@ -8541,7 +8571,8 @@ function bigOhCard(p, v){
       +(v.t?big(v.t,'TRANSIT (BOTTLES)','#2563a8','Left the warehouse, not checked in at Amazon yet'):'')
       +big(v.o,'IN WAREHOUSE','#5a6472')
       +'<button onclick="requestPrep(\''+esc(p.asin)+'\','+((p.is_component||p.is_bundle)?'true':'false')+')" style="flex:1;min-width:120px;padding:12px;font-size:17px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">🔧 PREP</button>'
-    +'</div>'
+      +'<button onclick="ohAdjust(\''+esc(p.asin)+'\')" title="Units missing on the floor (or found again)" style="min-width:110px;padding:12px;font-size:14px;font-weight:800;background:#fff;color:#5a6472;border:1.5px solid #d5d9d9;border-radius:8px;cursor:pointer">✏️ Fix count</button>'
+    +'</div>'+shrinkNote(p)
     +(duos.length?'<div style="margin-top:10px;font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">MAKES THESE DUOS</div>'+duos.join(''):'')
     +amazonSplit(p)+(v.mktRow||'')
     +'</div>';
@@ -8911,7 +8942,7 @@ function renderOnhand(){
     // by listing" table above it shows the same, per listing.
     const mktRow='';
     if(viewBig('onhand')) return bigOhCard(p, {available, pend, prep, t, o, mktRow});
-    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700" title="Bottles that left the warehouse and Amazon has not checked in yet — singles and duo bottles together. The table below splits them.">'+t+' transit (bottles)</div>':''}${fbaF>0?'<div style="color:#008296;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}</div></div>${amazonSplit(p)}${mktRow}</div>`;
+    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700">'+prep+' prepped</div>':''}${t?'<div style="color:#2563a8;font-size:11px;font-weight:700" title="Bottles that left the warehouse and Amazon has not checked in yet — singles and duo bottles together. The table below splits them.">'+t+' transit (bottles)</div>':''}${fbaF>0?'<div style="color:#008296;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px">+'+fbaIn+' inbound</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}<div><button onclick="ohAdjust('${p.asin}')" title="Units missing on the floor (or found again): corrects On Hand and keeps a log on this card" style="margin-top:5px;padding:4px 9px;font-size:10.5px;font-weight:700;background:#fff;color:#5a6472;border:1px solid #d5d9d9;border-radius:999px;cursor:pointer;white-space:nowrap">✏️ Fix count</button></div>${shrinkNote(p)}</div></div>${amazonSplit(p)}${mktRow}</div>`;
   }).join('')+'</div>';
   // Full breakdown totals across ALL products, not just the filtered view.
   //
