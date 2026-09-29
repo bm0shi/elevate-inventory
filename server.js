@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'shipment-production-header-0929';
+const BUILD_ID = 'shipment-production-tab-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1791,7 +1791,7 @@ app.post('/api/pack/delete', auth, async (req, res) => {
   if (!sid) return res.status(400).json({ ok: false, error: 'bad shipment id' });
   const out = await withTx(async (db) => {
     const r = await db.query('SELECT status FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sid]);
-    if (!r.rows.length) return { status: 404, body: { ok: false, error: `${sid} isn't in 2D Production (already deleted?).` } };
+    if (!r.rows.length) return { status: 404, body: { ok: false, error: `${sid} isn't in Shipment Production (already deleted?).` } };
     const b = await db.query('DELETE FROM inv_pack_boxes WHERE shipment_id=$1', [sid]);
     await db.query('DELETE FROM inv_pack_shipments WHERE shipment_id=$1', [sid]);
     return { status: 200, body: { ok: true, boxes: b.rowCount, wasFinished: r.rows[0].status !== 'packing' } };
@@ -2233,7 +2233,7 @@ async function planPlace(id, args, step) {
   const mskuToAsin = {}, fnskuOf = {}; p.items.forEach(i => { mskuToAsin[i.msku] = i.asin; fnskuOf[i.msku] = i.fnsku; });
   const ships = [];
   for (const shId of opt.shipmentIds) {
-    await step(`Bringing shipment ${ships.length + 1} of ${opt.shipmentIds.length} into 2D Production…`);
+    await step(`Bringing shipment ${ships.length + 1} of ${opt.shipmentIds.length} into Shipment Production…`);
     const full = await amzInbound.getShipment(p.plan_id, shId);
     const fba = String(full.shipmentConfirmationId || '').toUpperCase();
     if (!pack.normShipmentId(fba)) throw new Error(`Amazon hasn't given shipment ${shId} its FBA ID yet — Retry in a minute.`);
@@ -2364,8 +2364,8 @@ app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
   const diffs = [];
   for (const sh of p.shipments || []) {
     const ps = (await pool.query('SELECT status, amz FROM inv_pack_shipments WHERE shipment_id=$1', [sh.fba])).rows[0];
-    if (!ps) return res.status(409).json({ ok: false, error: `${sh.fba} isn't in 2D Production any more.` });
-    if (ps.status === 'packing') return res.status(409).json({ ok: false, error: `${sh.fba} isn't finished yet — build all its boxes and press Finish in 2D Production first.` });
+    if (!ps) return res.status(409).json({ ok: false, error: `${sh.fba} isn't in Shipment Production any more.` });
+    if (ps.status === 'packing') return res.status(409).json({ ok: false, error: `${sh.fba} isn't finished yet — build all its boxes and press Finish in Shipment Production first.` });
     const cmp = builtVsShipment((ps.amz && ps.amz.items) || [], await floorBoxes(sh.fba, (ps.amz && ps.amz.items) || []));
     for (const r of cmp.rows) if (r.planned !== r.boxed) diffs.push(`${sh.fba} ${r.msku}: built ${r.boxed}, Amazon expects ${r.planned}`);
   }
@@ -2451,7 +2451,7 @@ app.post('/api/shipments/replace-id', ownerAuth, async (req, res) => {
     const taken = (await db.query('SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_shipment_items WHERE shipment_id=$1', [to])).rows[0].n;
     if (taken > 0) return { status: 409, body: { ok: false, error: `${to} already has ${taken} units in the app — it was posted separately. Nothing changed.` } };
     const packTo = (await db.query("SELECT (SELECT COUNT(*) FROM inv_pack_boxes WHERE shipment_id=$1 AND jsonb_array_length(items) > 0)::int AS n", [to])).rows[0].n;
-    if (packTo > 0) return { status: 409, body: { ok: false, error: `${to} already has boxes in 2D Production. Nothing changed.` } };
+    if (packTo > 0) return { status: 409, body: { ok: false, error: `${to} already has boxes in Shipment Production. Nothing changed.` } };
     // New row first (items point at it), then move everything, then drop the old row.
     await db.query('DELETE FROM inv_shipments WHERE shipment_id=$1', [to]);
     await db.query(`INSERT INTO inv_shipments(shipment_id, shipment_name, created_at, status, received_at, has_discrepancy)
