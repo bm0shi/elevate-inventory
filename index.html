@@ -2081,7 +2081,7 @@ function loadDemand(){
 function demandRate(asin, keepaSold){
   if(!_demand) loadDemand();
   const b=_demand&&_demand.demand&&_demand.demand[asin];
-  if(b && b.monthly>0) return {mo:b.monthly, est:false, note:demandNote(b.used)+(_demand.learned?'':' (starting weights — it learns as 30-day checks come in)')};
+  if(b && b.monthly>0) return {mo:b.monthly, est:false, note:(b.floored?'Other sellers\' average ~'+Math.round(b.monthly)+'/mo — your own estimate was ~'+Math.round(b.blend||0)+'/mo, so planning on the higher':demandNote(b.used)+(_demand.learned?'':' (starting weights — it learns as 30-day checks come in)'))};
   const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
   if(a && a.avg>0) return {mo:a.avg, est:true, note:'No best estimate yet: other sellers\' Smart Scout average'};
   return {mo:keepaSold||0, est:!!keepaSold, note:'No best estimate or Smart Scout average: Keepa listing sales (all sellers, includes Amazon)'};
@@ -4016,7 +4016,7 @@ function planSrcNote(l, dm){
 }
 // Rec. Order: blend a listing's demand signals with the learned weights
 // (same maths as lib/forecast.js blend; the server learns the weights).
-const REC_LABELS={instock:'Your sales while in stock', ours:'Your sales (30d)', ssus:'SmartScout (you)', keepa:'Keepa × your Buy Box', fair:'Even split of the pie'};
+const REC_LABELS={instock:'Your sales while in stock', ours:'Your sales (30d)', ssus:'SmartScout (you)', keepa:'Keepa × your Buy Box', fair:'Even split of the pie', peers:'Other sellers\' average (your own sales were lower)'};
 const REC_KEYS=['instock','ours','ssus','keepa','fair'];
 // "leans on: your sales while in stock 60% · even split 25%…" for tooltips.
 function demandNote(used){

@@ -60,3 +60,14 @@ test('nothing at Amazon and no history: raw sales left out of the blend (may be 
   assert.strictEqual(blendSignals({ ours: 40, fair: 300 }, { atAmazon: 0, snapKnown: 20 }).ours, 40);
   assert.strictEqual(blendSignals({ ours: 40 }, { atAmazon: 0, snapKnown: 0 }).ours, 40);   // nothing else to go on
 });
+
+test('peerFloor: never plan below the other sellers\' average (B002CMLJMW: ~137/mo ours vs 422/mo peers)', () => {
+  const f = require('../lib/forecast');
+  const low = f.peerFloor({ monthly: 137, used: { instock: 1 } }, 422);
+  assert.strictEqual(low.monthly, 422); assert.strictEqual(low.floored, true); assert.strictEqual(low.blend, 137);
+  assert.strictEqual(480 / (low.monthly / 30) < 35, true);   // 480 bottles ≈ 34 days, not 105
+  const high = { monthly: 600, used: { instock: 1 } };
+  assert.strictEqual(f.peerFloor(high, 422), high);          // we outsell them: keep ours
+  assert.strictEqual(f.peerFloor({ monthly: null, used: {} }, 90).monthly, 90);
+  assert.strictEqual(f.peerFloor(high, null), high);         // no seller files: unchanged
+});
