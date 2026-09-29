@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'demand-peer-floor-0929';
+const BUILD_ID = 'demand-peer-avg-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6606,15 +6606,15 @@ async function buildPlanData() {
   } catch (e) { console.error('[Plan] forecast log/learn failed:', e.message); }
   // THE demand number (monthly units we'll sell), used by Send Next, Rec.
   // Order, Pending Prep and On Hand alike so they never disagree.
-  // Floored at the other sellers' average (forecast.peerFloor): the owner
-  // sends enough to never run out, so a listing we haven't been selling isn't
-  // planned on our own thin sales.
+  // The other sellers' average when SmartScout has it (forecast.peerRate):
+  // the owner's rule is to never over-send, and our own sales undercount a
+  // listing we haven't kept in stock. No seller data → our own blend.
   const peers = ssSellers.filter(sl => !sl.isUs);
   for (const L of listings) {
     const b = forecast.blend(forecast.blendSignals(L.signals, { atAmazon: L.atAmazon, snapKnown: L.snap.known }), model.weights);
     const v = peers.filter(sl => sl.by[L.asin]).map(sl => smartscout.sellerUnitsOn(ssBrand[L.asin] ? ssBrand[L.asin].units : null, sl.by[L.asin])).filter(x => x != null && isFinite(x));
-    const f = forecast.peerFloor(b, v.length ? v.reduce((t, x) => t + x, 0) / v.length : null);
-    L.demand = { monthly: f.monthly, used: f.used, ...(f.floored ? { floored: true, blend: f.blend } : {}) };
+    const f = forecast.peerRate(b, v.length ? v.reduce((t, x) => t + x, 0) / v.length : null);
+    L.demand = { monthly: f.monthly, used: f.used, ...(f.peers ? { peers: true, blend: f.blend } : {}) };
   }
   let checkIn = null;
   try { checkIn = await checkinNow(); } catch (e) { console.error('[Plan] check-in stats failed:', e.message); }
@@ -6632,7 +6632,7 @@ app.get('/api/demand', auth, async (req, res) => {
     const d = await buildPlanData();
     const demand = {};
     for (const L of d.listings) if (L.demand && L.demand.monthly != null) demand[L.asin] = { monthly: Math.round(L.demand.monthly * 10) / 10, used: L.demand.used,
-      ...(L.demand.floored ? { floored: true, blend: L.demand.blend != null ? Math.round(L.demand.blend * 10) / 10 : null } : {}) };
+      ...(L.demand.peers ? { peers: true, blend: L.demand.blend != null ? Math.round(L.demand.blend * 10) / 10 : null } : {}) };
     demandCache = { at: Date.now(), body: { ok: true, demand, learned: !!(d.forecast && d.forecast.learned), since: d.forecast && d.forecast.since } };
   }
   res.json(demandCache.body);
