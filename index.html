@@ -437,7 +437,7 @@
       </select>
       <button class="action" onclick="ppTickAll(true)" style="padding:11px 14px;font-size:14px;background:#1e8449" title="Tick every job showing (search and filter apply)">☑ Select all</button>
       <button class="action" onclick="ppTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every job showing">Clear</button>
-      <button class="action" onclick="ppToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment in Shipment Production with every ticked job. No stock changes until Finish.">🏷️ Send ticked to production →</button>
+      <button class="action" onclick="sendTickedToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment with everything ticked here AND on Prepped &amp; Ready, added together. No stock changes until Finish.">🏷️ Send ticked to production →</button>
       <span class="viewtoggle" id="vt_pp"><button onclick="setPpList(false);setView('pp',false)">Compact</button><button onclick="setPpList(false);setView('pp',true)">Big</button><button onclick="setPpList(true)" title="One tight row per item — best on small screens like the Surface">List</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
@@ -487,9 +487,11 @@
         <option value="asin">ASIN</option>
       </select>
       <input type="text" id="prepSearch" placeholder="Search prepped..." onkeyup="renderPrepList()" style="flex:1;min-width:160px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
+      <button class="action" onclick="prepTickAll(true)" style="padding:11px 14px;font-size:14px;background:#1e8449" title="Tick every line showing (search applies)">☑ Select all</button>
+      <button class="action" onclick="prepTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every line showing">Clear</button>
+      <button class="action" onclick="sendTickedToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment with everything ticked here AND on Pending Prep, added together. No stock changes until Finish.">🏷️ Send ticked to production →</button>
     </div>
     <div id="prepListBox"></div>
-    <button class="action full" onclick="prepToProduction()" style="margin-top:10px;background:#008296;font-size:17px;padding:14px" title="Opens New shipment in Shipment Production filled with everything prepped. No stock changes until Finish.">🏷️ Send to production → (new shipment from everything prepped)</button>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
   <div id="prod" class="panel"><div id="prodArea"></div></div>
@@ -1074,8 +1076,7 @@ function prodHome(d){
   const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
   // Plans being created: warehouse login is enough (owner's choice), so the
   // list always loads here.
-  if(window._nsFromPreppedNext){ window._nsFromPreppedNext=false; nsOpen(()=>nsFromPrepped(null)); return; }
-  if(window._nsNext==='pending'){ window._nsNext=null; nsOpen(()=>nsFromPending(null)); return; }
+  if(window._nsNext==='ticked'){ window._nsNext=null; nsOpen(()=>nsFromTicked(null)); return; }
   nsPlansBox();
 }
 // ============================================================
@@ -1136,7 +1137,7 @@ function nsRender(){
   const rows=_ns.items;
   h+='<div class="box"><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">'+inp('nsName','SHIPMENT NAME (optional)',_ns.name,2)
     +'<div class="hint" style="flex:2;min-width:220px;padding-bottom:8px">Prep is set for you: the app asks Amazon which products need prep and marks those as prepped by us; the rest go as no prep.</div></div>'
-    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromPrepped(this)" style="background:#008296;margin-right:8px" title="Adds everything on Prepped &amp; Ready with its prepped quantity (singles and duos as scanned). No stock changes until Finish in Shipment Production.">📦 Add from Prepped &amp; Ready</button><button class="action" onclick="nsFromPending(this)" style="background:#7a4fb5" title="Adds every Pending Prep item ticked as added to the shipment plan, with its quantity">📋 Add from Pending Prep (ticked items)</button></div>'
+    +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromTicked(this)" style="background:#008296" title="Adds everything ticked on Pending Prep and on Prepped &amp; Ready; the same product on both is added together. No stock changes until Finish in Shipment Production.">☑ Add ticked items (Pending Prep + Prepped &amp; Ready)</button></div>'
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
     h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
@@ -1218,62 +1219,41 @@ function nsAdd(code){
     const q=document.querySelectorAll('#prodArea input[type=number]'); if(q.length) q[q.length-1].focus();
   });
 }
-// Everything on Prepped & Ready → rows here with the prepped quantity, as
-// scanned (a single under its ASIN, a duo under the duo ASIN). Nothing moves
-// stock: bottles leave On Hand only at Finish in 2D Production, so a wrong
-// line is just removed here (or the plan cancelled). Warns when a product is
-// already on another open plan, so the same prepped units aren't pulled twice.
-function nsFromPrepped(btn){
+// Everything ticked on Pending Prep and on Prepped & Ready → rows here. The
+// same product on both is added together (a duo is keyed by the duo ASIN on
+// both screens, as scanned). A row already on the list is set to the ticked
+// total, so pressing again never doubles it. Nothing moves stock: bottles
+// leave On Hand only at Finish in Shipment Production. Warns when a product
+// is already on another open plan, so the same units aren't sent twice.
+function nsFromTicked(btn){
   _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
   if(btn){ btn.disabled=true; btn.textContent='Adding…'; }
-  Promise.all([api('/api/prep/list'), ownerApi('/api/inbound/plans').catch(()=>null)]).then(([d,pl])=>{
-    const items=((d&&d.items)||[]).filter(i=>i.prepped>0);
-    if(!items.length){ toast('Nothing on Prepped & Ready',true); nsRender(); return; }
+  Promise.all([api('/api/pending-prep/list'), api('/api/prep/list'), ownerApi('/api/inbound/plans').catch(()=>null)]).then(([pp,pr,pl])=>{
+    const want={};
+    const add=(asin,name,q,src,duo)=>{ const w=want[asin]=want[asin]||{asin,name,pend:0,prep:0,duo:false}; w[src]+=q; w.duo=w.duo||!!duo; };
+    ((pp&&pp.items)||[]).filter(i=>i.in_plan&&i.qty>0).forEach(i=>add(i.asin,i.name,i.qty,'pend',i.is_duo));
+    ((pr&&pr.items)||[]).filter(i=>i.in_plan&&i.prepped>0).forEach(i=>add(i.asin,i.name,i.prepped,'prep',i.isBundle));
+    const L=Object.values(want);
+    if(!L.length){ toast('Nothing is ticked on Pending Prep or Prepped & Ready',true); nsRender(); return; }
     const open={}; ((pl&&pl.plans)||[]).filter(p=>['new','working','placement','building','error'].includes(p.status)).forEach(p=>(p.asins||[]).forEach(a=>{ (open[a]=open[a]||[]).push(p.name||('Plan '+p.id)); }));
-    const clash=items.filter(i=>open[i.asin]);
-    const lines=items.map(i=>'  '+i.prepped+' × '+String(i.name||i.asin).slice(0,45)+(i.isBundle?' (duo)':'')).join('\n');
-    if(!confirm('Add everything on Prepped & Ready to this shipment?\n\n'+lines
+    const clash=L.filter(i=>open[i.asin]);
+    const lines=L.map(i=>'  '+(i.pend+i.prep)+' × '+String(i.name||i.asin).slice(0,42)+(i.duo?' (duo)':'')
+      +' — '+[i.prep?i.prep+' prepped':'', i.pend?i.pend+' pending prep':''].filter(Boolean).join(' + ')).join('\n');
+    if(!confirm('Add everything ticked to this shipment?\n\n'+lines
       +(clash.length?'\n\n⚠️ Already on another open shipment: '+clash.map(i=>String(i.name||i.asin).slice(0,30)+' ('+open[i.asin].join(', ')+')').join('; ')+' — make sure the same units aren\'t sent twice.':'')
       +'\n\nNo stock changes now — only at Finish in Shipment Production. You can change quantities or remove lines before creating the plan.')){ nsRender(); return; }
-    const todo=items.filter(i=>!_ns.items.some(x=>x.asin===i.asin));
-    const same=items.filter(i=>_ns.items.some(x=>x.asin===i.asin));
-    same.forEach(i=>{ const x=_ns.items.find(y=>y.asin===i.asin); x.qty=i.prepped; });
+    const same=L.filter(i=>_ns.items.some(x=>x.asin===i.asin)), todo=L.filter(i=>!_ns.items.some(x=>x.asin===i.asin));
+    same.forEach(i=>{ _ns.items.find(y=>y.asin===i.asin).qty=i.pend+i.prep; });
     return Promise.all(todo.map(i=>api('/api/pack/product/'+encodeURIComponent(i.asin)).catch(()=>null))).then(rs=>{
-      let added=0;
-      rs.forEach((r,k)=>{ if(!r||r.ok===false) return; const p=r.product; added++;
-        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:todo[k].prepped, exp:'', needsExp:!!p.amz_needs_exp}); });
-      toast('Added '+added+' from Prepped & Ready'+(same.length?' · '+same.length+' already on the list set to the prepped qty':''));
+      let added=0; const bad=[];
+      rs.forEach((r,k)=>{ if(!r||r.ok===false){ bad.push(todo[k].name||todo[k].asin); return; } const p=r.product; added++;
+        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:todo[k].pend+todo[k].prep, exp:'', needsExp:!!p.amz_needs_exp}); });
+      const tp=L.reduce((a,i)=>a+i.prep,0), tq=L.reduce((a,i)=>a+i.pend,0);
+      toast('Added '+added+' product'+(added===1?'':'s')+' ('+tp+' prepped + '+tq+' pending prep)'+(same.length?' · '+same.length+' already on the list set to the ticked total':''), false);
+      if(bad.length) toast('Could not add: '+bad.slice(0,3).map(x=>String(x).slice(0,30)).join(', '),true);
       nsRender();
     });
-  }).catch(e=>{ toast('Could not read Prepped & Ready: '+e.message,true); nsRender(); });
-}
-// Prepped & Ready → "Send to production": opens New shipment already filled.
-function prepToProduction(){
-  const t=[...document.querySelectorAll('.tab')].find(x=>(x.getAttribute('onclick')||'').includes("'prod'"));
-  // Opened once the 2D Production start page has drawn (prodHome), so that
-  // page can't land on top of New shipment.
-  _prod=null; window._nsFromPreppedNext=true;
-  if(t) t.click(); else prodOpen();
-}
-// Pending Prep items ticked "added to the shipment plan" → rows here, with
-// their quantities (same product twice is summed). Only when the button is
-// pressed; rows already on the list are left as they are.
-function nsFromPending(btn){
-  _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
-  if(btn){ btn.disabled=true; btn.textContent='Adding…'; }
-  api('/api/pending-prep/list').then(d=>{
-    const want={}; ((d&&d.items)||[]).filter(i=>i.in_plan).forEach(i=>{ want[i.asin]=(want[i.asin]||0)+(i.qty||0); });
-    const asins=Object.keys(want).filter(a=>!_ns.items.some(x=>x.asin===a));
-    if(!Object.keys(want).length){ toast('Nothing is ticked on Pending Prep',true); nsRender(); return; }
-    return Promise.all(asins.map(a=>api('/api/pack/product/'+encodeURIComponent(a)).catch(()=>null))).then(rs=>{
-      let added=0;
-      rs.forEach((r,k)=>{ if(!r||r.ok===false) return; const p=r.product; added++;
-        _ns.items.push({asin:p.asin, name:p.name, sku:p.sku, fnsku:p.fnsku, qty:want[asins[k]], exp:'', needsExp:!!p.amz_needs_exp}); });
-      const skipped=Object.keys(want).length-asins.length;
-      toast('Added '+added+' from Pending Prep'+(skipped?' · '+skipped+' already on the list':''));
-      nsRender();
-    });
-  }).catch(e=>{ toast('Could not read Pending Prep: '+e.message,true); nsRender(); });
+  }).catch(e=>{ toast('Could not read the ticked items: '+e.message,true); nsRender(); });
 }
 function nsSaveAddresses(list, pickId){
   _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
@@ -5440,12 +5420,14 @@ function ppTickAll(on){
     renderPendingPrep();
   }).catch(e=>toast('Not saved: '+e.message,true));
 }
-// Pending Prep → New shipment with every ticked job (same as the button there).
-function ppToProduction(){
-  const d=window._pendingPrepData;
-  if(!d||!d.items.some(i=>i.in_plan)){ toast('Tick the jobs to send first (☑ Select all)',true); return; }
+// Pending Prep or Prepped & Ready → New shipment with everything ticked on
+// BOTH screens (the floor sometimes works ahead, so a shipment is part
+// prepped, part still to prep).
+function sendTickedToProduction(){
   const t=[...document.querySelectorAll('.tab')].find(x=>(x.getAttribute('onclick')||'').includes("'prod'"));
-  _prod=null; window._nsNext='pending';
+  // Opened once the Shipment Production start page has drawn (prodHome), so
+  // that page can't land on top of New shipment.
+  _prod=null; window._nsNext='ticked';
   if(t) t.click(); else prodOpen();
 }
 function toggleInPlan(id, on){
@@ -5800,7 +5782,8 @@ function renderPrepList(){
     // labeled pill rows for ASIN + FNSKU (like the reference app)
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     const border=x.isBundle?'border:1px solid #fdeceb;':'';
-    return `<div class="pcard" style="${border};align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
+    const tick=`<label title="Tick to send to the next shipment (with Pending Prep's ticked jobs)" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:6px;padding:4px 10px;border-radius:999px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;${x.in_plan?'background:#e7f6ec;color:#1e8449;border:1.5px solid #1e8449':'background:#fff;color:#5a6472;border:1.5px solid #d5d9d9'}"><input type="checkbox" ${x.in_plan?'checked':''} onchange="prepTick(['${esc(x.asin)}'],this.checked)" style="width:18px;height:18px;margin:0">${x.in_plan?'✓ FOR SHIPMENT':'For shipment'}</label>`;
+    return `<div class="pcard" style="${border};align-items:stretch${x.in_plan?';outline:2px solid #1e8449':''}">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — matches your shipment plan software. Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
   b.innerHTML=h;
@@ -5816,6 +5799,21 @@ function copyText(txt, el){
     }
     toast('Copied: '+txt);
   }).catch(()=>{ toast('Copy failed — long-press to copy',true); });
+}
+// Prepped & Ready ticks (saved on the server, like Pending Prep's).
+function prepTick(asins, on){
+  if(!asins.length){ toast(on?'Everything showing is already ticked':'Nothing ticked'); return; }
+  api('/api/prep/in-plan',{method:'POST',body:JSON.stringify({asins, inPlan:on})}).then(r=>{
+    if(!r||r.ok===false){ toast((r&&r.error)||'Not saved',true); return; }
+    const d=window._prepData; (d&&d.items||[]).forEach(i=>{ if(asins.includes(i.asin)) i.in_plan=on; });
+    if(asins.length>1) toast((on?'Ticked ':'Unticked ')+asins.length+' line'+(asins.length===1?'':'s'));
+    renderPrepList();
+  }).catch(e=>toast('Not saved: '+e.message,true));
+}
+function prepTickAll(on){
+  const d=window._prepData; if(!d) return;
+  const q=((document.getElementById('prepSearch')||{}).value||'').toLowerCase();
+  prepTick(d.items.filter(x=>(!q||(x.name||'').toLowerCase().includes(q)||(x.asin||'').toLowerCase().includes(q)||(x.fnsku||'').toLowerCase().includes(q)) && !!x.in_plan!==on).map(x=>x.asin), on);
 }
 function editPrep(asin, current){
   const v=prompt('Set prepped quantity (0 to remove):', current);
