@@ -109,7 +109,7 @@ When you change a parser or rule in `lib/`, add a test for the case that
 prompted it.
 
 The stock-moving routes (receive, invoice complete, pending prep, prep scan,
-ship, pack boxes, shipment received, undo, cycle count) have end-to-end tests in
+ship, pack boxes, shipment received, undo, cycle count, On Hand fix count) have end-to-end tests in
 `test/routes/`: a real server on a throwaway database, checking the counts
 after double taps, simultaneous requests and repeats. They need a database
 whose name contains "test" (it is wiped):
