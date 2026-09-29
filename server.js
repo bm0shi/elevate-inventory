@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prep-to-boxes-0930';
+const BUILD_ID = 'pallet-layers-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -529,6 +529,13 @@ async function initDb() {
       data JSONB,
       updated_at TIMESTAMPTZ DEFAULT now()
     );
+    -- The empty pallet is 6" (owner measured it); the old default was 5, and
+    -- saving Pallet limits stored it. Moved to 6 once (deck6 marks it done),
+    -- so a later deliberate 5 isn't overwritten.
+    UPDATE inv_cache SET data = data || '{"deckIn": 6, "deck6": true}'::jsonb
+      WHERE cache_key='pack_settings' AND NOT (data ? 'deck6') AND COALESCE(data->>'deckIn','5') = '5';
+    UPDATE inv_cache SET data = data || '{"deck6": true}'::jsonb
+      WHERE cache_key='pack_settings' AND NOT (data ? 'deck6');
     -- Pending/received Cosmoprof invoices
     CREATE TABLE IF NOT EXISTS inv_invoices (
       order_number TEXT PRIMARY KEY,

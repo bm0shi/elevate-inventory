@@ -1508,12 +1508,18 @@ const prodAddrHtml=a=>a&&a.line1?esc(a.name||'')+'<br>'+esc(a.line1)+(a.line2?'<
 // Same arithmetic as lib/pallet.js boxesThatFit, for the live preview:
 // each box counts its cardboard and a bag per unit, and the pallet stops at
 // the safe limit (Amazon's 1,500 minus the safety margin).
+// Height in layers, like lib/pallet.js: a box takes 1/(boxes per layer on
+// 48×40) of a layer, a layer is as tall as its tallest box, and a started
+// layer counts its full height. hAfter(k) = pallet height after k more boxes.
 function prodFit(st, box, S){
   const packed=box.weight_lb+S.boxPackLb+(box.units||0)*S.unitPackLb;
-  const base=st&&st.boxes?st:{weight:S.palletLb, height:S.deckIn};
-  const v=box.len*box.wid*box.hgt, area=S.footL*S.footW*S.fill;
-  const byW=packed>0?Math.floor((S.limitLb-base.weight)/packed+1e-9):Infinity, byH=v>0?Math.floor((S.maxHeightIn-base.height)*area/v+1e-9):Infinity;
-  return {n:Math.max(0,Math.min(byW,byH)), limitedBy:byW<=byH?'weight':'height', addH:v/area, packed};
+  const base=st&&st.boxes?st:{weight:S.palletLb, height:S.deckIn, layers:null};
+  const per=Math.max(1, Math.floor(S.footL/box.len)*Math.floor(S.footW/box.wid), Math.floor(S.footL/box.wid)*Math.floor(S.footW/box.len));
+  const L0=base.layers||{done:0,fill:0,top:0}, h0=L0.done+L0.top;
+  const hAfter=k=>{ let d=L0.done, f=L0.fill, t=L0.top; for(let i=0;i<k;i++){ if(f>0&&f+1/per>1+1e-9){ d+=t; f=0; t=0; } f+=1/per; t=Math.max(t,box.hgt); } return base.height+(d+t)-h0; };
+  const byW=packed>0?Math.floor((S.limitLb-base.weight)/packed+1e-9):Infinity;
+  let byH=0; if(box.hgt>0) while(byH<10000&&hAfter(byH+1)<=S.maxHeightIn+1e-9) byH++; else byH=Infinity;
+  return {n:Math.max(0,Math.min(byW,byH)), limitedBy:byW<=byH?'weight':'height', hAfter, packed};
 }
 // Table cells for the 2D Production tables. Headers and cells share the same
 // padding and alignment (headers were 4px off their columns when they didn't).
@@ -1726,7 +1732,7 @@ function prodPreview(){
     if(r0&&r0.left&&bl&&f.per>0){ bl.textContent=Math.ceil(r0.left/f.per); if(bs) bs.textContent=f.per+' per box'+(r0.left%f.per?' · last box '+(r0.left%f.per):''); } }
   if(!(f.per>0&&f.count>0&&f.w>0&&f.L>0&&f.W>0&&f.H>0)){ el.innerHTML='<span class="hint">Fill in units per box, boxes, unit weight and box size — they\'re saved for next time.</span>'; return; }
   const bw=Math.round(f.w*f.per*100)/100, fit=prodFit(st,{weight_lb:bw,units:f.per,len:f.L,wid:f.W,hgt:f.H},S);
-  const wAfter=(st.boxes?st.weight:S.palletLb)+fit.packed*f.count, hAfter=(st.boxes?st.height:S.deckIn)+fit.addH*f.count;
+  const wAfter=(st.boxes?st.weight:S.palletLb)+fit.packed*f.count, hAfter=fit.hAfter(f.count);
   const row=v.plan.find(r=>r.asin===P.asin);
   let t='<b>'+f.count+' box'+(f.count===1?'':'es')+' × '+f.per+' = '+(f.count*f.per)+' units</b> · '+bw+' lb of product per box · pallet '+v.currentPallet+' after: <b>'+f1(wAfter)+' / '+S.limitLb+' lb</b>, ~<b>'+f1(hAfter)+' / '+S.maxHeightIn+' in</b>';
   if(f.count>fit.n) t+=prodWarn('⛔ ONLY '+fit.n+' FIT ON PALLET '+v.currentPallet+' ('+fit.limitedBy+' limit). You\'ll be asked where the rest go.',true);
@@ -1840,12 +1846,12 @@ function prodSettings(){
     +inp('maxLb','Amazon max pallet weight (lb)','LTL: 1,500')+inp('safetyLb','Safety margin (lb)','we stop this far under Amazon\'s max')
     +inp('palletLb','Empty pallet + stretch wrap (lb)','65 lb pallet + ~5 lb wrap')+inp('boxPackLb','Cardboard + tape per box (lb)')+inp('unitPackLb','Poly / bubble bag per unit (lb)','weigh 20 bags and divide')
     +inp('maxHeightIn','Max height (in)','ours, including the pallet')
-    +inp('deckIn','Empty pallet height (in)')+inp('fill','Packing efficiency (%)','how tightly boxes fill the 48×40 footprint; lower = more cautious height')+inp('warnPct','Warn at (%)')
+    +inp('deckIn','Empty pallet height (in)')+inp('warnPct','Warn at (%)')
     +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" onclick="document.getElementById(\'prodSetModal\').remove()" style="flex:1;background:#e2e8f0;color:#1f2733">Cancel</button><button class="action" onclick="prodSettingsSave()" style="flex:2;background:#0d4450">Save</button></div></div>';
   document.body.appendChild(m);
 }
 function prodSettingsSave(){
-  const b={}; for(const k of ['maxLb','safetyLb','palletLb','boxPackLb','unitPackLb','maxHeightIn','deckIn','fill','warnPct']) b[k]=document.getElementById('ps_'+k).value;
+  const b={}; for(const k of ['maxLb','safetyLb','palletLb','boxPackLb','unitPackLb','maxHeightIn','deckIn','warnPct']) b[k]=document.getElementById('ps_'+k).value;
   api('/api/pack/settings',{method:'POST',body:JSON.stringify(b)}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } document.getElementById('prodSetModal').remove(); toast('Pallet limits saved'); prodLoad(prodSid()); });
 }
 function prodMove(n){
