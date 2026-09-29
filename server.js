@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'demand-peer-avg-0929';
+const BUILD_ID = 'pp-select-all-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7099,6 +7099,16 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
   res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount });
 });
 
+// Tick / untick many jobs at once (Pending Prep "Select all"). Only the
+// shipment-plan tick: no stock moves.
+app.post('/api/pending-prep/in-plan-many', auth, async (req, res) => {
+  const ids = (Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map(x => parseInt(x, 10)).filter(x => x > 0).slice(0, 2000);
+  if (!ids.length) return res.status(400).json({ ok: false, error: 'Nothing to tick.' });
+  const on = !!req.body.inPlan;
+  const r = await pool.query(on ? 'UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE id = ANY($1)'
+                                : 'UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id = ANY($1)', [ids]);
+  res.json({ ok: true, changed: r.rowCount });
+});
 // Mark / unmark a job as added to the 3rd-party shipment plan software
 app.post('/api/pending-prep/in-plan', auth, async (req, res) => {
   const { id, inPlan } = req.body;
