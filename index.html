@@ -985,21 +985,24 @@ function prodHome(d){
       +'<button class="action" onclick="nsOpen()" style="background:#1a2b4a;font-size:17px;padding:14px 26px;border-radius:10px">➕ New shipment (no Send to Amazon)</button>'
       +'<button class="action" onclick="skuCheckOpen()" style="background:#eef2f6;color:#1f2733;font-size:15px;padding:14px 18px;border-radius:10px" title="ASINs with more than one SKU at Amazon (old SKUs), or an app SKU Amazon doesn\'t list">🔎 SKU check</button></div></div>'
       +'<div id="nsPlans"></div>';
-  h+='<div class="box" style="padding:0;overflow:hidden"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:16px 20px;border-bottom:1px solid #eef2f6">'
-    +'<div><div style="font-size:18px;font-weight:900">Shipments</div><div class="hint">Every shipment built in this app. Status from Amazon, updated '+ago(d&&d.statusAt)+(d&&d.statusError?' · <span style="color:#c0392b">Amazon: '+esc(d.statusError).slice(0,120)+'</span>':'')+'</div></div>'
+  // The floor's section: where boxes are built and 2D labels printed. Big
+  // and outlined so a new employee knows this is the one to tap (the plans
+  // box above is the main shipment page: destination and freight setup).
+  h+='<div class="box" style="padding:0;overflow:hidden;border:3px solid #127a7a"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:18px 22px;border-bottom:2px solid #d5ecec;background:#f2fafa">'
+    +'<div><div style="font-size:26px;font-weight:900;color:#0f5f5f;letter-spacing:0.3px">SHIPMENT PRODUCTION SCREEN 📦</div><div style="font-size:17px;font-weight:900;color:#1f2733;margin-top:2px">(FINISH GENERATING BOX LABELS) — tap a shipment to build boxes &amp; print its 2D labels</div><div class="hint" style="margin-top:4px">Status from Amazon, updated '+ago(d&&d.statusAt)+(d&&d.statusError?' · <span style="color:#c0392b">Amazon: '+esc(d.statusError).slice(0,120)+'</span>':'')+'</div></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+Object.values(counts).map(c=>'<span style="font-size:12px;font-weight:800;color:'+c.st.c+';background:'+c.st.bg+';padding:4px 10px;border-radius:999px">'+c.n+' '+c.st.t.toLowerCase()+'</span>').join('')
     +'<button class="action" onclick="prodRefreshList(this)" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">↻ Refresh</button></div></div>';
   const table=rows=>'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('SHIPMENT','left')+prodTh('DESTINATION')+prodTh('BOXES')+prodTh('UNITS BUILT')+prodTh('PALLETS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
     +rows.map(x=>{ const st=prodStatus(x), pct=x.planned?Math.min(100,Math.round(x.built/x.planned*100)):0;
       return '<tr style="cursor:pointer" onmouseover="this.style.background=\'#f6f9fc\'" onmouseout="this.style.background=\'\'" onclick="prodLoad(\''+esc(x.shipment_id)+'\')">'
-        +prodTd('<div style="font-family:monospace;font-size:16px;font-weight:900;color:#0f1b2d">'+esc(x.shipment_id)+'</div><div class="hint" style="font-size:12px">'+esc(x.name||'')+'</div>','left')
-        +prodTd(x.fc?'<b style="color:#2563a8;font-size:15px">'+esc(x.fc)+'</b>':'—')
-        +prodTd('<b style="font-size:16px">'+x.boxes+'</b>')
-        +prodTd('<div style="font-weight:800">'+x.built.toLocaleString()+(x.planned?' / '+x.planned.toLocaleString():'')+'</div>'+(x.planned?'<div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin:4px auto 0;max-width:120px"><div style="height:100%;width:'+pct+'%;background:'+(pct>=100?'#1e8449':'#127a7a')+'"></div></div>':''))
-        +prodTd('<b>'+(x.pallets||'—')+'</b>')
-        +prodTd(new Date(x.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),'center','white-space:nowrap;color:#5a6472')
+        +prodTd('<div style="font-family:monospace;font-size:21px;font-weight:900;color:#0f1b2d">'+esc(x.shipment_id)+'</div><div style="font-size:14px;font-weight:700;color:#5a6472">'+esc(x.name||'')+'</div>','left')
+        +prodTd(x.fc?'<b style="color:#2563a8;font-size:19px">'+esc(x.fc)+'</b>':'—')
+        +prodTd('<b style="font-size:21px">'+x.boxes+'</b>')
+        +prodTd('<div style="font-weight:900;font-size:18px">'+x.built.toLocaleString()+(x.planned?' / '+x.planned.toLocaleString():'')+'</div>'+(x.planned?'<div style="height:6px;background:#e2e8f0;border-radius:3px;overflow:hidden;margin:4px auto 0;max-width:120px"><div style="height:100%;width:'+pct+'%;background:'+(pct>=100?'#1e8449':'#127a7a')+'"></div></div>':''))
+        +prodTd('<b style="font-size:19px">'+(x.pallets||'—')+'</b>')
+        +prodTd(new Date(x.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}),'center','white-space:nowrap;color:#5a6472;font-size:15px;font-weight:700')
         +prodTd(pill(st)+(x.has_discrepancy?'<div style="margin-top:4px;font-size:11px;font-weight:900;color:#c0392b">⚠ units short</div>':''))
-        +prodTd('<span style="font-size:20px;color:#9aa6b2">›</span>')+'</tr>'; }).join('')+'</table>';
+        +prodTd(st.key==='PACKING'?'<span class="action" style="display:inline-block;background:#127a7a;font-size:16px;padding:10px 16px;white-space:nowrap">🏷️ Build boxes →</span>':'<span style="font-size:15px;font-weight:800;color:#127a7a;white-space:nowrap">Open →</span>')+'</tr>'; }).join('')+'</table>';
   if(!list.length) h+='<div style="padding:30px;text-align:center;color:#5a6472">'+(cancelled.length?'No active shipments.':'No shipments yet. Enter a shipment ID above to start the first one.')+'</div>';
   else h+=table(list);
   h+='</div>';
@@ -1030,10 +1033,10 @@ function nsPlansBox(){
   const el=document.getElementById('nsPlans'); if(!el) return;
   ownerApi('/api/inbound/plans').then(d=>{
     if(!d||!d.ok||!d.plans.length){ el.innerHTML=''; return; }
-    el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:14px 20px;border-bottom:1px solid #eef2f6"><div style="font-size:18px;font-weight:900">Shipments being created</div><div class="hint">Made in the app. Click one to continue it.</div></div>'
+    el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:18px 22px;border-bottom:1px solid #eef2f6"><div style="font-size:24px;font-weight:900;color:#1f2733;letter-spacing:0.3px">SHIPMENT CREATED – MAIN PAGE</div><div style="font-size:17px;font-weight:900;color:#5a6472;margin-top:2px">DESTINATION AND FREIGHT SETUP</div><div class="hint" style="margin-top:2px">Boxes and labels are built in the Shipment Production Screen below.</div></div>'
       +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('NAME','left')+prodTh('PRODUCTS')+prodTh('UNITS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
-      +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b>'+esc(p.name||('Plan '+p.id))+'</b>'+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd(p.skus)+prodTd('<b>'+p.units.toLocaleString()+'</b>')
-        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472')+prodTd(nsPill(p.status))
+      +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b style="font-size:18px">'+esc(p.name||('Plan '+p.id))+'</b>'+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd('<b style="font-size:17px">'+p.skus+'</b>')+prodTd('<b style="font-size:18px">'+p.units.toLocaleString()+'</b>')
+        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472;font-size:15px;font-weight:700')+prodTd(nsPill(p.status))
         +prodTd('<button onclick="event.stopPropagation();nsRemove('+p.id+')" title="Remove from the app (nothing sent to Amazon)" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>').join('')+'</table></div>';
   }).catch(()=>{});
 }
