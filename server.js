@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'duo-stock-check-0930';
+const BUILD_ID = 'ticked-both-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -499,6 +499,9 @@ async function initDb() {
       qty INTEGER NOT NULL DEFAULT 0,
       updated_at TIMESTAMPTZ DEFAULT now()
     );
+    -- Ticked on Prepped & Ready to go into the next shipment (with Pending
+    -- Prep's ticked jobs). Only a tick: no stock moves.
+    ALTER TABLE inv_prepped ADD COLUMN IF NOT EXISTS in_plan BOOLEAN DEFAULT false;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
@@ -7711,7 +7714,7 @@ async function componentCommitted(componentAsin) {
 // Current prepped list — items shown AS SCANNED (duos as duos, singles as singles)
 app.get('/api/prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pr.asin, p.name, p.sku, p.fnsku, p.image, p.upc, pr.qty AS prepped, s.onhand
+    `SELECT pr.asin, p.name, p.sku, p.fnsku, p.image, p.upc, pr.qty AS prepped, s.onhand, COALESCE(pr.in_plan,false) AS in_plan
      FROM inv_prepped pr JOIN inv_products p ON p.asin=pr.asin LEFT JOIN inv_stock s ON s.asin=pr.asin
      WHERE pr.qty > 0 ORDER BY p.name`);
   // mark which are bundles
@@ -7722,6 +7725,14 @@ app.get('/api/prep/list', auth, async (req, res) => {
   }
   const totalPrepped = rows.rows.reduce((sum,x)=>sum+x.prepped,0);
   res.json({ items: out, totalPrepped });
+});
+
+// Tick / untick Prepped & Ready lines for the next shipment (Select all too).
+app.post('/api/prep/in-plan', auth, async (req, res) => {
+  const asins = (Array.isArray(req.body && req.body.asins) ? req.body.asins : []).map(x => String(x || '').trim()).filter(Boolean).slice(0, 2000);
+  if (!asins.length) return res.status(400).json({ ok: false, error: 'Nothing to tick.' });
+  const r = await pool.query('UPDATE inv_prepped SET in_plan=$2 WHERE asin = ANY($1)', [asins, !!req.body.inPlan]);
+  res.json({ ok: true, changed: r.rowCount });
 });
 
 // Adjust/remove a prepped line (corrections)
