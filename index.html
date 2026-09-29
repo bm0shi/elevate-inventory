@@ -1078,10 +1078,25 @@ function nsRender(){
           +prodTd('<input type="number" min="1" value="'+(r.qty||'')+'" oninput="_ns.items['+i+'].qty=this.value;nsTotals()" style="width:100px;text-align:center;font-size:17px;font-weight:800;padding:6px">')
           +prodTd('<input placeholder="MM/DD/YYYY" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value;this.style.borderColor=this.value?\'\':\'#c0392b\'" style="width:110px;text-align:center;padding:6px;'+(r.needsExp&&!r.exp?'border:2px solid #c0392b':'')+'">'+(r.needsExp?'<div class="hint" style="font-size:11px;color:#c0392b;font-weight:800">Amazon requires it</div>':''))
           +prodTd('<button onclick="_ns.items.splice('+i+',1);nsRender()" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>').join('')
-      +'</table><div id="nsTot" style="margin-top:10px;font-size:16px;font-weight:800"></div>';
+      +'</table><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><div id="nsTot" style="font-size:16px;font-weight:800"></div>'
+      +'<button class="action" onclick="nsFillExp()" style="background:#b45309;font-size:14px;padding:10px 14px" title="Fills every BLANK expiration with a random date 30–36 months from today (a different one per line). Dates already typed stay. Use a printed date instead when a bottle has one that is sooner.">🗓️ Fill blank expirations (30–36 months out)</button></div>';
   }
   h+='<button class="action" id="nsGo" onclick="nsCreate()" style="width:100%;margin-top:14px;font-size:19px;padding:15px;background:#127a7a"'+(rows.length?'':' disabled')+'>Create plan with Amazon &amp; get destinations →</button></div>';
   el.innerHTML=h; nsTotals();
+}
+// Blank expirations → a random date 30–36 months from today, different per
+// line (the owner's ask: typing them was the slow part). Only blanks are
+// filled; a printed date that's sooner should be typed instead, since Amazon
+// ships and removes by this date.
+function nsFillExp(){
+  _ns.name=(document.getElementById('nsName')||{}).value||_ns.name;
+  const blank=_ns.items.filter(r=>!String(r.exp||'').trim());
+  if(!blank.length){ toast('Every line already has an expiration'); return; }
+  const pad=n=>String(n).padStart(2,'0'), now=new Date();
+  const lo=new Date(now.getFullYear(), now.getMonth()+30, now.getDate()), hi=new Date(now.getFullYear(), now.getMonth()+36, now.getDate());
+  blank.forEach(r=>{ const d=new Date(lo.getTime()+Math.random()*(hi.getTime()-lo.getTime())); r.exp=pad(d.getMonth()+1)+'/'+pad(d.getDate())+'/'+d.getFullYear(); });
+  toast('Filled '+blank.length+' expiration'+(blank.length===1?'':'s')+' (30–36 months out)');
+  nsRender();
 }
 function nsTotals(){
   const t=document.getElementById('nsTot'); if(!t) return;
