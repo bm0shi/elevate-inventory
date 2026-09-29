@@ -3887,11 +3887,11 @@ function requestPrep(asin, canDuo){
         </label>
         ${duoList.length ? duoList.map((o,i)=>`
         <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:9px 11px;border:2px solid #fdeceb;background:#fffafa;border-radius:8px;cursor:pointer;margin-bottom:8px">
-          <input type="radio" name="prepMode" class="prepModeDuo" value="${esc(o.asin)}" style="width:18px;height:18px;flex:none">
+          <input type="radio" name="prepMode" class="prepModeDuo" value="${esc(o.asin)}" data-can="${o.canBuild}" data-name="${esc(String(o.name).slice(0,60))}" style="width:18px;height:18px;flex:none">
           ${o.image?`<img src="${esc(o.image)}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid #f3d9d6;flex:none">`:''}
           <span style="font-size:12.5px;line-height:1.3"><b style="color:#c0392b">DUO</b> <b>${esc(String(o.name).slice(0,70))}</b><br>
             <span style="font-family:monospace;color:#2563a8">${esc(o.asin)}</span>${o.fnsku?` · <span style="font-family:monospace">${esc(o.fnsku)}</span>`:''}<br>
-            <span style="color:#5a6472">with ${o.partners.map(pt=>esc(pt.asin)+' (<b style="color:'+(pt.onhand>0?'#1e8449':'#c0392b')+'">'+pt.onhand+'</b> on hand)').join(', ')} · <b style="color:${o.canBuild>0?'#7a4fb5':'#c0392b'}">can build ${o.canBuild}</b></span></span>
+            <span style="color:#5a6472">with ${o.partners.map(pt=>esc(pt.asin)+' (<b style="color:'+(pt.onhand>0?'#1e8449':'#c0392b')+'">'+pt.onhand+'</b> on hand)').join(', ')} · <b style="color:${o.canBuild>0?'#7a4fb5':'#c0392b'}">${o.canBuild>0?'can build '+o.canBuild:'⛔ can\'t build any: a bottle is short'}</b></span></span>
         </label>`).join('') : `
         <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:11px;border:2px solid #fdeceb;background:#fffafa;border-radius:8px;cursor:pointer">
           <input type="radio" name="prepMode" class="prepModeDuo" value="" style="width:18px;height:18px">
@@ -3913,9 +3913,16 @@ function submitPrepRequest(asin){
   // Which duo was picked (each duo is its own choice); none = singles.
   const duoEl=document.querySelector('#prepModal .prepModeDuo:checked');
   const isDuo = !!duoEl, duoAsin = duoEl && duoEl.value ? duoEl.value : undefined;
+  // Hard stop: a duo can't be queued past the bottles on hand (the server
+  // checks too, this just says so before the window closes).
+  if(duoEl && duoEl.dataset.can!=null && qty>Number(duoEl.dataset.can)){
+    const can=Number(duoEl.dataset.can);
+    alert('⛔ NOT ENOUGH STOCK\n\n'+qty+' × '+(duoEl.dataset.name||'this duo')+'\n\nOne of its bottles is short: you can build '+can+' at most right now.'+(can>0?'\n\nLower the quantity to '+can+' or less.':''));
+    return;
+  }
   closePrepModal();
   api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo,duoAsin})}).then(d=>{
-    if(d.error){ toast(d.error,true); return; }
+    if(!d || d.ok===false || d.error){ if(d&&d.notEnough) alert('⛔ NOT ENOUGH STOCK\n\n'+d.error); else toast((d&&d.error)||'Could not add',true); loadProducts(); return; }
     const dn=d.isDuo?(((products||[]).find(x=>x.asin===d.asin)||{}).name||d.asin):'';
     toast('Added to Pending Prep: '+qty+(d.isDuo?' duos — '+String(dn).slice(0,40):' units'));
     loadProducts();
@@ -5615,7 +5622,10 @@ function localStorage_set(k,v){ try { window.localStorage.setItem(k,v); } catch(
 function editPendingPrep(id, current){
   const v=prompt('Set quantity to prep (0 to remove):', current);
   if(v===null)return;
-  api('/api/pending-prep/set',{method:'POST',body:JSON.stringify({id,qty:parseInt(v)||0})}).then(()=>{ loadPendingPrep(); loadProducts(); });
+  api('/api/pending-prep/set',{method:'POST',body:JSON.stringify({id,qty:parseInt(v)||0})}).then(d=>{
+    if(d && d.ok===false){ if(d.notEnough) alert('⛔ NOT ENOUGH STOCK\n\n'+d.error); else toast(d.error||'Could not save',true); }
+    loadPendingPrep(); loadProducts();
+  }).catch(e=>toast('Could not save: '+e.message,true));
 }
 
 // ==================== PREPPED & READY ====================

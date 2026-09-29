@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'onhand-missing-0929';
+const BUILD_ID = 'duo-stock-check-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7054,10 +7054,44 @@ app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
 // ============================================================
 
 // Create a prep request
+// Duos can't be queued past the bottles we have (owner's ask: the app let a
+// duo work order through with a component short). Free stock of a bottle =
+// on hand − prepped (singles, and bottles inside prepped duos) − other
+// pending work orders (singles, and bottles inside pending duos). Returns the
+// short bottles, empty when there's enough. exceptJob leaves out the work
+// order being edited. Callers hold advisory locks on the bottles.
+async function duoShortfall(db, duoAsin, duos, exceptJob) {
+  const comps = await db.query(
+    `SELECT b.component_asin AS asin, COALESCE(b.qty,1) AS per, p.name, COALESCE(s.onhand,0) AS onhand
+     FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin LEFT JOIN inv_stock s ON s.asin=b.component_asin
+     WHERE b.bundle_asin=$1 ORDER BY b.component_asin`, [duoAsin]);
+  const short = [];
+  for (const c of comps.rows) {
+    const r = await db.query(
+      `SELECT
+         COALESCE((SELECT qty FROM inv_prepped WHERE asin=$1),0)
+         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=$1),0)
+         + COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=$1 AND is_duo=false AND id<>$2),0)
+         + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=$1 AND pp.is_duo=true AND pp.id<>$2),0)
+         AS used`, [c.asin, exceptJob || 0]);
+    const free = Math.max(0, c.onhand - Number(r.rows[0].used));
+    const need = duos * c.per;
+    if (need > free) short.push({ asin: c.asin, name: c.name, free, need, canBuild: Math.floor(free / c.per) });
+  }
+  return short;
+}
+const duoShortMsg = (duos, short) => `Not enough bottles to build ${duos} duos. `
+  + short.map(x => `${String(x.name || x.asin).slice(0, 50)}: ${x.free} free, needs ${x.need}`).join(' · ')
+  + `. You can build ${Math.max(0, Math.min(...short.map(x => x.canBuild)))} at most right now.`;
+async function lockDuoBottles(db, duoAsin) {
+  const c = await db.query('SELECT component_asin FROM inv_bundles WHERE bundle_asin=$1 ORDER BY component_asin', [duoAsin]);
+  for (const r of c.rows) await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bottle:' + r.component_asin]);
+}
+
 app.post('/api/pending-prep/add', auth, async (req, res) => {
   const { asin, qty, isDuo, duoAsin } = req.body;
   const q = parseInt(qty);
-  if (!asin || !q || q < 1) return res.status(400).json({ error: 'asin + qty required' });
+  if (!asin || !q || badQty(q)) return res.status(400).json({ ok: false, error: `asin + qty (1–${MAX_QTY}) required` });
 
   // If marked as duo, the asin passed is either the duo itself or a bottle in
   // it. A bottle can be in several duos (Tea Tree Special Shampoo is in the
@@ -7088,15 +7122,22 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
   // merge with an existing open request for the same item. The lock stops two
   // taps landing together from both missing the existing row and inserting a
   // duplicate work order.
-  await withTx(async (c) => {
+  const short = await withTx(async (c) => {
     await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['pending-prep:' + requestAsin]);
+    if (duoFlag) {
+      await lockDuoBottles(c, requestAsin);
+      const sh = await duoShortfall(c, requestAsin, q, 0);
+      if (sh.length) return sh;
+    }
     const ex = await c.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 ORDER BY id LIMIT 1', [requestAsin, duoFlag]);
     if (ex.rows.length) {
       await c.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
     } else {
       await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
     }
+    return null;
   });
+  if (short) return res.status(400).json({ ok: false, error: duoShortMsg(q, short), short, notEnough: true });
   res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag });
 });
 
@@ -7377,8 +7418,21 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
 app.post('/api/pending-prep/set', auth, async (req, res) => {
   const { id, qty } = req.body;
   const q = parseInt(qty) || 0;
-  if (q <= 0) await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]);
-  else await pool.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [q, id]);
+  if (q <= 0) { await pool.query('DELETE FROM inv_pending_prep WHERE id=$1', [id]); return res.json({ ok: true }); }
+  if (badQty(q)) return res.status(400).json({ ok: false, error: `Quantity must be 1–${MAX_QTY}` });
+  // Raising a duo work order is checked against the bottles like adding one.
+  const short = await withTx(async (db) => {
+    const j = await db.query('SELECT asin, qty, is_duo FROM inv_pending_prep WHERE id=$1', [id]);
+    const job = j.rows[0];
+    if (job && job.is_duo && q > job.qty) {
+      await lockDuoBottles(db, job.asin);
+      const sh = await duoShortfall(db, job.asin, q, id);
+      if (sh.length) return sh;
+    }
+    await db.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [q, id]);
+    return null;
+  });
+  if (short) return res.status(400).json({ ok: false, error: duoShortMsg(q, short), short, notEnough: true });
   res.json({ ok: true });
 });
 

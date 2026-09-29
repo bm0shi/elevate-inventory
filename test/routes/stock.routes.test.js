@@ -186,6 +186,30 @@ test('On Hand fix count: missing units come off once, are logged, can be undone,
   assert.strictEqual((await stock('TSTA')).onhand, before);
 });
 
+test('a duo work order is refused past the bottles on hand (adding or raising it)', { skip }, async () => {
+  await post('/api/receive', { asin: 'TSTA', qty: 200 }); await post('/api/receive', { asin: 'TSTB', qty: 200 });
+  const huge = await post('/api/pending-prep/add', { asin: 'TSTDUO', qty: 5000, isDuo: true });
+  assert.strictEqual(huge.status, 400);
+  assert.ok(huge.body.notEnough && huge.body.short.length, JSON.stringify(huge.body));
+  const can = Math.min(...huge.body.short.map(x => x.canBuild));
+  assert.ok(can > 0, 'expected some duos buildable after receiving');
+  const before = await pending('TSTDUO');
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTDUO', qty: can + 1, isDuo: true })).status, 400);
+  assert.strictEqual(await pending('TSTDUO'), before);
+  // Asked from a bottle's card, same rule.
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTA', qty: can + 1, isDuo: true, duoAsin: 'TSTDUO' })).status, 400);
+  const ok = await post('/api/pending-prep/add', { asin: 'TSTDUO', qty: can, isDuo: true });
+  assert.strictEqual(ok.status, 200, JSON.stringify(ok.body));
+  assert.strictEqual(await pending('TSTDUO'), before + can);
+  // Nothing left: one more is refused, and so is raising the work order.
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTDUO', qty: 1, isDuo: true })).status, 400);
+  const job = await one('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=true ORDER BY id LIMIT 1', ['TSTDUO']);
+  assert.strictEqual((await post('/api/pending-prep/set', { id: job.id, qty: job.qty + 1 })).status, 400);
+  assert.strictEqual((await post('/api/pending-prep/set', { id: job.id, qty: job.qty - 1 })).status, 200);   // lowering is fine
+  // Leave the stock free for the tests after this one.
+  await post('/api/pending-prep/set', { id: job.id, qty: 0 });
+});
+
 // No Amazon keys in tests, so the destination is entered by hand, as the
 // floor would when Amazon's lookup can't give the street address.
 async function confirmDest(SID) {
