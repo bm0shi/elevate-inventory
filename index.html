@@ -1002,6 +1002,8 @@ let _prod=null;
 const f1=v=>v==null?'':(Math.round(v*10)/10).toLocaleString();
 function prodSid(){ return _prod&&_prod.v&&_prod.v.shipment.shipment_id; }
 function prodOpen(){
+  // Sent here from a job on Pending Prep: that shipment, with the product picked.
+  if(window._prodGoto){ const g=window._prodGoto; window._prodGoto=null; return prodLoad(g.sid).then(()=>{ if(prodSid()===g.sid) prodPick(g.asin); }); }
   if(prodSid()) return prodLoad(prodSid());
   const el=document.getElementById('prodArea');
   api('/api/pack/list').then(d=>{ prodHome(d); return api('/api/pack/list/refresh',{method:'POST',body:'{}'}); })
@@ -3908,6 +3910,22 @@ function submitPrepRequest(asin){
     loadProducts();
   });
 }
+// On a job being prepped: jump to Shipment Production with this product
+// picked, in each open shipment that includes it (the floor preps, prints the
+// FNSKU labels, then builds the boxes without hunting for the shipment).
+function ppBuildLinks(asin){
+  const L=((window._pendingPrepData||{}).openShipments||{})[asin]||[];
+  return L.map(s=>{ const done=s.planned&&s.built>=s.planned;
+    return '<button onclick="prepGoBuild(\''+esc(s.shipmentId)+'\',\''+esc(asin)+'\')" title="Open '+esc(s.name||s.shipmentId)+' in Shipment Production with this product ready to box" '
+      +'style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;padding:8px 16px;font-size:13.5px;font-weight:900;background:linear-gradient(180deg,#ffc05a,#ff9900);color:#0f1111;border:none;border-radius:999px;cursor:pointer;white-space:nowrap;box-shadow:0 3px 10px rgba(240,136,4,0.35)">'
+      +'🖨️ Build Box Labels 📦 <span style="font-family:monospace;font-weight:800">'+esc(s.shipmentId)+'</span>'+(s.fc?' <span style="font-weight:700">· '+esc(s.fc)+'</span>':'')
+      +' <span style="background:rgba(255,255,255,0.7);padding:2px 8px;border-radius:999px;font-size:12px">'+(done?'✓ ':'')+s.built+' / '+s.planned+' built</span></button>'; }).join('');
+}
+function prepGoBuild(sid, asin){
+  window._prodGoto={sid, asin};
+  const t=[...document.querySelectorAll('.tab')].find(x=>(x.getAttribute('onclick')||'').includes("'prod'"));
+  if(t) t.click(); else prodOpen();
+}
 function loadPendingPrep(){
   api('/api/pending-prep/list').then(d=>{
     window._pendingPrepData=d;
@@ -5293,6 +5311,7 @@ function renderPendingPrep(){
            </div>
            <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">${crewChips}
              <button onclick="addPrepper(${x.id})" style="padding:7px 13px;font-size:12.5px;font-weight:800;background:rgba(255,255,255,0.22);color:#fff;border:1.5px dashed rgba(255,255,255,0.6);border-radius:16px;cursor:pointer;white-space:nowrap">+ Add prepper</button>
+             ${ppBuildLinks(x.asin)}
            </div>
            <div style="color:#d4f5e2;font-size:12.5px;margin-top:9px;display:flex;gap:16px;flex-wrap:wrap">
              <span>⏱ Started ${x.claimed_at ? new Date(x.claimed_at).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'}) : '—'}</span>
