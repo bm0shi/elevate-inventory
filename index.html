@@ -975,10 +975,10 @@ function prodHome(d){
   const ago=t=>{ if(!t) return 'not yet'; const m=Math.round((Date.now()-new Date(t))/60000); return m<1?'just now':m<60?m+' min ago':Math.round(m/60)+' h ago'; };
   const step=(n,t)=>'<div style="display:flex;align-items:center;gap:8px"><span style="width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,0.18);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:13px">'+n+'</span><span style="font-size:13px;font-weight:700">'+t+'</span></div>';
   let h='<div id="prodHome"><div style="border-radius:16px;overflow:hidden;box-shadow:0 2px 10px rgba(15,27,45,0.10);margin-bottom:18px">'
-    +'<div style="background:linear-gradient(120deg,#0f1b2d 0%,#16395a 60%,#127a7a 100%);color:#fff;padding:26px 28px">'
-      +'<div style="font-size:28px;font-weight:900;letter-spacing:0.3px">🏷️ 2D Production</div>'
-      +'<div style="margin-top:6px;font-size:14px;opacity:0.85">Build boxes, print Amazon 2D box labels and track every pallet, from Send to Amazon to checked in.</div>'
-      +'<div style="display:flex;gap:22px;flex-wrap:wrap;margin-top:16px;opacity:0.95">'+step(1,'Create the shipment in Send to Amazon')+step(2,'Load it here')+step(3,'Build boxes & print labels')+step(4,'Finish')+'</div></div>'
+    +'<div style="background:linear-gradient(120deg,#0f1b2d 0%,#16395a 60%,#127a7a 100%);color:#fff;padding:26px 28px;text-align:center">'
+      +'<div style="font-size:28px;font-weight:900;letter-spacing:0.3px">🏷️ Shipment Production 📦</div>'
+      +'<div style="margin-top:6px;font-size:14px;opacity:0.85">Build boxes, print Amazon 2D box labels and track every pallet, from creating the shipment to checked in.</div>'
+      +'<div style="display:flex;gap:22px;flex-wrap:wrap;justify-content:center;margin-top:16px;opacity:0.95">'+step(1,'Create the shipment (New shipment or Send to Amazon)')+step(2,'Load it here')+step(3,'Build boxes & print labels')+step(4,'Finish')+'</div></div>'
     +'<div style="background:#fff;padding:20px 28px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">'
       +'<div style="flex:1;min-width:260px"><div style="font-size:12px;font-weight:900;letter-spacing:0.4px;color:#5a6472;margin-bottom:6px">SHIPMENT ID</div>'
       +'<input id="prodSidIn" placeholder="FBA19R87QYJJ" autocomplete="off" style="width:100%;box-sizing:border-box;text-transform:uppercase;font-size:22px;font-weight:800;letter-spacing:1px;padding:12px 16px;border:2px solid #cfd8e3;border-radius:10px;font-family:monospace" onkeydown="if(event.key===\'Enter\')prodStart()"></div>'
