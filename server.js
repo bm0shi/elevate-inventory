@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'shipment-production-tab-0929';
+const BUILD_ID = 'sku-check-quieter-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7414,7 +7414,14 @@ async function skuCheck() {
   for (const p of prods) {
     const list = (amz[p.asin] || []).sort((a, b) => b.total - a.total);
     const appListed = !p.sku || list.some(x => x.sku === p.sku);
-    if (list.length > 1 || (p.sku && list.length && !appListed)) rows.push({ asin: p.asin, name: p.name, appSku: p.sku || null, appListed, amazon: list });
+    // Amazon keeps closed/archived SKUs in its FBA records (they don't show in
+    // Seller Central's active inventory search), so 2+ SKUs is often harmless.
+    // 'risky' = the app's SKU isn't listed, or another SKU holds more stock
+    // than it (a sign the app has the old one). Only risky rows warn on New shipment.
+    const stock = (x) => (x ? x.fulfillable + x.inbound : 0);
+    const mine = list.find(x => x.sku === p.sku);
+    const risky = !!p.sku && list.length > 0 && (!appListed || list.some(x => x.sku !== p.sku && stock(x) > stock(mine)));
+    if (list.length > 1 || (p.sku && list.length && !appListed)) rows.push({ asin: p.asin, name: p.name, appSku: p.sku || null, appListed, risky, amazon: list });
   }
   return { at: c && c.updated_at, skus: Object.keys(bySku).length, rows };
 }
