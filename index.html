@@ -1081,7 +1081,7 @@ function nsRender(){
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
     h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
-      +rows.map((r,i)=>'<tr>'+prodTd('<b>'+esc(String(r.name||r.asin).slice(0,70))+'</b><div class="hint" style="font-family:monospace">'+esc(r.fnsku||'')+' · '+esc(r.sku||'no SKU')+'</div>','left')
+      +rows.map((r,i)=>'<tr>'+prodTd('<b>'+esc(String(r.name||r.asin).slice(0,70))+'</b><div class="hint" style="font-family:monospace">'+esc(r.fnsku||'')+' · '+(r.sku?esc(r.sku):'<a href="#" onclick="setSku(\''+esc(r.asin)+'\',sku=>{ _ns.items['+i+'].sku=sku; nsRender(); });return false" style="color:#c0392b;font-weight:800" title="Amazon\'s inventory doesn\'t list a SKU for it — tap to type it (the app also looks it up when you create the plan)">no SKU — tap to add</a>')+'</div>','left')
           +prodTd('<input type="number" min="1" value="'+(r.qty||'')+'" oninput="_ns.items['+i+'].qty=this.value;nsTotals()" style="width:100px;text-align:center;font-size:17px;font-weight:800;padding:6px">')
           +prodTd('<input placeholder="MM/DD/YYYY" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value;this.style.borderColor=this.value?\'\':\'#c0392b\'" style="width:110px;text-align:center;padding:6px;'+(r.needsExp&&!r.exp?'border:2px solid #c0392b':'')+'">'+(r.needsExp?'<div class="hint" style="font-size:11px;color:#c0392b;font-weight:800">Amazon requires it</div>':''))
           +prodTd('<button onclick="_ns.items.splice('+i+',1);nsRender()" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px;font-weight:900">✕</button>')+'</tr>').join('')
@@ -8428,7 +8428,7 @@ function bigOhCard(p, v){
     +'<div style="flex:1;min-width:240px">'
       +'<div style="font-weight:800;font-size:16px;line-height:1.3"><a href="https://www.amazon.com/dp/'+esc(p.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(p.name)+'</a>'+(p.is_bundle?' <span style="background:#c0392b;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:800;vertical-align:middle">DUO</span>':'')+'</div>'
       +loc
-      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px">'+box('ASIN',p.asin)+box('SKU',p.sku)+box('FNSKU',p.fnsku,p.asin)+'</div>'
+      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-top:10px">'+box('ASIN',p.asin)+(p.sku?box('SKU',p.sku):'<div onclick="setSku(\''+esc(p.asin)+'\')" title="Tap to add" style="cursor:pointer;background:#fdeceb;border:1.5px dashed #c0392b;border-radius:8px;padding:6px 10px"><div style="font-size:10px;font-weight:800;letter-spacing:0.6px;color:#c0392b">SKU</div><div style="font-size:13px;font-weight:800;color:#c0392b">not on file — tap to add</div></div>')+box('FNSKU',p.fnsku,p.asin)+'</div>'
     +'</div></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">'
       +big(v.available,'AVAILABLE',v.available>0?'#1e8449':'#c0392b','On hand minus work orders and prepped')
@@ -8572,6 +8572,16 @@ function duoAmazonLine(p){
 // Add a missing duo FNSKU by typing it or scanning the Amazon label (a
 // scanner types into the box and presses Enter). "Sync with Amazon" fills
 // most of these automatically; this is for the rest.
+function setSku(asin, then){
+  const p=(products||[]).find(x=>x.asin===asin)||{};
+  const v=prompt('Seller SKU for:\n'+String(p.name||asin).slice(0,70)+'\n\nCopy it from Seller Central → Manage inventory (the SKU column), exactly as written:');
+  if(v===null) return;
+  const sku=v.trim(); if(!sku){ toast('No SKU typed',true); return; }
+  api('/api/products/set-sku',{method:'POST',body:JSON.stringify({asin,sku})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast('NOT saved: '+((d&&(d.error||d.message))||'error'),true); return; }
+    toast('SKU '+sku+' saved'); p.sku=sku; if(then) then(sku); loadProducts();
+  }).catch(()=>toast('NOT saved — connection problem',true));
+}
 function setDuoFnsku(asin){
   const p=(products||[]).find(x=>x.asin===asin)||{};
   const v=prompt('FNSKU for:\n'+String(p.name||asin).slice(0,70)+'\n\nScan the Amazon label or type it (usually starts with X00, 10 characters):');
