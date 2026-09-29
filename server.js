@@ -409,7 +409,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ns-fill-exp-0929';
+const BUILD_ID = 'sku-check-0929';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7399,6 +7399,37 @@ app.get('/api/fnsku-lookup/:fnsku', auth, async (req, res) => {
 // Type a seller SKU for a product that has none (when Amazon's inventory
 // doesn't list it yet). Only fills a blank; a SKU already used by another
 // product is refused.
+// SKU check: one ASIN can carry several seller SKUs at Amazon (an old SKU
+// and its replacement). The app keeps one SKU per ASIN and New shipment
+// ships under it, so an old SKU there would put units on the wrong listing.
+// From the last FBA sync (fba_by_sku): ASINs with 2+ Amazon SKUs, and ASINs
+// whose app SKU Amazon doesn't list at all.
+async function skuCheck() {
+  const c = (await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='fba_by_sku'")).rows[0];
+  const bySku = (c && c.data && c.data.bySku) || {};
+  const amz = {};
+  for (const [sku, f] of Object.entries(bySku)) if (f && f.asin) (amz[f.asin] = amz[f.asin] || []).push({ sku, fulfillable: f.fulfillable || 0, inbound: f.inbound || 0, total: f.total || 0 });
+  const prods = (await pool.query('SELECT asin, name, sku FROM inv_products')).rows;
+  const rows = [];
+  for (const p of prods) {
+    const list = (amz[p.asin] || []).sort((a, b) => b.total - a.total);
+    const appListed = !p.sku || list.some(x => x.sku === p.sku);
+    if (list.length > 1 || (p.sku && list.length && !appListed)) rows.push({ asin: p.asin, name: p.name, appSku: p.sku || null, appListed, amazon: list });
+  }
+  return { at: c && c.updated_at, skus: Object.keys(bySku).length, rows };
+}
+app.get('/api/sku-check', auth, async (req, res) => { res.json({ ok: true, ...(await skuCheck()) }); });
+// Switch a product to another of the SKUs Amazon lists under the same ASIN.
+app.post('/api/products/use-sku', auth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim().toUpperCase(), sku = String((req.body && req.body.sku) || '').trim();
+  const c = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_by_sku'")).rows[0];
+  const f = c && c.data && c.data.bySku && c.data.bySku[sku];
+  if (!f || f.asin !== asin) return res.status(400).json({ ok: false, error: `Amazon doesn't list SKU ${sku} under ${asin}. Nothing changed.` });
+  const other = (await pool.query('SELECT asin, name FROM inv_products WHERE sku=$1 AND asin<>$2', [sku, asin])).rows[0];
+  if (other) return res.status(409).json({ ok: false, error: `SKU ${sku} already belongs to ${other.name || other.asin}.` });
+  const r = await pool.query('UPDATE inv_products SET sku=$2 WHERE asin=$1', [asin, sku]);
+  res.json({ ok: r.rowCount > 0 });
+});
 app.post('/api/products/set-sku', auth, async (req, res) => {
   const asin = String((req.body && req.body.asin) || '').trim().toUpperCase(), sku = String((req.body && req.body.sku) || '').trim().slice(0, 40);
   if (!/^[A-Z0-9]{10}$/.test(asin) || !sku) return res.status(400).json({ ok: false, error: 'ASIN and SKU are needed.' });
