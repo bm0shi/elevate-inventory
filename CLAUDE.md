@@ -63,6 +63,7 @@ and shown in the UI so you can confirm the deploy is live.
 - `ownerAuth` middleware: checks the `x-owner-password` header. It does **not** honor `AUTH_DISABLED` and does **not** accept the app password. Staff must never see velocity, margin, cost, inventory value, settlements, or the P&L.
 - Any new route that exposes money, cost, velocity, or value data must use `ownerAuth`. Hiding a screen in `index.html` is not protection.
 - Owner-approved exception: New shipment (`/api/inbound/*`) uses `auth`, including confirming a destination and booking freight (the owner found the owner password unnecessary there). The charge step shows the amount in a confirm pop-up and the server re-checks it against the quote.
+- Owner-approved exception: setting FBA capacity room left (`/api/capacity/limit`, cubic feet only) uses `auth`.
 - Owner-approved exceptions (for now, three trusted staff): `/api/ss-avg` (other sellers' average sales) and `/api/demand` (the best-estimate monthly sales per listing, for days covered on Pending Prep and On Hand) use `auth`. Revisit when per-person PINs or a separate staff link are added.
 - Passwords are compared with `safeEq` (timing-safe), and login routes are rate limited (`loginLimiter`).
 

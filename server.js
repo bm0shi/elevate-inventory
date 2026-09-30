@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'capacity-room-0930';
+const BUILD_ID = 'capacity-nopw-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6577,7 +6577,8 @@ async function capacityNow() {
 app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow()); });
 // Owner sets the month's limits (from Seller Central → Capacity Monitor), and
 // optionally what Seller Central says is used right now, to calibrate.
-app.post('/api/capacity/limit', ownerAuth, async (req, res) => {
+// Warehouse login is enough (owner's choice): it's cubic feet, no money.
+app.post('/api/capacity/limit', auth, async (req, res) => {
   const b = req.body || {};
   const num = (v) => v === '' || v == null ? null : Number(v);
   let standard = num(b.standard), hazmat = num(b.hazmat);
