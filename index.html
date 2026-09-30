@@ -4027,7 +4027,6 @@ function capLimitModal(){
   m.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%"><b style="font-size:16px">FBA capacity</b>'
     +'<div class="hint" style="margin-top:4px">Seller Central → Inventory → FBA dashboard → Capacity Monitor. Type the <b>Maximum shipment</b> number (cubic feet) — the room you have left to send. Update it when you check Seller Central.</div>'
     +inp('capStd','Standard — Maximum shipment (cu ft)',L.standardRoom)+inp('capHaz','Dangerous goods — Maximum shipment (cu ft)',L.hazmatRoom,'(optional)')
-    +(OWNER_PW?'':'<label style="display:block;margin-top:10px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">Owner password<input id="capPw" type="password" style="width:100%;padding:10px;font-size:15px;border:2px solid #e2e8f0;border-radius:8px;margin-top:4px"></label>')
     +'<div style="display:flex;gap:8px;margin-top:16px"><button onclick="document.getElementById(\'capModal\').remove()" style="flex:1;padding:11px;font-weight:700;background:#e2e8f0;border:none;border-radius:8px;cursor:pointer">Cancel</button>'
     +'<button onclick="capSaveLimit()" style="flex:2;padding:11px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">Save</button></div></div>';
   m.onclick=e=>{ if(e.target===m) m.remove(); };
@@ -4035,14 +4034,11 @@ function capLimitModal(){
 }
 function capSaveLimit(){
   const v=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
-  const pwEl=document.getElementById('capPw'), had=OWNER_PW;
-  if(!OWNER_PW && pwEl) OWNER_PW=pwEl.value;
-  ownerApi('/api/capacity/limit',{method:'POST',body:JSON.stringify({standardRoom:v('capStd')||null, hazmatRoom:v('capHaz')||null})}).then(d=>{
-    if(!had) OWNER_PW='';
+  api('/api/capacity/limit',{method:'POST',body:JSON.stringify({standardRoom:v('capStd')||null, hazmatRoom:v('capHaz')||null})}).then(d=>{
     if(!d||d.ok===false||d.error){ toast('NOT saved: '+((d&&d.error)||'error'),true); return; }
     _cap=d; renderCapBar(); if(ppList()) renderPendingPrep();
     const m=document.getElementById('capModal'); if(m) m.remove(); toast('Saved');
-  }).catch(e=>{ if(!had) OWNER_PW=''; toast('NOT saved: '+e.message,true); });
+  }).catch(e=>toast('NOT saved: '+e.message,true));
 }
 // ---- SHIPMENT BUILDER ----
 // Turns the Restock Plan's suggested send quantities into a draft shipment:
