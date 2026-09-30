@@ -44,3 +44,15 @@ test('measured share = our monthly ÷ listing monthly, capped at 100%', () => {
   assert.strictEqual(measuredShare(0, 1000), null);
   assert.strictEqual(measuredShare(10, null), null);
 });
+
+test('Products to Add: 75% of the other sellers\' average, shrunk for us joining the pie', () => {
+  const { joinRate } = require('../lib/demand');
+  // 3 sellers averaging 300/mo on Amazon's leftovers: we'd make it 4 → 225 each, 75% → 168.75
+  assert.deepStrictEqual(joinRate({ peerAvg: 300, peerN: 3, pie: 900, sellers3P: 3, carried: false }), { units: 168.75, src: 'peers', split: 4 });
+  // Already carried: we're already one of the sellers, no extra split
+  assert.strictEqual(joinRate({ peerAvg: 300, peerN: 3, sellers3P: 4, carried: true }).units, 225);
+  // No seller files: the pie split with us in (1,000 ÷ 5 × 75%)
+  assert.deepStrictEqual(joinRate({ pie: 1000, sellers3P: 4, carried: false }), { units: 150, src: 'pie', split: 5 });
+  // Nothing to go on
+  assert.strictEqual(joinRate({}).src, null);
+});
