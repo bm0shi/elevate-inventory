@@ -187,6 +187,8 @@
   button.action[style*="background:#eef2f6"] { background:#fff !important; color:#0f1111 !important; border:1.5px solid #c7cdcd !important; box-shadow:0 1px 3px rgba(15,17,17,0.08); }
   button.action.danger, button.action[style*="background:#c0392b"], button.action[style*="background:#fdecea"], button.action[style*="background:#fff;color:#c0392b"] { background:linear-gradient(180deg,#e0484e,#b4232a) !important; color:#fff !important; box-shadow:0 3px 10px rgba(180,35,42,0.25); }
   /* The one thing to tap next: Amazon orange with dark text. */
+  /* Amazon's own paperwork (BOL, pallet labels): Amazon's beige button. */
+  .action.amzbeige, button.action.amzbeige { background:linear-gradient(180deg,#f7dfa5,#f0c14b) !important; color:#111 !important; border:1px solid #a88734 !important; box-shadow:0 2px 6px rgba(168,135,52,0.3) !important; font-weight:900; letter-spacing:0.5px; }
   .action.gold, button.action.gold { background:linear-gradient(180deg,#ffc05a 0%,#ff9900 60%,#f08804 100%) !important; color:#0f1111 !important; box-shadow:0 4px 14px rgba(240,136,4,0.35), inset 0 1px 0 rgba(255,255,255,0.45) !important; font-weight:900; }
   .mini { border-radius:999px; font-family:var(--head); border-color:#c7cdcd; padding:6px 13px; }
   .mini:hover { background:#eef8fa; border-color:var(--teal); }
@@ -1416,7 +1418,7 @@ function nsPlan(id){
     }
     if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon</b>'
       +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): '+$$(p.confirmed.placementFee)+'</div>'
-      +(p.confirmed.shipments||[]).map(f=>'<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-family:monospace;font-size:18px">'+esc(f)+'</b>'+openBtn(f)+'<span class="hint">bill of lading &amp; pallet labels are on the shipment</span></div>').join('')+'</div>';
+      +(p.confirmed.shipments||[]).map(f=>'<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-family:monospace;font-size:18px">'+esc(f)+'</b>'+openBtn(f)+'<span style="font-size:16px;font-weight:800;color:#0f1111">📄 Bill of lading &amp; pallet labels are on the shipment</span></div>').join('')+'</div>';
     h+='<div class="box" style="overflow-x:auto"><b>Products</b><table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('SKU','left')+prodTh('UNITS')+prodTh('EXPIRATION')+'</tr>'
       +p.items.map(i=>'<tr>'+prodTd(esc(String(i.name||i.asin).slice(0,80)),'left')+prodTd(esc(i.msku),'left','font-family:monospace')+prodTd('<b>'+i.qty+'</b>')+prodTd(i.exp?expText(i.exp):'—')+'</tr>').join('')+'</table></div>';
     el.innerHTML=h;
@@ -1565,7 +1567,17 @@ function prodRender(){
   // send the box info, get freight quotes, book and print the BOL.
   const planRow=sh.amz&&sh.amz.planRow;
   let next='';
-  if(done&&planRow) next='<div class="box" style="border:3px solid #ff9900;background:#fff8ec;text-align:center;padding:22px">'
+  if(done&&planRow&&v.planStage==='booked') next='<div class="box" style="border:3px solid #1e8449;background:#f0faf4;text-align:center;padding:22px">'
+    +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ FREIGHT BOOKED — LAST STEP</div>'
+    +'<div style="font-size:16px;margin-top:6px">Print the bill of lading and the pallet labels, put the labels on each pallet, and hand the BOL to the driver.</div>'
+    +'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px">'
+    +'<button class="action amzbeige" onclick="prodPaper(\'bol\')" style="font-size:18px;padding:14px 28px">📄 BILL OF LADING</button>'
+    +'<button class="action amzbeige" onclick="prodPaper(\'pallet\')" style="font-size:18px;padding:14px 28px">🏷️ AMAZON PALLET LABELS</button></div></div>';
+  else if(done&&planRow&&v.planStage==='freight') next='<div class="box" style="border:3px solid #ff9900;background:#fff8ec;text-align:center;padding:22px">'
+    +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ BOX INFO SENT — NEXT STEP</div>'
+    +'<div style="font-size:16px;margin-top:6px">Get freight quotes and book the freight on the shipment\'s main page. Nothing is charged until you book.</div>'
+    +'<button class="action gold" onclick="_prod=null;nsPlan('+Number(planRow)+')" style="margin-top:14px;font-size:19px;padding:15px 34px">🚚 Go to freight →</button></div>';
+  else if(done&&planRow) next='<div class="box" style="border:3px solid #ff9900;background:#fff8ec;text-align:center;padding:22px">'
     +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ FLOOR DONE — NEXT STEP</div>'
     +'<div style="font-size:16px;margin-top:6px;line-height:1.5">1. <b>Send the box info to Amazon</b> → 2. <b>Get freight quotes</b> → 3. <b>Book the freight</b> → 4. <b>Print the BOL &amp; pallet labels</b><br><span class="hint">All on the shipment\'s main page. Nothing is charged until you book the freight.</span></div>'
     +'<button class="action gold" onclick="_prod=null;window._nsScrollSend=true;nsPlan('+Number(planRow)+')" style="margin-top:14px;font-size:19px;padding:15px 34px">📦 Go to next step: Send box info →</button></div>';
@@ -1577,8 +1589,8 @@ function prodRender(){
     +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(done?'':'<button class="action" id="prodRefreshBtn" onclick="prodStart(true)" style="padding:6px 12px;font-size:12px;background:#2563a8">↻ Refresh from Amazon</button>')
     +'<button class="action" onclick="prodBigToggle()" style="padding:6px 12px;font-size:12px;background:#0d4450">📺 Big screen</button>'
-    +'<button class="action" onclick="prodPaper(\'pallet\')" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">📄 Amazon pallet labels</button>'
-    +'<button class="action" onclick="prodPaper(\'bol\')" style="padding:6px 12px;font-size:12px;background:#eef2f6;color:#1f2733">📄 Bill of lading</button>'
+    +'<button class="action amzbeige" onclick="prodPaper(\'pallet\')" style="padding:6px 12px;font-size:12px">📄 AMAZON PALLET LABELS</button>'
+    +'<button class="action amzbeige" onclick="prodPaper(\'bol\')" style="padding:6px 12px;font-size:12px">📄 BILL OF LADING</button>'
     +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
