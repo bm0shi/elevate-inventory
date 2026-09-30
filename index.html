@@ -1390,6 +1390,7 @@ function nsPlan(id){
           +'</table><button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].push({weight:500,height:40});nsPlan('+p.id+')" style="margin-top:6px;cursor:pointer;border:1px solid #008296;color:#008296;background:#fff;border-radius:6px;padding:4px 10px;font-weight:800">+ Add pallet</button></div>').join('')
         +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:11px;font-weight:900;color:#5a6472">READY TO SHIP<input id="nsReady" type="date" value="'+ready+'" style="display:block;margin-top:3px;padding:8px;font-size:15px"></label>'
         +'<label style="font-size:14px;font-weight:700;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0"><input id="nsStack" type="checkbox"'+(p.freight&&p.freight.stackable?' checked':'')+' style="width:20px;height:20px"> Pallets can be stacked</label>'
+        +'<span style="font-size:14px;font-weight:700;color:#5f6675;align-self:center">Freight class 85</span>'
         +'<button class="action" onclick="nsQuote('+p.id+')" style="background:#008296;font-size:16px;padding:12px 20px">'+(p.freight?'↻ Get new quotes':'Get freight quotes →')+'</button></div></div>';
     }
     // 6. Freight options + book
