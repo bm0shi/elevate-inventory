@@ -135,6 +135,10 @@ test('2D barcode: box info says Amazon reads the contents off each box\'s label'
   const src = (opt) => ib.shipmentBoxesBody('sh1', [bx], {}, opt).body.packageGroupings[0].boxes[0].contentInformationSource;
   assert.strictEqual(src({ source: '2D' }), 'BARCODE_2D');
   assert.strictEqual(src({}), 'BOX_CONTENT_PROVIDED');
+  // Amazon refuses an item list with BARCODE_2D; it reads the label instead.
+  const box = (opt) => ib.shipmentBoxesBody('sh1', [bx], {}, opt).body.packageGroupings[0].boxes[0];
+  assert.strictEqual(box({ source: '2D' }).items, undefined);
+  assert.strictEqual(box({}).items.length, 1);
 });
 
 test('unique weights: each box is 0.01 lb × its number heavier, so no two identical boxes look the same to Amazon', () => {
