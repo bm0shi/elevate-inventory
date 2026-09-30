@@ -108,9 +108,7 @@ test('pack later: built boxes go to Amazon one by one in box-number order, packa
   assert.deepStrictEqual(r.problems, []);
   const g = r.body.packageGroupings;
   assert.strictEqual(g.length, 1); assert.strictEqual(g[0].shipmentId, 'sh1');
-  assert.deepStrictEqual(g[0].boxes.map(b => [b.items[0].msku, b.quantity]), [['SKU-A', 1], ['SKU-B', 1], ['SKU-A', 1]]);   // not merged: numbering must follow the labels
-  assert.strictEqual(g[0].boxes[0].weight.value, 30 + 1.5 + 0.6);
-  assert.strictEqual(g[0].boxes[0].items[0].expiration, '2029-09-26');
+  assert.deepStrictEqual(g[0].boxes.map(b => [b.weight.value, b.quantity]), [[30 + 1.5 + 0.6, 1], [12 + 1.5 + 0.3, 1], [30 + 1.5 + 0.6, 1]]);
 });
 
 test('pack later: a gap in box numbers or a box with no size stops the send', () => {
@@ -130,41 +128,11 @@ test('pack later: Amazon\'s box numbers checked against the labels', () => {
   assert.deepStrictEqual(ib.checkBoxIds(ours, swapped), { ok: false, wrong: [1, 2], missing: [], extra: [3] });
 });
 
-test('2D barcode: box info says Amazon reads the contents off each box\'s label', () => {
+test('2D barcode: each box goes with its size and weight only; Amazon reads the contents off the label', () => {
   const bx = { box_no: 1, items: [{ msku: 'A', qty: 10 }], weight_lb: 24, len: 12, wid: 12, hgt: 10 };
-  const src = (opt) => ib.shipmentBoxesBody('sh1', [bx], {}, opt).body.packageGroupings[0].boxes[0].contentInformationSource;
-  assert.strictEqual(src({ source: '2D' }), 'BARCODE_2D');
-  assert.strictEqual(src({}), 'BOX_CONTENT_PROVIDED');
-  // Amazon refuses an item list with BARCODE_2D; it reads the label instead.
-  const box = (opt) => ib.shipmentBoxesBody('sh1', [bx], {}, opt).body.packageGroupings[0].boxes[0];
-  assert.strictEqual(box({ source: '2D' }).items, undefined);
-  assert.strictEqual(box({}).items.length, 1);
-});
-
-test('unique weights: each box is 0.01 lb × its number heavier, so no two identical boxes look the same to Amazon', () => {
-  const bx = (n) => ({ box_no: n, items: [{ msku: 'A', qty: 10 }], weight_lb: 24, len: 12, wid: 12, hgt: 10 });
-  const w = (opt) => ib.shipmentBoxesBody('sh1', [bx(1), bx(2), bx(26)].map((b, i) => ({ ...b, box_no: i + 1 })), {}, opt).body.packageGroupings[0].boxes.map(b => b.weight.value);
-  const plain = w({});
-  assert.strictEqual(new Set(plain).size, 1);   // identical boxes, identical weight
-  const u = w({ uniqueWeights: true });
-  assert.deepStrictEqual(u.map((v, i) => Math.round((v - plain[i]) * 100)), [1, 2, 3]);
-});
-
-test('Amazon numbered the boxes differently: only the mismatched boxes get Amazon\'s number for their contents', () => {
-  const b = (n, msku, qty) => ({ box_no: n, items: [{ msku, qty }] });
-  const a = (n, msku, qty) => ({ boxId: 'FBA1U' + String(n).padStart(6, '0'), items: [{ msku, quantity: qty }] });
-  // Ours: 1-3 are A×12, 4 is B×6, 5 is C×10. Amazon put B first and C at 3.
-  const ours = [b(1, 'A', 12), b(2, 'A', 12), b(3, 'A', 12), b(4, 'B', 6), b(5, 'C', 10)];
-  const amz = [a(1, 'B', 6), a(2, 'A', 12), a(3, 'C', 10), a(4, 'A', 12), a(5, 'A', 12)];
-  const m = ib.matchAmazonNumbers(ours, amz);
-  assert.deepStrictEqual(m.unmatched, []);
-  // Box 2 already matches (A at 2) and keeps its label; the rest move.
-  assert.deepStrictEqual(m.moves, [{ from: 1, to: 4 }, { from: 3, to: 5 }, { from: 4, to: 1 }, { from: 5, to: 3 }]);
-  // After the moves every label agrees with Amazon.
-  const renum = ours.map(x => ({ ...x, box_no: (m.moves.find(v => v.from === x.box_no) || {}).to || x.box_no }));
-  assert.strictEqual(ib.checkBoxIds(renum, amz).ok, true);
-  // Contents Amazon doesn't have can't be fixed by relabelling
-  assert.deepStrictEqual(ib.matchAmazonNumbers([b(1, 'Z', 1)], [a(1, 'A', 12)]).unmatched, [1]);
+  const box = ib.shipmentBoxesBody('sh1', [bx], {}).body.packageGroupings[0].boxes[0];
+  assert.strictEqual(box.contentInformationSource, 'BARCODE_2D');
+  assert.strictEqual(box.items, undefined);   // Amazon refuses an item list with BARCODE_2D
 });
 
 test('pack later: the floor\'s pallets become the freight pallets', () => {

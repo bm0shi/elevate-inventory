@@ -1291,7 +1291,6 @@ function nsPlan(id){
   nsOwner().then(ok=>{ if(!ok) return; ownerApi('/api/inbound/plans/'+id).then(d=>{
     if(!d||!d.ok){ toast((d&&d.error)||'Not found',true); return; }
     const p=d.plan, el=document.getElementById('prodArea');
-    window._nsLastPlan=p;
     if(!el||(_prod&&_prod.v)) return;
     const SH=p.shipments||[], sent=SH.length&&SH.every(x=>x.boxesSentAt);
     const floorDone=SH.length&&(sent||SH.every(x=>x.floor&&x.floor.finished));
@@ -1315,7 +1314,7 @@ function nsPlan(id){
     h+='<div class="box"><b style="font-size:16px">Steps</b>'+stepRow(done('plan'),'1. Plan created at Amazon')
       +stepRow(done('place'),'2. Destination confirmed → FBA ID',chosen&&p.placement_confirmed_at?(SH.map(x=>esc(x.fba)+(x.fc?' → '+nsWhere(x):'')).join(' · ')+' · placement fee '+(chosen.fee>0?$$(chosen.fee):'none')):'')
       +stepRow(done('floor'),'3. Boxes built & labelled, Finish pressed in Shipment Production')
-      +stepRow(done('boxes'),'4. Box info sent to Amazon',sent?SH.map(x=>x.boxes+' boxes'+(x.boxCheck&&!x.boxCheck.ok?' · ⚠️ box numbers differ':'')).join(' · '):'')
+      +stepRow(done('boxes'),'4. Box info sent to Amazon',sent?SH.map(x=>x.boxes+' boxes'+(x.boxCheck&&!x.boxCheck.ok?' · ⚠️ box count differs':'')).join(' · '):'')
       +stepRow(done('freight'),'5. Freight quotes from the floor\'s pallets')+stepRow(done('conf'),'6. Freight booked → bill of lading & pallet labels',p.confirmed?esc((p.confirmed.shipments||[]).join(' · ')):'')+'</div>';
     // 2. Pick + confirm a destination
     if(p.placement&&p.placement.length&&!p.placement_confirmed_at&&p.status!=='working'){
@@ -1373,27 +1372,10 @@ function nsPlan(id){
     }
     // Amazon's box numbers vs the labels already on the boxes
     const bad=SH.filter(x=>x.boxCheck&&!x.boxCheck.ok);
-    if(bad.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Amazon numbered some boxes differently from their labels</b>'
-      +bad.map(x=>'<div style="margin-top:6px;font-size:14px"><b>'+esc(x.fba)+'</b>: '+[x.boxCheck.wrong.length?'different contents on box '+x.boxCheck.wrong.join(', '):'',x.boxCheck.missing.length?'not in Amazon\'s list: box '+x.boxCheck.missing.join(', '):'',x.boxCheck.extra.length?'extra at Amazon: box '+x.boxCheck.extra.join(', '):''].filter(Boolean).join(' · ')+'</div>').join('')
-      +bad.filter(x=>x.boxCheck.wrong.length&&!x.boxCheck.missing.length&&!x.boxCheck.extra.length).map(x=>'<button class="action gold" onclick="nsMatchBoxes('+p.id+',\''+esc(x.fba)+'\','+x.boxCheck.wrong.length+')" style="margin-top:10px;font-size:16px;padding:12px 22px">🏷️ Fix '+esc(x.fba)+': give those '+x.boxCheck.wrong.length+' boxes Amazon\'s numbers</button>').join(' ')
-      +'<div class="hint" style="margin-top:6px">Don\'t ship those boxes as labelled. The fix changes only box numbers here, then you print new labels for just those boxes and stick them over the old ones.</div></div>';
-    // After the fix: which box gets which new label (print order = new number).
-    SH.filter(x=>x.relabel&&x.relabel.moves&&x.relabel.moves.length).forEach(x=>{
-      const mv=[...x.relabel.moves].sort((a,b)=>a.to-b.to);
-      if(!(window._nsRelabel||{})[x.fba]) nsRelabelView(x.fba);
-      h+='<div class="box" style="border:3px solid #ff9900;background:#fff8ec"><div style="font-family:Montserrat,sans-serif;font-size:19px;font-weight:900">🏷️ '+esc(x.fba)+': '+mv.length+' boxes get a new label</div>'
-        +'<div class="hint" style="margin-top:4px">Print them, then for each new label find the box with the OLD number and stick the new label over the old one (both the box ID and the 2D barcode). Every other box keeps its label.</div>'
-        +'<table style="width:100%;border-collapse:collapse;margin-top:10px;box-shadow:none;border-radius:0;table-layout:fixed"><tr>'+prodTh('NEW LABEL')+prodTh('PUT IT ON THE BOX LABELLED')+prodTh('PALLET')+prodTh('CONTENTS','left')+'</tr>'
-        +mv.map(r=>'<tr>'+prodTd('<b style="font-size:20px;color:#1e8449">'+r.to+'</b>')+prodTd('<b style="font-size:20px;color:#c0392b">'+r.from+'</b>')+prodTd('<b>'+(r.pallet||1)+'</b>')+prodTd(esc((r.items||[]).map(i=>i.qty+' × '+i.msku).join(', ')),'left','font-family:monospace')+'</tr>').join('')+'</table>'
-        +'<button class="action gold" onclick="nsPrintRelabel(\''+esc(x.fba)+'\')" style="margin-top:12px;width:100%;font-size:18px;padding:14px">🖨️ Print the '+mv.length+' new labels</button></div>';
-    });
-    // Try again before relabelling: re-send with every box's weight made unique
-    // (Amazon groups identical boxes and renumbers the groups).
-    if((bad.length||SH.some(x=>x.relabel&&x.relabel.moves&&x.relabel.moves.length))&&(p.status==='pallets'||p.status==='quotes'))
-      h+='<div class="box" style="border:3px solid #008296;text-align:center;padding:18px"><div style="font-family:Montserrat,sans-serif;font-size:18px;font-weight:900">Haven\'t stuck new labels on yet? Do this instead — no relabelling:</div>'
-        +'<div style="font-size:14px;margin-top:6px">Sends the box info again as <b>2D barcode</b>: Amazon reads what\'s in each box from the 2D barcode on its label, so the box numbers don\'t have to match. Box numbers go back to the ones on your labels. Nothing is charged.</div>'
-        +'<button class="action gold" onclick="nsResendBoxes('+p.id+')" style="margin-top:12px;font-size:17px;padding:13px 28px">↻ Re-send box info as 2D barcode</button></div>';
-    if(!bad.length&&sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">'+(SH.every(x=>x.boxCheck&&x.boxCheck.twoD)?'✅ Sent as 2D barcode: Amazon reads each box\'s contents from its label, so the labels already on the boxes are right.':'✅ Amazon\'s box numbers match the labels on the boxes.')+'</div>';
+    if(bad.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Amazon has a different number of boxes than were built</b>'
+      +bad.map(x=>'<div style="margin-top:6px;font-size:14px"><b>'+esc(x.fba)+'</b>: '+[x.boxCheck.missing.length?'not at Amazon: box '+x.boxCheck.missing.join(', '):'',x.boxCheck.extra.length?'extra at Amazon: box '+x.boxCheck.extra.join(', '):''].filter(Boolean).join(' · ')+'</div>').join('')
+      +'<div class="hint" style="margin-top:6px">Tell Claude before booking freight.</div></div>';
+    else if(sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">✅ Box info sent to Amazon (2D barcode) — Amazon reads each box\'s contents from its label.</div>';
     // 5. Pallets → freight quotes
     if(SH.length&&(p.status==='pallets'||p.status==='quotes')){
       const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(SH.map(sh=>[sh.shipmentId,sh.pallets||[]]))))};
@@ -1455,36 +1437,6 @@ function nsPlace(id, optId, fee, where){
 const nsPlaces=o=>(o.places&&o.places.length?o.places:(o.destinations||[]).map(fc=>({fc,city:'',state:''})));
 const nsWhere=sh=>esc(sh.fc||sh.shipmentId)+(sh.city?' ('+esc(sh.city)+', '+esc(sh.state)+')':'');
 function nsGuess(id){ ownerApi('/api/inbound/plans/'+id+'/guess',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
-function nsResendBoxes(id){
-  if(!confirm('Send the box info to Amazon again as 2D barcode?\n\nAmazon will read each box\'s contents from the 2D barcode on its label, so the box numbers don\'t need to match.\n\nOnly do this if the new labels are NOT stuck on yet — box numbers go back to the ones on the boxes now.\n\nNothing is charged.')) return;
-  api('/api/inbound/plans/'+id+'/resend-boxes',{method:'POST',body:'{}'}).then(d=>{
-    if(!d||d.ok===false){ alert('Not sent: '+((d&&d.error)||'error')); return; }
-    toast('Re-sending to Amazon…'); window._nsRelabel={}; nsPlan(id);
-  }).catch(e=>toast('Not sent: '+e.message,true));
-}
-function nsMatchBoxes(id, fba, n){
-  if(!confirm('Give the '+n+' mismatched boxes of '+fba+' the Amazon box numbers that match what\'s inside them?\n\nOnly box numbers change in the app (no stock, nothing sent to Amazon). Then print the new labels for just those boxes.')) return;
-  api('/api/inbound/plans/'+id+'/match-boxes',{method:'POST',body:JSON.stringify({fba})}).then(d=>{
-    if(!d||d.ok===false){ alert('Not fixed: '+((d&&d.error)||'error')); return; }
-    toast(d.moves.length?d.moves.length+' boxes renumbered — print their new labels':'Nothing to change');
-    if(window._nsRelabel) delete window._nsRelabel[fba];
-    nsPlan(id);
-  }).catch(e=>toast('Not fixed: '+e.message,true));
-}
-// The shipment's boxes, loaded ahead so Print opens its window straight from
-// the tap (a window opened after a network wait is blocked as a popup).
-function nsRelabelView(fba){
-  window._nsRelabel=window._nsRelabel||{}; window._nsRelabel[fba]='loading';
-  api('/api/pack/'+encodeURIComponent(fba)).then(d=>{ if(d&&d.ok!==false) window._nsRelabel[fba]=d; else delete window._nsRelabel[fba]; }).catch(()=>{ delete window._nsRelabel[fba]; });
-}
-function nsPrintRelabel(fba){
-  const v=(window._nsRelabel||{})[fba];
-  if(!v||v==='loading'){ toast('Still loading the boxes — try again in a second',true); nsRelabelView(fba); return; }
-  const pl=(window._nsLastPlan&&window._nsLastPlan.shipments||[]).find(x=>x.fba===fba);
-  const nums=((pl&&pl.relabel&&pl.relabel.moves)||[]).map(m=>m.to);
-  if(!nums.length){ toast('No new labels to print',true); return; }
-  const save=_prod; _prod={v}; try{ prodPrint(nums); } finally{ _prod=save; }
-}
 function nsSendBoxes(id, force){
   if(!force&&!confirm('Send the built boxes (contents, size, weight) to Amazon?')) return;
   window._nsPal=null; window._nsSel=null;
@@ -1628,12 +1580,6 @@ function prodRender(){
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
   h+=next;
-  // Boxes whose expiration differs from Amazon's plan: Amazon refuses the box
-  // info until they match, and the printed labels should match too.
-  if(v.expMismatch&&v.expMismatch.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea;text-align:center;padding:18px">'
-    +'<div style="font-family:Montserrat,sans-serif;font-size:20px;font-weight:900;color:#c0392b">⛔ '+v.expMismatch.length+' BOX'+(v.expMismatch.length===1?'':'ES')+' HAVE A DIFFERENT EXPIRATION THAN AMAZON EXPECTS</div>'
-    +'<div style="font-size:14px;margin-top:6px">Box '+v.expMismatch.join(', ')+'. Fix sets each box to Amazon\'s date for its product, then reprints those labels — stick the new labels over the old ones. Nothing else changes.</div>'
-    +'<button class="action gold" onclick="prodFixExp()" style="margin-top:12px;font-size:17px;padding:13px 28px">🗓️ Fix dates &amp; reprint '+v.expMismatch.length+' label'+(v.expMismatch.length===1?'':'s')+'</button></div>';
   if(sh.amz_error) h+='<div class="box" style="border:2px solid #c0392b;color:#c0392b"><b>Amazon lookup failed:</b> '+esc(sh.amz_error)+'<div class="hint">Check the ID, or enter the destination by hand below.</div></div>';
   // Destination
   const conf=!!sh.dest_confirmed_at;
@@ -1719,7 +1665,7 @@ function prodRender(){
         +cell(r,3,r.produced,'center','font-weight:800;color:'+(r.produced?'#1e8449':'#1f2733'))
         +cell(r,4,(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':''),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
         +cell(r,5,bxLeft(r),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
-        +cell(r,6,(r.noPerBox&&!done?'<a href="#" onclick="event.stopPropagation();prodSetPer(\''+esc(r.asin)+'\');return false" style="color:#5f6675;font-weight:800" title="Units per box — lets the app number the boxes the way Amazon does (by SKU, A→Z)">set ✏️</a>':(r.caseQty||'—'))+(r.boxNos&&r.boxNos[1]>=r.boxNos[0]?'<div style="font-size:11px;color:#5f6675;font-weight:700;white-space:nowrap">box #'+r.boxNos[0]+(r.boxNos[1]>r.boxNos[0]?'–'+r.boxNos[1]:'')+'</div>':''))+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
+        +cell(r,6,r.caseQty||'—')+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
       +'<tr style="background:#f6f8fa">'+prodTd('<b style="font-size:15px">TOTAL</b>','left','border-top:2px solid #1f2733')+prodTd('','left','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px">'+totP.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px;color:#1e8449">'+totB.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
@@ -1985,24 +1931,6 @@ function prodFinishGo(){
     if(!d||d.ok===false){ toast('NOT finished: '+((d&&(d.message||d.error))||'error'),true); return; }
     toast('Done: '+d.units+' units in '+d.boxes+' boxes moved to In Transit'); prodLoad(prodSid()); try{ loadProducts(); }catch(e){}
   }).catch(e=>toast('NOT finished — connection problem: '+e.message,true));
-}
-function prodFixExp(){
-  api('/api/pack/fix-exp',{method:'POST',body:JSON.stringify({shipmentId:prodSid()})}).then(d=>{
-    if(!d||d.ok===false){ toast((d&&d.error)||'Not fixed',true); return; }
-    toast('Fixed '+d.fixed.length+' box'+(d.fixed.length===1?'':'es')+' — reprinting');
-    prodLoad(prodSid()).then(()=>{ if(d.fixed.length) prodPrint(d.fixed); });
-  }).catch(e=>toast('Not fixed: '+e.message,true));
-}
-// Units per box for a product not built yet: the box numbers of the SKUs
-// after it (Amazon numbers by SKU, A→Z) depend on its box count.
-function prodSetPer(asin){
-  const r=(_prod.v.plan||[]).find(x=>x.asin===asin)||{};
-  const v=prompt('Units per box for:\n'+(r.name||asin)+'\n\n(How many go in one full box. Box numbers are given by SKU the way Amazon numbers them, so the app needs this for every product.)', r.caseQty||'');
-  if(v===null) return;
-  api('/api/pack/per-box',{method:'POST',body:JSON.stringify({asin, perBox:parseInt(v,10)})}).then(d=>{
-    if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
-    toast('Saved'); prodLoad(prodSid());
-  }).catch(e=>toast('Not saved: '+e.message,true));
 }
 function prodCopyBoxes(){
   const rows=_prod.v.boxes.filter(b=>b.status==='closed'&&b.items.length).sort((a,b)=>a.box_no-b.box_no).map(b=>['Box '+b.box_no, b.boxId, 'Pallet '+(b.pallet_no||1), (b.weight_lb||'')+' lb', b.len?b.len+' x '+b.wid+' x '+b.hgt+' in':'', b.items.map(i=>i.fnsku+' x'+i.qty).join(' ')].join('\t'));
