@@ -1101,7 +1101,7 @@ function nsPlansBox(){
     el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:20px 24px;border-bottom:1px solid #d5d9d9"><div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#002f36;letter-spacing:1px">SHIPMENT CREATED – MAIN PAGE</div><div style="font-family:Montserrat,sans-serif;font-size:15px;font-weight:800;color:#007185;margin-top:4px;letter-spacing:1px">DESTINATION AND FREIGHT SETUP</div><div class="hint" style="margin-top:2px">Boxes and labels are built in the Shipment Production Screen below.</div></div>'
       +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('NAME','left')+prodTh('PRODUCTS')+prodTh('UNITS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
       +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b style="font-size:18px">'+esc(p.name||('Plan '+p.id))+'</b>'+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd('<b style="font-size:17px">'+p.skus+'</b>')+prodTd('<b style="font-size:18px">'+p.units.toLocaleString()+'</b>')
-        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472;font-size:15px;font-weight:700')+prodTd(nsPill(p.status))
+        +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472;font-size:15px;font-weight:700')+prodTd(p.floor_done?'<span style="display:inline-block;padding:6px 13px;border-radius:999px;font-family:Montserrat,sans-serif;font-size:12px;font-weight:900;letter-spacing:0.6px;color:#0f1111;background:linear-gradient(180deg,#ffc05a,#ff9900)">▶ NEXT: SEND BOX INFO</span>':nsPill(p.status))
         +prodTd('<button onclick="event.stopPropagation();nsRemove('+p.id+')" title="Remove from the app (nothing sent to Amazon)" style="cursor:pointer;border:1px solid #d5d9d9;background:#fff;color:#8a8f9a;border-radius:999px;width:32px;height:32px;font-weight:900">✕</button>')+'</tr>').join('')+'</table></div>';
   }).catch(()=>{});
 }
@@ -1300,7 +1300,7 @@ function nsPlan(id){
     const stepRow=(ok,t,sub)=>'<div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-top:1px solid #eef2f6"><span style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;background:'+(ok?'#1e8449':'#e2e8f0')+';color:'+(ok?'#fff':'#8a97a6')+'">'+(ok?'✓':'•')+'</span><div><b>'+t+'</b>'+(sub?'<div class="hint">'+sub+'</div>':'')+'</div></div>';
     const units=p.items.reduce((t,i)=>t+i.qty,0);
     const openBtn=f=>'<button class="action" onclick="clearTimeout(_nsPoll);prodLoad(\''+esc(f)+'\')" style="background:#008296">Open in Shipment Production →</button>';
-    let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+nsPill(p.status)
+    let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+(p.status==='building'&&floorDone?'<span style="display:inline-block;padding:6px 13px;border-radius:999px;font-family:Montserrat,sans-serif;font-size:12px;font-weight:900;letter-spacing:0.6px;color:#0f1111;background:linear-gradient(180deg,#ffc05a,#ff9900)">▶ NEXT: SEND BOX INFO</span>':nsPill(p.status))
       +'<div class="hint">'+p.items.length+' products · '+units.toLocaleString()+' units'+(p.plan_id?' · Amazon plan '+esc(p.plan_id):'')+'</div></div>'
       +'<div style="display:flex;gap:6px"><button class="action" onclick="clearTimeout(_nsPoll);_ns=null;prodOpen()" style="background:#5a6472">← Back</button>'
       +'<button class="action" onclick="nsCancel('+p.id+')" style="background:#fdecea;color:#c0392b">Cancel plan</button></div></div>';
@@ -1366,7 +1366,8 @@ function nsPlan(id){
             +(f.missing?'<b style="color:#c0392b">deleted from Shipment Production</b>':f.finished?'<b style="color:#1e8449">✅ Finished</b>':'<b style="color:#b45309">building…</b>')+'</div>'+openBtn(x.fba)+'</div>'
             +(f.rows&&f.rows.length?'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0"><tr>'+prodTh('SKU','left')+prodTh('AMAZON EXPECTS')+prodTh('BUILT')+prodTh('LEFT')+'</tr>'
               +f.rows.map(r=>{ const left=r.planned-r.boxed; return '<tr style="background:'+(left===0?'#eefaf1':'#fdf2f2')+'">'+prodTd(esc(r.msku),'left','font-family:monospace')+prodTd('<b>'+r.planned+'</b>')+prodTd('<b>'+r.boxed+'</b>')+prodTd('<b style="color:'+(left===0?'#1e8449':'#c0392b')+'">'+(left===0?'✓':left)+'</b>')+'</tr>'; }).join('')+'</table>':'')+'</div>'; }).join('')
-        +'<button class="action" onclick="nsSendBoxes('+p.id+')"'+(allDone&&p.status==='building'?'':' disabled')+' style="width:100%;margin-top:14px;font-size:18px;padding:15px;background:#008296">📦 Send box info to Amazon →</button>'
+        +'<button id="nsSendBoxesBtn" class="action'+(allDone&&p.status==='building'?' gold':'')+'" onclick="nsSendBoxes('+p.id+')"'+(allDone&&p.status==='building'?'':' disabled')+' style="width:100%;margin-top:14px;font-size:20px;padding:17px;background:#008296">📦 NEXT: Send box info to Amazon →</button>'
+        +(allDone&&p.status==='building'?'<div class="hint" style="margin-top:6px;text-align:center">Tells Amazon what\'s in each box. Then this page asks Amazon for freight quotes from your pallets. Nothing is charged until you book the freight.</div>':'')
         +(allDone?'':'<div class="hint" style="margin-top:6px">Unlocks once every shipment above is Finished in Shipment Production.</div>')+'</div>';
     }
     // Amazon's box numbers vs the labels already on the boxes
@@ -1418,6 +1419,7 @@ function nsPlan(id){
     h+='<div class="box" style="overflow-x:auto"><b>Products</b><table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('SKU','left')+prodTh('UNITS')+prodTh('EXPIRATION')+'</tr>'
       +p.items.map(i=>'<tr>'+prodTd(esc(String(i.name||i.asin).slice(0,80)),'left')+prodTd(esc(i.msku),'left','font-family:monospace')+prodTd('<b>'+i.qty+'</b>')+prodTd(i.exp?expText(i.exp):'—')+'</tr>').join('')+'</table></div>';
     el.innerHTML=h;
+    if(window._nsScrollSend){ window._nsScrollSend=false; const b=document.getElementById('nsSendBoxesBtn'); if(b) setTimeout(()=>b.scrollIntoView({behavior:'smooth',block:'center'}),100); }
     if(p.status==='working'||p.status==='new'||d.plan.running) _nsPoll=setTimeout(()=>nsPlan(id),3000);
     else if(p.status==='building') _nsPoll=setTimeout(()=>nsPlan(id),15000);   // floor progress
     // After the destination is confirmed, Cancel would need Amazon; offer an
@@ -1555,6 +1557,18 @@ function prodRender(){
   const el=document.getElementById('prodArea'), v=_prod.v, sh=v.shipment, sid=sh.shipment_id, done=sh.status!=='packing', S=v.settings;
   const cur=v.currentPallet, st=v.pallets[cur]||{boxes:0,weight:0,height:0,weightPct:0,heightPct:0,status:'ok'};
   const col=st.status==='ok'?'#008296':'#c0392b';
+  // Finished: say what comes next, in big type (the owner pressed Finish and
+  // couldn't tell). A shipment made in the app goes back to its plan page to
+  // send the box info, get freight quotes, book and print the BOL.
+  const planRow=sh.amz&&sh.amz.planRow;
+  let next='';
+  if(done&&planRow) next='<div class="box" style="border:3px solid #ff9900;background:#fff8ec;text-align:center;padding:22px">'
+    +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ FLOOR DONE — NEXT STEP</div>'
+    +'<div style="font-size:16px;margin-top:6px;line-height:1.5">1. <b>Send the box info to Amazon</b> → 2. <b>Get freight quotes</b> → 3. <b>Book the freight</b> → 4. <b>Print the BOL &amp; pallet labels</b><br><span class="hint">All on the shipment\'s main page. Nothing is charged until you book the freight.</span></div>'
+    +'<button class="action gold" onclick="_prod=null;window._nsScrollSend=true;nsPlan('+Number(planRow)+')" style="margin-top:14px;font-size:19px;padding:15px 34px">📦 Go to next step: Send box info →</button></div>';
+  else if(done) next='<div class="box" style="border:3px solid #ff9900;background:#fff8ec;text-align:center;padding:18px">'
+    +'<div style="font-family:Montserrat,sans-serif;font-size:22px;font-weight:900">✅ FLOOR DONE — NEXT STEP</div>'
+    +'<div style="font-size:15px;margin-top:6px">This shipment was made in Seller Central, so finish it there: box info → transport → labels. The stock here is already moved to In Transit.</div></div>';
   let h='<div class="box" style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">'
     +'<div><b style="font-size:19px">'+esc(sid)+'</b> '+(sh.name?'<span class="hint">'+esc(sh.name)+'</span>':'')+(sh.fc?' <b style="color:#2563a8">→ '+esc(sh.fc)+'</b>':'')+(done?' <span class="badge received">Finished — stock deducted</span>':'')
     +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
@@ -1565,6 +1579,7 @@ function prodRender(){
     +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
+  h+=next;
   if(sh.amz_error) h+='<div class="box" style="border:2px solid #c0392b;color:#c0392b"><b>Amazon lookup failed:</b> '+esc(sh.amz_error)+'<div class="hint">Check the ID, or enter the destination by hand below.</div></div>';
   // Destination
   const conf=!!sh.dest_confirmed_at;
