@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sku-box-numbers-0930';
+const BUILD_ID = 'box-2d-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1729,22 +1729,17 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
         message: `Pallet ${pal} only has room for ${fit.n} more of these (${fit.limitedBy}).` } };
     }
     const used = new Set((await db.query('SELECT box_no FROM inv_pack_boxes WHERE shipment_id=$1', [sid])).rows.map(r => r.box_no));
-    // Amazon's numbering: this product's block of numbers (SKUs A→Z).
+    // Amazon's numbering: this product's block of numbers (SKUs A→Z), when
+    // it can be worked out. Only a bonus now: box info goes to Amazon as 2D
+    // barcode by default, and then the numbers don't have to match at all,
+    // so a missing units-per-box or a full block never stops the floor — the
+    // box just takes the next free number.
     if (!amzNos) {
       const nb = await skuNumbering(db, sid, { [p.asin]: per });
-      if (nb) {
-        const mine = nb.blocks.find(x => x.asin === p.asin);
-        if (mine) {
-          const before = nb.missing.filter(a => { const k = nb.blocks.find(x => x.asin === a); return k && k.msku < mine.msku; });
-          if (before.length) {
-            const names = (await db.query('SELECT asin, name FROM inv_products WHERE asin = ANY($1)', [before])).rows.map(r => String(r.name || r.asin).slice(0, 50));
-            return { status: 409, body: { ok: false, error: 'units_per_box_needed', asins: before,
-              message: `Amazon numbers boxes by SKU, A→Z, so the box numbers for this product depend on how many boxes come before it. Set "units per box" first for: ${names.join(' · ')}.` } };
-          }
-          const pick = pack.blockNumbers(nb, p.asin, count, [...used]);
-          if (pick.error) return { status: 409, body: { ok: false, error: `This shipment has room for ${mine.boxes} box${mine.boxes === 1 ? '' : 'es'} of this product at ${per} per box (${(pick.nos || []).length} left). More would shift every box number after it. Check units per box and the number of boxes.` } };
-          amzNos = pick.nos;
-        }
+      const mine = nb && nb.blocks.find(x => x.asin === p.asin);
+      if (mine && !nb.missing.some(a => { const k = nb.blocks.find(x => x.asin === a); return k && k.msku < mine.msku; })) {
+        const pick = pack.blockNumbers(nb, p.asin, count, [...used]);
+        if (!pick.error) amzNos = pick.nos;
       }
     }
     const made = [];
@@ -2397,7 +2392,11 @@ async function planSendBoxes(id, args, step) {
     const boxes = await floorBoxes(sh.fba, items);
     if (!sh.boxesSentAt) {
       const owners = {}; for (const i of p.items) owners[i.msku] = { prepOwner: i.prepOwner, labelOwner: i.labelOwner };
-      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner, owners, uniqueWeights: !!(args && args.uniqueWeights) });
+      // 2D barcode is the default: Amazon reads the contents off each box's
+      // label, so box numbers never need to match (args.source 'list' = the
+      // old way, contents tied to Amazon's own numbering).
+      sh.contentSource = (args && args.source === 'list') ? 'list' : '2D';
+      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner, owners, uniqueWeights: !!(args && args.uniqueWeights), source: sh.contentSource === '2D' ? '2D' : null });
       if (body.problems.length) throw new Error(sh.fba + ': ' + body.problems.join(' '));
       await step(`Sending ${boxes.length} boxes for ${sh.fba} to Amazon…`);
       const r = await amzInbound.setPackingInformation(p.plan_id, body.body);
@@ -2409,6 +2408,9 @@ async function planSendBoxes(id, args, step) {
     await step(`Checking Amazon's box numbers for ${sh.fba}…`);
     const amzBoxes = await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId);
     sh.boxCheck = inboundLib.checkBoxIds(boxes, amzBoxes);
+    // Sent as 2D barcodes: Amazon takes each box's contents from its label,
+    // so only the number of boxes has to agree, not which number is which.
+    if (sh.contentSource === '2D') sh.boxCheck = { ...sh.boxCheck, wrong: [], twoD: true, ok: !sh.boxCheck.missing.length && !sh.boxCheck.extra.length };
     // Kept to learn how Amazon orders box numbers (the pilot's didn't follow
     // the order sent): Amazon's number → contents, and ours.
     sh.amzOrder = inboundLib.amazonBoxMap(amzBoxes).map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]);
@@ -2541,8 +2543,8 @@ app.post('/api/inbound/plans/:id/resend-boxes', auth, async (req, res) => {
     return { status: 200, body: { ok: true } };
   });
   if (out.status !== 200) return res.status(out.status).json(out.body);
-  const args = { force: true, uniqueWeights: true };
-  runPlanJob(id, 'Re-sending the boxes to Amazon with unique weights…', (step) => planSendBoxes(id, args, step), 'boxes', args);
+  const args = { force: true, source: '2D' };
+  runPlanJob(id, 'Re-sending the boxes to Amazon as 2D barcodes…', (step) => planSendBoxes(id, args, step), 'boxes', args);
   res.json({ ok: true });
 });
 app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
