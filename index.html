@@ -1412,7 +1412,7 @@ function nsPlan(id){
       h+='<div style="margin-top:16px;padding:16px;border-radius:12px;background:#002f36;color:#fff;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">'
         +'<div style="font-size:15px">Freight'+(SH.length>1?' for '+SH.length+' shipments':'')+'</div><div style="font-size:26px;font-weight:900">'+$$(total)+'</div></div>'
         +'<button class="action" onclick="nsConfirm('+p.id+','+total+')"'+(all?'':' disabled')+' style="width:100%;margin-top:12px;font-size:19px;padding:16px;background:#c0392b">Book freight with Amazon — charge '+$$(total)+'</button>'
-        +'<div class="hint" style="margin-top:6px">This books the carrier and charges your account. The bill of lading and pallet labels come next (in Shipment Production, on the shipment).</div></div>';
+        +'<div class="hint" style="margin-top:6px"><b>Your Amazon account is charged after this step</b> — nothing before it. The bill of lading and pallet labels come next (in Shipment Production, on the shipment).</div></div>';
     }
     if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon</b>'
       +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): '+$$(p.confirmed.placementFee)+'</div>'
@@ -1457,9 +1457,11 @@ function nsQuote(id){
 // The purchase: typed amount must match what's shown; the server checks it
 // against the quotes on file again.
 function nsConfirm(id, total){
-  const t=prompt('This CHARGES your Amazon account $'+total.toFixed(2)+' for the freight and books the carrier.\n\nType the amount to confirm (e.g. '+total.toFixed(2)+'):');
-  if(t==null) return;
-  if(Math.abs(parseFloat(String(t).replace(/[$,]/g,''))-total)>0.009){ toast('Amount didn\'t match — nothing was bought',true); return; }
+  // One tap with the carrier and amount shown (the owner found typing the
+  // amount a hassle); the server still re-checks the amount against Amazon's
+  // current quote before anything is charged.
+  const picked=[...document.querySelectorAll('input[type=radio][name^="nsq_"]:checked')].map(r=>{ const l=r.closest('label'); return l?(l.querySelector('b')||{}).textContent||'':''; }).filter(Boolean);
+  if(!confirm('Book '+(picked.length?picked.join(' + '):'this freight')+' for $'+total.toFixed(2)+'?\n\n⚠️ Your Amazon account is charged $'+total.toFixed(2)+' when you press OK.\nNothing is charged before this step.')) return;
   ownerApi('/api/inbound/plans/'+id+'/confirm',{method:'POST',body:JSON.stringify({selections:(window._nsSel||{}).sel||{}, total})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not confirmed',true); } nsPlan(id); });
 }
 function nsSaveExp(id){
