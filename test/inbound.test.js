@@ -180,3 +180,12 @@ test('freight estimate: pallets guessed from saved cases, or Amazon package size
   // Heavy enough for two pallets under the 1,450 lb safe limit.
   assert.strictEqual(ib.estimatePallets([{ msku: 'H', units: 1200, unitLb: 2, perBox: 12, len: 12, wid: 10, hgt: 8 }]).pallets.length, 2);
 });
+
+test('freight options: the same carrier listed many times shows once, at its lowest price', () => {
+  const o = (id, name, amt, exp, mode = 'FREIGHT_LTL') => ({ transportationOptionId: id, shipmentId: 'sh1', carrier: { name }, shippingMode: mode, shippingSolution: 'AMAZON_PARTNERED_CARRIER', quote: { cost: { amount: amt, code: 'USD' }, expiration: exp } });
+  const list = [o('a1', 'CENTRAL', 144.59, '2026-09-29T10:00Z'), o('a2', 'CENTRAL', 144.59, '2026-09-29T11:00Z'), o('b1', 'ESTES', 204.38, 'x'),
+    o('c1', 'Amazon Freight', 275.10, 'x'), o('c2', 'Amazon Freight', 271.55, 'x'), o('d1', 'FLOCK', 584.39, 'x', 'FREIGHT_FTL_PALLET')];
+  const s = ib.transportSummary(list);
+  assert.deepStrictEqual(s.map(x => [x.carrier, x.cost]), [['CENTRAL', 144.59], ['ESTES', 204.38], ['Amazon Freight', 271.55], ['FLOCK', 584.39]]);
+  assert.strictEqual(s[0].transportationOptionId, 'a2');   // equal price: the one quoted last
+});
