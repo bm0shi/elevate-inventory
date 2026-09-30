@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pallet-labels-4x6-0930';
+const BUILD_ID = 'pallet-labels-try-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2489,7 +2489,8 @@ app.post('/api/inbound/paperwork', auth, async (req, res) => {
     if (req.body.kind === 'bol') return res.json({ ok: true, url: await amzInbound.billOfLading(sid) });
     const n = parseInt(req.body.pallets, 10);
     if (!(n >= 1 && n <= 60)) return res.status(400).json({ ok: false, error: 'How many pallets?' });
-    res.json({ ok: true, url: await amzInbound.palletLabels(sid, n) });
+    const pl = await amzInbound.palletLabels(sid, n);
+    res.json({ ok: true, url: pl.url, pageType: pl.pageType });
   } catch (e) {
     res.status(502).json({ ok: false, error: /not.*(available|found|ready)|NotFound|No bill/i.test(e.message) && req.body.kind === 'bol' ? 'Amazon hasn\'t issued the bill of lading yet — it comes once the carrier is assigned (usually within a day of booking). ' + e.message : e.message });
   }
