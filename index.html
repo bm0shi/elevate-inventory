@@ -440,6 +440,7 @@
       <button class="action" onclick="ppTickAll(true)" style="padding:11px 14px;font-size:14px;background:#1e8449" title="Tick every job showing (search and filter apply)">☑ Select all</button>
       <button class="action" onclick="ppTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every job showing">Clear</button>
       <button class="action" onclick="sendTickedToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment with everything ticked here AND on Prepped &amp; Ready, added together. No stock changes until Finish.">🏷️ Send ticked to production →</button>
+      <button class="action" onclick="ppSourceCorrectCsv()" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Downloads a CSV of Pending Prep (the ticked jobs, or all of them if none are ticked): seller SKU and quantity, for Source Correct">⬇ CSV for Source Correct</button>
       <span class="viewtoggle" id="vt_pp"><button onclick="setPpList(false);setView('pp',false)">Compact</button><button onclick="setPpList(false);setView('pp',true)">Big</button><button onclick="setPpList(true)" title="One tight row per item — best on small screens like the Surface">List</button></span>
       <input type="text" id="ppSearch" placeholder="Search..." onkeyup="renderPendingPrep()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:14px">
     </div>
@@ -4098,6 +4099,23 @@ function shipBuilderToPrep(){
     alert('✓ '+ok+' work order'+(ok===1?'':'s')+' added to Pending Prep.'+(fail.length?'\n\nNot added:\n'+fail.join('\n'):''));
     loadPendingPrep();
   })();
+}
+// Pending Prep → CSV for Source Correct (seller SKU + quantity, one row per
+// SKU; a duo job is its duo SKU). The ticked jobs, or all when none are ticked.
+function ppSourceCorrectCsv(){
+  const d=window._pendingPrepData; const all=(d&&d.items)||[];
+  const ticked=all.filter(i=>i.in_plan), list=(ticked.length?ticked:all).filter(i=>i.qty>0);
+  if(!list.length){ toast('Nothing on Pending Prep',true); return; }
+  const by={}, noSku=[];
+  for(const i of list){ if(!i.sku){ noSku.push(i.name||i.asin); continue; } by[i.sku]=(by[i.sku]||0)+i.qty; }
+  if(noSku.length&&!confirm('No seller SKU on file for:\n'+noSku.map(x=>'  '+String(x).slice(0,60)).join('\n')+'\n\nThey\'ll be left out of the file. Continue?')) return;
+  const q=v=>/[",\n]/.test(v)?'"'+String(v).replace(/"/g,'""')+'"':String(v);
+  const csv=['SKU,Quantity'].concat(Object.entries(by).map(([k,n])=>q(k)+','+n)).join('\r\n');
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+  a.download='source-correct-'+new Date().toISOString().slice(0,10)+'.csv';
+  document.body.appendChild(a); a.click(); a.remove();
+  toast('CSV: '+Object.keys(by).length+' SKUs · '+Object.values(by).reduce((x,y)=>x+y,0)+' units'+(ticked.length?' (ticked jobs)':' (all jobs)'));
 }
 function shipBuilderDownload(){
   const on=_sb.rows.filter(r=>r.on&&r.qty>0&&r.sku);
