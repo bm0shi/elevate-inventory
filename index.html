@@ -1390,10 +1390,10 @@ function nsPlan(id){
     // Try again before relabelling: re-send with every box's weight made unique
     // (Amazon groups identical boxes and renumbers the groups).
     if((bad.length||SH.some(x=>x.relabel&&x.relabel.moves&&x.relabel.moves.length))&&(p.status==='pallets'||p.status==='quotes'))
-      h+='<div class="box" style="border:2px dashed #008296;text-align:center"><div style="font-weight:800">Haven\'t stuck the new labels on yet? Try this first:</div>'
-        +'<div class="hint" style="margin-top:4px">Sends the box info again with each box 0.01 lb × its number heavier (box 26 = +0.26 lb), so Amazon can\'t group identical boxes. Box numbers go back to the ones on your labels. If Amazon then matches, no new labels are needed; if not, the Fix button comes back.</div>'
-        +'<button class="action" onclick="nsResendBoxes('+p.id+')" style="margin-top:10px;background:#008296;font-size:16px;padding:12px 24px">↻ Re-send box info with unique weights</button></div>';
-    if(!bad.length&&sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">✅ Amazon\'s box numbers match the labels on the boxes.</div>';
+      h+='<div class="box" style="border:3px solid #008296;text-align:center;padding:18px"><div style="font-family:Montserrat,sans-serif;font-size:18px;font-weight:900">Haven\'t stuck new labels on yet? Do this instead — no relabelling:</div>'
+        +'<div style="font-size:14px;margin-top:6px">Sends the box info again as <b>2D barcode</b>: Amazon reads what\'s in each box from the 2D barcode on its label, so the box numbers don\'t have to match. Box numbers go back to the ones on your labels. Nothing is charged.</div>'
+        +'<button class="action gold" onclick="nsResendBoxes('+p.id+')" style="margin-top:12px;font-size:17px;padding:13px 28px">↻ Re-send box info as 2D barcode</button></div>';
+    if(!bad.length&&sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">'+(SH.every(x=>x.boxCheck&&x.boxCheck.twoD)?'✅ Sent as 2D barcode: Amazon reads each box\'s contents from its label, so the labels already on the boxes are right.':'✅ Amazon\'s box numbers match the labels on the boxes.')+'</div>';
     // 5. Pallets → freight quotes
     if(SH.length&&(p.status==='pallets'||p.status==='quotes')){
       const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(SH.map(sh=>[sh.shipmentId,sh.pallets||[]]))))};
@@ -1456,7 +1456,7 @@ const nsPlaces=o=>(o.places&&o.places.length?o.places:(o.destinations||[]).map(f
 const nsWhere=sh=>esc(sh.fc||sh.shipmentId)+(sh.city?' ('+esc(sh.city)+', '+esc(sh.state)+')':'');
 function nsGuess(id){ ownerApi('/api/inbound/plans/'+id+'/guess',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
 function nsResendBoxes(id){
-  if(!confirm('Send the box info to Amazon again with a unique weight on every box?\n\nOnly do this if the new labels are NOT stuck on yet — box numbers go back to the ones on the boxes now.\n\nNothing is charged.')) return;
+  if(!confirm('Send the box info to Amazon again as 2D barcode?\n\nAmazon will read each box\'s contents from the 2D barcode on its label, so the box numbers don\'t need to match.\n\nOnly do this if the new labels are NOT stuck on yet — box numbers go back to the ones on the boxes now.\n\nNothing is charged.')) return;
   api('/api/inbound/plans/'+id+'/resend-boxes',{method:'POST',body:'{}'}).then(d=>{
     if(!d||d.ok===false){ alert('Not sent: '+((d&&d.error)||'error')); return; }
     toast('Re-sending to Amazon…'); window._nsRelabel={}; nsPlan(id);
@@ -1628,9 +1628,6 @@ function prodRender(){
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
   h+=next;
-  // Boxes whose number no longer matches the order Amazon will number them in.
-  if(v.numbering&&v.numbering.misfits&&v.numbering.misfits.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Box '+v.numbering.misfits.join(', ')+' won\'t match Amazon\'s box numbers</b>'
-    +'<div style="font-size:14px;margin-top:4px">Amazon numbers boxes by SKU, A→Z. Units per box changed after these were labelled (or they were made before this numbering), so they\'ll need new labels after the box info is sent. Keep units per box the same from here on.</div></div>';
   // Boxes whose expiration differs from Amazon's plan: Amazon refuses the box
   // info until they match, and the printed labels should match too.
   if(v.expMismatch&&v.expMismatch.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea;text-align:center;padding:18px">'
@@ -1722,7 +1719,7 @@ function prodRender(){
         +cell(r,3,r.produced,'center','font-weight:800;color:'+(r.produced?'#1e8449':'#1f2733'))
         +cell(r,4,(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':''),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
         +cell(r,5,bxLeft(r),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
-        +cell(r,6,(r.noPerBox&&!done?'<a href="#" onclick="event.stopPropagation();prodSetPer(\''+esc(r.asin)+'\');return false" style="color:#c0392b;font-weight:900" title="Needed to number the boxes the way Amazon will (by SKU, A→Z)">set ✏️</a>':(r.caseQty||'—'))+(r.boxNos&&r.boxNos[1]>=r.boxNos[0]?'<div style="font-size:11px;color:#5f6675;font-weight:700;white-space:nowrap">box #'+r.boxNos[0]+(r.boxNos[1]>r.boxNos[0]?'–'+r.boxNos[1]:'')+'</div>':''))+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
+        +cell(r,6,(r.noPerBox&&!done?'<a href="#" onclick="event.stopPropagation();prodSetPer(\''+esc(r.asin)+'\');return false" style="color:#5f6675;font-weight:800" title="Units per box — lets the app number the boxes the way Amazon does (by SKU, A→Z)">set ✏️</a>':(r.caseQty||'—'))+(r.boxNos&&r.boxNos[1]>=r.boxNos[0]?'<div style="font-size:11px;color:#5f6675;font-weight:700;white-space:nowrap">box #'+r.boxNos[0]+(r.boxNos[1]>r.boxNos[0]?'–'+r.boxNos[1]:'')+'</div>':''))+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
       +'<tr style="background:#f6f8fa">'+prodTd('<b style="font-size:15px">TOTAL</b>','left','border-top:2px solid #1f2733')+prodTd('','left','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px">'+totP.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px;color:#1e8449">'+totB.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
@@ -1831,7 +1828,6 @@ function prodMake(override, palletNo, countOverride){
   api('/api/pack/boxes',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), asin:P.asin, qtyPerBox:f.per, count, pallet:pal, unitWeight:f.w, len:f.L, wid:f.W, hgt:f.H, exp:f.exp||null, override:!!override})}).then(d=>{
     if(btn) btn.disabled=false;
     if(d&&d.error==='pallet_full'){ return prodFull(d, count, pal); }
-    if(d&&d.error==='units_per_box_needed'){ alert('⛔ NOT CREATED\n\n'+d.message+'\n\nTap "set ✏️" in the UNITS PER BOX column for those products, then try again.'); return; }
     if(!d||d.ok===false){ toast('NOT created: '+((d&&(d.message||d.error))||'error'),true); return; }
     toast('Boxes '+d.boxes.join(', ')+' created — printing '+d.boxes.length+' label'+(d.boxes.length===1?'':'s'));
     return prodLoad(prodSid()).then(()=>{ prodPrint(d.boxes); _prod.sel=null; prodRender(); prodFullPrompt(); });

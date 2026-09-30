@@ -130,6 +130,13 @@ test('pack later: Amazon\'s box numbers checked against the labels', () => {
   assert.deepStrictEqual(ib.checkBoxIds(ours, swapped), { ok: false, wrong: [1, 2], missing: [], extra: [3] });
 });
 
+test('2D barcode: box info says Amazon reads the contents off each box\'s label', () => {
+  const bx = { box_no: 1, items: [{ msku: 'A', qty: 10 }], weight_lb: 24, len: 12, wid: 12, hgt: 10 };
+  const src = (opt) => ib.shipmentBoxesBody('sh1', [bx], {}, opt).body.packageGroupings[0].boxes[0].contentInformationSource;
+  assert.strictEqual(src({ source: '2D' }), 'BARCODE_2D');
+  assert.strictEqual(src({}), 'BOX_CONTENT_PROVIDED');
+});
+
 test('unique weights: each box is 0.01 lb × its number heavier, so no two identical boxes look the same to Amazon', () => {
   const bx = (n) => ({ box_no: n, items: [{ msku: 'A', qty: 10 }], weight_lb: 24, len: 12, wid: 12, hgt: 10 });
   const w = (opt) => ib.shipmentBoxesBody('sh1', [bx(1), bx(2), bx(26)].map((b, i) => ({ ...b, box_no: i + 1 })), {}, opt).body.packageGroupings[0].boxes.map(b => b.weight.value);
