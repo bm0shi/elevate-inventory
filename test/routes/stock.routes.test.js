@@ -338,6 +338,28 @@ test('shipment created from the app: boxes take Amazon\'s box numbers; two taps 
   assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [SID])).n, 4);
 });
 
+test('expiration on a box follows the date Amazon has for the product; Fix corrects boxes already made', { skip }, async () => {
+  const SID = 'FBAEXPTEST1';
+  await post('/api/pack/start', { shipmentId: SID });
+  await confirmDest(SID);
+  // Amazon's shipment says TSTA expires 2029-07-12 (the plan's date).
+  await pool.query(`UPDATE inv_pack_shipments SET amz = $2 WHERE shipment_id=$1`,
+    [SID, JSON.stringify({ items: [{ asin: 'TSTA', msku: 'SKU-A', fnsku: 'X00TESTAAA', qty: 20, expiration: '2029-07-12T00:00Z' }] })]);
+  // The floor typed a different date: the box takes Amazon's.
+  const r = await post('/api/pack/boxes', { shipmentId: SID, asin: 'TSTA', qtyPerBox: 10, count: 1, pallet: 1, unitWeight: 1, len: 10, wid: 10, hgt: 10, exp: '09/23/2029' });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  const b1 = await one('SELECT exp, items FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=1', [SID]);
+  assert.strictEqual(b1.exp, '290712');
+  assert.strictEqual(b1.items[0].exp, '290712');
+  // A box made before this fix, with the wrong date: Fix sets it to Amazon's.
+  await pool.query(`UPDATE inv_pack_boxes SET exp='290923', items=jsonb_set(items, '{0,exp}', '"290923"') WHERE shipment_id=$1 AND box_no=1`, [SID]);
+  const f = await post('/api/pack/fix-exp', { shipmentId: SID });
+  assert.strictEqual(f.status, 200);
+  assert.deepStrictEqual(f.body.fixed, [1]);
+  assert.strictEqual((await one('SELECT items FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=1', [SID])).items[0].exp, '290712');
+  assert.deepStrictEqual((await post('/api/pack/fix-exp', { shipmentId: SID })).body.fixed, []);   // nothing left to fix
+});
+
 test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {
   const SID = 'FBAPACKTEST3';
   await post('/api/pack/start', { shipmentId: SID });
