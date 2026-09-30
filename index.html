@@ -1488,6 +1488,7 @@ function prodPaper(kind){
   const w=window.open('about:blank','_blank');
   api('/api/inbound/paperwork',{method:'POST',body:JSON.stringify({shipmentId:prodSid(), kind, pallets})}).then(d=>{
     if(!d||d.ok===false||!d.url){ if(w) w.close(); toast((d&&d.error)||'Amazon returned nothing',true); return; }
+    if(d.pageType&&!/Thermal/.test(d.pageType)) toast('Amazon only had the pallet labels as '+d.pageType.replace('PackageLabel_','').replace(/_/g,' ')+' (not 4×6 thermal)');
     if(w) w.location=d.url; else window.open(d.url,'_blank');
   }).catch(e=>{ if(w) w.close(); toast('Could not get it: '+e.message,true); });
 }

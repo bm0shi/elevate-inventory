@@ -1007,27 +1007,32 @@ const inbound = {
   confirmPlacementOption: (planId, placementOptionId) => inbWrite('POST', `/inboundPlans/${planId}/placementOptions/${placementOptionId}/confirmation`),
   confirmTransportationOptions: (planId, selections) => inbWrite('POST', `/inboundPlans/${planId}/transportationOptions/confirmation`, { transportationSelections: selections }),
   // Paperwork (older API, by the FBA shipment ID): pallet labels and the bill of lading → a download URL.
-  // Amazon refused PackageLabel_Letter_4 for the pilot's pallet labels
-  // ("must satisfy enum value set: [PackageLabel_A4_2_DHL, …]"), and the set
-  // it accepts isn't the documented one. The floor prints 4×6 thermal (owner's
-  // ask), so ask for thermal first and, if Amazon says the page type isn't
-  // allowed, pick the 4×6 thermal one from the list it sends back.
+  // Pallet labels (the floor prints 4×6 thermal). Amazon's accepted page
+  // types aren't the documented ones (it refused PackageLabel_Letter_4 with
+  // its own list), and for the pilot the thermal type came back "Label for
+  // shipment cannot be found!". So try the 4×6 thermal types first, then
+  // whatever Amazon says it accepts, and use the first that gives a file.
+  // → { url, pageType }
   palletLabels: async (fbaId, pallets) => {
     const get = (PageType) => http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${encodeURIComponent(fbaId)}/labels`, { params: { MarketplaceId: MARKETPLACE_ID, PageType, LabelType: 'PALLET', NumberOfPallets: pallets } });
-    const fail = (e) => new Error(`Amazon ${e.response?.status || ''}: ${JSON.stringify(e.response?.data || e.message).slice(0, 600)}`);
-    let r;
-    try { r = await get('PackageLabel_Thermal'); }
-    catch (e) {
-      const m = JSON.stringify(e.response?.data || '').match(/enum value set: \[([^\]]+)\]/);
-      if (!m) throw fail(e);
-      const ok = m[1].split(',').map(x => x.trim()).filter(Boolean);
-      const want = ['PackageLabel_Thermal', 'PackageLabel_Thermal_Unified', 'PackageLabel_Thermal_NonPCP', 'PackageLabel_Thermal_No_Carrier_Rotation'];
-      // 4×6 thermal only (not the 10 cm square AWD one)
-      const pick = want.find(x => ok.includes(x)) || ok.find(x => /Thermal/i.test(x) && !/Square|10CM|AWD/i.test(x));
-      if (!pick || pick === 'PackageLabel_Thermal') throw fail(e);
-      r = await get(pick).catch(e2 => { throw fail(e2); });
+    const txt = (e) => JSON.stringify(e.response?.data || e.message);
+    const queue = ['PackageLabel_Thermal', 'PackageLabel_Thermal_Unified', 'PackageLabel_Thermal_NonPCP', 'PackageLabel_Thermal_No_Carrier_Rotation', 'PackageLabel_Plain_Paper', 'PackageLabel_Letter_4'];
+    const tried = new Set(), errors = [];
+    while (queue.length && tried.size < 12) {
+      const t = queue.shift(); if (tried.has(t)) continue; tried.add(t);
+      try {
+        const r = await get(t);
+        const url = r.data.payload && r.data.payload.DownloadURL;
+        if (url) return { url, pageType: t };
+        errors.push(t + ': no file');
+      } catch (e) {
+        const m = txt(e).match(/enum value set: \[([^\]]+)\]/);
+        if (m) m[1].split(',').map(x => x.trim()).filter(x => x && !/Square|10CM|AWD|DHL/i.test(x))
+          .sort((x, y) => (/Thermal/.test(y) - /Thermal/.test(x))).forEach(x => { if (!tried.has(x)) queue.push(x); });
+        else errors.push(t + ': ' + txt(e).slice(0, 160));
+      }
     }
-    return r.data.payload && r.data.payload.DownloadURL;
+    throw new Error('Amazon has no pallet labels for this shipment yet (' + errors.join(' · ').slice(0, 500) + ')');
   },
   billOfLading: async (fbaId) => {
     const r = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${encodeURIComponent(fbaId)}/billOfLading`)
