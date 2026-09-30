@@ -338,7 +338,7 @@ test('shipment created from the app: boxes take Amazon\'s box numbers; two taps 
   assert.strictEqual((await one('SELECT COUNT(*)::int AS n FROM inv_pack_boxes WHERE shipment_id=$1', [SID])).n, 4);
 });
 
-test('expiration on a box follows the date Amazon has for the product; Fix corrects boxes already made', { skip }, async () => {
+test('expiration on a box follows the date Amazon has for the product', { skip }, async () => {
   const SID = 'FBAEXPTEST1';
   await post('/api/pack/start', { shipmentId: SID });
   await confirmDest(SID);
@@ -351,37 +351,6 @@ test('expiration on a box follows the date Amazon has for the product; Fix corre
   const b1 = await one('SELECT exp, items FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=1', [SID]);
   assert.strictEqual(b1.exp, '290712');
   assert.strictEqual(b1.items[0].exp, '290712');
-  // A box made before this fix, with the wrong date: Fix sets it to Amazon's.
-  await pool.query(`UPDATE inv_pack_boxes SET exp='290923', items=jsonb_set(items, '{0,exp}', '"290923"') WHERE shipment_id=$1 AND box_no=1`, [SID]);
-  const f = await post('/api/pack/fix-exp', { shipmentId: SID });
-  assert.strictEqual(f.status, 200);
-  assert.deepStrictEqual(f.body.fixed, [1]);
-  assert.strictEqual((await one('SELECT items FROM inv_pack_boxes WHERE shipment_id=$1 AND box_no=1', [SID])).items[0].exp, '290712');
-  assert.deepStrictEqual((await post('/api/pack/fix-exp', { shipmentId: SID })).body.fixed, []);   // nothing left to fix
-});
-
-test('box numbers follow Amazon: SKUs A→Z each get a block, whatever order the floor builds in', { skip }, async () => {
-  const SID = 'FBASKUTEST1';
-  await post('/api/pack/start', { shipmentId: SID });
-  await confirmDest(SID);
-  await pool.query(`UPDATE inv_pack_shipments SET amz = $2 WHERE shipment_id=$1`,
-    [SID, JSON.stringify({ items: [{ asin: 'TSTB', msku: 'SKU-B', fnsku: 'X00TESTBBB', qty: 12 }, { asin: 'TSTA', msku: 'SKU-A', fnsku: 'X00TESTAAA', qty: 20 }] })]);
-  await pool.query(`UPDATE inv_products SET case_qty=NULL WHERE asin IN ('TSTA','TSTB')`);
-  const mk = (asin, per, count) => post('/api/pack/boxes', { shipmentId: SID, asin, qtyPerBox: per, count, pallet: 1, unitWeight: 1, len: 10, wid: 10, hgt: 10, override: true });
-  // SKU-A's units per box unknown: SKU-B's place can't be worked out, but the
-  // floor isn't stopped (box info goes as 2D barcode) — it takes a free number.
-  const r0 = await mk('TSTB', 12, 1);
-  assert.strictEqual(r0.status, 200, JSON.stringify(r0.body));
-  await post('/api/pack/box/void', { shipmentId: SID, boxNo: r0.body.boxes[0] });
-  assert.strictEqual((await post('/api/pack/per-box', { asin: 'TSTA', perBox: 10 })).status, 200);
-  // Built first, but numbered after SKU-A's two boxes, as Amazon will.
-  const r1 = await mk('TSTB', 12, 1);
-  assert.strictEqual(r1.status, 200, JSON.stringify(r1.body));
-  assert.deepStrictEqual(r1.body.boxes, [3]);
-  const r2 = await mk('TSTA', 10, 2);
-  assert.deepStrictEqual(r2.body.boxes, [1, 2]);
-  // SKU-A's block is full: a third box still gets made, on the next free number.
-  assert.deepStrictEqual((await mk('TSTA', 10, 1)).body.boxes, [4]);
 });
 
 test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {

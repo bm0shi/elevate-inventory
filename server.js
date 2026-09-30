@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'box-2d-noitems-0930';
+const BUILD_ID = 'clean-2d-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1398,30 +1398,6 @@ async function packSettings() {
   return { ...pallet.settings(d), shipFrom: d.shipFrom || null };
 }
 const boxWeightOf = (unitLb, qty) => unitLb > 0 && qty > 0 ? Math.round(unitLb * qty * 100) / 100 : null;
-// Amazon numbers a shipment's boxes by seller SKU A→Z (lib/pack skuBlocks),
-// so each SKU gets a block of box numbers and labels printed as boxes are
-// built already carry Amazon's numbers. null for shipments planned box by
-// box up front (amz_boxes: Amazon already numbered them) or with no items.
-// perOverride: { asin: units per box } being used right now on the floor.
-async function skuNumbering(db, sid, perOverride) {
-  const sh = (await db.query('SELECT amz, amz_boxes FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
-  if (!sh || sh.amz_boxes) return null;
-  const raw = ((sh.amz && sh.amz.items) || []).filter(i => i.msku && Number(i.qty) > 0);
-  if (!raw.length) return null;
-  const need = raw.filter(i => !i.asin);
-  const map = {};
-  if (need.length) for (const r of (await db.query('SELECT asin, sku, UPPER(fnsku) AS fnsku FROM inv_products WHERE sku = ANY($1) OR UPPER(fnsku) = ANY($2)',
-    [need.map(i => i.msku), need.map(i => String(i.fnsku || '').toUpperCase())])).rows) { if (r.sku) map['s:' + r.sku] = r.asin; if (r.fnsku) map['f:' + r.fnsku] = r.asin; }
-  const items = raw.map(i => ({ msku: i.msku, qty: Number(i.qty), asin: i.asin || map['s:' + i.msku] || map['f:' + String(i.fnsku || '').toUpperCase()] || null })).filter(i => i.asin);
-  const rows = (await db.query("SELECT box_no, items FROM inv_pack_boxes WHERE shipment_id=$1 AND status='closed' AND jsonb_array_length(items) = 1", [sid])).rows;
-  const built = rows.map(b => ({ box_no: b.box_no, asin: b.items[0].asin, units: Number(b.items[0].qty) || 0 }));
-  const perBox = {};
-  for (const r of (await db.query('SELECT asin, case_qty FROM inv_products WHERE asin = ANY($1)', [items.map(i => i.asin)])).rows) if (r.case_qty > 0) perBox[r.asin] = r.case_qty;
-  Object.assign(perBox, perOverride || {});
-  const plan = pack.skuBlocks(items, built, perBox);
-  plan.misfits = pack.blockMisfits(plan, built);
-  return plan;
-}
 async function packView(sid, opts = {}) {
   const sh = (await pool.query('SELECT * FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
   if (!sh) return null;
@@ -1484,13 +1460,8 @@ async function packView(sid, opts = {}) {
     .map(r => ({ asin: r.asin, name: r.name, perBox: r.caseQty, boxesLeft: Math.ceil(r.left / r.caseQty),
                  box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), units: r.caseQty, len: r.len, wid: r.wid, hgt: r.hgt } }));
   const nums = new Set(boxes.map(b => b.box_no));
-  const numbering = await skuNumbering(pool, sid);
-  // A mixed box goes after every product's block (Amazon's place for it isn't known).
-  let nextBoxNo = numbering ? numbering.total + 1 : 1; while (nums.has(nextBoxNo)) nextBoxNo++;
-  if (numbering) { const at = {}; for (const b of numbering.blocks) at[b.asin] = b; for (const r of plan) if (at[r.asin]) { r.boxNos = [at[r.asin].start, at[r.asin].end]; r.noPerBox = numbering.missing.includes(r.asin); } }
-  const want = amzExpByAsin(planItems);
-  const expMismatch = boxes.filter(b => (b.items || []).some(i => want[i.asin] && i.exp !== want[i.asin])).map(b => b.box_no);
-  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, expMismatch, numbering,
+  let nextBoxNo = 1; while (nums.has(nextBoxNo)) nextBoxNo++;
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 // The 2D Production start page: every shipment built in the app (deleted
@@ -1665,27 +1636,6 @@ app.post('/api/pack/pallet', auth, async (req, res) => {
 // 1..N (Amazon numbers boxes that way). Refused if the destination isn't
 // confirmed, or if the boxes would take the pallet over its weight or height
 // limit — unless `override` (the floor saw the warning and chose to).
-// Set every box's expiration to the date Amazon has for its product, so the
-// labels (reprinted after) and the box info sent to Amazon agree with the
-// plan. Only dates change: no stock, no box numbers.
-app.post('/api/pack/fix-exp', auth, async (req, res) => {
-  const sid = pack.normShipmentId((req.body || {}).shipmentId);
-  if (!sid) return res.status(400).json({ ok: false, error: 'Shipment ID needed.' });
-  const out = await withTx(async (db) => {
-    const shr = (await db.query('SELECT amz FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sid])).rows[0];
-    if (!shr) return { status: 404, body: { ok: false, error: 'Not found' } };
-    const want = amzExpByAsin(shr.amz && shr.amz.items), fixed = [];
-    for (const b of (await db.query('SELECT id, box_no, items FROM inv_pack_boxes WHERE shipment_id=$1', [sid])).rows) {
-      if (!(b.items || []).some(i => want[i.asin] && i.exp !== want[i.asin])) continue;
-      const items = b.items.map(i => want[i.asin] ? { ...i, exp: want[i.asin] } : i);
-      const one = [...new Set(items.map(i => i.exp).filter(Boolean))];
-      await db.query('UPDATE inv_pack_boxes SET items=$2, exp=$3 WHERE id=$1', [b.id, JSON.stringify(items), one.length === 1 ? one[0] : null]);
-      fixed.push(b.box_no);
-    }
-    return { status: 200, body: { ok: true, fixed: fixed.sort((a, c) => a - c) } };
-  });
-  res.status(out.status).json(out.body);
-});
 app.post('/api/pack/boxes', auth, async (req, res) => {
   const b = req.body || {};
   const sid = pack.normShipmentId(b.shipmentId), per = parseInt(b.qtyPerBox, 10), count = parseInt(b.count, 10), pal = parseInt(b.pallet, 10) || 1;
@@ -1729,19 +1679,6 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
         message: `Pallet ${pal} only has room for ${fit.n} more of these (${fit.limitedBy}).` } };
     }
     const used = new Set((await db.query('SELECT box_no FROM inv_pack_boxes WHERE shipment_id=$1', [sid])).rows.map(r => r.box_no));
-    // Amazon's numbering: this product's block of numbers (SKUs A→Z), when
-    // it can be worked out. Only a bonus now: box info goes to Amazon as 2D
-    // barcode by default, and then the numbers don't have to match at all,
-    // so a missing units-per-box or a full block never stops the floor — the
-    // box just takes the next free number.
-    if (!amzNos) {
-      const nb = await skuNumbering(db, sid, { [p.asin]: per });
-      const mine = nb && nb.blocks.find(x => x.asin === p.asin);
-      if (mine && !nb.missing.some(a => { const k = nb.blocks.find(x => x.asin === a); return k && k.msku < mine.msku; })) {
-        const pick = pack.blockNumbers(nb, p.asin, count, [...used]);
-        if (!pick.error) amzNos = pick.nos;
-      }
-    }
     const made = [];
     let n = 1;
     for (let i = 0; i < count; i++) {
@@ -1761,14 +1698,6 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
       [p.asin, per, L, W, H, w]);
   }
   res.status(out.status).json(out.body);
-});
-// Units per box for a product not built yet, so the box-number blocks of the
-// SKUs after it can be placed (skuNumbering). Same field the build form saves.
-app.post('/api/pack/per-box', auth, async (req, res) => {
-  const asin = String((req.body || {}).asin || ''), per = parseInt((req.body || {}).perBox, 10);
-  if (!asin || badQty(per)) return res.status(400).json({ ok: false, error: `Units per box (1–${MAX_QTY}) needed.` });
-  const r = await pool.query('UPDATE inv_products SET case_qty=$2 WHERE asin=$1', [asin, per]);
-  res.status(r.rowCount ? 200 : 404).json(r.rowCount ? { ok: true } : { ok: false, error: 'Product not found' });
 });
 // Remove a box (a label printed by mistake). Its number is reused by the
 // next box, so the numbers stay 1..N.
@@ -2379,9 +2308,10 @@ async function floorBoxes(fba, items) {
 function builtVsShipment(items, boxes) {
   return inboundLib.boxedVsPlan((items || []).map(i => ({ msku: i.msku, qty: i.qty })), boxes);
 }
-// Send each finished shipment's boxes to Amazon (box contents, size, weight),
-// then read back Amazon's box numbers and check them against the labels on
-// the boxes. Then the floor's pallets become the starting point for freight.
+// Send each finished shipment's boxes to Amazon as 2D barcode (size and
+// weight; Amazon reads the contents off each label), then check Amazon has
+// the same number of boxes. Then the floor's pallets become the starting
+// point for freight.
 async function planSendBoxes(id, args, step) {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   const S = await packSettings();
@@ -2391,12 +2321,7 @@ async function planSendBoxes(id, args, step) {
     const items = (ps && ps.amz && ps.amz.items) || [];
     const boxes = await floorBoxes(sh.fba, items);
     if (!sh.boxesSentAt) {
-      const owners = {}; for (const i of p.items) owners[i.msku] = { prepOwner: i.prepOwner, labelOwner: i.labelOwner };
-      // 2D barcode is the default: Amazon reads the contents off each box's
-      // label, so box numbers never need to match (args.source 'list' = the
-      // old way, contents tied to Amazon's own numbering).
-      sh.contentSource = (args && args.source === 'list') ? 'list' : '2D';
-      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner, owners, uniqueWeights: !!(args && args.uniqueWeights), source: sh.contentSource === '2D' ? '2D' : null });
+      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S);
       if (body.problems.length) throw new Error(sh.fba + ': ' + body.problems.join(' '));
       await step(`Sending ${boxes.length} boxes for ${sh.fba} to Amazon…`);
       const r = await amzInbound.setPackingInformation(p.plan_id, body.body);
@@ -2407,14 +2332,10 @@ async function planSendBoxes(id, args, step) {
     }
     await step(`Checking Amazon's box numbers for ${sh.fba}…`);
     const amzBoxes = await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId);
+    // 2D barcode: Amazon reads each box's contents off its label, so only the
+    // number of boxes has to agree, not which number holds what.
     sh.boxCheck = inboundLib.checkBoxIds(boxes, amzBoxes);
-    // Sent as 2D barcodes: Amazon takes each box's contents from its label,
-    // so only the number of boxes has to agree, not which number is which.
-    if (sh.contentSource === '2D') sh.boxCheck = { ...sh.boxCheck, wrong: [], twoD: true, ok: !sh.boxCheck.missing.length && !sh.boxCheck.extra.length };
-    // Kept to learn how Amazon orders box numbers (the pilot's didn't follow
-    // the order sent): Amazon's number → contents, and ours.
-    sh.amzOrder = inboundLib.amazonBoxMap(amzBoxes).map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]);
-    sh.ourOrder = boxes.map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]);
+    sh.boxCheck = { ...sh.boxCheck, wrong: [], ok: !sh.boxCheck.missing.length && !sh.boxCheck.extra.length };
     sh.boxes = boxes.length; sh.units = boxes.reduce((t, b) => t + b.items.reduce((u, i) => u + i.qty, 0), 0);
     sh.pallets = inboundLib.floorPallets(boxes, S, ps && ps.pallets);
     ships.push(sh);
@@ -2481,72 +2402,6 @@ app.post('/api/inbound/plans/:id/place', auth, async (req, res) => {
 });
 // Send the built boxes (every shipment of the plan must be finished in 2D
 // Production). Built units that differ from Amazon's shipment need `force`.
-// Amazon numbered the boxes in its own order, so some labels point at another
-// box's contents. Give each mismatched box the Amazon number that holds the
-// same contents (lib/inbound matchAmazonNumbers), so reprinting just those
-// labels makes every box agree with Amazon. Only box numbers change: no stock,
-// nothing sent to Amazon. A second press finds nothing left to move.
-app.post('/api/inbound/plans/:id/match-boxes', auth, async (req, res) => {
-  const id = parseInt(req.params.id, 10) || 0, fba = pack.normShipmentId((req.body || {}).fba);
-  const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
-  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
-  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
-  const k = (p.shipments || []).findIndex(x => x.fba === fba);
-  const sh = (p.shipments || [])[k];
-  if (!sh || !sh.boxesSentAt) return res.status(409).json({ ok: false, error: 'Send the box info to Amazon first.' });
-  const ps = (await pool.query('SELECT amz FROM inv_pack_shipments WHERE shipment_id=$1', [fba])).rows[0];
-  const items = (ps && ps.amz && ps.amz.items) || [];
-  const amz = await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId);
-  const before = await floorBoxes(fba, items);
-  const m = inboundLib.matchAmazonNumbers(before, amz);
-  if (m.unmatched.length) return res.status(409).json({ ok: false, error: `Box ${m.unmatched.join(', ')}: Amazon has no box with the same contents, so new labels can't fix it. Tell Claude.` });
-  const info = {}; for (const b of before) info[b.box_no] = { pallet: b.pallet_no || 1, items: b.items.map(i => ({ msku: i.msku, qty: i.qty })) };
-  await withTx(async (db) => {
-    await db.query('SELECT 1 FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [fba]);
-    // Two steps (negative first) so no two boxes share a number mid-way.
-    for (const mv of m.moves) await db.query('UPDATE inv_pack_boxes SET box_no=$3 WHERE shipment_id=$1 AND box_no=$2', [fba, mv.from, -mv.to]);
-    await db.query('UPDATE inv_pack_boxes SET box_no=-box_no WHERE shipment_id=$1 AND box_no<0', [fba]);
-    const after = before.map(b => ({ ...b, box_no: (m.moves.find(v => v.from === b.box_no) || {}).to || b.box_no }));
-    const ships = [...p.shipments];
-    const prev = (sh.relabel && sh.relabel.moves) || [];
-    ships[k] = { ...sh, boxCheck: inboundLib.checkBoxIds(after, amz),
-      amzOrder: sh.amzOrder || inboundLib.amazonBoxMap(amz).map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]),
-      ourOrder: sh.ourOrder || before.map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]),
-      relabel: m.moves.length ? { at: new Date().toISOString(), moves: m.moves.map(v => ({ ...v, ...info[v.from] })) } : sh.relabel || null };
-    await db.query('UPDATE inv_inbound_plans SET shipments=$2, updated_at=now() WHERE id=$1', [id, JSON.stringify(ships)]);
-  });
-  res.json({ ok: true, moves: m.moves });
-});
-// Send the box info again (allowed until the freight is booked), with every
-// box's weight made unique so Amazon can't group identical boxes and renumber
-// them. Any Fix renumbering is undone first, so the numbers sent are the ones
-// on the labels already on the boxes. Then the usual check runs; if Amazon
-// still numbers differently, Fix works as before.
-app.post('/api/inbound/plans/:id/resend-boxes', auth, async (req, res) => {
-  const id = parseInt(req.params.id, 10) || 0;
-  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
-  const out = await withTx(async (db) => {
-    const p = (await db.query('SELECT * FROM inv_inbound_plans WHERE id=$1 FOR UPDATE', [id])).rows[0];
-    if (!p) return { status: 404, body: { ok: false, error: 'Not found' } };
-    if (!['pallets', 'quotes'].includes(p.status) && !(p.status === 'error' && p.stage === 'boxes')) return { status: 409, body: { ok: false, error: 'Box info can only be re-sent after it was sent and before the freight is booked.' } };
-    const ships = [];
-    for (const sh of p.shipments || []) {
-      const mv = (sh.relabel && sh.relabel.moves) || [];
-      if (mv.length) {
-        await db.query('SELECT 1 FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sh.fba]);
-        for (const m of mv) await db.query('UPDATE inv_pack_boxes SET box_no=$3 WHERE shipment_id=$1 AND box_no=$2', [sh.fba, m.to, -m.from]);
-        await db.query('UPDATE inv_pack_boxes SET box_no=-box_no WHERE shipment_id=$1 AND box_no<0', [sh.fba]);
-      }
-      ships.push({ ...sh, boxesSentAt: null, boxCheck: null, relabel: null, prevCheck: sh.boxCheck || null });
-    }
-    await db.query("UPDATE inv_inbound_plans SET shipments=$2, freight=NULL, status='building', error=NULL, updated_at=now() WHERE id=$1", [id, JSON.stringify(ships)]);
-    return { status: 200, body: { ok: true } };
-  });
-  if (out.status !== 200) return res.status(out.status).json(out.body);
-  const args = { force: true, source: '2D' };
-  runPlanJob(id, 'Re-sending the boxes to Amazon as 2D barcodes…', (step) => planSendBoxes(id, args, step), 'boxes', args);
-  res.json({ ok: true });
-});
 app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
