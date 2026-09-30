@@ -1291,6 +1291,7 @@ function nsPlan(id){
   nsOwner().then(ok=>{ if(!ok) return; ownerApi('/api/inbound/plans/'+id).then(d=>{
     if(!d||!d.ok){ toast((d&&d.error)||'Not found',true); return; }
     const p=d.plan, el=document.getElementById('prodArea');
+    window._nsLastPlan=p;
     if(!el||(_prod&&_prod.v)) return;
     const SH=p.shipments||[], sent=SH.length&&SH.every(x=>x.boxesSentAt);
     const floorDone=SH.length&&(sent||SH.every(x=>x.floor&&x.floor.finished));
@@ -1374,8 +1375,19 @@ function nsPlan(id){
     const bad=SH.filter(x=>x.boxCheck&&!x.boxCheck.ok);
     if(bad.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Amazon numbered some boxes differently from their labels</b>'
       +bad.map(x=>'<div style="margin-top:6px;font-size:14px"><b>'+esc(x.fba)+'</b>: '+[x.boxCheck.wrong.length?'different contents on box '+x.boxCheck.wrong.join(', '):'',x.boxCheck.missing.length?'not in Amazon\'s list: box '+x.boxCheck.missing.join(', '):'',x.boxCheck.extra.length?'extra at Amazon: box '+x.boxCheck.extra.join(', '):''].filter(Boolean).join(' · ')+'</div>').join('')
-      +'<div class="hint" style="margin-top:6px">Don\'t ship those boxes as labelled — tell Claude before booking freight.</div></div>';
-    else if(sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">✅ Amazon\'s box numbers match the labels on the boxes.</div>';
+      +bad.filter(x=>x.boxCheck.wrong.length&&!x.boxCheck.missing.length&&!x.boxCheck.extra.length).map(x=>'<button class="action gold" onclick="nsMatchBoxes('+p.id+',\''+esc(x.fba)+'\','+x.boxCheck.wrong.length+')" style="margin-top:10px;font-size:16px;padding:12px 22px">🏷️ Fix '+esc(x.fba)+': give those '+x.boxCheck.wrong.length+' boxes Amazon\'s numbers</button>').join(' ')
+      +'<div class="hint" style="margin-top:6px">Don\'t ship those boxes as labelled. The fix changes only box numbers here, then you print new labels for just those boxes and stick them over the old ones.</div></div>';
+    // After the fix: which box gets which new label (print order = new number).
+    SH.filter(x=>x.relabel&&x.relabel.moves&&x.relabel.moves.length).forEach(x=>{
+      const mv=[...x.relabel.moves].sort((a,b)=>a.to-b.to);
+      if(!(window._nsRelabel||{})[x.fba]) nsRelabelView(x.fba);
+      h+='<div class="box" style="border:3px solid #ff9900;background:#fff8ec"><div style="font-family:Montserrat,sans-serif;font-size:19px;font-weight:900">🏷️ '+esc(x.fba)+': '+mv.length+' boxes get a new label</div>'
+        +'<div class="hint" style="margin-top:4px">Print them, then for each new label find the box with the OLD number and stick the new label over the old one (both the box ID and the 2D barcode). Every other box keeps its label.</div>'
+        +'<table style="width:100%;border-collapse:collapse;margin-top:10px;box-shadow:none;border-radius:0;table-layout:fixed"><tr>'+prodTh('NEW LABEL')+prodTh('PUT IT ON THE BOX LABELLED')+prodTh('PALLET')+prodTh('CONTENTS','left')+'</tr>'
+        +mv.map(r=>'<tr>'+prodTd('<b style="font-size:20px;color:#1e8449">'+r.to+'</b>')+prodTd('<b style="font-size:20px;color:#c0392b">'+r.from+'</b>')+prodTd('<b>'+(r.pallet||1)+'</b>')+prodTd(esc((r.items||[]).map(i=>i.qty+' × '+i.msku).join(', ')),'left','font-family:monospace')+'</tr>').join('')+'</table>'
+        +'<button class="action gold" onclick="nsPrintRelabel(\''+esc(x.fba)+'\')" style="margin-top:12px;width:100%;font-size:18px;padding:14px">🖨️ Print the '+mv.length+' new labels</button></div>';
+    });
+    if(!bad.length&&sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">✅ Amazon\'s box numbers match the labels on the boxes.</div>';
     // 5. Pallets → freight quotes
     if(SH.length&&(p.status==='pallets'||p.status==='quotes')){
       const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(SH.map(sh=>[sh.shipmentId,sh.pallets||[]]))))};
@@ -1437,6 +1449,29 @@ function nsPlace(id, optId, fee, where){
 const nsPlaces=o=>(o.places&&o.places.length?o.places:(o.destinations||[]).map(fc=>({fc,city:'',state:''})));
 const nsWhere=sh=>esc(sh.fc||sh.shipmentId)+(sh.city?' ('+esc(sh.city)+', '+esc(sh.state)+')':'');
 function nsGuess(id){ ownerApi('/api/inbound/plans/'+id+'/guess',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
+function nsMatchBoxes(id, fba, n){
+  if(!confirm('Give the '+n+' mismatched boxes of '+fba+' the Amazon box numbers that match what\'s inside them?\n\nOnly box numbers change in the app (no stock, nothing sent to Amazon). Then print the new labels for just those boxes.')) return;
+  api('/api/inbound/plans/'+id+'/match-boxes',{method:'POST',body:JSON.stringify({fba})}).then(d=>{
+    if(!d||d.ok===false){ alert('Not fixed: '+((d&&d.error)||'error')); return; }
+    toast(d.moves.length?d.moves.length+' boxes renumbered — print their new labels':'Nothing to change');
+    if(window._nsRelabel) delete window._nsRelabel[fba];
+    nsPlan(id);
+  }).catch(e=>toast('Not fixed: '+e.message,true));
+}
+// The shipment's boxes, loaded ahead so Print opens its window straight from
+// the tap (a window opened after a network wait is blocked as a popup).
+function nsRelabelView(fba){
+  window._nsRelabel=window._nsRelabel||{}; window._nsRelabel[fba]='loading';
+  api('/api/pack/'+encodeURIComponent(fba)).then(d=>{ if(d&&d.ok!==false) window._nsRelabel[fba]=d; else delete window._nsRelabel[fba]; }).catch(()=>{ delete window._nsRelabel[fba]; });
+}
+function nsPrintRelabel(fba){
+  const v=(window._nsRelabel||{})[fba];
+  if(!v||v==='loading'){ toast('Still loading the boxes — try again in a second',true); nsRelabelView(fba); return; }
+  const pl=(window._nsLastPlan&&window._nsLastPlan.shipments||[]).find(x=>x.fba===fba);
+  const nums=((pl&&pl.relabel&&pl.relabel.moves)||[]).map(m=>m.to);
+  if(!nums.length){ toast('No new labels to print',true); return; }
+  const save=_prod; _prod={v}; try{ prodPrint(nums); } finally{ _prod=save; }
+}
 function nsSendBoxes(id, force){
   if(!force&&!confirm('Send the built boxes (contents, size, weight) to Amazon?')) return;
   window._nsPal=null; window._nsSel=null;
