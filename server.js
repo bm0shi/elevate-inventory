@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'freight-dedupe-0930';
+const BUILD_ID = 'freight-class85-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2351,7 +2351,10 @@ async function planQuote(id, args, step) {
     const edited = (args.pallets || {})[sh.shipmentId] || sh.pallets;
     return { shipmentId: sh.shipmentId, readyToShipWindow: { start: start.toISOString() },
       contactInformation: { name: c.contactName, phoneNumber: String(c.phone).replace(/[^\d+]/g, ''), ...(c.email ? { email: c.email } : {}) },
-      pallets: inboundLib.palletsBody(edited, !!args.stackable) };
+      pallets: inboundLib.palletsBody(edited, !!args.stackable),
+      // Freight class 85 on every quote (owner's standard for our shampoo/
+      // conditioner pallets); without it Amazon picks its own class.
+      freightInformation: { freightClass: 'FC_85' } };
   });
   if (conf.some(x => !x.pallets.length)) throw new Error('Every shipment needs at least one pallet with a weight and height.');
   await step('Asking Amazon for freight quotes…');
