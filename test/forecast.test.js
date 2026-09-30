@@ -64,9 +64,10 @@ test('nothing at Amazon and no history: raw sales left out of the blend (may be 
 test('peerRate: plan on the other sellers\' average when known, ours or not (never over-send)', () => {
   const f = require('../lib/forecast');
   const low = f.peerRate({ monthly: 137, used: { instock: 1 } }, 422);   // B002CMLJMW
-  assert.strictEqual(low.monthly, 422); assert.strictEqual(low.peers, true); assert.strictEqual(low.blend, 137);
-  assert.strictEqual(480 / (low.monthly / 30) < 35, true);                 // 480 bottles ≈ 34 days, not 105
-  assert.strictEqual(f.peerRate({ monthly: 600, used: { instock: 1 } }, 422).monthly, 422);   // we outsell them: still their average
+  assert.strictEqual(low.monthly, 316.5); assert.strictEqual(low.peers, true); assert.strictEqual(low.blend, 137);   // 75% of 422
+  assert.strictEqual(low.peerAvg, 422);
+  assert.strictEqual(480 / (low.monthly / 30) < 50, true);                 // 480 bottles ≈ 45 days, not 105
+  assert.strictEqual(f.peerRate({ monthly: 600, used: { instock: 1 } }, 422).monthly, 316.5);   // we outsell them: still 75% of their average
   const none = { monthly: 600, used: { instock: 1 } };
   assert.strictEqual(f.peerRate(none, null), none);                        // no seller files: our own
 });

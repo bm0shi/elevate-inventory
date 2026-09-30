@@ -2251,9 +2251,9 @@ function loadDemand(){
 function demandRate(asin, keepaSold){
   if(!_demand) loadDemand();
   const b=_demand&&_demand.demand&&_demand.demand[asin];
-  if(b && b.monthly>0) return {mo:b.monthly, est:false, note:(b.peers?'Other sellers\' average ~'+Math.round(b.monthly)+'/mo (your own estimate ~'+Math.round(b.blend||0)+'/mo) — planning on the sellers\' average so nothing sits at Amazon':demandNote(b.used)+(_demand.learned?'':' (starting weights — it learns as 30-day checks come in)'))};
+  if(b && b.monthly>0) return {mo:b.monthly, est:false, note:(b.peers?'75% of the other sellers\' average: ~'+Math.round(b.monthly)+'/mo'+(b.peerAvg?' (their average ~'+Math.round(b.peerAvg)+'/mo)':'')+' · your own estimate ~'+Math.round(b.blend||0)+'/mo — planning low so nothing sits at Amazon':demandNote(b.used)+(_demand.learned?'':' (starting weights — it learns as 30-day checks come in)'))};
   const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
-  if(a && a.avg>0) return {mo:a.avg, est:true, note:'No best estimate yet: other sellers\' Smart Scout average'};
+  if(a && a.avg>0) return {mo:a.avg*0.75, est:true, note:'No best estimate yet: 75% of the other sellers\' Smart Scout average (~'+Math.round(a.avg)+'/mo)'};
   return {mo:keepaSold||0, est:!!keepaSold, note:'No best estimate or Smart Scout average: Keepa listing sales (all sellers, includes Amazon)'};
 }
 let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo (On Hand "3P Avg / Mo", Pending Prep)
@@ -3276,10 +3276,17 @@ function renderToAdd(){
     x._profitMoMax = x._profitUnit * u;
 
     // --- capture rate ---
-    let cap;
+    let cap; x._capSrc='';
     if(!isNaN(captureOverride) && captureOverride>0){
       cap = captureOverride/100;                       // user override
+    } else if(x.join && x.join.units!=null && u>0){
+      // Owner's rule: 75% of the other sellers' average (their files), shrunk
+      // for us joining Amazon's leftovers; no seller files → the pie split
+      // with us in. See joinRate in lib/demand.js.
+      cap = x.join.units/u;
+      x._capSrc = x.join.src==='peers' ? '75% of '+x.join.peers.join('/')+' avg' + (x.carried?'':' ÷ '+x.join.split+' sellers') : '75% of pie ÷ '+x.join.split+' sellers';
     } else {
+      x._capSrc = 'no Smart Scout data · even split';
       const sellers = (x.sellers!=null && x.sellers>0) ? x.sellers : 3;   // assume 3 if unknown
       cap = 1/(sellers+1);                             // fair share once you join
       if(x.amazonHasBuyBox){
@@ -3364,7 +3371,7 @@ function renderToAdd(){
      '<button onclick="toaddClearSel()" style="padding:7px 13px;font-size:12px;font-weight:700;background:#fff;color:#5a6472;border:1px solid #c9d4e0;border-radius:6px;cursor:pointer">Clear</button>'+
      '<button onclick="exportToadd()" style="padding:8px 16px;font-size:13px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:auto">⬇ Export to Excel</button>'+
      '</div>';
-  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Order Qty</b> = units to buy to cover the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> applies a capture rate: fair share 1/(sellers+1), reduced when Amazon holds the buy box, increased when Amazon is often out of stock. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Order Qty</b> = units to buy to cover the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> = 75% of what the other sellers average on the listing (Smart Scout seller files), shrunk for one more seller splitting Amazon\'s leftovers when we join. With no seller files: Amazon\'s leftovers (the pie) split evenly with us in, × 75%. With no Smart Scout data at all: an even split, reduced when Amazon holds the Buy Box. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
   h+='<table><thead><tr>'+
     '<th style="width:36px;text-align:center"><input type="checkbox" id="toaddSelectAll" onclick="toaddToggleAll(this.checked)" style="width:17px;height:17px;cursor:pointer" title="Select all shown"></th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
@@ -3416,7 +3423,7 @@ function renderToAdd(){
       ? `<span style="color:#5a6472;font-weight:600">$${Math.round(x._profitMoMax).toLocaleString()}</span><div style="font-size:10px;color:#c9d4e0">$${x._profitUnit.toFixed(2)}/unit</div>`
       : '<span style="color:#9db0c9">—</span>';
     const realCell = x._profitMo>0
-      ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">${Math.round(x._capture*100)}% capture · ~${Math.round(x._unitsReal)} u/mo</div>`
+      ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">~${Math.round(x._unitsReal)} u/mo · ${esc(x._capSrc||(Math.round(x._capture*100)+'% capture'))}</div>`
       : '<span style="color:#9db0c9">—</span>';
     const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
     return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td></tr>`;
