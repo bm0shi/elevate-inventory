@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pallet-layers-0930';
+const BUILD_ID = 'next-step-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2097,7 +2097,12 @@ app.get('/api/inbound/plans', auth, async (req, res) => {
   // prepped units are pulled into a second open plan.
   const r = await pool.query(`SELECT id, name, status, step, error, plan_id, created_at, updated_at,
       (SELECT COALESCE(SUM((i->>'qty')::int),0) FROM jsonb_array_elements(items) i)::int AS units, jsonb_array_length(items) AS skus,
-      (SELECT COALESCE(jsonb_agg(i->>'asin'),'[]'::jsonb) FROM jsonb_array_elements(items) i) AS asins
+      (SELECT COALESCE(jsonb_agg(i->>'asin'),'[]'::jsonb) FROM jsonb_array_elements(items) i) AS asins,
+      -- Every shipment Finished on the floor: the next step is sending the
+      -- box info (the owner finished one and couldn't tell what came next).
+      (status = 'building' AND jsonb_array_length(COALESCE(shipments,'[]'::jsonb)) > 0 AND NOT EXISTS (
+         SELECT 1 FROM jsonb_array_elements(shipments) x LEFT JOIN inv_pack_shipments ps ON ps.shipment_id = x->>'fba'
+         WHERE ps.shipment_id IS NULL OR ps.status = 'packing')) AS floor_done
     FROM inv_inbound_plans WHERE status <> 'cancelled' ORDER BY created_at DESC LIMIT 100`);
   res.json({ ok: true, plans: r.rows });
 });
