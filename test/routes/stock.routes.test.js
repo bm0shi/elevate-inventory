@@ -385,7 +385,8 @@ test('2D production: N identical boxes, pallet limit refused unless overridden, 
 });
 
 test('staff cannot reach owner routes', { skip }, async () => {
-  assert.strictEqual((await post('/api/capacity/limit', { standard: 1 })).status, 403);
+  // Capacity room left is cubic feet only; the owner dropped the password there (#132)
+  assert.notStrictEqual((await post('/api/capacity/limit', { standard: 1 })).status, 403);
   assert.strictEqual((await fetch(`http://localhost:${PORT}/api/backup/download`, { headers: H() })).status, 403);
   assert.strictEqual((await fetch(`http://localhost:${PORT}/api/plan/data`, { headers: H() })).status, 403);
 });
