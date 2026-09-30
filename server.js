@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'next-step-0930';
+const BUILD_ID = 'exp-match-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1461,7 +1461,9 @@ async function packView(sid, opts = {}) {
                  box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), units: r.caseQty, len: r.len, wid: r.wid, hgt: r.hgt } }));
   const nums = new Set(boxes.map(b => b.box_no));
   let nextBoxNo = 1; while (nums.has(nextBoxNo)) nextBoxNo++;
-  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo,
+  const want = amzExpByAsin(planItems);
+  const expMismatch = boxes.filter(b => (b.items || []).some(i => want[i.asin] && i.exp !== want[i.asin])).map(b => b.box_no);
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, expMismatch,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 // The 2D Production start page: every shipment built in the app (deleted
@@ -1636,17 +1638,41 @@ app.post('/api/pack/pallet', auth, async (req, res) => {
 // 1..N (Amazon numbers boxes that way). Refused if the destination isn't
 // confirmed, or if the boxes would take the pallet over its weight or height
 // limit — unless `override` (the floor saw the warning and chose to).
+// Set every box's expiration to the date Amazon has for its product, so the
+// labels (reprinted after) and the box info sent to Amazon agree with the
+// plan. Only dates change: no stock, no box numbers.
+app.post('/api/pack/fix-exp', auth, async (req, res) => {
+  const sid = pack.normShipmentId((req.body || {}).shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'Shipment ID needed.' });
+  const out = await withTx(async (db) => {
+    const shr = (await db.query('SELECT amz FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sid])).rows[0];
+    if (!shr) return { status: 404, body: { ok: false, error: 'Not found' } };
+    const want = amzExpByAsin(shr.amz && shr.amz.items), fixed = [];
+    for (const b of (await db.query('SELECT id, box_no, items FROM inv_pack_boxes WHERE shipment_id=$1', [sid])).rows) {
+      if (!(b.items || []).some(i => want[i.asin] && i.exp !== want[i.asin])) continue;
+      const items = b.items.map(i => want[i.asin] ? { ...i, exp: want[i.asin] } : i);
+      const one = [...new Set(items.map(i => i.exp).filter(Boolean))];
+      await db.query('UPDATE inv_pack_boxes SET items=$2, exp=$3 WHERE id=$1', [b.id, JSON.stringify(items), one.length === 1 ? one[0] : null]);
+      fixed.push(b.box_no);
+    }
+    return { status: 200, body: { ok: true, fixed: fixed.sort((a, c) => a - c) } };
+  });
+  res.status(out.status).json(out.body);
+});
 app.post('/api/pack/boxes', auth, async (req, res) => {
   const b = req.body || {};
   const sid = pack.normShipmentId(b.shipmentId), per = parseInt(b.qtyPerBox, 10), count = parseInt(b.count, 10), pal = parseInt(b.pallet, 10) || 1;
   const w = Number(b.unitWeight), L = Number(b.len), W = Number(b.wid), H = Number(b.hgt);
-  const exp = b.exp ? pack.normExp(b.exp) : null;
+  let exp = b.exp ? pack.normExp(b.exp) : null;
   if (!sid || !b.asin || badQty(per) || !(count >= 1 && count <= 200)) return res.status(400).json({ ok: false, error: 'Units per box and number of boxes are needed.' });
   if (!(w > 0 && L > 0 && W > 0 && H > 0)) return res.status(400).json({ ok: false, error: 'Unit weight and box size (L × W × H) are needed for the label and the pallet limits.' });
   if (b.exp && !exp) return res.status(400).json({ ok: false, error: 'Expiration date isn\'t a real date.' });
   const p = (await pool.query('SELECT asin, name, fnsku FROM inv_products WHERE asin=$1', [b.asin])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Product not found' });
   if (!p.fnsku) return res.status(400).json({ ok: false, error: `${p.name || p.asin} has no FNSKU on file — the label needs it.` });
+  // The shipment's own date wins: the label must match what Amazon expects.
+  { const shr = (await pool.query('SELECT amz FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
+    const e = amzExpByAsin(shr && shr.amz && shr.amz.items)[b.asin]; if (e) exp = e; }
   const boxW = boxWeightOf(w, per);
   const out = await withTx(async (db) => {
     const bad = await packLock(db, sid); if (bad) return bad;
@@ -2282,14 +2308,24 @@ async function planPlace(id, args, step) {
   await pool.query("UPDATE inv_inbound_plans SET shipments=$2, status='building', step=NULL, updated_at=now() WHERE id=$1", [id, JSON.stringify(ships)]);
 }
 // The floor's boxes for one app shipment, in Amazon's terms (seller SKUs).
+// Amazon's expiration per product on a shipment (YYMMDD), from its items.
+// Amazon refuses the box info unless each box's date matches the plan's
+// ("did not contain expected items": expected 2029-07-12, provided
+// 2029-09-23 — the floor's form had reused one typed date for every product).
+function amzExpByAsin(items) {
+  const o = {};
+  for (const i of items || []) if (i.asin && i.expiration) { const e = pack.normExp(String(i.expiration).slice(0, 10)); if (e) o[i.asin] = e; }
+  return o;
+}
 async function floorBoxes(fba, items) {
   const skuOf = {}; for (const i of items || []) if (i.asin) skuOf[i.asin] = i.msku;
+  const expOf = amzExpByAsin(items);
   const rows = (await pool.query("SELECT box_no, pallet_no, status, weight_lb::float AS weight_lb, len::float AS len, wid::float AS wid, hgt::float AS hgt, items FROM inv_pack_boxes WHERE shipment_id=$1 AND jsonb_array_length(items) > 0 ORDER BY box_no", [fba])).rows;
   if (rows.some(b => b.items.some(i => !skuOf[i.asin]))) {
     const need = [...new Set(rows.flatMap(b => b.items.map(i => i.asin)).filter(a => !skuOf[a]))];
     for (const r of (await pool.query('SELECT asin, sku FROM inv_products WHERE asin = ANY($1)', [need])).rows) if (r.sku) skuOf[r.asin] = r.sku;
   }
-  return rows.map(b => ({ ...b, items: b.items.map(i => ({ ...i, msku: skuOf[i.asin] || null })) }));
+  return rows.map(b => ({ ...b, items: b.items.map(i => ({ ...i, msku: skuOf[i.asin] || null, exp: expOf[i.asin] || i.exp })) }));
 }
 // Built vs Amazon's shipment, per SKU, for the screen and the send check.
 function builtVsShipment(items, boxes) {

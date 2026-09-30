@@ -1580,6 +1580,12 @@ function prodRender(){
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
   h+=next;
+  // Boxes whose expiration differs from Amazon's plan: Amazon refuses the box
+  // info until they match, and the printed labels should match too.
+  if(v.expMismatch&&v.expMismatch.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea;text-align:center;padding:18px">'
+    +'<div style="font-family:Montserrat,sans-serif;font-size:20px;font-weight:900;color:#c0392b">⛔ '+v.expMismatch.length+' BOX'+(v.expMismatch.length===1?'':'ES')+' HAVE A DIFFERENT EXPIRATION THAN AMAZON EXPECTS</div>'
+    +'<div style="font-size:14px;margin-top:6px">Box '+v.expMismatch.join(', ')+'. Fix sets each box to Amazon\'s date for its product, then reprints those labels — stick the new labels over the old ones. Nothing else changes.</div>'
+    +'<button class="action gold" onclick="prodFixExp()" style="margin-top:12px;font-size:17px;padding:13px 28px">🗓️ Fix dates &amp; reprint '+v.expMismatch.length+' label'+(v.expMismatch.length===1?'':'s')+'</button></div>';
   if(sh.amz_error) h+='<div class="box" style="border:2px solid #c0392b;color:#c0392b"><b>Amazon lookup failed:</b> '+esc(sh.amz_error)+'<div class="hint">Check the ID, or enter the destination by hand below.</div></div>';
   // Destination
   const conf=!!sh.dest_confirmed_at;
@@ -1726,7 +1732,13 @@ function prodRender(){
   const sc=document.getElementById('prodScan'); if(sc&&!_prod.sel) sc.focus();
 }
 function prodTogglePallet(n){ const o=_prod.openPallets||[]; _prod.openPallets=o.includes(n)?o.filter(x=>x!==n):o.concat([n]); prodRender(); }
-function prodExpDefault(row){ try{ const m=JSON.parse(localStorage_get('prodExp')||'{}'); return m[prodSid()]||(row&&row.expiration)||''; }catch(e){ return ''; } }
+// Amazon's date for this product on this shipment always wins (the box
+// info is refused otherwise). Remembered per shipment AND product: it used
+// to be per shipment, so one typed date went on every product's labels.
+function prodExpDefault(row){
+  if(row&&row.expiration){ const d=String(row.expiration).slice(0,10).split('-'); if(d.length===3) return d[1]+'/'+d[2]+'/'+d[0]; }
+  try{ const m=JSON.parse(localStorage_get('prodExp2')||'{}'); return (row&&m[prodSid()+'|'+row.asin])||''; }catch(e){ return ''; }
+}
 function prodScan(code){
   code=String(code||'').trim(); if(!code) return;
   api('/api/pack/product/'+encodeURIComponent(code)).then(d=>{
@@ -1762,7 +1774,7 @@ function prodMake(override, palletNo, countOverride){
   if(!v.shipment.dest_confirmed_at){ toast('Confirm the destination first — it prints on every label',true); return; }
   if(v.plan.length&&!row&&!override&&!confirm('This product is NOT in Amazon\'s shipment '+prodSid()+'. Amazon may refuse it. Make the boxes anyway?')) return;
   if(row&&f.count*f.per>row.left&&!override&&!confirm('That\'s more than the shipment still needs ('+row.left+' left). Continue?')) return;
-  try{ const m=JSON.parse(localStorage_get('prodExp')||'{}'); m[prodSid()]=f.exp; localStorage_set('prodExp',JSON.stringify(m)); }catch(e){}
+  try{ const m=JSON.parse(localStorage_get('prodExp2')||'{}'); m[prodSid()+'|'+((_prod.sel||{}).asin||'')]=f.exp; localStorage_set('prodExp2',JSON.stringify(m)); }catch(e){}
   const count=countOverride||f.count, pal=palletNo||v.currentPallet;
   const btn=document.getElementById('prodMakeBtn'); if(btn) btn.disabled=true;
   api('/api/pack/boxes',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), asin:P.asin, qtyPerBox:f.per, count, pallet:pal, unitWeight:f.w, len:f.L, wid:f.W, hgt:f.H, exp:f.exp||null, override:!!override})}).then(d=>{
@@ -1925,6 +1937,13 @@ function prodFinishGo(){
     if(!d||d.ok===false){ toast('NOT finished: '+((d&&(d.message||d.error))||'error'),true); return; }
     toast('Done: '+d.units+' units in '+d.boxes+' boxes moved to In Transit'); prodLoad(prodSid()); try{ loadProducts(); }catch(e){}
   }).catch(e=>toast('NOT finished — connection problem: '+e.message,true));
+}
+function prodFixExp(){
+  api('/api/pack/fix-exp',{method:'POST',body:JSON.stringify({shipmentId:prodSid()})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not fixed',true); return; }
+    toast('Fixed '+d.fixed.length+' box'+(d.fixed.length===1?'':'es')+' — reprinting');
+    prodLoad(prodSid()).then(()=>{ if(d.fixed.length) prodPrint(d.fixed); });
+  }).catch(e=>toast('Not fixed: '+e.message,true));
 }
 function prodCopyBoxes(){
   const rows=_prod.v.boxes.filter(b=>b.status==='closed'&&b.items.length).sort((a,b)=>a.box_no-b.box_no).map(b=>['Box '+b.box_no, b.boxId, 'Pallet '+(b.pallet_no||1), (b.weight_lb||'')+' lb', b.len?b.len+' x '+b.wid+' x '+b.hgt+' in':'', b.items.map(i=>i.fnsku+' x'+i.qty).join(' ')].join('\t'));
