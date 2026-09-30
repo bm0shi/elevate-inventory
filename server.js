@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'book-one-tap-0930';
+const BUILD_ID = 'next-step-stage-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1461,7 +1461,18 @@ async function packView(sid, opts = {}) {
                  box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), units: r.caseQty, len: r.len, wid: r.wid, hgt: r.hgt } }));
   const nums = new Set(boxes.map(b => b.box_no));
   let nextBoxNo = 1; while (nums.has(nextBoxNo)) nextBoxNo++;
-  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo,
+  // Where the app-made plan behind this shipment is, so the finished page
+  // shows the real next step (it kept saying "send box info" after the
+  // freight was booked).
+  let planStage = null;
+  if (sh.amz && sh.amz.planRow) {
+    const pr = (await pool.query('SELECT status, shipments FROM inv_inbound_plans WHERE id=$1', [sh.amz.planRow])).rows[0];
+    if (pr) {
+      const me = (pr.shipments || []).find(x => x.fba === sid) || {};
+      planStage = pr.status === 'confirmed' ? 'booked' : me.boxesSentAt ? 'freight' : 'boxes';
+    }
+  }
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, planStage,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 // The 2D Production start page: every shipment built in the app (deleted
