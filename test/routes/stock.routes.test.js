@@ -246,6 +246,9 @@ test('pack boxes: scan, close (label text), finish deducts once; nothing changes
   // A: 4 singles + 2 in duos; B: 3 singles + 2 in duos
   assert.deepStrictEqual(await stock('TSTA'), { onhand: A.onhand - 6, transit: A.transit + 6 });
   assert.deepStrictEqual(await stock('TSTB'), { onhand: B.onhand - 5, transit: B.transit + 5 });
+  // Stored as bottles, but each line remembers what it shipped as (single or the duo)
+  const rows = (await pool.query(`SELECT asin, shipped_as, SUM(qty)::int AS q FROM inv_shipment_items WHERE shipment_id=$1 GROUP BY 1,2 ORDER BY 1,2`, [SID])).rows;
+  assert.deepStrictEqual(rows.map(r => [r.asin, r.shipped_as, r.q]), [['TSTA', 'TSTA', 4], ['TSTA', 'TSTDUO', 2], ['TSTB', 'TSTB', 3], ['TSTB', 'TSTDUO', 2]]);
   assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 3, code: 'TSTA' })).status, 409);
   assert.strictEqual((await post('/api/pack/finish', { shipmentId: SID })).status, 409);
   assert.deepStrictEqual(await stock('TSTA'), { onhand: A.onhand - 6, transit: A.transit + 6 });
