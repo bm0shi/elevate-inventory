@@ -53,3 +53,30 @@ test('unit weight from Amazon catalog data, in pounds', () => {
   assert.strictEqual(unitWeightLb({ item: { weight: { unit: 'kilograms', value: 1 } } }), 2.205);
   assert.strictEqual(unitWeightLb({ package: {} }), null);
 });
+
+test('box numbers follow Amazon: SKUs A→Z, each SKU a block, any build order', () => {
+  const { skuBlocks, blockNumbers, blockMisfits } = require('../lib/pack');
+  // The pilot's SKUs (quantities made up to the same box counts).
+  const items = [
+    { asin: 'TT', msku: 'TT Color Cond. Liter', qty: 70 }, { asin: 'EF', msku: 'EF-LC17-YC8K', qty: 10 },
+    { asin: '6G', msku: '6G-LRYZ-9L0S', qty: 24 }, { asin: 'I4', msku: 'I4-57YE-F8II', qty: 12 },
+    { asin: 'O5', msku: 'O5-PB55-7VXU', qty: 6 }, { asin: '3L', msku: '3L-HCWL-B9J3', qty: 18 }, { asin: 'E7', msku: 'E7-D3O7-1IBL', qty: 30 }];
+  const per = { TT: 10, EF: 10, '6G': 12, I4: 12, O5: 6, '3L': 6, E7: 10 };
+  const p = skuBlocks(items, [], per);
+  assert.deepStrictEqual(p.blocks.map(b => [b.msku.slice(0, 2), b.start, b.end]),
+    [['3L', 1, 3], ['6G', 4, 5], ['E7', 6, 8], ['EF', 9, 9], ['I4', 10, 10], ['O5', 11, 11], ['TT', 12, 18]]);
+  assert.strictEqual(p.total, 18);
+  // The floor builds TT first: it gets 12-18, the numbers Amazon will give it.
+  assert.deepStrictEqual(blockNumbers(p, 'TT', 7, []).nos, [12, 13, 14, 15, 16, 17, 18]);
+  assert.strictEqual(blockNumbers(p, 'TT', 8, []).error, 'block_full');
+  // A SKU before this one with no units per box: can't place the block yet.
+  assert.deepStrictEqual(skuBlocks(items, [], { ...per, '3L': null }).missing, ['3L']);
+  // Built boxes count as they are; the rest from units per box.
+  const built = [{ box_no: 1, asin: '3L', units: 6 }, { box_no: 2, asin: '3L', units: 6 }];
+  const p2 = skuBlocks(items, built, per);
+  assert.strictEqual(p2.blocks[0].boxes, 3);
+  assert.deepStrictEqual(blockNumbers(p2, '3L', 1, [1, 2]).nos, [3]);
+  // Units per box changed on 3L after TT was labelled: TT's labels no longer fit.
+  const p3 = skuBlocks(items, [...built, { box_no: 12, asin: 'TT', units: 10 }], { ...per, '3L': 3 });
+  assert.deepStrictEqual(blockMisfits(p3, [...built, { box_no: 12, asin: 'TT', units: 10 }]), [12]);
+});

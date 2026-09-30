@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'resend-unique-0930';
+const BUILD_ID = 'sku-box-numbers-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1398,6 +1398,30 @@ async function packSettings() {
   return { ...pallet.settings(d), shipFrom: d.shipFrom || null };
 }
 const boxWeightOf = (unitLb, qty) => unitLb > 0 && qty > 0 ? Math.round(unitLb * qty * 100) / 100 : null;
+// Amazon numbers a shipment's boxes by seller SKU A→Z (lib/pack skuBlocks),
+// so each SKU gets a block of box numbers and labels printed as boxes are
+// built already carry Amazon's numbers. null for shipments planned box by
+// box up front (amz_boxes: Amazon already numbered them) or with no items.
+// perOverride: { asin: units per box } being used right now on the floor.
+async function skuNumbering(db, sid, perOverride) {
+  const sh = (await db.query('SELECT amz, amz_boxes FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
+  if (!sh || sh.amz_boxes) return null;
+  const raw = ((sh.amz && sh.amz.items) || []).filter(i => i.msku && Number(i.qty) > 0);
+  if (!raw.length) return null;
+  const need = raw.filter(i => !i.asin);
+  const map = {};
+  if (need.length) for (const r of (await db.query('SELECT asin, sku, UPPER(fnsku) AS fnsku FROM inv_products WHERE sku = ANY($1) OR UPPER(fnsku) = ANY($2)',
+    [need.map(i => i.msku), need.map(i => String(i.fnsku || '').toUpperCase())])).rows) { if (r.sku) map['s:' + r.sku] = r.asin; if (r.fnsku) map['f:' + r.fnsku] = r.asin; }
+  const items = raw.map(i => ({ msku: i.msku, qty: Number(i.qty), asin: i.asin || map['s:' + i.msku] || map['f:' + String(i.fnsku || '').toUpperCase()] || null })).filter(i => i.asin);
+  const rows = (await db.query("SELECT box_no, items FROM inv_pack_boxes WHERE shipment_id=$1 AND status='closed' AND jsonb_array_length(items) = 1", [sid])).rows;
+  const built = rows.map(b => ({ box_no: b.box_no, asin: b.items[0].asin, units: Number(b.items[0].qty) || 0 }));
+  const perBox = {};
+  for (const r of (await db.query('SELECT asin, case_qty FROM inv_products WHERE asin = ANY($1)', [items.map(i => i.asin)])).rows) if (r.case_qty > 0) perBox[r.asin] = r.case_qty;
+  Object.assign(perBox, perOverride || {});
+  const plan = pack.skuBlocks(items, built, perBox);
+  plan.misfits = pack.blockMisfits(plan, built);
+  return plan;
+}
 async function packView(sid, opts = {}) {
   const sh = (await pool.query('SELECT * FROM inv_pack_shipments WHERE shipment_id=$1', [sid])).rows[0];
   if (!sh) return null;
@@ -1460,10 +1484,13 @@ async function packView(sid, opts = {}) {
     .map(r => ({ asin: r.asin, name: r.name, perBox: r.caseQty, boxesLeft: Math.ceil(r.left / r.caseQty),
                  box: { weight_lb: boxWeightOf(r.unitWeight, r.caseQty), units: r.caseQty, len: r.len, wid: r.wid, hgt: r.hgt } }));
   const nums = new Set(boxes.map(b => b.box_no));
-  let nextBoxNo = 1; while (nums.has(nextBoxNo)) nextBoxNo++;
+  const numbering = await skuNumbering(pool, sid);
+  // A mixed box goes after every product's block (Amazon's place for it isn't known).
+  let nextBoxNo = numbering ? numbering.total + 1 : 1; while (nums.has(nextBoxNo)) nextBoxNo++;
+  if (numbering) { const at = {}; for (const b of numbering.blocks) at[b.asin] = b; for (const r of plan) if (at[r.asin]) { r.boxNos = [at[r.asin].start, at[r.asin].end]; r.noPerBox = numbering.missing.includes(r.asin); } }
   const want = amzExpByAsin(planItems);
   const expMismatch = boxes.filter(b => (b.items || []).some(i => want[i.asin] && i.exp !== want[i.asin])).map(b => b.box_no);
-  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, expMismatch,
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, expMismatch, numbering,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 // The 2D Production start page: every shipment built in the app (deleted
@@ -1702,6 +1729,24 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
         message: `Pallet ${pal} only has room for ${fit.n} more of these (${fit.limitedBy}).` } };
     }
     const used = new Set((await db.query('SELECT box_no FROM inv_pack_boxes WHERE shipment_id=$1', [sid])).rows.map(r => r.box_no));
+    // Amazon's numbering: this product's block of numbers (SKUs A→Z).
+    if (!amzNos) {
+      const nb = await skuNumbering(db, sid, { [p.asin]: per });
+      if (nb) {
+        const mine = nb.blocks.find(x => x.asin === p.asin);
+        if (mine) {
+          const before = nb.missing.filter(a => { const k = nb.blocks.find(x => x.asin === a); return k && k.msku < mine.msku; });
+          if (before.length) {
+            const names = (await db.query('SELECT asin, name FROM inv_products WHERE asin = ANY($1)', [before])).rows.map(r => String(r.name || r.asin).slice(0, 50));
+            return { status: 409, body: { ok: false, error: 'units_per_box_needed', asins: before,
+              message: `Amazon numbers boxes by SKU, A→Z, so the box numbers for this product depend on how many boxes come before it. Set "units per box" first for: ${names.join(' · ')}.` } };
+          }
+          const pick = pack.blockNumbers(nb, p.asin, count, [...used]);
+          if (pick.error) return { status: 409, body: { ok: false, error: `This shipment has room for ${mine.boxes} box${mine.boxes === 1 ? '' : 'es'} of this product at ${per} per box (${(pick.nos || []).length} left). More would shift every box number after it. Check units per box and the number of boxes.` } };
+          amzNos = pick.nos;
+        }
+      }
+    }
     const made = [];
     let n = 1;
     for (let i = 0; i < count; i++) {
@@ -1721,6 +1766,14 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
       [p.asin, per, L, W, H, w]);
   }
   res.status(out.status).json(out.body);
+});
+// Units per box for a product not built yet, so the box-number blocks of the
+// SKUs after it can be placed (skuNumbering). Same field the build form saves.
+app.post('/api/pack/per-box', auth, async (req, res) => {
+  const asin = String((req.body || {}).asin || ''), per = parseInt((req.body || {}).perBox, 10);
+  if (!asin || badQty(per)) return res.status(400).json({ ok: false, error: `Units per box (1–${MAX_QTY}) needed.` });
+  const r = await pool.query('UPDATE inv_products SET case_qty=$2 WHERE asin=$1', [asin, per]);
+  res.status(r.rowCount ? 200 : 404).json(r.rowCount ? { ok: true } : { ok: false, error: 'Product not found' });
 });
 // Remove a box (a label printed by mistake). Its number is reused by the
 // next box, so the numbers stay 1..N.
