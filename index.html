@@ -1317,7 +1317,7 @@ function nsPlan(id){
       +stepRow(done('place'),'2. Destination confirmed → FBA ID',chosen&&p.placement_confirmed_at?(SH.map(x=>esc(x.fba)+(x.fc?' → '+nsWhere(x):'')).join(' · ')+' · placement fee '+(chosen.fee>0?$$(chosen.fee):'none')):'')
       +stepRow(done('floor'),'3. Boxes built & labelled, Finish pressed in Shipment Production')
       +stepRow(done('boxes'),'4. Box info sent to Amazon',sent?SH.map(x=>x.boxes+' boxes'+(x.boxCheck&&!x.boxCheck.ok?' · ⚠️ box count differs':'')).join(' · '):'')
-      +stepRow(done('freight'),'5. Freight quotes from the floor\'s pallets')+stepRow(done('conf'),'6. Freight booked → bill of lading & pallet labels',p.confirmed?esc((p.confirmed.shipments||[]).join(' · ')):'')+'</div>';
+      +stepRow(done('freight'),'5. Freight quotes from the floor\'s pallets')+stepRow(done('conf'),'6. Freight booked → bill of lading & pallet labels',p.confirmed?esc((p.confirmed.shipments||[]).join(' · '))+' · freight '+$$(p.confirmed.freight)+' + placement '+$$(p.confirmed.placementFee)+' = <b>'+$$((Number(p.confirmed.freight)||0)+(Number(p.confirmed.placementFee)||0))+'</b>':'')+'</div>';
     // 2. Pick + confirm a destination
     if(p.placement&&p.placement.length&&!p.placement_confirmed_at&&p.status!=='working'){
       const tots=p.placement.map(o=>o.guess&&o.guess.freight!=null?(o.fee||0)+o.guess.freight:null), lo=Math.min(...tots.filter(x=>x!=null));
@@ -1417,7 +1417,8 @@ function nsPlan(id){
         +'<div class="hint" style="margin-top:6px"><b>Your Amazon account is charged after this step</b> — nothing before it. The bill of lading and pallet labels come next (in Shipment Production, on the shipment).</div></div>';
     }
     if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon</b>'
-      +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): '+$$(p.confirmed.placementFee)+'</div>'
+      +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): <b>'+$$(p.confirmed.placementFee)+'</b></div>'
+      +'<div style="margin-top:6px;font-size:20px;font-weight:900">Total: '+$$((Number(p.confirmed.freight)||0)+(Number(p.confirmed.placementFee)||0))+' <span style="font-size:13px;font-weight:700;color:#5f6675">freight + placement</span></div>'
       +(p.confirmed.shipments||[]).map(f=>'<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-family:monospace;font-size:18px">'+esc(f)+'</b>'+openBtn(f)+'<span style="font-size:16px;font-weight:800;color:#0f1111">📄 Bill of lading &amp; pallet labels are on the shipment</span></div>').join('')+'</div>';
     h+='<div class="box" style="overflow-x:auto"><b>Products</b><table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('SKU','left')+prodTh('UNITS')+prodTh('EXPIRATION')+'</tr>'
       +p.items.map(i=>'<tr>'+prodTd(esc(String(i.name||i.asin).slice(0,80)),'left')+prodTd(esc(i.msku),'left','font-family:monospace')+prodTd('<b>'+i.qty+'</b>')+prodTd(i.exp?expText(i.exp):'—')+'</tr>').join('')+'</table></div>';
