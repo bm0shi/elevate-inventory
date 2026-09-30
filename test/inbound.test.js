@@ -130,6 +130,15 @@ test('pack later: Amazon\'s box numbers checked against the labels', () => {
   assert.deepStrictEqual(ib.checkBoxIds(ours, swapped), { ok: false, wrong: [1, 2], missing: [], extra: [3] });
 });
 
+test('unique weights: each box is 0.01 lb × its number heavier, so no two identical boxes look the same to Amazon', () => {
+  const bx = (n) => ({ box_no: n, items: [{ msku: 'A', qty: 10 }], weight_lb: 24, len: 12, wid: 12, hgt: 10 });
+  const w = (opt) => ib.shipmentBoxesBody('sh1', [bx(1), bx(2), bx(26)].map((b, i) => ({ ...b, box_no: i + 1 })), {}, opt).body.packageGroupings[0].boxes.map(b => b.weight.value);
+  const plain = w({});
+  assert.strictEqual(new Set(plain).size, 1);   // identical boxes, identical weight
+  const u = w({ uniqueWeights: true });
+  assert.deepStrictEqual(u.map((v, i) => Math.round((v - plain[i]) * 100)), [1, 2, 3]);
+});
+
 test('Amazon numbered the boxes differently: only the mismatched boxes get Amazon\'s number for their contents', () => {
   const b = (n, msku, qty) => ({ box_no: n, items: [{ msku, qty }] });
   const a = (n, msku, qty) => ({ boxId: 'FBA1U' + String(n).padStart(6, '0'), items: [{ msku, quantity: qty }] });
