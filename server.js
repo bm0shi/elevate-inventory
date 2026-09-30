@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'freight-total-0930';
+const BUILD_ID = 'transit-split-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -691,6 +691,10 @@ async function initDb() {
       qty_received INTEGER
     );
     ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS qty_received INTEGER;
+    -- What the line shipped as (the duo ASIN for a bottle that went out inside
+    -- a duo, else the bottle's own ASIN). Rows are stored as bottles so On Hand
+    -- and In Transit stay right; this keeps singles and duos apart on the card.
+    ALTER TABLE inv_shipment_items ADD COLUMN IF NOT EXISTS shipped_as TEXT;
   `);
 
   // Seed products once (only if table empty)
@@ -1265,8 +1269,41 @@ app.get('/api/products', auth, async (req, res) => {
       referralPct: m.referralPct != null ? m.referralPct : null,
     };
   });
+  // On the way from here, split like the "At Amazon by listing" table:
+  // bottles shipped as singles vs inside duos (owner: duos mustn't blur the
+  // single count). Shipments made in Shipment Production are split from their
+  // boxes; others from shipped_as (recorded from now on); older lines that
+  // can't be split stay "other".
+  try {
+    const split = await transitSplit();
+    for (const o of out) if (split[o.asin]) o.transit_split = split[o.asin];
+  } catch (e) { console.error('[Products] transit split:', e.message); }
   res.json(out);
 });
+async function transitSplit() {
+  const rows = (await pool.query(`SELECT si.shipment_id, si.asin, si.qty, si.shipped_as
+    FROM inv_shipment_items si JOIN inv_shipments s ON s.shipment_id = si.shipment_id
+    WHERE s.status = 'in_transit' AND si.qty > 0`)).rows;
+  if (!rows.length) return {};
+  const ids = [...new Set(rows.map(r => r.shipment_id))];
+  const boxes = (await pool.query(`SELECT shipment_id, items FROM inv_pack_boxes
+    WHERE shipment_id = ANY($1) AND status = 'closed' AND jsonb_array_length(items) > 0`, [ids])).rows;
+  const bundles = (await pool.query('SELECT bundle_asin, component_asin, COALESCE(qty,1) AS qty FROM inv_bundles')).rows;
+  const comps = {}; for (const b of bundles) (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push(b);
+  const out = {};
+  const add = (asin, kind, n) => { const x = out[asin] = out[asin] || { single: 0, duo: 0, other: 0 }; x[kind] += n; };
+  const fromBoxes = new Set(boxes.map(b => b.shipment_id));
+  for (const b of boxes) for (const i of b.items) {
+    const q = Number(i.qty) || 0;
+    if (comps[i.asin]) for (const c of comps[i.asin]) add(c.component_asin, 'duo', q * c.qty);
+    else add(i.asin, 'single', q);
+  }
+  for (const r of rows) {
+    if (fromBoxes.has(r.shipment_id)) continue;
+    add(r.asin, !r.shipped_as ? 'other' : r.shipped_as === r.asin ? 'single' : 'duo', r.qty);
+  }
+  return out;
+}
 
 // assign a UPC to a product (learn-as-you-scan)
 app.post('/api/assign-upc', auth, async (req, res) => {
@@ -1359,7 +1396,7 @@ async function applyShipItems(db, shipmentId, items) {
       const parts = await expandToComponents(matchedAsin, q);
       for (const part of parts) {
         await db.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
-        await db.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
+        await db.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty, shipped_as) VALUES($1,$2,$3,$4)', [shipmentId, part.asin, part.qty, matchedAsin]);
         const note = part.fromBundle ? ('Shipment ' + shipmentId + ' (from ' + rows[0].name.slice(0,20) + ' duo)') : ('Shipment ' + shipmentId);
         await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
           ['out', part.asin, part.name, part.qty, note]);
@@ -5240,7 +5277,7 @@ app.post('/api/ship-from-tsv', auth, upload.single('file'), async (req, res) => 
       if (isPreview) { done++; continue; }  // preview: don't actually deduct
       for (const part of parts) {
         await db.query('UPDATE inv_stock SET onhand = onhand - $1, transit = transit + $1 WHERE asin=$2', [part.qty, part.asin]);
-        await db.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES($1,$2,$3)', [shipmentId, part.asin, part.qty]);
+        await db.query('INSERT INTO inv_shipment_items(shipment_id, asin, qty, shipped_as) VALUES($1,$2,$3,$4)', [shipmentId, part.asin, part.qty, matchedAsin]);
         await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
           ['out', part.asin, part.name, part.qty, part.fromBundle ? ('Shipment '+shipmentId+' (duo)') : ('Shipment '+shipmentId)]);
       }
