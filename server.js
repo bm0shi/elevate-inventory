@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'match-box-numbers-0930b';
+const BUILD_ID = 'resend-unique-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2344,7 +2344,7 @@ async function planSendBoxes(id, args, step) {
     const boxes = await floorBoxes(sh.fba, items);
     if (!sh.boxesSentAt) {
       const owners = {}; for (const i of p.items) owners[i.msku] = { prepOwner: i.prepOwner, labelOwner: i.labelOwner };
-      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner, owners });
+      const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S, { prepOwner: p.prep_owner, owners, uniqueWeights: !!(args && args.uniqueWeights) });
       if (body.problems.length) throw new Error(sh.fba + ': ' + body.problems.join(' '));
       await step(`Sending ${boxes.length} boxes for ${sh.fba} to Amazon…`);
       const r = await amzInbound.setPackingInformation(p.plan_id, body.body);
@@ -2461,6 +2461,36 @@ app.post('/api/inbound/plans/:id/match-boxes', auth, async (req, res) => {
     await db.query('UPDATE inv_inbound_plans SET shipments=$2, updated_at=now() WHERE id=$1', [id, JSON.stringify(ships)]);
   });
   res.json({ ok: true, moves: m.moves });
+});
+// Send the box info again (allowed until the freight is booked), with every
+// box's weight made unique so Amazon can't group identical boxes and renumber
+// them. Any Fix renumbering is undone first, so the numbers sent are the ones
+// on the labels already on the boxes. Then the usual check runs; if Amazon
+// still numbers differently, Fix works as before.
+app.post('/api/inbound/plans/:id/resend-boxes', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
+  const out = await withTx(async (db) => {
+    const p = (await db.query('SELECT * FROM inv_inbound_plans WHERE id=$1 FOR UPDATE', [id])).rows[0];
+    if (!p) return { status: 404, body: { ok: false, error: 'Not found' } };
+    if (!['pallets', 'quotes'].includes(p.status) && !(p.status === 'error' && p.stage === 'boxes')) return { status: 409, body: { ok: false, error: 'Box info can only be re-sent after it was sent and before the freight is booked.' } };
+    const ships = [];
+    for (const sh of p.shipments || []) {
+      const mv = (sh.relabel && sh.relabel.moves) || [];
+      if (mv.length) {
+        await db.query('SELECT 1 FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [sh.fba]);
+        for (const m of mv) await db.query('UPDATE inv_pack_boxes SET box_no=$3 WHERE shipment_id=$1 AND box_no=$2', [sh.fba, m.to, -m.from]);
+        await db.query('UPDATE inv_pack_boxes SET box_no=-box_no WHERE shipment_id=$1 AND box_no<0', [sh.fba]);
+      }
+      ships.push({ ...sh, boxesSentAt: null, boxCheck: null, relabel: null, prevCheck: sh.boxCheck || null });
+    }
+    await db.query("UPDATE inv_inbound_plans SET shipments=$2, freight=NULL, status='building', error=NULL, updated_at=now() WHERE id=$1", [id, JSON.stringify(ships)]);
+    return { status: 200, body: { ok: true } };
+  });
+  if (out.status !== 200) return res.status(out.status).json(out.body);
+  const args = { force: true, uniqueWeights: true };
+  runPlanJob(id, 'Re-sending the boxes to Amazon with unique weights…', (step) => planSendBoxes(id, args, step), 'boxes', args);
+  res.json({ ok: true });
 });
 app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;

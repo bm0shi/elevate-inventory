@@ -1387,6 +1387,12 @@ function nsPlan(id){
         +mv.map(r=>'<tr>'+prodTd('<b style="font-size:20px;color:#1e8449">'+r.to+'</b>')+prodTd('<b style="font-size:20px;color:#c0392b">'+r.from+'</b>')+prodTd('<b>'+(r.pallet||1)+'</b>')+prodTd(esc((r.items||[]).map(i=>i.qty+' × '+i.msku).join(', ')),'left','font-family:monospace')+'</tr>').join('')+'</table>'
         +'<button class="action gold" onclick="nsPrintRelabel(\''+esc(x.fba)+'\')" style="margin-top:12px;width:100%;font-size:18px;padding:14px">🖨️ Print the '+mv.length+' new labels</button></div>';
     });
+    // Try again before relabelling: re-send with every box's weight made unique
+    // (Amazon groups identical boxes and renumbers the groups).
+    if((bad.length||SH.some(x=>x.relabel&&x.relabel.moves&&x.relabel.moves.length))&&(p.status==='pallets'||p.status==='quotes'))
+      h+='<div class="box" style="border:2px dashed #008296;text-align:center"><div style="font-weight:800">Haven\'t stuck the new labels on yet? Try this first:</div>'
+        +'<div class="hint" style="margin-top:4px">Sends the box info again with each box 0.01 lb × its number heavier (box 26 = +0.26 lb), so Amazon can\'t group identical boxes. Box numbers go back to the ones on your labels. If Amazon then matches, no new labels are needed; if not, the Fix button comes back.</div>'
+        +'<button class="action" onclick="nsResendBoxes('+p.id+')" style="margin-top:10px;background:#008296;font-size:16px;padding:12px 24px">↻ Re-send box info with unique weights</button></div>';
     if(!bad.length&&sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">✅ Amazon\'s box numbers match the labels on the boxes.</div>';
     // 5. Pallets → freight quotes
     if(SH.length&&(p.status==='pallets'||p.status==='quotes')){
@@ -1449,6 +1455,13 @@ function nsPlace(id, optId, fee, where){
 const nsPlaces=o=>(o.places&&o.places.length?o.places:(o.destinations||[]).map(fc=>({fc,city:'',state:''})));
 const nsWhere=sh=>esc(sh.fc||sh.shipmentId)+(sh.city?' ('+esc(sh.city)+', '+esc(sh.state)+')':'');
 function nsGuess(id){ ownerApi('/api/inbound/plans/'+id+'/guess',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
+function nsResendBoxes(id){
+  if(!confirm('Send the box info to Amazon again with a unique weight on every box?\n\nOnly do this if the new labels are NOT stuck on yet — box numbers go back to the ones on the boxes now.\n\nNothing is charged.')) return;
+  api('/api/inbound/plans/'+id+'/resend-boxes',{method:'POST',body:'{}'}).then(d=>{
+    if(!d||d.ok===false){ alert('Not sent: '+((d&&d.error)||'error')); return; }
+    toast('Re-sending to Amazon…'); window._nsRelabel={}; nsPlan(id);
+  }).catch(e=>toast('Not sent: '+e.message,true));
+}
 function nsMatchBoxes(id, fba, n){
   if(!confirm('Give the '+n+' mismatched boxes of '+fba+' the Amazon box numbers that match what\'s inside them?\n\nOnly box numbers change in the app (no stock, nothing sent to Amazon). Then print the new labels for just those boxes.')) return;
   api('/api/inbound/plans/'+id+'/match-boxes',{method:'POST',body:JSON.stringify({fba})}).then(d=>{
