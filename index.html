@@ -3999,17 +3999,17 @@ function renderCapBar(){
       +'<div style="position:absolute;left:'+w(now+prep)+'%;top:0;bottom:0;width:'+Math.max(0,w(tot)-w(now+prep))+'%;background:#7a4fb5" title="Pending prep: '+f(pend)+' cu ft"></div></div>':'';
     return '<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px">'
       +'<span><b>'+label+'</b> · <span style="color:#2563a8">'+f(now)+' at Amazon + on the way</span> + <span style="color:#b7791f">'+f(prep)+' prepped</span> + <span style="color:#7a4fb5">'+f(pend)+' pending prep</span></span>'
-      +'<b style="color:'+col+'">'+f(tot)+(limit?' of '+f(limit)+' cu ft ('+Math.round(pct)+'%)'+(pct>100?' — OVER by '+f(tot-limit):''):' cu ft · no limit set')+'</b></div>'+bar+'</div>';
+      +(limit?(()=>{ const room=Math.max(0,limit-now), add=prep+pend; return '<b style="color:'+col+'">'+f(add)+' to send · '+f(room)+' cu ft room left'+(add>room?' — OVER by '+f(add-room):' ('+f(room-add)+' spare)')+'</b>'; })():'<b style="color:#5a6472">'+f(tot)+' cu ft · no limit set</b>')+'</div>'+bar+'</div>';
   };
   const L=c.limit||{};
   let h='<div class="box" style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
-    +'<div><b>📦 FBA capacity</b> <span class="hint">'+(L.setAt?'limit entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'enter your limit from Seller Central → Capacity Monitor')+(c.cal!==1?' · calibrated ×'+c.cal.toFixed(2)+' to Seller Central':'')+'</span></div>'
-    +'<div style="display:flex;gap:6px"><button class="action" onclick="capLimitModal()" style="padding:6px 12px;font-size:12px;background:#0d4450">Set limit</button>'
+    +'<div><b>📦 FBA capacity</b> <span class="hint">'+(L.setAt?'room left entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'enter Maximum shipment from Seller Central → Capacity Monitor')+(c.cal!==1?' · calibrated ×'+c.cal.toFixed(2)+' to Seller Central':'')+'</span></div>'
+    +'<div style="display:flex;gap:6px"><button class="action" onclick="capLimitModal()" style="padding:6px 12px;font-size:12px;background:#0d4450">Set room left</button>'
     +'<button class="action" onclick="capSizes()" style="padding:6px 12px;font-size:12px;background:#5a6472" title="Look up each listing\'s package size on Amazon">'+(c.sizeJob&&c.sizeJob.running?'Getting sizes… '+esc(c.sizeJob.step||''):'Get sizes from Amazon')+'</button></div></div>'
     +line('Standard', 'standard', L.standard)
     +line('Dangerous goods', 'hazmat', L.hazmat);
   if(c.missing&&c.missing.length) h+='<div class="hint" style="margin-top:6px;color:#b7791f">⚠ No package size yet for '+c.missing.length+' listing'+(c.missing.length===1?'':'s')+', not counted: '+c.missing.slice(0,6).map(m=>esc(String(m.name||m.asin).slice(0,40))).join(' · ')+(c.missing.length>6?' …':'')+'. Tap “Get sizes from Amazon”.</div>';
-  h+='<div class="hint" style="margin-top:4px">Amazon counts stock at Amazon plus open shipments. Prepped and pending prep are what you\'re about to add. '+(L.amazonUsed?'Seller Central showed '+f(L.amazonUsed)+' cu ft used on '+new Date(L.amazonUsedAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+'.':'Enter Seller Central\'s “used” figure with the limit once to calibrate.')+'</div></div>';
+  h+='<div class="hint" style="margin-top:4px">Room left = Seller Central\'s <b>Maximum shipment</b>'+(L.setAt?' (entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+(L.standardRoom!=null?': '+f(L.standardRoom)+' cu ft':'')+')':'')+', less anything sent to Amazon since. Prepped and pending prep are what you\'re about to send.</div></div>';
   el.innerHTML=h;
 }
 function capSizes(){
@@ -4024,10 +4024,9 @@ function capLimitModal(){
   const m=document.createElement('div'); m.id='capModal';
   m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
   const inp=(id,label,v,hint)=>'<label style="display:block;margin-top:10px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">'+label+(hint?' <span class="hint" style="font-weight:400">'+hint+'</span>':'')+'<input id="'+id+'" type="number" min="0" step="any" value="'+(v==null?'':v)+'" style="width:100%;padding:10px;font-size:15px;border:2px solid #e2e8f0;border-radius:8px;margin-top:4px"></label>';
-  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%"><b style="font-size:16px">FBA capacity limit</b>'
-    +'<div class="hint" style="margin-top:4px">From Seller Central → Inventory → FBA dashboard → Capacity Monitor, in cubic feet. It changes monthly.</div>'
-    +inp('capStd','Standard-size limit',L.standard)+inp('capHaz','Dangerous goods limit',L.hazmat,'(optional)')
-    +inp('capUsed','Standard used right now, as Seller Central shows it',null,'(optional — calibrates the app)')
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%"><b style="font-size:16px">FBA capacity</b>'
+    +'<div class="hint" style="margin-top:4px">Seller Central → Inventory → FBA dashboard → Capacity Monitor. Type the <b>Maximum shipment</b> number (cubic feet) — the room you have left to send. Update it when you check Seller Central.</div>'
+    +inp('capStd','Standard — Maximum shipment (cu ft)',L.standardRoom)+inp('capHaz','Dangerous goods — Maximum shipment (cu ft)',L.hazmatRoom,'(optional)')
     +(OWNER_PW?'':'<label style="display:block;margin-top:10px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">Owner password<input id="capPw" type="password" style="width:100%;padding:10px;font-size:15px;border:2px solid #e2e8f0;border-radius:8px;margin-top:4px"></label>')
     +'<div style="display:flex;gap:8px;margin-top:16px"><button onclick="document.getElementById(\'capModal\').remove()" style="flex:1;padding:11px;font-weight:700;background:#e2e8f0;border:none;border-radius:8px;cursor:pointer">Cancel</button>'
     +'<button onclick="capSaveLimit()" style="flex:2;padding:11px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">Save</button></div></div>';
@@ -4038,11 +4037,11 @@ function capSaveLimit(){
   const v=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
   const pwEl=document.getElementById('capPw'), had=OWNER_PW;
   if(!OWNER_PW && pwEl) OWNER_PW=pwEl.value;
-  ownerApi('/api/capacity/limit',{method:'POST',body:JSON.stringify({standard:v('capStd'), hazmat:v('capHaz'), amazonUsed:v('capUsed')||null})}).then(d=>{
+  ownerApi('/api/capacity/limit',{method:'POST',body:JSON.stringify({standardRoom:v('capStd')||null, hazmatRoom:v('capHaz')||null})}).then(d=>{
     if(!had) OWNER_PW='';
     if(!d||d.ok===false||d.error){ toast('NOT saved: '+((d&&d.error)||'error'),true); return; }
     _cap=d; renderCapBar(); if(ppList()) renderPendingPrep();
-    const m=document.getElementById('capModal'); if(m) m.remove(); toast('Capacity limit saved');
+    const m=document.getElementById('capModal'); if(m) m.remove(); toast('Saved');
   }).catch(e=>{ if(!had) OWNER_PW=''; toast('NOT saved: '+e.message,true); });
 }
 // ---- SHIPMENT BUILDER ----

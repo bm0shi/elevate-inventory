@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'transit-split-0930';
+const BUILD_ID = 'capacity-room-0930';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6570,7 +6570,7 @@ async function capacityNow() {
   const cal = lim.amazonUsed && lim.ourUsedThen ? capacity.calibration(lim.ourUsedThen, lim.amazonUsed) : 1;
   const cuft = {}; for (const p of prods) if (p.cuft > 0) cuft[p.asin] = p.cuft * cal;
   const sc = (v) => ({ standard: v.standard * cal, hazmat: v.hazmat * cal, missing: v.missing });
-  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, setAt: lim.setAt || null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
+  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, setAt: lim.setAt || null, standardRoom: lim.standardRoom ?? null, hazmatRoom: lim.hazmatRoom ?? null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
     cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
     sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
 }
@@ -6580,10 +6580,21 @@ app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow(
 app.post('/api/capacity/limit', ownerAuth, async (req, res) => {
   const b = req.body || {};
   const num = (v) => v === '' || v == null ? null : Number(v);
-  const standard = num(b.standard), hazmat = num(b.hazmat), amazonUsed = num(b.amazonUsed);
-  for (const v of [standard, hazmat, amazonUsed]) if (v != null && !(v >= 0 && v < 1e7)) return res.status(400).json({ ok: false, error: 'Enter cubic feet as a number.' });
+  let standard = num(b.standard), hazmat = num(b.hazmat);
+  const amazonUsed = num(b.amazonUsed), stdRoom = num(b.standardRoom), hazRoom = num(b.hazmatRoom);
+  for (const v of [standard, hazmat, amazonUsed, stdRoom, hazRoom]) if (v != null && !(v >= 0 && v < 1e7)) return res.status(400).json({ ok: false, error: 'Enter cubic feet as a number.' });
+  // Seller Central's Capacity Monitor shows "Maximum shipment": the room LEFT
+  // (limit minus stock at Amazon and on the way). The owner typed that 470 as
+  // the limit and the bar read 299% full. Room left is what's entered now; the
+  // limit is worked out as what the app counts right now + that room.
+  if (stdRoom != null || hazRoom != null) {
+    const c = await capacityNow();
+    if (stdRoom != null) standard = Math.round((c.used.standard + stdRoom) * 100) / 100;
+    if (hazRoom != null) hazmat = Math.round((c.used.hazmat + hazRoom) * 100) / 100;
+  }
   const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_capacity'")).rows[0];
-  const data = Object.assign({}, prev ? prev.data : {}, { standard, hazmat, setAt: new Date().toISOString() });
+  const data = Object.assign({}, prev ? prev.data : {}, { standard, hazmat, setAt: new Date().toISOString(),
+    standardRoom: stdRoom, hazmatRoom: hazRoom });
   if (amazonUsed != null) {
     // Store our own figure at the same moment, so the ratio compares like with like.
     const c = await capacityNow();
