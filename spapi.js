@@ -1007,9 +1007,24 @@ const inbound = {
   confirmPlacementOption: (planId, placementOptionId) => inbWrite('POST', `/inboundPlans/${planId}/placementOptions/${placementOptionId}/confirmation`),
   confirmTransportationOptions: (planId, selections) => inbWrite('POST', `/inboundPlans/${planId}/transportationOptions/confirmation`, { transportationSelections: selections }),
   // Paperwork (older API, by the FBA shipment ID): pallet labels and the bill of lading → a download URL.
+  // Amazon refused PackageLabel_Letter_4 for the pilot's pallet labels
+  // ("must satisfy enum value set: [PackageLabel_A4_2_DHL, …]"), and the set
+  // it accepts isn't the documented one. So ask for letter-size first and, if
+  // Amazon says the page type isn't allowed, pick from the list it sends back.
   palletLabels: async (fbaId, pallets) => {
-    const r = await http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${encodeURIComponent(fbaId)}/labels`, { params: { MarketplaceId: MARKETPLACE_ID, PageType: 'PackageLabel_Letter_4', LabelType: 'PALLET', NumberOfPallets: pallets } })
-      .catch(e => { throw new Error(`Amazon ${e.response?.status || ''}: ${JSON.stringify(e.response?.data || e.message).slice(0, 300)}`); });
+    const get = (PageType) => http.get(`${SP_API_BASE}/fba/inbound/v0/shipments/${encodeURIComponent(fbaId)}/labels`, { params: { MarketplaceId: MARKETPLACE_ID, PageType, LabelType: 'PALLET', NumberOfPallets: pallets } });
+    const fail = (e) => new Error(`Amazon ${e.response?.status || ''}: ${JSON.stringify(e.response?.data || e.message).slice(0, 600)}`);
+    let r;
+    try { r = await get('PackageLabel_Letter_4'); }
+    catch (e) {
+      const m = JSON.stringify(e.response?.data || '').match(/enum value set: \[([^\]]+)\]/);
+      if (!m) throw fail(e);
+      const ok = m[1].split(',').map(x => x.trim()).filter(Boolean);
+      const want = ['PackageLabel_Letter_4', 'PackageLabel_Plain_Paper', 'PackageLabel_Letter_2', 'PackageLabel_Letter_6', 'PackageLabel_Letter_PCP_FulfillmentLabel', 'PackageLabel'];
+      const pick = want.find(x => ok.includes(x)) || ok.find(x => /Letter/.test(x)) || ok.find(x => /Plain/.test(x)) || ok[0];
+      if (!pick || pick === 'PackageLabel_Letter_4') throw fail(e);
+      r = await get(pick).catch(e2 => { throw fail(e2); });
+    }
     return r.data.payload && r.data.payload.DownloadURL;
   },
   billOfLading: async (fbaId) => {
