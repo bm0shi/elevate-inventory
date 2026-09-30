@@ -130,6 +130,23 @@ test('pack later: Amazon\'s box numbers checked against the labels', () => {
   assert.deepStrictEqual(ib.checkBoxIds(ours, swapped), { ok: false, wrong: [1, 2], missing: [], extra: [3] });
 });
 
+test('Amazon numbered the boxes differently: only the mismatched boxes get Amazon\'s number for their contents', () => {
+  const b = (n, msku, qty) => ({ box_no: n, items: [{ msku, qty }] });
+  const a = (n, msku, qty) => ({ boxId: 'FBA1U' + String(n).padStart(6, '0'), items: [{ msku, quantity: qty }] });
+  // Ours: 1-3 are A×12, 4 is B×6, 5 is C×10. Amazon put B first and C at 3.
+  const ours = [b(1, 'A', 12), b(2, 'A', 12), b(3, 'A', 12), b(4, 'B', 6), b(5, 'C', 10)];
+  const amz = [a(1, 'B', 6), a(2, 'A', 12), a(3, 'C', 10), a(4, 'A', 12), a(5, 'A', 12)];
+  const m = ib.matchAmazonNumbers(ours, amz);
+  assert.deepStrictEqual(m.unmatched, []);
+  // Box 2 already matches (A at 2) and keeps its label; the rest move.
+  assert.deepStrictEqual(m.moves, [{ from: 1, to: 4 }, { from: 3, to: 5 }, { from: 4, to: 1 }, { from: 5, to: 3 }]);
+  // After the moves every label agrees with Amazon.
+  const renum = ours.map(x => ({ ...x, box_no: (m.moves.find(v => v.from === x.box_no) || {}).to || x.box_no }));
+  assert.strictEqual(ib.checkBoxIds(renum, amz).ok, true);
+  // Contents Amazon doesn't have can't be fixed by relabelling
+  assert.deepStrictEqual(ib.matchAmazonNumbers([b(1, 'Z', 1)], [a(1, 'A', 12)]).unmatched, [1]);
+});
+
 test('pack later: the floor\'s pallets become the freight pallets', () => {
   const box = (n, pal) => ({ box_no: n, pallet_no: pal, items: [{ qty: 10 }], weight_lb: 20, len: 12, wid: 12, hgt: 12 });
   const p = ib.floorPallets([box(1, 1), box(2, 1), box(3, 2)], {}, { 2: { h: 30, count: 1 } });

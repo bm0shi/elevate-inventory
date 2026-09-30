@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'exp-match-0930';
+const BUILD_ID = 'match-box-numbers-0930b';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2354,7 +2354,12 @@ async function planSendBoxes(id, args, step) {
       await pool.query('UPDATE inv_inbound_plans SET shipments=$2 WHERE id=$1', [id, JSON.stringify([...ships, sh, ...(p.shipments || []).slice(ships.length + 1)])]);
     }
     await step(`Checking Amazon's box numbers for ${sh.fba}…`);
-    sh.boxCheck = inboundLib.checkBoxIds(boxes, await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId));
+    const amzBoxes = await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId);
+    sh.boxCheck = inboundLib.checkBoxIds(boxes, amzBoxes);
+    // Kept to learn how Amazon orders box numbers (the pilot's didn't follow
+    // the order sent): Amazon's number → contents, and ours.
+    sh.amzOrder = inboundLib.amazonBoxMap(amzBoxes).map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]);
+    sh.ourOrder = boxes.map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]);
     sh.boxes = boxes.length; sh.units = boxes.reduce((t, b) => t + b.items.reduce((u, i) => u + i.qty, 0), 0);
     sh.pallets = inboundLib.floorPallets(boxes, S, ps && ps.pallets);
     ships.push(sh);
@@ -2421,6 +2426,42 @@ app.post('/api/inbound/plans/:id/place', auth, async (req, res) => {
 });
 // Send the built boxes (every shipment of the plan must be finished in 2D
 // Production). Built units that differ from Amazon's shipment need `force`.
+// Amazon numbered the boxes in its own order, so some labels point at another
+// box's contents. Give each mismatched box the Amazon number that holds the
+// same contents (lib/inbound matchAmazonNumbers), so reprinting just those
+// labels makes every box agree with Amazon. Only box numbers change: no stock,
+// nothing sent to Amazon. A second press finds nothing left to move.
+app.post('/api/inbound/plans/:id/match-boxes', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0, fba = pack.normShipmentId((req.body || {}).fba);
+  const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
+  const k = (p.shipments || []).findIndex(x => x.fba === fba);
+  const sh = (p.shipments || [])[k];
+  if (!sh || !sh.boxesSentAt) return res.status(409).json({ ok: false, error: 'Send the box info to Amazon first.' });
+  const ps = (await pool.query('SELECT amz FROM inv_pack_shipments WHERE shipment_id=$1', [fba])).rows[0];
+  const items = (ps && ps.amz && ps.amz.items) || [];
+  const amz = await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId);
+  const before = await floorBoxes(fba, items);
+  const m = inboundLib.matchAmazonNumbers(before, amz);
+  if (m.unmatched.length) return res.status(409).json({ ok: false, error: `Box ${m.unmatched.join(', ')}: Amazon has no box with the same contents, so new labels can't fix it. Tell Claude.` });
+  const info = {}; for (const b of before) info[b.box_no] = { pallet: b.pallet_no || 1, items: b.items.map(i => ({ msku: i.msku, qty: i.qty })) };
+  await withTx(async (db) => {
+    await db.query('SELECT 1 FROM inv_pack_shipments WHERE shipment_id=$1 FOR UPDATE', [fba]);
+    // Two steps (negative first) so no two boxes share a number mid-way.
+    for (const mv of m.moves) await db.query('UPDATE inv_pack_boxes SET box_no=$3 WHERE shipment_id=$1 AND box_no=$2', [fba, mv.from, -mv.to]);
+    await db.query('UPDATE inv_pack_boxes SET box_no=-box_no WHERE shipment_id=$1 AND box_no<0', [fba]);
+    const after = before.map(b => ({ ...b, box_no: (m.moves.find(v => v.from === b.box_no) || {}).to || b.box_no }));
+    const ships = [...p.shipments];
+    const prev = (sh.relabel && sh.relabel.moves) || [];
+    ships[k] = { ...sh, boxCheck: inboundLib.checkBoxIds(after, amz),
+      amzOrder: sh.amzOrder || inboundLib.amazonBoxMap(amz).map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]),
+      ourOrder: sh.ourOrder || before.map(b => [b.box_no, b.items.map(i => i.msku + '×' + i.qty).join('+')]),
+      relabel: m.moves.length ? { at: new Date().toISOString(), moves: m.moves.map(v => ({ ...v, ...info[v.from] })) } : sh.relabel || null };
+    await db.query('UPDATE inv_inbound_plans SET shipments=$2, updated_at=now() WHERE id=$1', [id, JSON.stringify(ships)]);
+  });
+  res.json({ ok: true, moves: m.moves });
+});
 app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
