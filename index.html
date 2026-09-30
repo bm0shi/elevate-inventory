@@ -1381,7 +1381,9 @@ function nsPlan(id){
     // 5. Pallets → freight quotes
     if(SH.length&&(p.status==='pallets'||p.status==='quotes')){
       const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(SH.map(sh=>[sh.shipmentId,sh.pallets||[]]))))};
-      const ready=(p.freight&&p.freight.readyDate)||new Date(Date.now()+86400000).toISOString().slice(0,10);
+      // Default today (Arizona): the owner always wants the soonest pickup
+      const today=new Date(Date.now()-7*3600000).toISOString().slice(0,10);
+      const ready=(p.freight&&p.freight.readyDate&&p.freight.readyDate>=today)?p.freight.readyDate:today;
       h+='<div class="box"><b style="font-size:16px">Pallets for the freight quote</b><div class="hint">From the pallets in Shipment Production (same weights and heights as the floor screen). Change them if you weighed or measured differently; the quote uses these.</div>'
         +SH.map(sh=>'<div style="margin-top:12px;padding:12px;border:1px solid #e2e8f0;border-radius:10px"><b style="font-size:15px">'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b> <span class="hint">'+(sh.boxes||0)+' boxes · '+(sh.units||0).toLocaleString()+' units</span>'
           +'<table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PALLET')+prodTh('BOXES')+prodTh('WEIGHT (LB)')+prodTh('HEIGHT (IN)')+prodTh('')+'</tr>'
@@ -1390,7 +1392,7 @@ function nsPlan(id){
             +prodTd('<input type="number" value="'+x.height+'" oninput="_nsPal.pal[\''+sh.shipmentId+'\']['+k+'].height=+this.value" style="width:80px;text-align:center;padding:6px;font-weight:800">')
             +prodTd((P.pal[sh.shipmentId].length>1?'<button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].splice('+k+',1);nsPlan('+p.id+')" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px">✕</button>':''))+'</tr>').join('')
           +'</table><button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].push({weight:500,height:40});nsPlan('+p.id+')" style="margin-top:6px;cursor:pointer;border:1px solid #008296;color:#008296;background:#fff;border-radius:6px;padding:4px 10px;font-weight:800">+ Add pallet</button></div>').join('')
-        +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:11px;font-weight:900;color:#5a6472">READY TO SHIP<input id="nsReady" type="date" value="'+ready+'" style="display:block;margin-top:3px;padding:8px;font-size:15px"></label>'
+        +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:13px;font-weight:900;color:#0f1111;padding:10px 12px;border:3px solid #ff9900;border-radius:10px;background:#fff8ec">🚚 FREIGHT READY FOR PICKUP ON<input id="nsReady" type="date" min="'+today+'" value="'+ready+'" style="display:block;margin-top:4px;padding:8px;font-size:18px;font-weight:800"><span style="display:block;font-size:11px;font-weight:700;color:#5f6675;margin-top:3px">Carriers pick up this day or after</span></label>'
         +'<label style="font-size:14px;font-weight:700;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0"><input id="nsStack" type="checkbox"'+(p.freight&&p.freight.stackable?' checked':'')+' style="width:20px;height:20px"> Pallets can be stacked</label>'
         +'<span style="font-size:14px;font-weight:700;color:#5f6675;align-self:center">Freight class 85</span>'
         +'<button class="action" onclick="nsQuote('+p.id+')" style="background:#008296;font-size:16px;padding:12px 20px">'+(p.freight?'↻ Get new quotes':'Get freight quotes →')+'</button></div></div>';
@@ -1398,7 +1400,7 @@ function nsPlan(id){
     // 6. Freight options + book
     if(p.status==='quotes'&&p.freight){
       const S=window._nsSel=window._nsSel&&window._nsSel.id===p.id?window._nsSel:{id:p.id, sel:{}};
-      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">Amazon partnered carriers first, cheapest first. Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
+      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">Amazon partnered carriers first, soonest pickup first, then cheapest. Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
       let freight=0, all=true;
       for(const sh of SH){
         const q=(p.freight.quotes[sh.shipmentId]||[]).filter(o=>o.cost!=null&&!o.preconditions.length);
@@ -1407,7 +1409,7 @@ function nsPlan(id){
         h+='<div style="margin-top:12px"><b>'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b>'+(q.length?'':' <span style="color:#c0392b;font-weight:800">no quote came back — change the pallets or date and get new quotes</span>')
           +q.map(o=>'<label style="display:flex;gap:10px;align-items:center;margin-top:6px;padding:10px 12px;border-radius:10px;cursor:pointer;text-transform:none;letter-spacing:0;border:2px solid '+(S.sel[sh.shipmentId]===o.transportationOptionId?'#008296':'#e2e8f0')+'">'
             +'<input type="radio" name="nsq_'+esc(sh.shipmentId)+'"'+(S.sel[sh.shipmentId]===o.transportationOptionId?' checked':'')+' onchange="_nsSel.sel[\''+sh.shipmentId+'\']=\''+o.transportationOptionId+'\';nsPlan('+p.id+')" style="width:18px;height:18px">'
-            +'<div style="flex:1"><b style="font-size:15px">'+esc(o.carrier||'Carrier')+'</b> <span class="hint">'+esc(o.mode.replace('FREIGHT_','').replace(/_/g,' '))+(o.partnered?' · Amazon partnered':' · your own carrier')+(o.expiration?' · quote good until '+new Date(o.expiration).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'')+'</span></div>'
+            +'<div style="flex:1"><b style="font-size:15px">'+esc(o.carrier||'Carrier')+'</b>'+(o.pickup?' <span class="nsPk" style="margin-left:6px;padding:3px 10px;border-radius:999px;background:#fff3d6;color:#0f1111;font-weight:900;font-size:14px">🚚 Pickup '+nsPickup(o.pickup)+'</span>':'')+' <span class="hint">'+esc(o.mode.replace('FREIGHT_','').replace(/_/g,' '))+(o.partnered?' · Amazon partnered':' · your own carrier')+(o.expiration?' · quote good until '+new Date(o.expiration).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'')+'</span></div>'
             +'<b style="font-size:18px">'+$$(o.cost)+'</b></label>').join('')+'</div>';
       }
       const total=Math.round(freight*100)/100;
@@ -1417,6 +1419,7 @@ function nsPlan(id){
         +'<div class="hint" style="margin-top:6px"><b>Your Amazon account is charged after this step</b> — nothing before it. The bill of lading and pallet labels come next (in Shipment Production, on the shipment).</div></div>';
     }
     if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon</b>'
+      +(p.confirmed.pickup?'<div style="margin-top:6px;font-size:18px;font-weight:900">🚚 Pickup '+nsPickup(p.confirmed.pickup)+'</div>':'')
       +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): <b>'+$$(p.confirmed.placementFee)+'</b></div>'
       +'<div style="margin-top:6px;font-size:20px;font-weight:900">Total: '+$$((Number(p.confirmed.freight)||0)+(Number(p.confirmed.placementFee)||0))+' <span style="font-size:13px;font-weight:700;color:#5f6675">freight + placement</span></div>'
       +(p.confirmed.shipments||[]).map(f=>'<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-family:monospace;font-size:18px">'+esc(f)+'</b>'+openBtn(f)+'<span style="font-size:16px;font-weight:800;color:#0f1111">📄 Bill of lading &amp; pallet labels are on the shipment</span></div>').join('')+'</div>';
@@ -1431,6 +1434,9 @@ function nsPlan(id){
     if(p.placement_confirmed_at){ const c=el.querySelector('button[onclick^="nsCancel"]'); if(c){ c.textContent='Remove from app'; c.setAttribute('onclick','nsRemove('+p.id+')'); } }
   }); });
 }
+// Carrier pickup window in Arizona time: "Thu, Oct 2, 8 AM–4 PM"
+function nsPickup(w){ const o={timeZone:'America/Phoenix'}, s=new Date(w.start);
+  return s.toLocaleDateString('en-US',{...o,weekday:'short',month:'short',day:'numeric'})+', '+s.toLocaleTimeString('en-US',{...o,hour:'numeric'})+(w.end?'–'+new Date(w.end).toLocaleTimeString('en-US',{...o,hour:'numeric'}):''); }
 const expText=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'/'+e.slice(4,6)+'/20'+e.slice(0,2):(e||'');
 function nsPlace(id, optId, fee, where){
   if(!confirm('Confirm this destination with Amazon?\n\n'+(where||'')+'\nPlacement fee: '+(fee>0?'$'+fee.toFixed(2):'none')+'\n\nAmazon gives the shipment its FBA ID and the floor can start building and labelling. After this the plan can only be cancelled in Seller Central. Freight is booked at the end.')) return;
@@ -1463,7 +1469,7 @@ function nsConfirm(id, total){
   // One tap with the carrier and amount shown (the owner found typing the
   // amount a hassle); the server still re-checks the amount against Amazon's
   // current quote before anything is charged.
-  const picked=[...document.querySelectorAll('input[type=radio][name^="nsq_"]:checked')].map(r=>{ const l=r.closest('label'); return l?(l.querySelector('b')||{}).textContent||'':''; }).filter(Boolean);
+  const picked=[...document.querySelectorAll('input[type=radio][name^="nsq_"]:checked')].map(r=>{ const l=r.closest('label'); if(!l) return ''; const pk=l.querySelector('.nsPk'); return ((l.querySelector('b')||{}).textContent||'')+(pk?' ('+pk.textContent.replace('🚚 ','')+')':''); }).filter(Boolean);
   if(!confirm('Book '+(picked.length?picked.join(' + '):'this freight')+' for $'+total.toFixed(2)+'?\n\n⚠️ Your Amazon account is charged $'+total.toFixed(2)+' when you press OK.\nNothing is charged before this step.')) return;
   ownerApi('/api/inbound/plans/'+id+'/confirm',{method:'POST',body:JSON.stringify({selections:(window._nsSel||{}).sel||{}, total})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not confirmed',true); } nsPlan(id); });
 }

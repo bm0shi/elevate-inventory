@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'no-sc-csv-0930';
+const BUILD_ID = 'pickup-1001';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2394,7 +2394,9 @@ async function planQuote(id, args, step) {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   const c = p.ship_from || {};
   if (!c.contactName || !c.phone) throw new Error('Freight quotes need a contact name and phone on the ship-from address.');
-  const start = new Date(args.readyDate + 'T09:00:00-07:00');
+  // 9 AM Arizona on the ready day; for today after 9 AM, from now (Amazon
+  // refuses a ready time in the past).
+  const start = new Date(Math.max(new Date(args.readyDate + 'T09:00:00-07:00').getTime(), Date.now() + 5 * 60000));
   const conf = (p.shipments || []).map(sh => {
     const edited = (args.pallets || {})[sh.shipmentId] || sh.pallets;
     return { shipmentId: sh.shipmentId, readyToShipWindow: { start: start.toISOString() },
@@ -2428,7 +2430,10 @@ async function planConfirm(id, args, step) {
   }
   const fee = ((p.placement || []).find(o => o.placementOptionId === p.placement_id) || {}).fee || 0;
   await pool.query("UPDATE inv_inbound_plans SET status='confirmed', step=NULL, confirmed=$2, updated_at=now() WHERE id=$1",
-    [id, JSON.stringify({ placementFee: fee, freight: args.freight || null, total: args.freight || null, shipments: (p.shipments || []).map(s => s.fba) })]);
+    [id, JSON.stringify({ placementFee: fee, freight: args.freight || null, total: args.freight || null, shipments: (p.shipments || []).map(s => s.fba),
+      // Earliest pickup among the booked options, shown on the booked banner
+      pickup: Object.entries(args.selections || {}).map(([sid, oid]) => (((p.freight || {}).quotes || {})[sid] || []).find(o => o.transportationOptionId === oid))
+        .map(o => o && o.pickup).filter(Boolean).sort((x, y) => x.start < y.start ? -1 : 1)[0] || null })]);
 }
 // Confirm a destination. The owner saw its fee; it must still be the fee on file.
 app.post('/api/inbound/plans/:id/place', auth, async (req, res) => {

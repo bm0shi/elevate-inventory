@@ -189,3 +189,13 @@ test('freight options: the same carrier listed many times shows once, at its low
   assert.deepStrictEqual(s.map(x => [x.carrier, x.cost]), [['CENTRAL', 144.59], ['ESTES', 204.38], ['Amazon Freight', 271.55], ['FLOCK', 584.39]]);
   assert.strictEqual(s[0].transportationOptionId, 'a2');   // equal price: the one quoted last
 });
+
+test('freight options: each pickup day is kept, soonest pickup first', () => {
+  const o = (id, name, amt, day) => ({ transportationOptionId: id, shipmentId: 'sh1', carrier: { name }, shippingMode: 'FREIGHT_LTL', shippingSolution: 'AMAZON_PARTNERED_CARRIER',
+    quote: { cost: { amount: amt, code: 'USD' } }, ...(day ? { carrierAppointment: { startTime: day + 'T15:00:00Z', endTime: day + 'T23:00:00Z' } } : {}) });
+  // The pilot: the cheaper CENTRAL quote picked up 6 days out and hid the sooner one
+  const s = ib.transportSummary([o('late', 'CENTRAL', 141.72, '2026-10-05'), o('soon', 'CENTRAL', 150.10, '2026-10-01'), o('soon2', 'CENTRAL', 155, '2026-10-01'), o('x', 'ESTES', 120, null)]);
+  assert.deepStrictEqual(s.map(x => x.transportationOptionId), ['soon', 'late', 'x']);
+  assert.deepStrictEqual(s[0].pickup, { start: '2026-10-01T15:00:00Z', end: '2026-10-01T23:00:00Z' });
+  assert.strictEqual(s[2].pickup, null);
+});
