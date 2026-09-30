@@ -1628,6 +1628,9 @@ function prodRender(){
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
     +'<button class="action" onclick="prodDelete()" style="padding:6px 12px;font-size:12px;background:#fdecea;color:#c0392b">🗑 Delete</button></div></div>';
   h+=next;
+  // Boxes whose number no longer matches the order Amazon will number them in.
+  if(v.numbering&&v.numbering.misfits&&v.numbering.misfits.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea"><b style="color:#c0392b;font-size:16px">⚠️ Box '+v.numbering.misfits.join(', ')+' won\'t match Amazon\'s box numbers</b>'
+    +'<div style="font-size:14px;margin-top:4px">Amazon numbers boxes by SKU, A→Z. Units per box changed after these were labelled (or they were made before this numbering), so they\'ll need new labels after the box info is sent. Keep units per box the same from here on.</div></div>';
   // Boxes whose expiration differs from Amazon's plan: Amazon refuses the box
   // info until they match, and the printed labels should match too.
   if(v.expMismatch&&v.expMismatch.length) h+='<div class="box" style="border:3px solid #c0392b;background:#fdecea;text-align:center;padding:18px">'
@@ -1719,7 +1722,7 @@ function prodRender(){
         +cell(r,3,r.produced,'center','font-weight:800;color:'+(r.produced?'#1e8449':'#1f2733'))
         +cell(r,4,(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':''),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
         +cell(r,5,bxLeft(r),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
-        +cell(r,6,r.caseQty||'—')+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
+        +cell(r,6,(r.noPerBox&&!done?'<a href="#" onclick="event.stopPropagation();prodSetPer(\''+esc(r.asin)+'\');return false" style="color:#c0392b;font-weight:900" title="Needed to number the boxes the way Amazon will (by SKU, A→Z)">set ✏️</a>':(r.caseQty||'—'))+(r.boxNos&&r.boxNos[1]>=r.boxNos[0]?'<div style="font-size:11px;color:#5f6675;font-weight:700;white-space:nowrap">box #'+r.boxNos[0]+(r.boxNos[1]>r.boxNos[0]?'–'+r.boxNos[1]:'')+'</div>':''))+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
       +'<tr style="background:#f6f8fa">'+prodTd('<b style="font-size:15px">TOTAL</b>','left','border-top:2px solid #1f2733')+prodTd('','left','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px">'+totP.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px;color:#1e8449">'+totB.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
@@ -1828,6 +1831,7 @@ function prodMake(override, palletNo, countOverride){
   api('/api/pack/boxes',{method:'POST',idem:newIdem(),body:JSON.stringify({shipmentId:prodSid(), asin:P.asin, qtyPerBox:f.per, count, pallet:pal, unitWeight:f.w, len:f.L, wid:f.W, hgt:f.H, exp:f.exp||null, override:!!override})}).then(d=>{
     if(btn) btn.disabled=false;
     if(d&&d.error==='pallet_full'){ return prodFull(d, count, pal); }
+    if(d&&d.error==='units_per_box_needed'){ alert('⛔ NOT CREATED\n\n'+d.message+'\n\nTap "set ✏️" in the UNITS PER BOX column for those products, then try again.'); return; }
     if(!d||d.ok===false){ toast('NOT created: '+((d&&(d.message||d.error))||'error'),true); return; }
     toast('Boxes '+d.boxes.join(', ')+' created — printing '+d.boxes.length+' label'+(d.boxes.length===1?'':'s'));
     return prodLoad(prodSid()).then(()=>{ prodPrint(d.boxes); _prod.sel=null; prodRender(); prodFullPrompt(); });
@@ -1992,6 +1996,17 @@ function prodFixExp(){
     toast('Fixed '+d.fixed.length+' box'+(d.fixed.length===1?'':'es')+' — reprinting');
     prodLoad(prodSid()).then(()=>{ if(d.fixed.length) prodPrint(d.fixed); });
   }).catch(e=>toast('Not fixed: '+e.message,true));
+}
+// Units per box for a product not built yet: the box numbers of the SKUs
+// after it (Amazon numbers by SKU, A→Z) depend on its box count.
+function prodSetPer(asin){
+  const r=(_prod.v.plan||[]).find(x=>x.asin===asin)||{};
+  const v=prompt('Units per box for:\n'+(r.name||asin)+'\n\n(How many go in one full box. Box numbers are given by SKU the way Amazon numbers them, so the app needs this for every product.)', r.caseQty||'');
+  if(v===null) return;
+  api('/api/pack/per-box',{method:'POST',body:JSON.stringify({asin, perBox:parseInt(v,10)})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
+    toast('Saved'); prodLoad(prodSid());
+  }).catch(e=>toast('Not saved: '+e.message,true));
 }
 function prodCopyBoxes(){
   const rows=_prod.v.boxes.filter(b=>b.status==='closed'&&b.items.length).sort((a,b)=>a.box_no-b.box_no).map(b=>['Box '+b.box_no, b.boxId, 'Pallet '+(b.pallet_no||1), (b.weight_lb||'')+' lb', b.len?b.len+' x '+b.wid+' x '+b.hgt+' in':'', b.items.map(i=>i.fnsku+' x'+i.qty).join(' ')].join('\t'));

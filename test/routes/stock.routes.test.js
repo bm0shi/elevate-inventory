@@ -360,6 +360,29 @@ test('expiration on a box follows the date Amazon has for the product; Fix corre
   assert.deepStrictEqual((await post('/api/pack/fix-exp', { shipmentId: SID })).body.fixed, []);   // nothing left to fix
 });
 
+test('box numbers follow Amazon: SKUs A→Z each get a block, whatever order the floor builds in', { skip }, async () => {
+  const SID = 'FBASKUTEST1';
+  await post('/api/pack/start', { shipmentId: SID });
+  await confirmDest(SID);
+  await pool.query(`UPDATE inv_pack_shipments SET amz = $2 WHERE shipment_id=$1`,
+    [SID, JSON.stringify({ items: [{ asin: 'TSTB', msku: 'SKU-B', fnsku: 'X00TESTBBB', qty: 12 }, { asin: 'TSTA', msku: 'SKU-A', fnsku: 'X00TESTAAA', qty: 20 }] })]);
+  await pool.query(`UPDATE inv_products SET case_qty=NULL WHERE asin IN ('TSTA','TSTB')`);
+  const mk = (asin, per, count) => post('/api/pack/boxes', { shipmentId: SID, asin, qtyPerBox: per, count, pallet: 1, unitWeight: 1, len: 10, wid: 10, hgt: 10, override: true });
+  // SKU-B comes after SKU-A: its numbers depend on SKU-A's box count, unknown yet.
+  const r0 = await mk('TSTB', 12, 1);
+  assert.strictEqual(r0.status, 409);
+  assert.strictEqual(r0.body.error, 'units_per_box_needed');
+  assert.strictEqual((await post('/api/pack/per-box', { asin: 'TSTA', perBox: 10 })).status, 200);
+  // Built first, but numbered after SKU-A's two boxes, as Amazon will.
+  const r1 = await mk('TSTB', 12, 1);
+  assert.strictEqual(r1.status, 200, JSON.stringify(r1.body));
+  assert.deepStrictEqual(r1.body.boxes, [3]);
+  const r2 = await mk('TSTA', 10, 2);
+  assert.deepStrictEqual(r2.body.boxes, [1, 2]);
+  // SKU-A's block is full: a third box would shift SKU-B's number.
+  assert.strictEqual((await mk('TSTA', 10, 1)).status, 409);
+});
+
 test('2D production: N identical boxes, pallet limit refused unless overridden, numbers stay 1..N', { skip }, async () => {
   const SID = 'FBAPACKTEST3';
   await post('/api/pack/start', { shipmentId: SID });
