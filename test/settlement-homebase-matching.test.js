@@ -80,3 +80,10 @@ test('matching: a shampoo line bound to a conditioner is flagged', () => {
   const warnings = crossCheck('TEA TREE SPECIAL SHAMPOO 33.8OZ', 'Tea Tree Special Conditioner, 33.8 fl. oz.');
   assert.ok(Array.isArray(warnings) ? warnings.length > 0 : warnings && warnings.ok === false);
 });
+
+test('laborRates: labeled per minute on the clock and inside prep jobs', () => {
+  const { laborRates } = require('../lib/homebase');
+  // 1,200 units in 8 clocked hours, 5 hours inside prep jobs
+  assert.deepStrictEqual(laborRates(1200, 8, 5 * 3600), { perMin: 2.5, perHour: 150, perMinOnJob: 4 });
+  assert.deepStrictEqual(laborRates(0, 0, 0), { perMin: null, perHour: null, perMinOnJob: null });
+});

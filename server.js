@@ -16,7 +16,7 @@ const pdfParse = require('pdf-parse');
 const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
 const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
-const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv } = require('./lib/homebase');
+const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'liftgate-1002';
+const BUILD_ID = 'labor-rate-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -974,6 +974,24 @@ async function initDb() {
         [disp, hb]);
     }
     console.log('[Inventory] Employees + timecards ready.');
+    // Ship-from written exactly as in Seller Central's address book (company,
+    // full name, "Suite B (BACK)"), in the hope Amazon links our API shipments
+    // to that saved address and its equipment profile (box truck with tail
+    // lift, no 53 ft trailer). Our pilot got a truck with no liftgate.
+    // One-time: only an entry still without a company is rewritten.
+    try {
+      const ps = await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'");
+      const d = ps.rows[0] && ps.rows[0].data;
+      if (d && Array.isArray(d.inboundAddresses)) {
+        let changed = false;
+        d.inboundAddresses = d.inboundAddresses.map(a => {
+          if (a.company || !/5115\s+w(est)?\.?\s+bell/i.test(a.line1 || '')) return a;
+          changed = true;
+          return { ...a, company: 'Beauty is...(Urban Bliss Salon)', name: 'Elevate Commerce', line2: 'Suite B (BACK)' };
+        });
+        if (changed) { await pool.query("UPDATE inv_cache SET data=$1 WHERE cache_key='pack_settings'", [JSON.stringify(d)]); console.log('[Inventory] Ship-from matched to Seller Central.'); }
+      }
+    } catch (e) { console.error('[Inventory] ship-from match failed:', e.message); }
   } catch(e) { console.error('employee migration skipped:', e.message); }
 
   // ---- Hazmat flags (idempotent) ----
@@ -1955,9 +1973,9 @@ function runPlanJob(id, label, fn, stage, args) {
 // Ship-from addresses for new shipments, each with its contact (Amazon needs
 // a phone; freight quotes send the contact to the carrier). Picked from a
 // dropdown per plan. The first one is the owner's (their words).
-const SHIP_FROM_DEFAULT = [{ id: 'bell', name: 'Beauty is...(Urban Bliss Salon)', line1: '5115 W Bell Rd', line2: 'Ste B', city: 'Glendale', state: 'AZ', zip: '85308', country: 'US', contactName: 'Z Jelow', phone: '408-420-4040', email: 'elevatecommercegroup67@gmail.com' }];
+const SHIP_FROM_DEFAULT = [{ id: 'bell', company: 'Beauty is...(Urban Bliss Salon)', name: 'Elevate Commerce', line1: '5115 W Bell Rd', line2: 'Suite B (BACK)', city: 'Glendale', state: 'AZ', zip: '85308', country: 'US', contactName: 'Z Jelow', phone: '408-420-4040', email: 'elevatecommercegroup67@gmail.com' }];
 const cleanShipFrom = (a, i) => ({ id: String(a.id || ('addr' + (i + 1))).replace(/[^\w-]/g, '').slice(0, 30) || ('addr' + (i + 1)),
-  name: String(a.name || '').slice(0, 50), line1: String(a.line1 || '').slice(0, 120), line2: String(a.line2 || '').slice(0, 60), city: String(a.city || '').slice(0, 30),
+  company: String(a.company || '').slice(0, 50), name: String(a.name || '').slice(0, 50), line1: String(a.line1 || '').slice(0, 120), line2: String(a.line2 || '').slice(0, 60), city: String(a.city || '').slice(0, 30),
   state: String(a.state || '').slice(0, 20), zip: String(a.zip || '').slice(0, 12), country: String(a.country || 'US').slice(0, 2).toUpperCase(),
   contactName: String(a.contactName || '').slice(0, 80), phone: String(a.phone || '').slice(0, 30), email: String(a.email || '').slice(0, 120),
   // No loading dock: the carrier must send a liftgate truck. Amazon's API has
@@ -4387,6 +4405,41 @@ app.get('/api/timesheets/coverage', ownerAuth, async (req, res) => {
      FROM inv_employees e LEFT JOIN inv_timecards t ON t.employee_id=e.id
      WHERE e.active GROUP BY e.display_name ORDER BY e.display_name`);
   res.json(rows);
+});
+
+// Labeling speed per person for a month: units prepped in the app (prep log,
+// by the name picked on the prep dropdown) against hours on the Homebase
+// clock. Days in Arizona time. Prep logged under a name that isn't on the
+// team is listed so it isn't silently dropped. Owner only (hours are pay).
+app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
+  const months = (await pool.query(`SELECT DISTINCT to_char(work_date,'YYYY-MM') AS m FROM inv_timecards ORDER BY m DESC`)).rows.map(r => r.m);
+  const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : (months[0] || new Date().toISOString().slice(0, 7));
+  const from = month + '-01';
+  const emps = (await pool.query(`
+    SELECT e.id, e.display_name, e.homebase_name,
+           COUNT(DISTINCT t.work_date)::int AS days, COALESCE(SUM(t.actual_hours),0)::float AS hours
+    FROM inv_employees e JOIN inv_timecards t ON t.employee_id=e.id
+    WHERE t.work_date >= $1::date AND t.work_date < ($1::date + interval '1 month')
+    GROUP BY e.id ORDER BY e.display_name`, [from])).rows;
+  const prep = (await pool.query(`
+    SELECT lower(trim(worker)) AS w, MIN(worker) AS worker, COUNT(*)::int AS jobs,
+           COALESCE(SUM(units),0)::int AS units, COALESCE(SUM(duration_sec),0)::int AS job_sec
+    FROM inv_prep_log
+    WHERE (finished_at AT TIME ZONE 'America/Phoenix') >= $1::date
+      AND (finished_at AT TIME ZONE 'America/Phoenix') < ($1::date + interval '1 month')
+    GROUP BY 1`, [from])).rows;
+  const byName = {}; for (const p of prep) byName[p.w] = p;
+  const used = new Set();
+  const people = emps.map(e => {
+    const keys = [e.display_name, e.homebase_name].filter(Boolean).map(x => x.trim().toLowerCase());
+    const p = { jobs: 0, units: 0, job_sec: 0 };
+    for (const k of new Set(keys)) if (byName[k] && !used.has(k)) { used.add(k); p.jobs += byName[k].jobs; p.units += byName[k].units; p.job_sec += byName[k].job_sec; }
+    return { name: e.display_name, days: e.days, hours: Math.round(e.hours * 100) / 100, jobs: p.jobs, units: p.units, jobMin: Math.round(p.job_sec / 60), ...laborRates(p.units, e.hours, p.job_sec) };
+  });
+  const unmatched = prep.filter(p => !used.has(p.w)).map(p => ({ worker: p.worker || '(no name)', jobs: p.jobs, units: p.units }));
+  const t = people.reduce((a, x) => ({ hours: a.hours + x.hours, units: a.units + x.units, jobSec: a.jobSec + x.jobMin * 60 }), { hours: 0, units: 0, jobSec: 0 });
+  res.json({ ok: true, month, months, people, unmatched,
+    total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) } });
 });
 
 // ============================================================

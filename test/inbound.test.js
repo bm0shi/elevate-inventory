@@ -199,3 +199,12 @@ test('freight options: each pickup day is kept, soonest pickup first', () => {
   assert.deepStrictEqual(s[0].pickup, { start: '2026-10-01T15:00:00Z', end: '2026-10-01T23:00:00Z' });
   assert.strictEqual(s[2].pickup, null);
 });
+
+test('ship-from: company and full name go to Amazon as in Seller Central (to match its liftgate profile)', () => {
+  const r = ib.sourceAddress({ company: 'Beauty is...(Urban Bliss Salon)', name: 'Elevate Commerce', line1: '5115 W Bell Rd', line2: 'Suite B (BACK)', city: 'Glendale', state: 'AZ', zip: '85308' }, { phone: '408-420-4040' });
+  assert.strictEqual(r.address.companyName, 'Beauty is...(Urban Bliss Salon)');
+  assert.strictEqual(r.address.name, 'Elevate Commerce');
+  assert.strictEqual(r.address.addressLine2, 'Suite B (BACK)');
+  assert.strictEqual(r.address.phoneNumber, '4084204040');
+  assert.strictEqual(ib.sourceAddress({ name: 'X', line1: '1', city: 'c', state: 'AZ', zip: '1' }, { phone: '1' }).address.companyName, undefined);
+});
