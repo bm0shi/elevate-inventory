@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'labor-clamp-1002';
+const BUILD_ID = 'prep-perf-clock-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4422,7 +4422,7 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
   // Punches for the month, plus a week before (a job claimed in late August
   // and finished in September still gets its August clocked time).
   const cards = (await pool.query(`
-    SELECT t.employee_id, t.work_date, t.clock_in, t.clock_out, COALESCE(t.actual_hours,0)::float AS hours
+    SELECT t.id, t.employee_id, t.work_date, t.clock_in, t.clock_out, COALESCE(t.actual_hours,0)::float AS hours
     FROM inv_timecards t
     WHERE t.work_date >= ($1::date - interval '7 days') AND t.work_date < ($1::date + interval '1 month')
     ORDER BY t.clock_in`, [from])).rows;
@@ -4458,7 +4458,7 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
   const empName = {}; for (const e of emps) empName[e.id] = e.display_name;
   res.json({ ok: true, month, months, people, unmatched: Object.values(um),
     total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) },
-    jobs, shifts: cards.filter(inMonth).map(c => ({ person: empName[c.employee_id] || '?', day: String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10), in: c.clock_in, out: c.clock_out, hours: c.hours })) });
+    jobs, shifts: cards.filter(inMonth).map(c => ({ id: c.id, person: empName[c.employee_id] || '?', day: String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10), in: c.clock_in, out: c.clock_out, hours: c.hours })) });
 });
 
 // ============================================================
@@ -7532,6 +7532,21 @@ app.post('/api/prep-log/delete', ownerAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Delete old/bad labor rows from Labeling speed's raw data: prep jobs (speed
+// only — no stock) and Homebase punches (these also feed the P&L's labor
+// dollars; the screen warns). Owner only. Re-importing that pay period's
+// CSV brings deleted punches back.
+app.post('/api/labor/delete', ownerAuth, async (req, res) => {
+  const ids = a => (Array.isArray(a) ? a : []).map(x => parseInt(x, 10)).filter(x => x > 0).slice(0, 5000);
+  const jobs = ids(req.body && req.body.jobs), punches = ids(req.body && req.body.punches);
+  if (!jobs.length && !punches.length) return res.status(400).json({ ok: false, error: 'Nothing picked to delete.' });
+  const out = await withTx(async (db) => ({
+    jobs: jobs.length ? (await db.query('DELETE FROM inv_prep_log WHERE id = ANY($1::int[])', [jobs])).rowCount : 0,
+    punches: punches.length ? (await db.query('DELETE FROM inv_timecards WHERE id = ANY($1::int[])', [punches])).rowCount : 0,
+  }));
+  res.json({ ok: true, deleted: out });
+});
+
 // Clear ALL prep log entries (wipe test data)
 app.post('/api/prep-log/clear-all', ownerAuth, async (req, res) => {
   const r = await pool.query('DELETE FROM inv_prep_log');
@@ -7539,46 +7554,54 @@ app.post('/api/prep-log/clear-all', ownerAuth, async (req, res) => {
 });
 
 // Prep performance metrics — recent jobs + per-worker + per-ASIN productivity
+// Each job's time counts only while its worker was clocked in (Homebase
+// punches, overlapSec): jobs stay claimed when people go home, so the raw
+// claim → finish timer ran across nights. A job with no overlapping punch
+// yet (that pay period not uploaded, or a name not on the team) keeps its
+// raw timer and is counted in rawJobs so the screen can say so.
+async function clockedPrepSec(rows) {
+  const out = {};
+  if (!rows.length) return out;
+  const emps = (await pool.query('SELECT id, display_name, homebase_name FROM inv_employees')).rows;
+  const key = x => String(x || '').trim().toLowerCase(), empOf = {};
+  for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empOf[key(k)] = e.id;
+  const minStart = rows.reduce((m, r) => r.started_at && new Date(r.started_at) < m ? new Date(r.started_at) : m, new Date());
+  const cards = (await pool.query('SELECT employee_id, clock_in, clock_out FROM inv_timecards WHERE clock_out >= $1', [minStart])).rows;
+  const shifts = {};
+  for (const c of cards) (shifts[c.employee_id] = shifts[c.employee_id] || []).push({ in: c.clock_in, out: c.clock_out });
+  for (const r of rows) {
+    const sh = shifts[empOf[key(r.worker)]] || [];
+    const sec = r.started_at ? overlapSec(r.started_at, r.finished_at, sh) : 0;
+    out[r.id] = sec > 0 ? { sec, src: 'clock' } : { sec: r.duration_sec, src: 'raw' };
+  }
+  return out;
+}
+
+// Prep performance metrics — recent jobs + per-worker + per-ASIN productivity
 app.get('/api/prep-performance', auth, async (req, res) => {
   const days = parseInt(req.query.days) || 30;
   const since = new Date(Date.now() - days*24*60*60*1000).toISOString();
-
-  const recent = await pool.query(
+  const rows = (await pool.query(
     `SELECT id, asin, name, qty, is_duo, units, worker, started_at, finished_at, duration_sec
-     FROM inv_prep_log WHERE finished_at >= $1 ORDER BY finished_at DESC LIMIT 100`, [since]);
-
-  const byWorker = await pool.query(
-    `SELECT worker,
-            COUNT(*)::int AS jobs,
-            SUM(units)::int AS units,
-            SUM(duration_sec)::int AS total_sec,
-            CASE WHEN SUM(duration_sec) > 0
-              THEN ROUND(SUM(units)::numeric / (SUM(duration_sec)::numeric/3600), 1)
-              ELSE NULL END AS units_per_hour
-     FROM inv_prep_log WHERE finished_at >= $1 AND duration_sec IS NOT NULL
-     GROUP BY worker ORDER BY units DESC`, [since]);
-
-  const byAsin = await pool.query(
-    `SELECT asin, name,
-            COUNT(*)::int AS jobs,
-            SUM(units)::int AS units,
-            SUM(duration_sec)::int AS total_sec,
-            CASE WHEN SUM(duration_sec) > 0
-              THEN ROUND(SUM(units)::numeric / (SUM(duration_sec)::numeric/3600), 1)
-              ELSE NULL END AS units_per_hour
-     FROM inv_prep_log WHERE finished_at >= $1 AND duration_sec IS NOT NULL
-     GROUP BY asin, name ORDER BY units_per_hour ASC NULLS LAST`, [since]);
-
-  const totals = await pool.query(
-    `SELECT COUNT(*)::int AS jobs, COALESCE(SUM(units),0)::int AS units,
-            COALESCE(SUM(duration_sec),0)::int AS total_sec
-     FROM inv_prep_log WHERE finished_at >= $1`, [since]);
-
-  const t = totals.rows[0];
-  const overallUPH = t.total_sec > 0 ? Math.round((t.units / (t.total_sec/3600)) * 10)/10 : null;
-
-  res.json({ days, recent: recent.rows, byWorker: byWorker.rows, byAsin: byAsin.rows,
-             totals: { ...t, unitsPerHour: overallUPH } });
+     FROM inv_prep_log WHERE finished_at >= $1 ORDER BY finished_at DESC`, [since])).rows;
+  const clk = await clockedPrepSec(rows);
+  const uph = (u, sec) => sec > 0 ? Math.round((u / (sec / 3600)) * 10) / 10 : null;
+  const group = keyFn => {
+    const g = {};
+    for (const r of rows) {
+      const c = clk[r.id]; if (c.sec == null) continue;
+      const k = keyFn(r), x = g[k.k] = g[k.k] || { ...k.v, jobs: 0, units: 0, total_sec: 0 };
+      x.jobs++; x.units += r.units || 0; x.total_sec += c.sec;
+    }
+    return Object.values(g).map(x => ({ ...x, units_per_hour: uph(x.units, x.total_sec) }));
+  };
+  const byWorker = group(r => ({ k: r.worker || '', v: { worker: r.worker } })).sort((a, b) => b.units - a.units);
+  const byAsin = group(r => ({ k: r.asin + '|' + (r.name || ''), v: { asin: r.asin, name: r.name } }))
+    .sort((a, b) => (a.units_per_hour == null) - (b.units_per_hour == null) || (a.units_per_hour || 0) - (b.units_per_hour || 0));
+  const recent = rows.slice(0, 100).map(r => ({ ...r, raw_duration_sec: r.duration_sec, duration_sec: clk[r.id].sec, time_src: clk[r.id].src }));
+  const units = rows.reduce((t, r) => t + (r.units || 0), 0), total_sec = rows.reduce((t, r) => t + (clk[r.id].sec || 0), 0);
+  res.json({ days, recent, byWorker, byAsin,
+             totals: { jobs: rows.length, units, total_sec, unitsPerHour: uph(units, total_sec), rawJobs: rows.filter(r => clk[r.id].src === 'raw').length } });
 });
 
 // Complete a prep job WITHOUT scanning — moves it straight to Prepped & Ready
