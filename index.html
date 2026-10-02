@@ -5405,7 +5405,7 @@ function renderPendingPrep(){
              <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release all</button>
            </div>
            <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">${crewChips}
-             <button onclick="addPrepper(${x.id})" style="padding:7px 13px;font-size:12.5px;font-weight:800;background:rgba(255,255,255,0.22);color:#fff;border:1.5px dashed rgba(255,255,255,0.6);border-radius:16px;cursor:pointer;white-space:nowrap">+ Add prepper</button>
+             ${x.is_duo?'':'<!--'}<button onclick="addPrepper(${x.id})" style="padding:7px 13px;font-size:12.5px;font-weight:800;background:rgba(255,255,255,0.22);color:#fff;border:1.5px dashed rgba(255,255,255,0.6);border-radius:16px;cursor:pointer;white-space:nowrap">+ Add prepper</button>${x.is_duo?'':'-->'}
              ${ppBuildLinks(x.asin)}
            </div>
            <div style="color:#d4f5e2;font-size:12.5px;margin-top:9px;display:flex;gap:16px;flex-wrap:wrap">

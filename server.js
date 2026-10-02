@@ -414,7 +414,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prep-split-1002';
+const BUILD_ID = 'solo-jobs-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7593,6 +7593,12 @@ app.post('/api/pending-prep/crew/join', auth, async (req, res) => {
   if (!id) return res.status(400).json({ error: 'id required' });
   const who = await resolveEmployee(name);
   if (!who) return res.status(400).json({ error: 'Pick your name from the list.' });
+  // Owner's rule: only duo jobs take a second or third person. A single-SKU
+  // job is one person's (big ones are split in half, one person per half),
+  // so each person's speed is their own.
+  const job = await pool.query('SELECT is_duo FROM inv_pending_prep WHERE id=$1', [id]);
+  if (!job.rows.length) return res.status(404).json({ ok: false, error: 'Job not found' });
+  if (!job.rows[0].is_duo) return res.status(409).json({ ok: false, error: 'Only duo jobs can have more than one person. Take your own job (or the other half of a split job).' });
 
   const dup = await pool.query(
     'SELECT 1 FROM inv_prep_crew WHERE job_id=$1 AND lower(employee)=lower($2) AND left_at IS NULL', [id, who]);
@@ -7635,8 +7641,11 @@ app.post('/api/pending-prep/claim', auth, async (req, res) => {
   const canonical = await resolveEmployee(who);
   if (!canonical) return res.status(400).json({ error: 'Pick your name from the list — free text is not accepted.' });
 
-  const cur = await pool.query('SELECT claimed_by FROM inv_pending_prep WHERE id=$1', [id]);
+  const cur = await pool.query('SELECT claimed_by, is_duo FROM inv_pending_prep WHERE id=$1', [id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Job not found' });
+  // A single-SKU job already started by someone else is theirs alone (only duos take a crew)
+  if (cur.rows[0].claimed_by && !cur.rows[0].is_duo && cur.rows[0].claimed_by.toLowerCase() !== canonical.toLowerCase())
+    return res.status(409).json({ ok: false, error: `${cur.rows[0].claimed_by} is already on this job. Only duo jobs take more than one person.` });
 
   // ONE JOB AT A TIME per person.
   const busy = await openJobElsewhere(canonical, id);
