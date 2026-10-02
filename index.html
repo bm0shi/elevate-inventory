@@ -633,7 +633,7 @@
 
     <div class="box" style="border:2px solid #008296">
       <b style="font-size:15px">Import a pay period</b>
-      <div class="hint">Homebase → Timesheets → Download → <b>all timecards</b> (CSV). Re-importing the same period is safe — shifts update rather than duplicate.</div>
+      <div class="hint">Homebase → Timesheets → Download → <b>all timecards</b> (CSV). Re-importing is safe — the file replaces what's on file for its days, so a fixed file corrects them instead of duplicating.</div>
       <input type="file" id="tsFile" accept=".csv,text/csv,text/plain" onchange="tsFilePicked(this)" style="margin-top:10px;width:100%;padding:10px;border:2px dashed #cfd8e3;border-radius:8px;background:#fff;font-size:13px">
       <div class="hint" style="margin:8px 0 4px">— or paste the CSV text —</div>
       <textarea id="tsText" placeholder="Paste the Homebase CSV here…" style="width:100%;height:90px;padding:10px;border:2px solid #e2e8f0;border-radius:8px;font-size:12px;font-family:monospace"></textarea>
@@ -6554,7 +6554,8 @@ function importTimesheets(dry){
     let h='<div class="box" style="margin-top:10px;border:2px solid '+(dry?'#7a4fb5':'#1e8449')+';background:'+(dry?'#faf7fd':'#f4fbf7')+'">';
     h+='<div style="font-weight:800;font-size:15px;color:'+(dry?'#7a4fb5':'#1e8449')+'">'+(dry?'🧪 Preview — nothing saved':'✅ Imported')+'</div>';
     h+='<div class="hint">'+d.shifts+' shift'+(d.shifts===1?'':'s')+' in the file'
-      +(dry?' · '+d.matchedCount+' matched to a team member':' · '+d.inserted+' new, '+d.updated+' updated')+'</div>';
+      +(dry?' · '+d.matchedCount+' matched to a team member':' · saved '+(d.inserted+d.updated)+(d.replaced?' (replaced the '+d.replaced+' already on file)':''))+'</div>'
+      +(d.range?'<div class="hint" style="margin-top:4px">'+(dry?'Importing will <b>replace</b> the '+(d.replaces||0)+' punch'+(d.replaces===1?'':'es')+' on file':'Replaced everything on file')+' for these people from <b>'+esc(d.range.from)+'</b> to <b>'+esc(d.range.to)+'</b> — the file is the truth for those days, so a fixed file never doubles a day.</div>':'');
     const names=Object.keys(d.summary||{});
     if(names.length){
       h+='<table style="margin-top:8px"><thead><tr><th>Person</th><th>Shifts</th><th>Hours</th><th>Wage</th><th>Labor cost</th></tr></thead><tbody>';
