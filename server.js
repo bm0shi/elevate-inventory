@@ -16,7 +16,7 @@ const pdfParse = require('pdf-parse');
 const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
 const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
-const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates } = require('./lib/homebase');
+const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'labor-rate-1002';
+const BUILD_ID = 'labor-clamp-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4415,31 +4415,50 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
   const months = (await pool.query(`SELECT DISTINCT to_char(work_date,'YYYY-MM') AS m FROM inv_timecards ORDER BY m DESC`)).rows.map(r => r.m);
   const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : (months[0] || new Date().toISOString().slice(0, 7));
   const from = month + '-01';
-  const emps = (await pool.query(`
-    SELECT e.id, e.display_name, e.homebase_name,
-           COUNT(DISTINCT t.work_date)::int AS days, COALESCE(SUM(t.actual_hours),0)::float AS hours
-    FROM inv_employees e JOIN inv_timecards t ON t.employee_id=e.id
-    WHERE t.work_date >= $1::date AND t.work_date < ($1::date + interval '1 month')
-    GROUP BY e.id ORDER BY e.display_name`, [from])).rows;
-  const prep = (await pool.query(`
-    SELECT lower(trim(worker)) AS w, MIN(worker) AS worker, COUNT(*)::int AS jobs,
-           COALESCE(SUM(units),0)::int AS units, COALESCE(SUM(duration_sec),0)::int AS job_sec
+  const emps = (await pool.query('SELECT id, display_name, homebase_name FROM inv_employees')).rows;
+  const keyOf = x => String(x || '').trim().toLowerCase();
+  const empByKey = {};
+  for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empByKey[keyOf(k)] = e;
+  // Punches for the month, plus a week before (a job claimed in late August
+  // and finished in September still gets its August clocked time).
+  const cards = (await pool.query(`
+    SELECT t.employee_id, t.work_date, t.clock_in, t.clock_out, COALESCE(t.actual_hours,0)::float AS hours
+    FROM inv_timecards t
+    WHERE t.work_date >= ($1::date - interval '7 days') AND t.work_date < ($1::date + interval '1 month')
+    ORDER BY t.clock_in`, [from])).rows;
+  const shiftsOf = {};
+  for (const c of cards) (shiftsOf[c.employee_id] = shiftsOf[c.employee_id] || []).push({ in: c.clock_in, out: c.clock_out });
+  const jobsRaw = (await pool.query(`
+    SELECT id, worker, asin, name, qty, is_duo, units, started_at, finished_at, duration_sec
     FROM inv_prep_log
     WHERE (finished_at AT TIME ZONE 'America/Phoenix') >= $1::date
       AND (finished_at AT TIME ZONE 'America/Phoenix') < ($1::date + interval '1 month')
-    GROUP BY 1`, [from])).rows;
-  const byName = {}; for (const p of prep) byName[p.w] = p;
-  const used = new Set();
-  const people = emps.map(e => {
-    const keys = [e.display_name, e.homebase_name].filter(Boolean).map(x => x.trim().toLowerCase());
-    const p = { jobs: 0, units: 0, job_sec: 0 };
-    for (const k of new Set(keys)) if (byName[k] && !used.has(k)) { used.add(k); p.jobs += byName[k].jobs; p.units += byName[k].units; p.job_sec += byName[k].job_sec; }
-    return { name: e.display_name, days: e.days, hours: Math.round(e.hours * 100) / 100, jobs: p.jobs, units: p.units, jobMin: Math.round(p.job_sec / 60), ...laborRates(p.units, e.hours, p.job_sec) };
+    ORDER BY finished_at`, [from])).rows;
+  // Each job's time = only the part inside the worker's shifts (overlapSec);
+  // claim → finish runs across nights when people go home mid-job.
+  const jobs = jobsRaw.map(j => {
+    const e = empByKey[keyOf(j.worker)];
+    const clockedSec = e && j.started_at ? overlapSec(j.started_at, j.finished_at, shiftsOf[e.id]) : null;
+    return { id: j.id, worker: j.worker || '', employee: e ? e.display_name : null, asin: j.asin, name: j.name, qty: j.qty, isDuo: j.is_duo, units: j.units || 0,
+      startedAt: j.started_at, finishedAt: j.finished_at, rawSec: j.duration_sec, clockedSec };
   });
-  const unmatched = prep.filter(p => !used.has(p.w)).map(p => ({ worker: p.worker || '(no name)', jobs: p.jobs, units: p.units }));
+  const inMonth = c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 7) === month;
+  const people = emps.map(e => {
+    const myCards = cards.filter(c => c.employee_id === e.id && inMonth(c));
+    const myJobs = jobs.filter(j => j.employee === e.display_name);
+    if (!myCards.length && !myJobs.length) return null;
+    const hours = myCards.reduce((t, c) => t + c.hours, 0);
+    const units = myJobs.reduce((t, j) => t + j.units, 0), jobSec = myJobs.reduce((t, j) => t + (j.clockedSec || 0), 0);
+    return { name: e.display_name, days: new Set(myCards.map(c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10))).size,
+      hours: Math.round(hours * 100) / 100, jobs: myJobs.length, units, jobMin: Math.round(jobSec / 60), ...laborRates(units, hours, jobSec) };
+  }).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
+  const um = {};
+  for (const j of jobs) if (!j.employee) { const k = j.worker || '(no name)'; um[k] = um[k] || { worker: k, jobs: 0, units: 0 }; um[k].jobs++; um[k].units += j.units; }
   const t = people.reduce((a, x) => ({ hours: a.hours + x.hours, units: a.units + x.units, jobSec: a.jobSec + x.jobMin * 60 }), { hours: 0, units: 0, jobSec: 0 });
-  res.json({ ok: true, month, months, people, unmatched,
-    total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) } });
+  const empName = {}; for (const e of emps) empName[e.id] = e.display_name;
+  res.json({ ok: true, month, months, people, unmatched: Object.values(um),
+    total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) },
+    jobs, shifts: cards.filter(inMonth).map(c => ({ person: empName[c.employee_id] || '?', day: String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10), in: c.clock_in, out: c.clock_out, hours: c.hours })) });
 });
 
 // ============================================================
@@ -4489,7 +4508,8 @@ async function buildLandedCosts() {
   } catch (e) { console.error('[Landed] inbound allocation failed:', e.message); }
 
   // 3. labor — per unit from finished prep jobs, once crew time is attributed.
-  //    Not wired yet: needs timecard clamping, so it stays null on purpose.
+  //    Not wired yet: per-unit labor dollars stay null on purpose. (Clamped
+  //    job time exists now — overlapSec, used by /api/labor/efficiency.)
 
   // 4. supplies — per-unit recipe by size. Not collected yet.
 

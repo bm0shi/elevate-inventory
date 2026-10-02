@@ -87,3 +87,12 @@ test('laborRates: labeled per minute on the clock and inside prep jobs', () => {
   assert.deepStrictEqual(laborRates(1200, 8, 5 * 3600), { perMin: 2.5, perHour: 150, perMinOnJob: 4 });
   assert.deepStrictEqual(laborRates(0, 0, 0), { perMin: null, perHour: null, perMinOnJob: null });
 });
+
+test('overlapSec: a job left claimed overnight only counts clocked-in time', () => {
+  const { overlapSec } = require('../lib/homebase');
+  const shifts = [{ in: '2026-09-08T16:00:00Z', out: '2026-09-09T00:00:00Z' }, { in: '2026-09-09T16:00:00Z', out: '2026-09-10T00:00:00Z' }];
+  // claimed 22:00 day 1, finished 18:00 day 2 = 20h claim → finish; on the clock 2h + 2h
+  assert.equal(overlapSec('2026-09-08T22:00:00Z', '2026-09-09T18:00:00Z', shifts), 4 * 3600);
+  assert.equal(overlapSec('2026-09-08T22:00:00Z', '2026-09-09T18:00:00Z', []), 0);   // no punches: nothing to count
+  assert.equal(overlapSec('2026-09-09T18:00:00Z', '2026-09-08T22:00:00Z', shifts), 0);
+});
