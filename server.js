@@ -414,7 +414,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'split-fit-1002';
+const BUILD_ID = 'part1-first-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7641,8 +7641,15 @@ app.post('/api/pending-prep/claim', auth, async (req, res) => {
   const canonical = await resolveEmployee(who);
   if (!canonical) return res.status(400).json({ error: 'Pick your name from the list — free text is not accepted.' });
 
-  const cur = await pool.query('SELECT claimed_by, is_duo FROM inv_pending_prep WHERE id=$1', [id]);
+  const cur = await pool.query('SELECT claimed_by, is_duo, split_group, split_part FROM inv_pending_prep WHERE id=$1', [id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Job not found' });
+  // Split job: part 2 starts only once part 1 is being worked on or done
+  // (owner's rule), so a lone worker always takes part 1.
+  if (cur.rows[0].split_part === 2 && cur.rows[0].split_group != null) {
+    const p1 = await pool.query('SELECT claimed_by FROM inv_pending_prep WHERE split_group=$1 AND split_part=1 AND id<>$2 AND qty>0', [cur.rows[0].split_group, id]);
+    if (p1.rows.length && !p1.rows[0].claimed_by)
+      return res.status(409).json({ ok: false, partFirst: true, error: 'Work on PART 1 first. Part 2 opens once someone has started part 1 (or it is done).' });
+  }
   // A single-SKU job already started by someone else is theirs alone (only duos take a crew)
   if (cur.rows[0].claimed_by && !cur.rows[0].is_duo && cur.rows[0].claimed_by.toLowerCase() !== canonical.toLowerCase())
     return res.status(409).json({ ok: false, error: `${cur.rows[0].claimed_by} is already on this job. Only duo jobs take more than one person.` });

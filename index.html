@@ -5637,9 +5637,18 @@ function pickWorker(cb){
   if(TEAM.length) go(); else loadTeam().then(go);
 }
 
+// Split job: part 2 can't start while part 1 sits untouched (the server checks too)
+function ppPart1Waiting(id){
+  const all=(window._pendingPrepData&&window._pendingPrepData.items)||[], me=all.find(i=>i.id===id);
+  if(!me||me.split_part!==2||me.split_group==null) return false;
+  const p1=all.find(i=>i.split_group===me.split_group&&i.split_part===1&&i.id!==id);
+  return !!(p1&&!p1.claimed_by);
+}
 function claimPrepJob(id){
+  if(ppPart1Waiting(id)){ alert('⚠ WORK ON PART 1 FIRST\n\nThis is part 2 of a large job. Start part 1 first; part 2 opens once someone is working on part 1 (or it\'s done).'); return; }
   pickWorker(function(who){
     api('/api/pending-prep/claim',{method:'POST',body:JSON.stringify({id,name:who})}).then(d=>{
+      if(d&&d.partFirst){ alert('⚠ WORK ON PART 1 FIRST\n\nThis is part 2 of a large job. Start part 1 first; part 2 opens once someone is working on part 1 (or it\'s done).'); loadPendingPrep(); return; }
       if(d.error){ toast(d.error,true); return; }
       if(!d.ok && d.alreadyOnJob){
         const o=d.other||{};
