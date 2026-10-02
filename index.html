@@ -616,10 +616,12 @@
     <div class="box" style="border:2px solid #ff9900">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div><b style="font-size:17px">⚡ Labeling speed</b>
-          <div class="hint">Units prepped in the app ÷ minutes on the Homebase clock. <b>Per min (clock)</b> is the real cost rate — it includes breaks, set-up and other work. <b>Per min (on job)</b> is pace while a prep job was open.</div></div>
+          <div class="hint">Units prepped in the app ÷ minutes on the Homebase clock. <b>Per min (clock)</b> is the real cost rate — it includes breaks, set-up and other work. <b>Per min (on job)</b> is pace while a prep job was open <b>and</b> they were clocked in — a job left claimed overnight stops counting at clock-out and starts again at the next clock-in.</div></div>
         <select id="laborMonth" onchange="loadLaborEff(this.value)" style="padding:10px;font-size:15px;font-weight:700;border:2px solid #e2e8f0;border-radius:8px"></select>
       </div>
       <div id="laborEffBody" style="margin-top:10px"><div class="hint">Loading…</div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="action" onclick="laborRawToggle()" id="laborRawBtn" style="background:#5a6472">📋 Show raw data</button><button class="action" onclick="laborRawCsv()" style="background:#eef2f6;color:#1f2733">⬇ Download jobs CSV</button></div>
+      <div id="laborRaw" style="display:none;margin-top:10px"></div>
     </div>
 
     <div class="box">
@@ -6574,10 +6576,34 @@ function importTimesheets(dry){
   }).catch(()=>{ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Import failed.</div>'; });
 }
 
+const azT=(t,o)=>t?new Date(t).toLocaleString('en-US',{timeZone:'America/Phoenix',...(o||{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})}):'—';
+const hm=sec=>sec==null?'—':(Math.floor(sec/3600)+'h '+String(Math.round(sec%3600/60)).padStart(2,'0')+'m');
+function laborRawToggle(){
+  const el=document.getElementById('laborRaw'), b=document.getElementById('laborRawBtn'), d=window._laborEff; if(!el||!d) return;
+  const show=el.style.display==='none'; el.style.display=show?'block':'none'; b.textContent=show?'📋 Hide raw data':'📋 Show raw data';
+  if(!show) return;
+  const th=(t,al)=>'<th style="text-align:'+(al||'center')+'">'+t+'</th>', td=(v,al,st)=>'<td style="text-align:'+(al||'center')+';'+(st||'')+'">'+v+'</td>';
+  el.innerHTML='<b style="font-size:15px">Prep jobs ('+d.jobs.length+')</b><div class="hint">Arizona time. <b>Claim → finish</b> is the raw timer; <b>On the clock</b> is only the part inside that person\'s Homebase punches — that\'s what the speed uses.</div>'
+    +'<div style="overflow-x:auto"><table style="width:100%;margin-top:6px"><thead><tr>'+th('Person','left')+th('Product','left')+th('Units')+th('Claimed')+th('Finished')+th('Claim → finish')+th('On the clock')+th('Per min')+'</tr></thead><tbody>'
+    +d.jobs.map(j=>'<tr>'+td('<b>'+esc(j.employee||j.worker||'—')+'</b>'+(j.employee?'':' <span style="color:#c0392b;font-size:11px">not on team</span>'),'left')+td(esc(String(j.name||j.asin).slice(0,50))+(j.isDuo?' <b>(duo)</b>':''),'left')+td(j.units.toLocaleString())
+      +td(azT(j.startedAt))+td(azT(j.finishedAt))+td(hm(j.rawSec),'center',(j.rawSec&&j.clockedSec!=null&&j.rawSec-j.clockedSec>1800)?'color:#c0392b;font-weight:800':'')+td(hm(j.clockedSec),'center','font-weight:800')
+      +td(j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'—')+'</tr>').join('')+'</tbody></table></div>'
+    +'<b style="font-size:15px;display:block;margin-top:14px">Punches ('+d.shifts.length+')</b><div style="overflow-x:auto"><table style="width:100%;margin-top:6px;table-layout:fixed"><thead><tr>'+th('Person','left')+th('Day')+th('Clock in')+th('Clock out')+th('Hours')+'</tr></thead><tbody>'
+    +d.shifts.map(c=>'<tr>'+td('<b>'+esc(c.person)+'</b>','left')+td(c.day)+td(azT(c.in,{hour:'numeric',minute:'2-digit'}))+td(azT(c.out,{hour:'numeric',minute:'2-digit'}))+td((c.hours||0).toFixed(2))+'</tr>').join('')+'</tbody></table></div>';
+}
+function laborRawCsv(){
+  const d=window._laborEff; if(!d||!d.jobs.length){ toast('No prep jobs this month',true); return; }
+  const q=v=>{ v=v==null?'':String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
+  const rows=[['Person','Product','ASIN','Units','Claimed (AZ)','Finished (AZ)','Claim to finish (min)','On the clock (min)','Per min on the clock']]
+    .concat(d.jobs.map(j=>[j.employee||j.worker,j.name,j.asin,j.units,azT(j.startedAt),azT(j.finishedAt),j.rawSec!=null?Math.round(j.rawSec/60):'',j.clockedSec!=null?Math.round(j.clockedSec/60):'',j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'']));
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(q).join(',')).join('\r\n')],{type:'text/csv'}));
+  a.download='labeling-'+d.month+'.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
 function loadLaborEff(month){
   const b=document.getElementById('laborEffBody'); if(!b) return;
   ownerApi('/api/labor/efficiency'+(month?'?month='+encodeURIComponent(month):'')).then(d=>{
     if(!d||d.ok===false){ b.innerHTML='<div class="hint" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; }
+    window._laborEff=d; const raw=document.getElementById('laborRaw'); if(raw&&raw.style.display!=='none'){ raw.style.display='none'; laborRawToggle(); }
     const sel=document.getElementById('laborMonth');
     if(sel) sel.innerHTML=(d.months.length?d.months:[d.month]).map(m=>'<option value="'+esc(m)+'"'+(m===d.month?' selected':'')+'>'+new Date(m+'-15').toLocaleDateString('en-US',{month:'long',year:'numeric'})+'</option>').join('');
     if(!d.people.length){ b.innerHTML='<div class="hint">No timecards for this month.</div>'; return; }
