@@ -16,7 +16,7 @@ const pdfParse = require('pdf-parse');
 const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
 const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
-const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec } = require('./lib/homebase');
+const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec, weekStart, crewShares } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ts-replace-1002';
+const BUILD_ID = 'prep-crew-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -931,6 +931,22 @@ async function initDb() {
       );
       CREATE INDEX IF NOT EXISTS idx_prep_crew_job ON inv_prep_crew(job_id);
       CREATE INDEX IF NOT EXISTS idx_prep_crew_open ON inv_prep_crew(employee) WHERE left_at IS NULL;
+    `);
+    // Everyone who worked a finished job, so the units can be split between
+    // them (crewShares). Only the claimer used to be credited: Zaia showed no
+    // labeling on a day she and Samantha worked the same jobs together.
+    // Backfill: a job's crew rows close in the same transaction that writes
+    // its prep log row, so left_at = finished_at finds the job; then every
+    // crew row of that job that overlapped the log row's claim → finish.
+    await pool.query(`
+      ALTER TABLE inv_prep_log ADD COLUMN IF NOT EXISTS crew JSONB;
+      UPDATE inv_prep_log l SET crew = sub.crew FROM (
+        SELECT l2.id, jsonb_agg(jsonb_build_object('employee', c.employee, 'joined_at', c.joined_at, 'left_at', c.left_at) ORDER BY c.joined_at) AS crew
+        FROM inv_prep_log l2
+        JOIN LATERAL (SELECT DISTINCT job_id FROM inv_prep_crew k WHERE k.left_at = l2.finished_at) j ON true
+        JOIN inv_prep_crew c ON c.job_id = j.job_id AND c.joined_at <= l2.finished_at AND (l2.started_at IS NULL OR c.left_at >= l2.started_at)
+        WHERE l2.crew IS NULL GROUP BY l2.id) sub
+      WHERE l.id = sub.id;
     `);
     console.log('[Inventory] Prep crew ready.');
   } catch(e) { console.error('prep crew migration skipped:', e.message); }
@@ -4455,41 +4471,88 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
   const shiftsOf = {};
   for (const c of cards) (shiftsOf[c.employee_id] = shiftsOf[c.employee_id] || []).push({ in: c.clock_in, out: c.clock_out });
   const jobsRaw = (await pool.query(`
-    SELECT id, worker, asin, name, qty, is_duo, units, started_at, finished_at, duration_sec
+    SELECT id, worker, asin, name, qty, is_duo, units, started_at, finished_at, duration_sec, crew
     FROM inv_prep_log
     WHERE (finished_at AT TIME ZONE 'America/Phoenix') >= $1::date
       AND (finished_at AT TIME ZONE 'America/Phoenix') < ($1::date + interval '1 month')
     ORDER BY finished_at`, [from])).rows;
-  // Each job's time = only the part inside the worker's shifts (overlapSec);
-  // claim → finish runs across nights when people go home mid-job.
+  // Each job is split between its crew (crewShares): each person's time is
+  // their stretch on the job inside their own punches (claim → finish runs
+  // across nights when people go home mid-job), and the units go by that time.
+  const shiftsByName = n => { const e = empByKey[keyOf(n)]; return e ? shiftsOf[e.id] || [] : []; };
+  const contribs = [];
   const jobs = jobsRaw.map(j => {
-    const e = empByKey[keyOf(j.worker)];
-    const clockedSec = e && j.started_at ? overlapSec(j.started_at, j.finished_at, shiftsOf[e.id]) : null;
-    return { id: j.id, worker: j.worker || '', employee: e ? e.display_name : null, asin: j.asin, name: j.name, qty: j.qty, isDuo: j.is_duo, units: j.units || 0,
-      startedAt: j.started_at, finishedAt: j.finished_at, rawSec: j.duration_sec, clockedSec };
+    const sh = j.started_at ? crewShares(j, shiftsByName) : [{ name: j.worker, units: j.units || 0, sec: 0 }];
+    for (const x of sh) { const e = empByKey[keyOf(x.name)]; contribs.push({ jobId: j.id, employee: e ? e.display_name : null, worker: x.name, units: x.units, sec: x.sec }); }
+    const any = sh.some(x => empByKey[keyOf(x.name)]);
+    return { id: j.id, worker: j.worker || '', employee: any ? sh.map(x => (empByKey[keyOf(x.name)] || {}).display_name || x.name).join(' + ') : null,
+      crew: sh.map(x => ({ name: (empByKey[keyOf(x.name)] || {}).display_name || x.name, units: Math.round(x.units), min: Math.round(x.sec / 60) })),
+      asin: j.asin, name: j.name, qty: j.qty, isDuo: j.is_duo, units: j.units || 0,
+      startedAt: j.started_at, finishedAt: j.finished_at, rawSec: j.duration_sec, clockedSec: any ? sh.reduce((t, x) => t + x.sec, 0) : null };
   });
   const inMonth = c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 7) === month;
   const people = emps.map(e => {
     const myCards = cards.filter(c => c.employee_id === e.id && inMonth(c));
-    const myJobs = jobs.filter(j => j.employee === e.display_name);
+    const myJobs = contribs.filter(c => c.employee === e.display_name);
     if (!myCards.length && !myJobs.length) return null;
     const hours = myCards.reduce((t, c) => t + c.hours, 0);
-    // Only jobs with clocked time count: a job on a day whose punches aren't
+    // Only work with clocked time counts: a job on a day whose punches aren't
     // uploaded yet added its units against zero hours and made the rate look
     // better than it was. Those are reported apart (unitsNoPunch).
-    const counted = myJobs.filter(j => j.clockedSec > 0), off = myJobs.filter(j => !(j.clockedSec > 0));
-    const units = counted.reduce((t, j) => t + j.units, 0), jobSec = counted.reduce((t, j) => t + j.clockedSec, 0);
+    const counted = myJobs.filter(j => j.sec > 0), off = myJobs.filter(j => !(j.sec > 0));
+    const units = Math.round(counted.reduce((t, j) => t + j.units, 0)), jobSec = counted.reduce((t, j) => t + j.sec, 0);
     return { name: e.display_name, days: new Set(myCards.map(c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10))).size,
       hours: Math.round(hours * 100) / 100, jobs: counted.length, units, jobMin: Math.round(jobSec / 60), ...laborRates(units, hours, jobSec),
-      jobsNoPunch: off.length, unitsNoPunch: off.reduce((t, j) => t + j.units, 0) };
+      jobsNoPunch: off.length, unitsNoPunch: Math.round(off.reduce((t, j) => t + j.units, 0)) };
   }).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
   const um = {};
-  for (const j of jobs) if (!j.employee) { const k = j.worker || '(no name)'; um[k] = um[k] || { worker: k, jobs: 0, units: 0 }; um[k].jobs++; um[k].units += j.units; }
+  for (const c of contribs) if (!c.employee) { const k = c.worker || '(no name)'; um[k] = um[k] || { worker: k, jobs: 0, units: 0 }; um[k].jobs++; um[k].units += Math.round(c.units); }
   const t = people.reduce((a, x) => ({ hours: a.hours + x.hours, units: a.units + x.units, jobSec: a.jobSec + x.jobMin * 60 }), { hours: 0, units: 0, jobSec: 0 });
   const empName = {}; for (const e of emps) empName[e.id] = e.display_name;
   res.json({ ok: true, month, months, people, unmatched: Object.values(um),
     total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) },
     jobs, shifts: cards.filter(inMonth).map(c => ({ id: c.id, person: empName[c.employee_id] || '?', day: String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10), in: c.clock_in, out: c.clock_out, hours: c.hours })) });
+});
+
+// Week-by-week labeling speed per person (owner uploads punches weekly to
+// watch trends). Last N weeks ending at the latest punch on file — uploads
+// lag, so "this week" would usually be empty. Same rules as the monthly view:
+// per minute on the clock; only jobs with clocked time count.
+app.get('/api/labor/trend', ownerAuth, async (req, res) => {
+  const n = Math.min(26, Math.max(2, parseInt(req.query.weeks, 10) || 8));
+  const last = (await pool.query('SELECT MAX(work_date) AS d FROM inv_timecards')).rows[0].d;
+  if (!last) return res.json({ ok: true, weeks: [], people: [] });
+  const lastWeek = weekStart(last instanceof Date ? last.toISOString() : last);
+  const weeks = [];
+  for (let i = n - 1; i >= 0; i--) { const d = new Date(lastWeek + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - 7 * i); weeks.push(d.toISOString().slice(0, 10)); }
+  const from = weeks[0], to = new Date(new Date(lastWeek + 'T12:00:00Z').getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const emps = (await pool.query('SELECT id, display_name, homebase_name FROM inv_employees')).rows;
+  const keyOf = x => String(x || '').trim().toLowerCase(), empByKey = {};
+  for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empByKey[keyOf(k)] = e;
+  const cards = (await pool.query(`SELECT employee_id, work_date, clock_in, clock_out, COALESCE(actual_hours,0)::float AS hours FROM inv_timecards
+    WHERE work_date >= ($1::date - interval '7 days') AND work_date < $2::date`, [from, to])).rows;
+  const shiftsOf = {};
+  for (const c of cards) (shiftsOf[c.employee_id] = shiftsOf[c.employee_id] || []).push({ in: c.clock_in, out: c.clock_out });
+  const jobs = (await pool.query(`SELECT worker, units, started_at, finished_at, crew, to_char(finished_at AT TIME ZONE 'America/Phoenix','YYYY-MM-DD') AS day FROM inv_prep_log
+    WHERE (finished_at AT TIME ZONE 'America/Phoenix') >= $1::date AND (finished_at AT TIME ZONE 'America/Phoenix') < $2::date`, [from, to])).rows;
+  const cell = {};   // empId|week → { hours, units, sec }
+  const at = (id, w) => (cell[id + '|' + w] = cell[id + '|' + w] || { hours: 0, units: 0, sec: 0 });
+  for (const c of cards) { const w = weekStart(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date); if (weeks.includes(w)) at(c.employee_id, w).hours += c.hours; }
+  const shiftsByName = n => { const e = empByKey[keyOf(n)]; return e ? shiftsOf[e.id] || [] : []; };
+  for (const j of jobs) {
+    if (!j.started_at) continue;
+    const w = weekStart(j.day); if (!weeks.includes(w)) continue;
+    for (const c of crewShares(j, shiftsByName)) {   // split between everyone on the job
+      const e = empByKey[keyOf(c.name)]; if (!e || !(c.sec > 0)) continue;
+      const x = at(e.id, w); x.units += c.units; x.sec += c.sec;
+    }
+  }
+  const people = emps.map(e => ({ name: e.display_name, weeks: weeks.map(w => { const x = cell[e.id + '|' + w]; return x ? { hours: Math.round(x.hours * 10) / 10, units: x.units, ...laborRates(x.units, x.hours, x.sec) } : null; }) }))
+    .filter(p => p.weeks.some(Boolean)).sort((a, b) => a.name.localeCompare(b.name));
+  for (const p of people) for (const x of p.weeks) if (x) x.units = Math.round(x.units);
+  // Start at the first week anyone has data (no row of empty weeks on the chart)
+  const first = Math.max(0, weeks.findIndex((w, i) => people.some(p => p.weeks[i])));
+  res.json({ ok: true, weeks: weeks.slice(first), people: people.map(p => ({ ...p, weeks: p.weeks.slice(first) })) });
 });
 
 // ============================================================
@@ -7584,8 +7647,7 @@ app.post('/api/prep-log/clear-all', ownerAuth, async (req, res) => {
   res.json({ ok: true, deleted: r.rowCount });
 });
 
-// Prep performance metrics — recent jobs + per-worker + per-ASIN productivity
-// Each job's time counts only while its worker was clocked in (Homebase
+// Each job's time counts only while its crew was clocked in (Homebase
 // punches, overlapSec): jobs stay claimed when people go home, so the raw
 // claim → finish timer ran across nights. A job with no overlapping punch
 // yet (that pay period not uploaded, or a name not on the team) keeps its
@@ -7595,15 +7657,20 @@ async function clockedPrepSec(rows) {
   if (!rows.length) return out;
   const emps = (await pool.query('SELECT id, display_name, homebase_name FROM inv_employees')).rows;
   const key = x => String(x || '').trim().toLowerCase(), empOf = {};
-  for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empOf[key(k)] = e.id;
+  for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empOf[key(k)] = e;
   const minStart = rows.reduce((m, r) => r.started_at && new Date(r.started_at) < m ? new Date(r.started_at) : m, new Date());
   const cards = (await pool.query('SELECT employee_id, clock_in, clock_out FROM inv_timecards WHERE clock_out >= $1', [minStart])).rows;
   const shifts = {};
   for (const c of cards) (shifts[c.employee_id] = shifts[c.employee_id] || []).push({ in: c.clock_in, out: c.clock_out });
+  const byName = n => { const e = empOf[key(n)]; return e ? shifts[e.id] || [] : []; };
   for (const r of rows) {
-    const sh = shifts[empOf[key(r.worker)]] || [];
-    const sec = r.started_at ? overlapSec(r.started_at, r.finished_at, sh) : 0;
-    out[r.id] = sec > 0 ? { sec, src: 'clock' } : { sec: r.duration_sec, src: 'raw' };
+    // Split between the crew (crewShares); a job nobody has punches for yet
+    // keeps its raw timer, all on the claimer, flagged 'raw'.
+    const sh = r.started_at ? crewShares(r, byName) : [];
+    const sec = sh.reduce((t, x) => t + x.sec, 0);
+    out[r.id] = sec > 0
+      ? { sec, src: 'clock', shares: sh.filter(x => x.sec > 0 || x.units > 0).map(x => ({ worker: (empOf[key(x.name)] || {}).display_name || x.name, units: x.units, sec: x.sec })) }
+      : { sec: r.duration_sec, src: 'raw', shares: [{ worker: r.worker, units: r.units || 0, sec: r.duration_sec }] };
   }
   return out;
 }
@@ -7613,7 +7680,7 @@ app.get('/api/prep-performance', auth, async (req, res) => {
   const days = parseInt(req.query.days) || 30;
   const since = new Date(Date.now() - days*24*60*60*1000).toISOString();
   const rows = (await pool.query(
-    `SELECT id, asin, name, qty, is_duo, units, worker, started_at, finished_at, duration_sec
+    `SELECT id, asin, name, qty, is_duo, units, worker, started_at, finished_at, duration_sec, crew
      FROM inv_prep_log WHERE finished_at >= $1 ORDER BY finished_at DESC`, [since])).rows;
   const clk = await clockedPrepSec(rows);
   const uph = (u, sec) => sec > 0 ? Math.round((u / (sec / 3600)) * 10) / 10 : null;
@@ -7626,10 +7693,18 @@ app.get('/api/prep-performance', auth, async (req, res) => {
     }
     return Object.values(g).map(x => ({ ...x, units_per_hour: uph(x.units, x.total_sec) }));
   };
-  const byWorker = group(r => ({ k: r.worker || '', v: { worker: r.worker } })).sort((a, b) => b.units - a.units);
+  // By worker: each person's share of every job they were on (crew split).
+  const bw = {};
+  for (const r of rows) for (const x of clk[r.id].shares) {
+    if (x.sec == null) continue;
+    const w = bw[x.worker || ''] = bw[x.worker || ''] || { worker: x.worker, jobs: 0, units: 0, total_sec: 0 };
+    w.jobs++; w.units += x.units; w.total_sec += x.sec;
+  }
+  const byWorker = Object.values(bw).map(x => ({ ...x, units: Math.round(x.units), units_per_hour: uph(x.units, x.total_sec) })).sort((a, b) => b.units - a.units);
   const byAsin = group(r => ({ k: r.asin + '|' + (r.name || ''), v: { asin: r.asin, name: r.name } }))
     .sort((a, b) => (a.units_per_hour == null) - (b.units_per_hour == null) || (a.units_per_hour || 0) - (b.units_per_hour || 0));
-  const recent = rows.slice(0, 100).map(r => ({ ...r, raw_duration_sec: r.duration_sec, duration_sec: clk[r.id].sec, time_src: clk[r.id].src }));
+  const recent = rows.slice(0, 100).map(r => ({ ...r, crew: undefined, worker: clk[r.id].shares.map(x => x.worker).join(' + ') || r.worker,
+    raw_duration_sec: r.duration_sec, duration_sec: clk[r.id].sec, time_src: clk[r.id].src }));
   const units = rows.reduce((t, r) => t + (r.units || 0), 0), total_sec = rows.reduce((t, r) => t + (clk[r.id].sec || 0), 0);
   res.json({ days, recent, byWorker, byAsin,
              totals: { jobs: rows.length, units, total_sec, unitsPerHour: uph(units, total_sec), rawJobs: rows.filter(r => clk[r.id].src === 'raw').length } });
@@ -7675,10 +7750,14 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
     const startedAt = job.rows[0].claimed_at || null;
     const durSec = startedAt ? Math.max(1, Math.round((Date.now() - new Date(startedAt).getTime())/1000)) : null;
     const unitsHandled = is_duo ? q * 2 : q;
+    // The whole crew on this job (still on it, or left during it), so the
+    // units are split between everyone who worked it, not just the claimer.
+    const crew = (await db.query(`SELECT employee, joined_at, COALESCE(left_at, now()) AS left_at FROM inv_prep_crew
+      WHERE job_id=$1 AND (left_at IS NULL OR $2::timestamptz IS NULL OR left_at >= $2::timestamptz) ORDER BY joined_at`, [id, startedAt])).rows;
     await db.query(
-      `INSERT INTO inv_prep_log(asin, name, qty, is_duo, units, worker, started_at, duration_sec)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-      [asin, nm.rows[0]?.name || asin, q, is_duo, unitsHandled, who, startedAt, durSec]);
+      `INSERT INTO inv_prep_log(asin, name, qty, is_duo, units, worker, started_at, duration_sec, crew)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      [asin, nm.rows[0]?.name || asin, q, is_duo, unitsHandled, who, startedAt, durSec, crew.length ? JSON.stringify(crew) : null]);
 
     // decrement / close the work order. Either way the crew is done with it —
     // open crew rows used to stay open for ever and keep counting minutes.
