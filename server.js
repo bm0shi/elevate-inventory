@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'toadd-peers-1001';
+const BUILD_ID = 'liftgate-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1501,15 +1501,19 @@ async function packView(sid, opts = {}) {
   // Where the app-made plan behind this shipment is, so the finished page
   // shows the real next step (it kept saying "send box info" after the
   // freight was booked).
-  let planStage = null;
+  let planStage = null, liftgate = null;
   if (sh.amz && sh.amz.planRow) {
-    const pr = (await pool.query('SELECT status, shipments FROM inv_inbound_plans WHERE id=$1', [sh.amz.planRow])).rows[0];
+    const pr = (await pool.query('SELECT status, shipments, confirmed, ship_from FROM inv_inbound_plans WHERE id=$1', [sh.amz.planRow])).rows[0];
     if (pr) {
       const me = (pr.shipments || []).find(x => x.fba === sid) || {};
       planStage = pr.status === 'confirmed' ? 'booked' : me.boxesSentAt ? 'freight' : 'boxes';
+      const c = pr.confirmed || {};
+      // Booked before the setting existed: go by the address (liftgate unless turned off)
+      const need = c.liftgate != null ? c.liftgate : (pr.ship_from || {}).liftgate !== false;
+      if (planStage === 'booked' && need) liftgate = { ok: !!c.liftgateOkAt, carrier: ((c.carriers || []).find(x => x.fba === sid) || {}).carrier || '' };
     }
   }
-  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, planStage,
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, planStage, liftgate,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 // The 2D Production start page: every shipment built in the app (deleted
@@ -1955,7 +1959,11 @@ const SHIP_FROM_DEFAULT = [{ id: 'bell', name: 'Beauty is...(Urban Bliss Salon)'
 const cleanShipFrom = (a, i) => ({ id: String(a.id || ('addr' + (i + 1))).replace(/[^\w-]/g, '').slice(0, 30) || ('addr' + (i + 1)),
   name: String(a.name || '').slice(0, 50), line1: String(a.line1 || '').slice(0, 120), line2: String(a.line2 || '').slice(0, 60), city: String(a.city || '').slice(0, 30),
   state: String(a.state || '').slice(0, 20), zip: String(a.zip || '').slice(0, 12), country: String(a.country || 'US').slice(0, 2).toUpperCase(),
-  contactName: String(a.contactName || '').slice(0, 80), phone: String(a.phone || '').slice(0, 30), email: String(a.email || '').slice(0, 120) });
+  contactName: String(a.contactName || '').slice(0, 80), phone: String(a.phone || '').slice(0, 30), email: String(a.email || '').slice(0, 120),
+  // No loading dock: the carrier must send a liftgate truck. Amazon's API has
+  // no liftgate field, so the app reminds us to call the carrier after
+  // booking (the pilot's truck came without one). On unless turned off.
+  liftgate: a.liftgate !== false });
 async function inboundSetup() {
   const r = await pool.query("SELECT data FROM inv_cache WHERE cache_key='pack_settings'");
   const d = (r.rows[0] && r.rows[0].data) || {};
@@ -2433,7 +2441,9 @@ async function planConfirm(id, args, step) {
     [id, JSON.stringify({ placementFee: fee, freight: args.freight || null, total: args.freight || null, shipments: (p.shipments || []).map(s => s.fba),
       // Earliest pickup among the booked options, shown on the booked banner
       pickup: Object.entries(args.selections || {}).map(([sid, oid]) => (((p.freight || {}).quotes || {})[sid] || []).find(o => o.transportationOptionId === oid))
-        .map(o => o && o.pickup).filter(Boolean).sort((x, y) => x.start < y.start ? -1 : 1)[0] || null })]);
+        .map(o => o && o.pickup).filter(Boolean).sort((x, y) => x.start < y.start ? -1 : 1)[0] || null,
+      carriers: (p.shipments || []).map(sh => ({ fba: sh.fba, carrier: ((((p.freight || {}).quotes || {})[sh.shipmentId] || []).find(o => o.transportationOptionId === (args.selections || {})[sh.shipmentId]) || {}).carrier || '' })),
+      liftgate: (p.ship_from || {}).liftgate !== false })]);
 }
 // Confirm a destination. The owner saw its fee; it must still be the fee on file.
 app.post('/api/inbound/plans/:id/place', auth, async (req, res) => {
@@ -2522,6 +2532,15 @@ app.post('/api/inbound/plans/:id/confirm', auth, async (req, res) => {
   const args = out.body.args;
   runPlanJob(id, 'Confirming with Amazon…', (step) => planConfirm(id, args, step), 'confirm', args);
   res.json({ ok: true, total: args.total });
+});
+// The carrier said yes to a liftgate truck (we called them; Amazon's API
+// can't ask). Clears the red step on the plan and in Shipment Production.
+app.post('/api/inbound/plans/:id/liftgate', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const r = await pool.query(`UPDATE inv_inbound_plans SET confirmed = confirmed || jsonb_build_object('liftgateOkAt', now()::text), updated_at=now()
+    WHERE id=$1 AND status='confirmed' AND confirmed IS NOT NULL RETURNING confirmed`, [id]);
+  if (!r.rows.length) return res.status(409).json({ ok: false, error: 'Book the freight first.' });
+  res.json({ ok: true, confirmed: r.rows[0].confirmed });
 });
 // Amazon's pallet labels and bill of lading for an FBA shipment (download links).
 app.post('/api/inbound/paperwork', auth, async (req, res) => {

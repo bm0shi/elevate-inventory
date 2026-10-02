@@ -1127,13 +1127,15 @@ function nsRender(){
     +'<button class="action" onclick="_ns.editAddr=\''+esc(_ns.addressId)+'\';nsRender()" style="background:#eef2f6;color:#1f2733">✎ Edit</button>'
     +'<button class="action" onclick="_ns.editAddr=\'new\';nsRender()" style="background:#eef2f6;color:#1f2733">➕ Add address</button></div>'
     +'<div style="margin-top:8px;font-size:14px;line-height:1.45">'+esc(cur.name||'')+'<br>'+esc(cur.line1||'')+(cur.line2?', '+esc(cur.line2):'')+'<br>'+esc(cur.city||'')+', '+esc(cur.state||'')+' '+esc(cur.zip||'')
-    +'<div style="margin-top:4px"><b>Contact:</b> '+esc(cur.contactName||'—')+' · '+esc(cur.phone||'—')+(cur.email?' · '+esc(cur.email):'')+'</div></div>';
+    +'<div style="margin-top:4px"><b>Contact:</b> '+esc(cur.contactName||'—')+' · '+esc(cur.phone||'—')+(cur.email?' · '+esc(cur.email):'')+'</div>'
+    +(cur.liftgate!==false?'<div style="margin-top:4px;font-weight:900;color:#c0392b">🚚 Needs a LIFTGATE truck (no loading dock)</div>':'')+'</div>';
   if(_ns.editAddr){
     const e=_ns.editAddr==='new'?{}:(A.find(x=>x.id===_ns.editAddr)||{});
     h+='<div style="margin-top:12px;padding:12px;border:1px dashed #008296;border-radius:10px;background:#f7fbfb"><b>'+(_ns.editAddr==='new'?'New ship-from address':'Edit this address')+'</b>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsAName','NAME',e.name,2)+inp('nsALine1','STREET',e.line1,2)+inp('nsALine2','SUITE',e.line2)+'</div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACity','CITY',e.city)+inp('nsAState','STATE',e.state)+inp('nsAZip','ZIP',e.zip)+'</div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACName','CONTACT NAME',e.contactName)+inp('nsAPhone','CONTACT PHONE',e.phone)+inp('nsAEmail','CONTACT EMAIL (optional)',e.email,2)+'</div>'
+      +'<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:15px;font-weight:800;text-transform:none;letter-spacing:0;color:#0f1111"><input id="nsALift" type="checkbox"'+(e.liftgate!==false?' checked':'')+' style="width:20px;height:20px"> No loading dock — needs a LIFTGATE truck</label>'
       +'<div style="display:flex;gap:8px;margin-top:10px"><button class="action" onclick="nsSaveAddr()" style="background:#008296">Save address</button><button class="action" onclick="_ns.editAddr=null;nsRender()" style="background:#eef2f6;color:#1f2733">Cancel</button>'
       +(_ns.editAddr!=='new'&&A.length>1?'<button class="action" onclick="nsDelAddr()" style="background:#fdecea;color:#c0392b;margin-left:auto">Remove</button>':'')+'</div></div>';
   }
@@ -1267,7 +1269,7 @@ function nsSaveAddresses(list, pickId){
 function nsSaveAddr(){
   const g=id=>((document.getElementById(id)||{}).value||'').trim();
   const A=((_ns.setup&&_ns.setup.addresses)||[]).slice(), isNew=_ns.editAddr==='new';
-  const a={id:isNew?('a'+Date.now().toString(36)):_ns.editAddr, name:g('nsAName'), line1:g('nsALine1'), line2:g('nsALine2'), city:g('nsACity'), state:g('nsAState'), zip:g('nsAZip'), country:'US', contactName:g('nsACName'), phone:g('nsAPhone'), email:g('nsAEmail')};
+  const a={id:isNew?('a'+Date.now().toString(36)):_ns.editAddr, name:g('nsAName'), line1:g('nsALine1'), line2:g('nsALine2'), city:g('nsACity'), state:g('nsAState'), zip:g('nsAZip'), country:'US', contactName:g('nsACName'), phone:g('nsAPhone'), email:g('nsAEmail'), liftgate:!!(document.getElementById('nsALift')||{}).checked};
   if(isNew) A.push(a); else A.splice(A.findIndex(x=>x.id===a.id),1,a);
   nsSaveAddresses(A, a.id);
 }
@@ -1400,6 +1402,7 @@ function nsPlan(id){
     // 6. Freight options + book
     if(p.status==='quotes'&&p.freight){
       const S=window._nsSel=window._nsSel&&window._nsSel.id===p.id?window._nsSel:{id:p.id, sel:{}};
+      if((p.ship_from||{}).liftgate!==false) h+='<div class="box" style="border:2px solid #c0392b;background:#fdecea;font-size:14px;line-height:1.5"><b style="color:#c0392b">🚚 This pickup needs a LIFTGATE truck.</b> Amazon doesn\'t let the app ask for one, so after booking you\'ll call the carrier. Carriers often run liftgate trucks only some days, so the pickup may come a day later — set the ready date a day earlier if you can.</div>';
       h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">Amazon partnered carriers first, soonest pickup first, then cheapest. Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
       let freight=0, all=true;
       for(const sh of SH){
@@ -1418,6 +1421,7 @@ function nsPlan(id){
         +'<button class="action" onclick="nsConfirm('+p.id+','+total+')"'+(all?'':' disabled')+' style="width:100%;margin-top:12px;font-size:19px;padding:16px;background:#c0392b">Book freight with Amazon — charge '+$$(total)+'</button>'
         +'<div class="hint" style="margin-top:6px"><b>Your Amazon account is charged after this step</b> — nothing before it. The bill of lading and pallet labels come next (in Shipment Production, on the shipment).</div></div>';
     }
+    if(p.status==='confirmed'&&p.confirmed&&(p.confirmed.liftgate!=null?p.confirmed.liftgate:(p.ship_from||{}).liftgate!==false)) h+=nsLiftgateBox(p.id, p.confirmed.liftgateOkAt, (p.confirmed.carriers||[]));
     if(p.status==='confirmed'&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon</b>'
       +(p.confirmed.pickup?'<div style="margin-top:6px;font-size:18px;font-weight:900">🚚 Pickup '+nsPickup(p.confirmed.pickup)+'</div>':'')
       +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): <b>'+$$(p.confirmed.placementFee)+'</b></div>'
@@ -1433,6 +1437,22 @@ function nsPlan(id){
     // app-only removal instead (for a plan deleted in Seller Central).
     if(p.placement_confirmed_at){ const c=el.querySelector('button[onclick^="nsCancel"]'); if(c){ c.textContent='Remove from app'; c.setAttribute('onclick','nsRemove('+p.id+')'); } }
   }); });
+}
+// Red step after booking until the carrier has agreed to a liftgate truck
+// (Amazon's API has no liftgate option; the pilot's truck came without one).
+function nsLiftgateBox(planId, okAt, carriers, inProd){
+  const who=carriers.map(c=>'<b>'+esc(c.carrier||'the carrier')+'</b> for <b style="font-family:monospace">'+esc(c.fba||'')+'</b>').join(' and ')||'<b>the carrier</b>';
+  if(okAt) return '<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449;font-size:15px">✓ Liftgate truck confirmed with the carrier ('+new Date(okAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+')</div>';
+  return '<div class="box" style="border:3px solid #c0392b;background:#fdecea;text-align:center;padding:20px">'
+    +'<div style="font-family:Montserrat,sans-serif;font-size:22px;font-weight:900;color:#c0392b">📞 CALL THE CARRIER — REQUEST A LIFTGATE TRUCK</div>'
+    +'<div style="font-size:16px;margin-top:8px">Call '+who+'. Give them the shipment ID (it\'s on the bill of lading) and ask for a <b>liftgate truck</b> — we have no loading dock. Without this they send a truck that can\'t load the pallets.</div>'
+    +'<div class="hint" style="margin-top:6px">Also set it once in Seller Central: Send to Amazon → Ship from another address → Edit → Special instructions (equipment) → Liftgate.</div>'
+    +'<button class="action" onclick="nsLiftOk('+Number(planId)+','+(inProd?1:0)+')" style="margin-top:12px;font-size:17px;padding:13px 26px;background:#1e8449">✓ Liftgate confirmed with carrier</button></div>';
+}
+function nsLiftOk(planId, inProd){
+  if(!confirm('Did the carrier confirm a LIFTGATE truck for this pickup?')) return;
+  api('/api/inbound/plans/'+planId+'/liftgate',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; } toast('Liftgate confirmed');
+    if(inProd) prodLoad(prodSid()); else nsPlan(planId); });
 }
 // Carrier pickup window in Arizona time: "Thu, Oct 2, 8 AM–4 PM"
 function nsPickup(w){ const o={timeZone:'America/Phoenix'}, s=new Date(w.start);
@@ -1575,7 +1595,8 @@ function prodRender(){
   // send the box info, get freight quotes, book and print the BOL.
   const planRow=sh.amz&&sh.amz.planRow;
   let next='';
-  if(done&&planRow&&v.planStage==='booked') next='<div class="box" style="border:3px solid #1e8449;background:#f0faf4;text-align:center;padding:22px">'
+  if(done&&planRow&&v.planStage==='booked'&&v.liftgate&&!v.liftgate.ok) next=nsLiftgateBox(planRow, null, [{carrier:v.liftgate.carrier, fba:sh.shipment_id}], true);
+  if(done&&planRow&&v.planStage==='booked') next+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4;text-align:center;padding:22px">'
     +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ FREIGHT BOOKED — LAST STEP</div>'
     +'<div style="font-size:16px;margin-top:6px">Print the bill of lading and the pallet labels, put the labels on each pallet, and hand the BOL to the driver.</div>'
     +'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px">'
