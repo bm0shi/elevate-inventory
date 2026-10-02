@@ -645,11 +645,11 @@
       <div id="tsOut"></div>
     </div>
 
-    <div class="box">
-      <b style="font-size:15px">Punches on file</b>
+    <details class="box">
+      <summary style="cursor:pointer;font-size:15px;font-weight:800">Punches on file — tap to show</summary>
       <button class="action full" onclick="loadCoverage()" style="margin-top:8px;background:#5a6472">↻ Refresh</button>
       <div id="covBody" style="margin-top:8px"></div>
-    </div>
+    </details>
   </div>
 <div id="sub-fpnl" class="subpanel">
     <div class="box">
@@ -6576,7 +6576,8 @@ function importTimesheets(dry){
     if(d.warnings && d.warnings.length) h+='<div class="hint" style="color:#b7791f;margin-top:6px">'+d.warnings.join(' · ')+'</div>';
     h+='</div>';
     out.innerHTML=h;
-    if(!dry){ loadCoverage(); loadLaborEff(); }   // new punches: refresh the speed tables
+    // New punches: refresh everything on the page (the owner had to press F5)
+    if(!dry){ loadEmployees(); loadCoverage(); loadLaborEff((document.getElementById('laborMonth')||{}).value); }
     if(!dry){ loadEmployees(); loadCoverage(); }
   }).catch(()=>{ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Import failed.</div>'; });
 }
@@ -6591,13 +6592,13 @@ function laborRawToggle(){
   const cb=(kind,id)=>'<input type="checkbox" class="labDel" data-kind="'+kind+'" data-id="'+Number(id)+'" onchange="laborDelCount()" style="width:18px;height:18px">';
   const trash=(kind,id)=>'<button onclick="laborDelete(\''+kind+'\','+Number(id)+')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:15px;opacity:.6">🗑</button>';
   el.innerHTML='<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><button class="action" id="labDelBtn" onclick="laborDelete()" disabled style="background:#c0392b">🗑 Delete ticked (0)</button><span class="hint">Tick old or wrong rows (or use 🗑 on one) to stop them counting.</span></div>'
-    +'<b style="font-size:15px">Prep jobs ('+d.jobs.length+')</b><div class="hint">Arizona time. <b>Claim → finish</b> is the raw timer; <b>On the clock</b> is only the part inside that person\'s Homebase punches — that\'s what the speed uses.</div>'
+    +'<b style="font-size:15px">Prep jobs ('+d.jobs.length+')</b><div class="hint">Arizona time. <b>Claim → finish</b> is the raw timer; <b>On the clock</b> is only the part inside the person\'s Homebase punches — that\'s what the speed uses. Two people on one job split its units by their time on it.</div>'
     +'<div style="overflow-x:auto"><table style="width:100%;margin-top:6px"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'job\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Product','left')+th('Units')+th('Claimed')+th('Finished')+th('Claim → finish')+th('On the clock')+th('Per min')+th('')+'</tr></thead><tbody>'
-    +d.jobs.map(j=>'<tr>'+td(cb('job',j.id))+td('<b>'+esc(j.employee||j.worker||'—')+'</b>'+(j.employee?'':' <span style="color:#c0392b;font-size:11px">not on team</span>'),'left')+td(esc(String(j.name||j.asin).slice(0,50))+(j.isDuo?' <b>(duo)</b>':''),'left')+td(j.units.toLocaleString())
+    +d.jobs.map(j=>'<tr>'+td(cb('job',j.id))+td((j.crew&&j.crew.length>1?j.crew.map(c=>'<div><b>'+esc(c.name)+'</b> <span style="font-size:11px;color:#5f6675">'+c.units.toLocaleString()+' u · '+hm(c.min*60)+'</span></div>').join(''):'<b>'+esc(j.employee||j.worker||'—')+'</b>')+(j.employee?'':' <span style="color:#c0392b;font-size:11px">not on team</span>'),'left')+td(esc(String(j.name||j.asin).slice(0,50))+(j.isDuo?' <b>(duo)</b>':''),'left')+td(j.units.toLocaleString())
       +td(azT(j.startedAt))+td(azT(j.finishedAt))+td(hm(j.rawSec),'center',(j.rawSec&&j.clockedSec!=null&&j.rawSec-j.clockedSec>1800)?'color:#c0392b;font-weight:800':'')+(j.clockedSec>0?td(hm(j.clockedSec),'center','font-weight:800'):td('no punches','center','color:#c0392b;font-weight:800;font-size:12px'))
       +td(j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'—')+td(trash('job',j.id))+'</tr>').join('')+'</tbody></table></div>'
-    +'<b style="font-size:15px;display:block;margin-top:14px">Punches ('+d.shifts.length+')</b><div style="overflow-x:auto"><table style="width:100%;margin-top:6px;table-layout:fixed"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'punch\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Day')+th('Clock in')+th('Clock out')+th('Hours')+th('')+'</tr></thead><tbody>'
-    +d.shifts.map(c=>'<tr>'+td(cb('punch',c.id))+td('<b>'+esc(c.person)+'</b>','left')+td(c.day)+td(azT(c.in,{hour:'numeric',minute:'2-digit'}))+td(azT(c.out,{hour:'numeric',minute:'2-digit'}))+td((c.hours||0).toFixed(2))+td(trash('punch',c.id))+'</tr>').join('')+'</tbody></table></div>';
+    +'<details style="margin-top:14px"><summary style="cursor:pointer;font-size:15px;font-weight:800">Punches ('+d.shifts.length+') — tap to show</summary><div style="overflow-x:auto"><table style="width:100%;margin-top:6px;table-layout:fixed"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'punch\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Day')+th('Clock in')+th('Clock out')+th('Hours')+th('')+'</tr></thead><tbody>'
+    +d.shifts.map(c=>'<tr>'+td(cb('punch',c.id))+td('<b>'+esc(c.person)+'</b>','left')+td(c.day)+td(azT(c.in,{hour:'numeric',minute:'2-digit'}))+td(azT(c.out,{hour:'numeric',minute:'2-digit'}))+td((c.hours||0).toFixed(2))+td(trash('punch',c.id))+'</tr>').join('')+'</tbody></table></div></details>';
 }
 function laborTickAll(kind,on){ document.querySelectorAll('.labDel[data-kind="'+kind+'"]').forEach(x=>x.checked=on); laborDelCount(); }
 function laborDelCount(){ const n=document.querySelectorAll('.labDel:checked').length, b=document.getElementById('labDelBtn'); if(b){ b.disabled=!n; b.textContent='🗑 Delete ticked ('+n+')'; } }
@@ -6630,7 +6631,8 @@ function loadLaborTrend(){
     if(!d||d.ok===false||!d.weeks.length||!d.people.length){ el.innerHTML=''; return; }
     const lab=w=>new Date(w+'T12:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
     const th=(t,al)=>'<th style="text-align:'+(al||'center')+'">'+t+'</th>';
-    el.innerHTML='<b style="font-size:16px">📈 Week by week</b><div class="hint">Labeled per minute on the clock, weeks Monday–Sunday (the week of…). ▲ faster / ▼ slower than the week before. Small number = hours clocked that week.</div>'
+    window._lsTrend=d;
+    el.innerHTML='<div id="lsChartBox"></div><b style="font-size:16px;display:block;margin-top:16px">📈 Week by week</b><div class="hint">Labeled per minute on the clock, weeks Monday–Sunday (the week of…). ▲ faster / ▼ slower than the week before. Small number = hours clocked that week.</div>'
       +'<div style="overflow-x:auto"><table style="width:100%;table-layout:fixed;margin-top:6px"><thead><tr>'+th('Person','left')+d.weeks.map(w=>th(lab(w))).join('')+'</tr></thead><tbody>'
       +d.people.map(p=>'<tr><td style="text-align:left"><b>'+esc(p.name)+'</b></td>'+p.weeks.map((x,i)=>{
         if(!x||x.perMin==null) return '<td style="text-align:center;color:#9db0c9">—'+(x&&x.hours?'<div style="font-size:11px">'+x.hours+'h</div>':'')+'</td>';
@@ -6638,8 +6640,113 @@ function loadLaborTrend(){
         const arrow=prev?(x.perMin>prev.perMin?' <span style="color:#1e8449">▲</span>':x.perMin<prev.perMin?' <span style="color:#c0392b">▼</span>':''):'';
         return '<td style="text-align:center"><b style="font-size:17px;color:#c45500">'+x.perMin.toFixed(2)+'</b>'+arrow+'<div style="font-size:11px;color:#5f6675">'+x.hours+'h · '+x.units.toLocaleString()+' u</div></td>';
       }).join('')+'</tr>').join('')+'</tbody></table></div>';
+    lsRenderBox();
   }).catch(()=>{ el.innerHTML=''; });
 }
+// ---- Labeling speed chart (interactive; "Present" for showing the team) ----
+// Colors: validated categorical slots (blue, orange, aqua, yellow, then more),
+// fixed per person by name order so a person keeps their color week to week.
+// Text stays in ink; each line is direct-labeled at its end (relief for the
+// two light hues under 3:1), and the week table below is the table view.
+const LS_COLORS=['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#008300','#4a3aa7','#e34948'];
+window._lsHidden=window._lsHidden||{};
+function lsToggle(i){ const p=(window._lsTrend||{people:[]}).people[i]; if(!p) return; window._lsHidden[p.name]=!window._lsHidden[p.name]; lsRenderBox(); if(document.getElementById('lsPresent')) lsPresent(); }
+function lsGoal(){ try{ const v=parseFloat(localStorage.getItem('lsGoal')); return v>0?v:null; }catch(e){ return null; } }
+function lsSetGoal(v){ v=parseFloat(v); try{ if(v>0) localStorage.setItem('lsGoal',String(v)); else localStorage.removeItem('lsGoal'); }catch(e){} lsRenderBox(); if(document.getElementById('lsPresent')) lsPresent(); }
+function lsColor(i){ return LS_COLORS[i%LS_COLORS.length]; }
+function lsWeekLabel(w){ return new Date(w+'T12:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'}); }
+function lsRenderBox(){
+  const box=document.getElementById('lsChartBox'), d=window._lsTrend; if(!box||!d) return;
+  const g=lsGoal();
+  box.innerHTML='<div style="border:1px solid #e3e6ea;border-radius:14px;padding:18px 20px;background:#fff;box-shadow:0 1px 3px rgba(15,17,17,.06)">'
+    +'<div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap">'
+    +'<div><div style="font-family:Montserrat,sans-serif;font-size:19px;font-weight:900;color:#0f1111;letter-spacing:.2px">Labeling Speed</div>'
+    +'<div style="font-size:13px;color:#5f6675;margin-top:2px">Units labeled per minute on the clock · weekly · '+lsWeekLabel(d.weeks[0])+' – '+lsWeekLabel(d.weeks[d.weeks.length-1])+'</div></div>'
+    +'<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+    +'<label style="font-size:12px;font-weight:800;color:#5f6675;display:flex;align-items:center;gap:6px;text-transform:none;letter-spacing:0">Team goal <input type="number" step="0.05" min="0" value="'+(g!=null?g:'')+'" placeholder="per min" onchange="lsSetGoal(this.value)" style="width:86px;padding:7px 8px;border:1px solid #cfd8e3;border-radius:8px;font-size:14px;font-weight:800;text-align:center"></label>'
+    +'<button onclick="lsPresent()" style="padding:9px 16px;border-radius:999px;border:none;background:#0f1111;color:#fff;font-weight:800;font-size:13px;cursor:pointer">📺 Present to team</button></div></div>'
+    +lsLegend(d)+'<div style="position:relative">'+lsSvg(d,{w:960,h:340})+'</div></div>';
+}
+function lsLegend(d){
+  return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 4px">'+d.people.map((p,i)=>{ const off=window._lsHidden[p.name];
+    return '<button onclick="lsToggle('+i+')" title="Show / hide" style="display:flex;align-items:center;gap:7px;padding:5px 12px;border-radius:999px;border:1px solid '+(off?'#e3e6ea':'#cfd8e3')+';background:'+(off?'#f6f7f8':'#fff')+';cursor:pointer;font-size:13px;font-weight:800;color:'+(off?'#9db0c9':'#0f1111')+'">'
+      +'<span style="width:10px;height:10px;border-radius:50%;background:'+(off?'#d5d9de':lsColor(i))+'"></span>'+esc(p.name)+'</button>'; }).join('')+'</div>';
+}
+function lsSvg(d,o){
+  const W=o.w,H=o.h,big=!!o.big,L=big?64:52,R=big?150:120,T=18,B=big?44:34, g=lsGoal();
+  const ppl=d.people.map((p,i)=>({...p,c:lsColor(i)})).filter(p=>!window._lsHidden[p.name]);
+  const vals=ppl.flatMap(p=>p.weeks.map(x=>x&&x.perMin)).filter(v=>v!=null);
+  let max=Math.max(0.5,...vals,g||0)*1.15; const step=max<=1.2?0.2:max<=2.5?0.5:max<=5?1:2; max=Math.ceil(max/step)*step;
+  const n=d.weeks.length, x=i=>L+(n===1?(W-L-R)/2:i*(W-L-R)/(n-1)), y=v=>T+(H-T-B)*(1-v/max);
+  const fs=big?15:12;
+  let s='<svg viewBox="0 0 '+W+' '+H+'" style="width:100%;height:auto;display:block;font-family:inherit" onmouseleave="lsHover(this,-1)">';
+  for(let v=0;v<=max+1e-9;v+=step){ s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y(v)+'" y2="'+y(v)+'" stroke="'+(v===0?'#c9ced4':'#eef0f2')+'" stroke-width="1"/>'
+    +'<text x="'+(L-10)+'" y="'+(y(v)+4)+'" text-anchor="end" font-size="'+fs+'" fill="#5f6675">'+v.toFixed(step<1?1:0)+'</text>'; }
+  d.weeks.forEach((w,i)=>{ s+='<text x="'+x(i)+'" y="'+(H-B+(big?26:20))+'" text-anchor="middle" font-size="'+fs+'" fill="#5f6675">'+lsWeekLabel(w)+'</text>'; });
+  if(g){ s+='<line x1="'+L+'" x2="'+(W-R)+'" y1="'+y(g)+'" y2="'+y(g)+'" stroke="#0f1111" stroke-width="1.5" stroke-dasharray="6 5"/>'
+    +'<text x="'+(W-R+8)+'" y="'+(y(g)+4)+'" font-size="'+fs+'" font-weight="800" fill="#0f1111">Goal '+g.toFixed(2)+'</text>'; }
+  s+='<line class="lsX" x1="0" x2="0" y1="'+T+'" y2="'+(H-B)+'" stroke="#0f1111" stroke-opacity=".18" stroke-width="1" visibility="hidden"/>';
+  const ends=[];
+  for(const p of ppl){
+    let seg=[];
+    const flush=()=>{ if(seg.length>1) s+='<path d="'+seg.map((q,k)=>(k?'L':'M')+q[0]+' '+q[1]).join('')+'" fill="none" stroke="'+p.c+'" stroke-width="'+(big?3.5:2.5)+'" stroke-linejoin="round" stroke-linecap="round"/>'; seg=[]; };
+    p.weeks.forEach((v,i)=>{ if(v&&v.perMin!=null) seg.push([x(i),y(v.perMin)]); else flush(); }); flush();
+    p.weeks.forEach((v,i)=>{ if(v&&v.perMin!=null) s+='<circle cx="'+x(i)+'" cy="'+y(v.perMin)+'" r="'+(big?6:4.5)+'" fill="'+p.c+'" stroke="#fff" stroke-width="2"/>'; });
+    const li=p.weeks.map((v,i)=>v&&v.perMin!=null?i:-1).filter(i=>i>=0).pop();
+    if(li!=null) ends.push({p,yv:y(p.weeks[li].perMin),x:x(li),v:p.weeks[li].perMin});
+  }
+  ends.sort((a,b)=>a.yv-b.yv); const gap=big?22:17;
+  for(let k=1;k<ends.length;k++) if(ends[k].yv-ends[k-1].yv<gap) ends[k].yv=ends[k-1].yv+gap;
+  for(const e of ends) s+='<circle cx="'+(W-R+14)+'" cy="'+(e.yv-4)+'" r="'+(big?5:4)+'" fill="'+e.p.c+'"/><text x="'+(W-R+24)+'" y="'+e.yv+'" font-size="'+fs+'" font-weight="800" fill="#0f1111">'+esc(e.p.name)+' <tspan font-weight="600" fill="#5f6675">'+e.v.toFixed(2)+'</tspan></text>';
+  const cw=n>1?(W-L-R)/(n-1):W-L-R;
+  d.weeks.forEach((w,i)=>{ s+='<rect x="'+(x(i)-cw/2)+'" y="'+T+'" width="'+cw+'" height="'+(H-T-B)+'" fill="transparent" onmousemove="lsHover(this.ownerSVGElement,'+i+',event,'+(big?1:0)+')"/>'; });
+  return s+'</svg><div class="lsTip" style="position:absolute;pointer-events:none;display:none;background:#0f1111;color:#fff;border-radius:10px;padding:10px 12px;font-size:'+(big?15:13)+'px;box-shadow:0 6px 18px rgba(0,0,0,.18);min-width:190px;z-index:5"></div>';
+}
+function lsHover(svg,i,ev,big){
+  const tip=svg.parentNode.querySelector('.lsTip'), xl=svg.querySelector('.lsX'), d=window._lsTrend;
+  if(i<0||!d){ if(tip) tip.style.display='none'; if(xl) xl.setAttribute('visibility','hidden'); return; }
+  const rect=svg.querySelector('rect[onmousemove*="lsHover(this.ownerSVGElement,'+i+',"]');
+  const cx=+rect.getAttribute('x')+(+rect.getAttribute('width'))/2; xl.setAttribute('x1',cx); xl.setAttribute('x2',cx); xl.setAttribute('visibility','visible');
+  const g=lsGoal();
+  const rows=d.people.map((p,k)=>({p,c:lsColor(k),v:p.weeks[i],prev:p.weeks.slice(0,i).reverse().find(y=>y&&y.perMin!=null)})).filter(r=>!window._lsHidden[r.p.name]&&r.v&&r.v.perMin!=null).sort((a,b)=>b.v.perMin-a.v.perMin);
+  tip.innerHTML='<div style="font-weight:900;margin-bottom:6px">Week of '+lsWeekLabel(d.weeks[i])+'</div>'+(rows.length?rows.map(r=>{
+    const ch=r.prev?r.v.perMin-r.prev.perMin:null;
+    return '<div style="display:flex;align-items:center;gap:8px;margin-top:4px"><span style="width:9px;height:9px;border-radius:50%;background:'+r.c+'"></span><b style="flex:1">'+esc(r.p.name)+'</b><b>'+r.v.perMin.toFixed(2)+'</b>'
+      +(ch!=null&&ch!==0?'<span style="color:'+(ch>0?'#7ee2a8':'#ff9b9b')+';font-weight:800">'+(ch>0?'▲':'▼')+Math.abs(ch).toFixed(2)+'</span>':'')
+      +'</div><div style="font-size:11px;color:#b9c0c8;margin-left:17px">'+r.v.hours+'h · '+r.v.units.toLocaleString()+' units'+(g&&r.v.perMin<g?' · <b style="color:#ff9b9b">below goal</b>':'')+'</div>'; }).join(''):'<div style="color:#b9c0c8">No labeling this week</div>');
+  tip.style.display='block';
+  const host=svg.parentNode.getBoundingClientRect(), px=ev.clientX-host.left, tw=tip.offsetWidth;
+  tip.style.left=Math.max(0,Math.min(host.width-tw,px+(px>host.width/2?-tw-16:16)))+'px'; tip.style.top='10px';
+}
+// Full-screen scoreboard for the TV: the chart large + the latest week ranked.
+function lsPresent(){
+  const d=window._lsTrend; if(!d) return;
+  let ov=document.getElementById('lsPresent');
+  if(!ov){ ov=document.createElement('div'); ov.id='lsPresent'; ov.style.cssText='position:fixed;inset:0;z-index:9999;background:#fff;overflow:auto;padding:28px 40px';
+    document.body.appendChild(ov); document.addEventListener('keydown',lsEsc); }
+  const g=lsGoal(), wi=d.weeks.length-1;
+  const lw=d.people.map((p,k)=>({p,c:lsColor(k),v:p.weeks[wi]})).filter(r=>!window._lsHidden[r.p.name]&&r.v&&r.v.perMin!=null).sort((a,b)=>b.v.perMin-a.v.perMin);
+  const top=Math.max(...lw.map(r=>r.v.perMin),g||0,0.1)*1.1;
+  ov.innerHTML='<div style="display:flex;justify-content:space-between;align-items:center;gap:16px;border-bottom:3px solid #ff9900;padding-bottom:14px">'
+    +'<div><div style="font-family:Montserrat,sans-serif;font-size:34px;font-weight:900;color:#0f1111;letter-spacing:.5px">LABELING SPEED · TEAM SCOREBOARD</div>'
+    +'<div style="font-size:17px;color:#5f6675;margin-top:4px">Units labeled per minute on the clock'+(g?' · Team goal <b style="color:#0f1111">'+g.toFixed(2)+'</b> per minute':'')+'</div></div>'
+    +'<button onclick="lsClose()" style="font-size:22px;border:none;background:#f1f3f5;border-radius:50%;width:48px;height:48px;cursor:pointer">✕</button></div>'
+    +'<div style="display:grid;grid-template-columns:minmax(0,1fr);gap:24px;margin-top:18px">'
+    +'<div>'+lsLegend(d)+'<div style="position:relative">'+lsSvg(d,{w:1000,h:420,big:true})+'</div></div>'
+    +'<div style="border:1px solid #e3e6ea;border-radius:16px;padding:22px;display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));column-gap:36px">'
+    +'<div style="grid-column:1/-1"><div style="font-family:Montserrat,sans-serif;font-size:20px;font-weight:900;color:#0f1111">Week of '+lsWeekLabel(d.weeks[wi])+'</div>'
+    +'<div style="font-size:14px;color:#5f6675;margin-bottom:4px">Ranked, fastest first</div></div>'
+    +(lw.length?lw.map((r,k)=>{ const below=g&&r.v.perMin<g, pct=Math.max(2,r.v.perMin/top*100);
+      return '<div style="margin-top:16px"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><span style="font-size:20px;font-weight:900;color:#0f1111">'+(k+1)+'. '+esc(r.p.name)+'</span>'
+        +'<span style="font-size:26px;font-weight:900;color:#0f1111">'+r.v.perMin.toFixed(2)+'<span style="font-size:13px;color:#5f6675;font-weight:700"> /min</span></span></div>'
+        +'<div style="position:relative;height:16px;background:#f1f3f5;border-radius:8px;margin-top:6px;overflow:hidden"><div style="width:'+pct+'%;height:100%;background:'+r.c+';border-radius:8px"></div>'
+        +(g?'<div style="position:absolute;top:-3px;bottom:-3px;left:'+(g/top*100)+'%;width:2px;background:#0f1111"></div>':'')+'</div>'
+        +'<div style="font-size:13px;color:#5f6675;margin-top:4px">'+r.v.hours+'h clocked · '+r.v.units.toLocaleString()+' units'
+        +(below?' · <b style="color:#c0392b">⚠ Below goal</b>':g?' · <b style="color:#1e8449">✓ At or above goal</b>':'')+'</div></div>'; }).join(''):'<div class="hint">No labeling in this week.</div>')
+    +'</div></div>';
+}
+function lsEsc(e){ if(e.key==='Escape') lsClose(); }
+function lsClose(){ const ov=document.getElementById('lsPresent'); if(ov) ov.remove(); document.removeEventListener('keydown',lsEsc); }
 function loadLaborEff(month){
   loadLaborTrend();
   const b=document.getElementById('laborEffBody'); if(!b) return;

@@ -109,3 +109,18 @@ test('weekStart: weeks run Monday to Sunday', () => {
   assert.equal(weekStart('2026-09-27'), '2026-09-21');   // Sunday
   assert.equal(weekStart('2026-10-01'), '2026-09-28');   // Thursday, across a month
 });
+
+test('crewShares: two people on one prep job split the units by their clocked time on it', () => {
+  const { crewShares } = require('../lib/homebase');
+  const day = (h) => '2026-10-01T' + String(h).padStart(2, '0') + ':00:00Z';
+  const shifts = { samantha: [{ in: day(15), out: day(23) }], zaia: [{ in: day(15), out: day(23) }] };
+  const of = n => shifts[n.toLowerCase()];
+  // Samantha claims at 16:00, Zaia joins at 18:00, finished at 20:00: 4h + 2h → 400 / 200 of 600
+  const r = crewShares({ units: 600, worker: 'Samantha', started_at: day(16), finished_at: day(20),
+    crew: [{ employee: 'Samantha', joined_at: day(16), left_at: day(20) }, { employee: 'Zaia', joined_at: day(18), left_at: day(20) }] }, of);
+  assert.deepEqual(r.map(x => [x.name, Math.round(x.units), x.sec / 3600]), [['Samantha', 400, 4], ['Zaia', 200, 2]]);
+  // No crew on record: the claimer gets it all
+  assert.deepEqual(crewShares({ units: 100, worker: 'Zaia', started_at: day(16), finished_at: day(17) }, of).map(x => [x.name, x.units]), [['Zaia', 100]]);
+  // No punches for anyone yet: even split, no time
+  assert.deepEqual(crewShares({ units: 100, worker: 'A', started_at: day(1), finished_at: day(2), crew: [{ employee: 'A' }, { employee: 'B' }] }, () => []).map(x => [x.name, x.units, x.sec]), [['A', 50, 0], ['B', 50, 0]]);
+});
