@@ -104,7 +104,9 @@
   .ppcard { height: 100%; }
   /* Large job split in half: the two halves sit side by side, linked */
   .ppSplit { grid-column: 1 / -1; border: 2px solid #ff9900; background: #fff8ec; border-radius: 14px; padding: 10px 12px 12px; }
-  .ppSplitHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .ppSplitHead { text-align: center; margin: 0 auto 12px; }
+  .ppSplitBanner { display: inline-block; background: #ff9900; color: #0f1111; font-family: Montserrat, sans-serif; font-size: 24px; font-weight: 900; letter-spacing: 1px; padding: 8px 26px; border-radius: 999px; box-shadow: 0 3px 10px rgba(240,136,4,.35); }
+  .ppSplitSub { font-size: 15px; font-weight: 800; color: #5f6675; margin-top: 6px; }
   .ppSplitRow { display: grid; grid-template-columns: minmax(0,1fr) 44px minmax(0,1fr); align-items: stretch; }
   .ppSplitLink { display: flex; align-items: center; justify-content: center; font-size: 26px; }
   .ppPart { font-size: 11px; font-weight: 900; letter-spacing: .6px; color: #c45500; margin: 0 0 5px 2px; }
@@ -5430,8 +5432,8 @@ function renderPendingPrep(){
   for(let i=0;i<items.length;i++){
     const x=items[i], y=items[i+1];
     if(ppIsPair(x,y)){
-      h+='<div class="ppSplit"><div class="ppSplitHead"><span style="font-family:Montserrat,sans-serif;font-size:14px;font-weight:900;letter-spacing:.6px;color:#c45500">🔗 LARGE JOB – SPLIT IN HALF</span>'
-        +'<span style="font-size:13px;font-weight:800;color:#5f6675">'+(x.qty+y.qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</span></div>'
+      h+='<div class="ppSplit"><div class="ppSplitHead"><div class="ppSplitBanner">🔗 LARGE JOB – SPLIT IN HALF 🔗</div>'
+        +'<div class="ppSplitSub">'+(x.qty+y.qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</div></div>'
         +'<div class="ppSplitRow"><div><div class="ppPart">PART 1 · '+x.qty.toLocaleString()+'</div>'+cardHtml(x,i)+'</div>'
         +'<div class="ppSplitLink" title="Same product, split so two people can each take half">🔗</div>'
         +'<div><div class="ppPart">PART 2 · '+y.qty.toLocaleString()+'</div>'+cardHtml(y,i+1)+'</div></div></div>';
@@ -5508,7 +5510,7 @@ function ppListRows(items){
           +'<button onclick="releasePrepJob('+x.id+')" style="padding:6px 10px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Release</button></div>'
         : '<button onclick="claimPrepJob('+x.id+')" style="padding:7px 12px;font-size:12px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">▶ Start prep</button>';
       // Duo rows tinted like Smart Scout Orders → By listing, so they stand out.
-      return (pairFirst?'<tr><td colspan="20" style="padding:8px 10px 4px;background:#fff8ec;border-top:2px solid #ff9900;border-left:4px solid #ff9900;font-size:12px;font-weight:900;letter-spacing:.6px;color:#c45500">🔗 LARGE JOB – SPLIT IN HALF · '+(x.qty+items[ri+1].qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</td></tr>':'')
+      return (pairFirst?'<tr><td colspan="20" style="padding:12px 10px 8px;background:#fff8ec;border-top:2px solid #ff9900;border-left:4px solid #ff9900;text-align:center"><span class="ppSplitBanner" style="font-size:20px;padding:6px 22px">🔗 LARGE JOB – SPLIT IN HALF 🔗</span><div class="ppSplitSub" style="font-size:13px">'+(x.qty+items[ri+1].qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</div></td></tr>':'')
         +'<tr style="'+(claimed?'background:#f0faf4':inPair?'background:#fff8ec':x.is_duo?'background:#fdebe6':'')+(inPair?';border-left:4px solid #ff9900':'')+(pairSecond?';border-bottom:2px solid #ff9900':'')+'"><td style="'+td+';width:98px">'+(inPair?'<div class="ppPart">'+(pairFirst?'🔗 PART 1':'🔗 PART 2')+'</div>':'')+img+'</td>'
         +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
