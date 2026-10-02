@@ -109,6 +109,10 @@
   .ppSplitSub { font-size: 15px; font-weight: 800; color: #5f6675; margin-top: 6px; }
   .ppSplitRow { display: grid; grid-template-columns: minmax(0,1fr) 44px minmax(0,1fr); align-items: stretch; }
   .ppSplitLink { display: flex; align-items: center; justify-content: center; font-size: 26px; }
+  /* Label above + card below inside each half: the card takes the remaining
+     height (height:100% on top of the label pushed it past the orange box) */
+  .ppSplitRow > div:not(.ppSplitLink) { display: flex; flex-direction: column; min-width: 0; }
+  .ppSplitRow .ppcard { height: auto; flex: 1 1 auto; }
   .ppPart { text-align: center; font-family: Montserrat, sans-serif; font-size: 19px; font-weight: 900; letter-spacing: 1px; color: #c45500; margin: 0 0 8px; }
   .ppPart b { color: #0f1111; }
   @media (max-width: 960px) { .ppSplitRow { grid-template-columns: minmax(0,1fr); } .ppSplitLink { padding: 6px 0; } }
