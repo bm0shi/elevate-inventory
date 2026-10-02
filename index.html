@@ -613,6 +613,15 @@
       <div class="hint">Upload the Homebase <b>timesheets CSV</b> once per pay period. Actual punches are what prep times get measured against — a job left open overnight is clamped to the hours somebody was really clocked in, instead of reading as 17 hours. <b>Wage data is owner-only.</b></div>
     </div>
 
+    <div class="box" style="border:2px solid #ff9900">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+        <div><b style="font-size:17px">⚡ Labeling speed</b>
+          <div class="hint">Units prepped in the app ÷ minutes on the Homebase clock. <b>Per min (clock)</b> is the real cost rate — it includes breaks, set-up and other work. <b>Per min (on job)</b> is pace while a prep job was open.</div></div>
+        <select id="laborMonth" onchange="loadLaborEff(this.value)" style="padding:10px;font-size:15px;font-weight:700;border:2px solid #e2e8f0;border-radius:8px"></select>
+      </div>
+      <div id="laborEffBody" style="margin-top:10px"><div class="hint">Loading…</div></div>
+    </div>
+
     <div class="box">
       <b style="font-size:15px">Team</b>
       <div class="hint">Short names appear on the prep dropdown. The Homebase name is only used to match rows on import.</div>
@@ -1123,16 +1132,16 @@ function nsRender(){
     +'<button class="action" onclick="_ns=null;prodOpen()" style="background:#5a6472">← Back</button></div>';
   h+='<div class="box"><div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end"><label style="flex:2;min-width:280px;font-size:11px;font-weight:900;color:#5a6472;letter-spacing:0.3px">SHIP FROM'
     +'<select onchange="_ns.addressId=this.value;_ns.editAddr=null;nsRender()" style="width:100%;margin-top:3px;padding:10px;font-size:15px;font-weight:700">'
-    +A.map(x=>'<option value="'+esc(x.id)+'"'+(x.id===_ns.addressId?' selected':'')+'>'+esc(x.name)+' — '+esc(x.line1)+(x.line2?' '+esc(x.line2):'')+', '+esc(x.city)+'</option>').join('')+'</select></label>'
+    +A.map(x=>'<option value="'+esc(x.id)+'"'+(x.id===_ns.addressId?' selected':'')+'>'+esc(x.company||x.name)+' — '+esc(x.line1)+(x.line2?' '+esc(x.line2):'')+', '+esc(x.city)+'</option>').join('')+'</select></label>'
     +'<button class="action" onclick="_ns.editAddr=\''+esc(_ns.addressId)+'\';nsRender()" style="background:#eef2f6;color:#1f2733">✎ Edit</button>'
     +'<button class="action" onclick="_ns.editAddr=\'new\';nsRender()" style="background:#eef2f6;color:#1f2733">➕ Add address</button></div>'
-    +'<div style="margin-top:8px;font-size:14px;line-height:1.45">'+esc(cur.name||'')+'<br>'+esc(cur.line1||'')+(cur.line2?', '+esc(cur.line2):'')+'<br>'+esc(cur.city||'')+', '+esc(cur.state||'')+' '+esc(cur.zip||'')
+    +'<div style="margin-top:8px;font-size:14px;line-height:1.45">'+(cur.company?esc(cur.company)+'<br>':'')+esc(cur.name||'')+'<br>'+esc(cur.line1||'')+(cur.line2?', '+esc(cur.line2):'')+'<br>'+esc(cur.city||'')+', '+esc(cur.state||'')+' '+esc(cur.zip||'')
     +'<div style="margin-top:4px"><b>Contact:</b> '+esc(cur.contactName||'—')+' · '+esc(cur.phone||'—')+(cur.email?' · '+esc(cur.email):'')+'</div>'
     +(cur.liftgate!==false?'<div style="margin-top:4px;font-weight:900;color:#c0392b">🚚 Needs a LIFTGATE truck (no loading dock)</div>':'')+'</div>';
   if(_ns.editAddr){
     const e=_ns.editAddr==='new'?{}:(A.find(x=>x.id===_ns.editAddr)||{});
     h+='<div style="margin-top:12px;padding:12px;border:1px dashed #008296;border-radius:10px;background:#f7fbfb"><b>'+(_ns.editAddr==='new'?'New ship-from address':'Edit this address')+'</b>'
-      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsAName','NAME',e.name,2)+inp('nsALine1','STREET',e.line1,2)+inp('nsALine2','SUITE',e.line2)+'</div>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACompany','COMPANY',e.company,2)+inp('nsAName','FULL NAME',e.name,2)+inp('nsALine1','STREET',e.line1,2)+inp('nsALine2','SUITE',e.line2)+'</div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACity','CITY',e.city)+inp('nsAState','STATE',e.state)+inp('nsAZip','ZIP',e.zip)+'</div>'
       +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+inp('nsACName','CONTACT NAME',e.contactName)+inp('nsAPhone','CONTACT PHONE',e.phone)+inp('nsAEmail','CONTACT EMAIL (optional)',e.email,2)+'</div>'
       +'<label style="display:flex;gap:8px;align-items:center;margin-top:10px;font-size:15px;font-weight:800;text-transform:none;letter-spacing:0;color:#0f1111"><input id="nsALift" type="checkbox"'+(e.liftgate!==false?' checked':'')+' style="width:20px;height:20px"> No loading dock — needs a LIFTGATE truck</label>'
@@ -1269,7 +1278,7 @@ function nsSaveAddresses(list, pickId){
 function nsSaveAddr(){
   const g=id=>((document.getElementById(id)||{}).value||'').trim();
   const A=((_ns.setup&&_ns.setup.addresses)||[]).slice(), isNew=_ns.editAddr==='new';
-  const a={id:isNew?('a'+Date.now().toString(36)):_ns.editAddr, name:g('nsAName'), line1:g('nsALine1'), line2:g('nsALine2'), city:g('nsACity'), state:g('nsAState'), zip:g('nsAZip'), country:'US', contactName:g('nsACName'), phone:g('nsAPhone'), email:g('nsAEmail'), liftgate:!!(document.getElementById('nsALift')||{}).checked};
+  const a={id:isNew?('a'+Date.now().toString(36)):_ns.editAddr, company:g('nsACompany'), name:g('nsAName'), line1:g('nsALine1'), line2:g('nsALine2'), city:g('nsACity'), state:g('nsAState'), zip:g('nsAZip'), country:'US', contactName:g('nsACName'), phone:g('nsAPhone'), email:g('nsAEmail'), liftgate:!!(document.getElementById('nsALift')||{}).checked};
   if(isNew) A.push(a); else A.splice(A.findIndex(x=>x.id===a.id),1,a);
   nsSaveAddresses(A, a.id);
 }
@@ -3821,7 +3830,7 @@ function showSubTab(name, ev){
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
   loadFreshness();
-  if(name==='labor'){ loadEmployees(); loadCoverage(); }
+  if(name==='labor'){ loadEmployees(); loadCoverage(); loadLaborEff(); }
   if(name==='audit') loadStockAudit();
   if(name==='pnl') loadPnl();
   if(name==='fpnl') loadFinPnl();
@@ -6565,6 +6574,23 @@ function importTimesheets(dry){
   }).catch(()=>{ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Import failed.</div>'; });
 }
 
+function loadLaborEff(month){
+  const b=document.getElementById('laborEffBody'); if(!b) return;
+  ownerApi('/api/labor/efficiency'+(month?'?month='+encodeURIComponent(month):'')).then(d=>{
+    if(!d||d.ok===false){ b.innerHTML='<div class="hint" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; }
+    const sel=document.getElementById('laborMonth');
+    if(sel) sel.innerHTML=(d.months.length?d.months:[d.month]).map(m=>'<option value="'+esc(m)+'"'+(m===d.month?' selected':'')+'>'+new Date(m+'-15').toLocaleDateString('en-US',{month:'long',year:'numeric'})+'</option>').join('');
+    if(!d.people.length){ b.innerHTML='<div class="hint">No timecards for this month.</div>'; return; }
+    const th=(t,al)=>'<th style="text-align:'+(al||'center')+'">'+t+'</th>', td=(v,al,st)=>'<td style="text-align:'+(al||'center')+';'+(st||'')+'">'+v+'</td>';
+    const n=v=>v==null?'—':v.toLocaleString(), rate=v=>v==null?'—':v.toFixed(2);
+    const row=(x,bold)=>'<tr'+(bold?' style="background:#f6f8fa;font-weight:900"':'')+'>'+td(bold?'<b>All</b>':'<b>'+esc(x.name)+'</b>','left')+td(bold?'':x.days)+td((x.hours||0).toFixed(1))+td(n(x.units))
+      +td(rate(x.perMin),'center','font-size:18px;font-weight:900;color:#c45500')+td(n(x.perHour))+td(rate(x.perMinOnJob),'center','color:#5f6675')+'</tr>';
+    b.innerHTML='<table style="width:100%;table-layout:fixed"><thead><tr>'+th('Person','left')+th('Days')+th('Hours clocked')+th('Units labeled')+th('Per min (clock)')+th('Per hour (clock)')+th('Per min (on job)')+'</tr></thead><tbody>'
+      +d.people.map(x=>row(x)).join('')+(d.people.length>1?row(d.total,true):'')+'</tbody></table>'
+      +(d.people.every(x=>!x.units)?'<div class="hint" style="margin-top:8px;color:#c0392b">No prep finished in the app this month by anyone on the team, so there\'s nothing to measure yet. Speed only counts prep jobs started and finished on Pending Prep.</div>':'')
+      +(d.unmatched.length?'<div class="hint" style="margin-top:8px">Prep logged under names not on the team (add them below, or set their Homebase name, to count it): '+d.unmatched.map(u=>'<b>'+esc(u.worker)+'</b> ('+u.units.toLocaleString()+' units)').join(', ')+'</div>':'');
+  }).catch(()=>{ b.innerHTML='<div class="hint" style="color:#c0392b">Could not load.</div>'; });
+}
 function loadCoverage(){
   const b=document.getElementById('covBody'); if(!b)return;
   ownerApi('/api/timesheets/coverage').then(list=>{
