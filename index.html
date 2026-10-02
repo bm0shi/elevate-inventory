@@ -616,7 +616,7 @@
     <div class="box" style="border:2px solid #ff9900">
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
         <div><b style="font-size:17px">⚡ Labeling speed</b>
-          <div class="hint">Units prepped in the app ÷ minutes on the Homebase clock. <b>Per min (clock)</b> is the real cost rate — it includes breaks, set-up and other work. <b>Per min (on job)</b> is pace while a prep job was open <b>and</b> they were clocked in — a job left claimed overnight stops counting at clock-out and starts again at the next clock-in.</div></div>
+          <div class="hint">Units prepped in the app ÷ minutes on the Homebase clock. <b>Per min (clock)</b> is the real cost rate — it includes breaks, set-up and other work. <b>Labor $ / unit</b> = paid hours × wage (set in Team) ÷ units labeled — the true labeling cost per bottle; the small "on job" figure counts only time on prep jobs. <b>Per min (on job)</b> is pace while a prep job was open <b>and</b> they were clocked in — a job left claimed overnight stops counting at clock-out and starts again at the next clock-in.</div></div>
         <select id="laborMonth" onchange="loadLaborEff(this.value)" style="padding:10px;font-size:15px;font-weight:700;border:2px solid #e2e8f0;border-radius:8px"></select>
       </div>
       <div id="laborEffBody" style="margin-top:10px"><div class="hint">Loading…</div></div>
@@ -6503,7 +6503,7 @@ function loadStockAudit(){
 
 // ==================== LABOR & TIMESHEETS ====================
 function loadEmployees(){
-  api('/api/employees').then(list=>{
+  ownerApi('/api/employees').then(list=>{   // owner screen: wages come only with the owner password
     const b=document.getElementById('empBody'); if(!b)return;
     if(!list||!list.length){ b.innerHTML='<div class="hint">No team members yet.</div>'; return; }
     window._emps=list;
@@ -6593,10 +6593,11 @@ function laborRawToggle(){
   const trash=(kind,id)=>'<button onclick="laborDelete(\''+kind+'\','+Number(id)+')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:15px;opacity:.6">🗑</button>';
   el.innerHTML='<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><button class="action" id="labDelBtn" onclick="laborDelete()" disabled style="background:#c0392b">🗑 Delete ticked (0)</button><span class="hint">Tick old or wrong rows (or use 🗑 on one) to stop them counting.</span></div>'
     +'<b style="font-size:15px">Prep jobs ('+d.jobs.length+')</b><div class="hint">Arizona time. <b>Claim → finish</b> is the raw timer; <b>On the clock</b> is only the part inside the person\'s Homebase punches — that\'s what the speed uses. Two people on one job split its units by their time on it.</div>'
-    +'<div style="overflow-x:auto"><table style="width:100%;margin-top:6px"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'job\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Product','left')+th('Units')+th('Claimed')+th('Finished')+th('Claim → finish')+th('On the clock')+th('Per min')+th('')+'</tr></thead><tbody>'
+    +'<div style="overflow-x:auto"><table style="width:100%;margin-top:6px"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'job\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Product','left')+th('Units')+th('Claimed')+th('Finished')+th('Claim → finish')+th('On the clock')+th('Per min')+th('Labor $')+th('')+'</tr></thead><tbody>'
     +d.jobs.map(j=>'<tr>'+td(cb('job',j.id))+td((j.crew&&j.crew.length>1?j.crew.map(c=>'<div><b>'+esc(c.name)+'</b> <span style="font-size:11px;color:#5f6675">'+c.units.toLocaleString()+' u · '+hm(c.min*60)+'</span></div>').join(''):'<b>'+esc(j.employee||j.worker||'—')+'</b>')+(j.employee?'':' <span style="color:#c0392b;font-size:11px">not on team</span>'),'left')+td(esc(String(j.name||j.asin).slice(0,50))+(j.isDuo?' <b>(duo)</b>':''),'left')+td(j.units.toLocaleString())
       +td(azT(j.startedAt))+td(azT(j.finishedAt))+td(hm(j.rawSec),'center',(j.rawSec&&j.clockedSec!=null&&j.rawSec-j.clockedSec>1800)?'color:#c0392b;font-weight:800':'')+(j.clockedSec>0?td(hm(j.clockedSec),'center','font-weight:800'):td('no punches','center','color:#c0392b;font-weight:800;font-size:12px'))
-      +td(j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'—')+td(trash('job',j.id))+'</tr>').join('')+'</tbody></table></div>'
+      +td(j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'—')
+      +td(j.cost!=null?'<b>$'+j.cost.toFixed(2)+'</b>'+(j.units?'<div style="font-size:11px;color:#5f6675">$'+(j.cost/j.units).toFixed(2)+'/unit</div>':''):'—')+td(trash('job',j.id))+'</tr>').join('')+'</tbody></table></div>'
     +'<details style="margin-top:14px"><summary style="cursor:pointer;font-size:15px;font-weight:800">Punches ('+d.shifts.length+') — tap to show</summary><div style="overflow-x:auto"><table style="width:100%;margin-top:6px;table-layout:fixed"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'punch\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Day')+th('Clock in')+th('Clock out')+th('Hours')+th('')+'</tr></thead><tbody>'
     +d.shifts.map(c=>'<tr>'+td(cb('punch',c.id))+td('<b>'+esc(c.person)+'</b>','left')+td(c.day)+td(azT(c.in,{hour:'numeric',minute:'2-digit'}))+td(azT(c.out,{hour:'numeric',minute:'2-digit'}))+td((c.hours||0).toFixed(2))+td(trash('punch',c.id))+'</tr>').join('')+'</tbody></table></div></details>';
 }
@@ -6619,8 +6620,8 @@ function laborDelete(kind,id){
 function laborRawCsv(){
   const d=window._laborEff; if(!d||!d.jobs.length){ toast('No prep jobs this month',true); return; }
   const q=v=>{ v=v==null?'':String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; };
-  const rows=[['Person','Product','ASIN','Units','Claimed (AZ)','Finished (AZ)','Claim to finish (min)','On the clock (min)','Per min on the clock']]
-    .concat(d.jobs.map(j=>[j.employee||j.worker,j.name,j.asin,j.units,azT(j.startedAt),azT(j.finishedAt),j.rawSec!=null?Math.round(j.rawSec/60):'',j.clockedSec!=null?Math.round(j.clockedSec/60):'',j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'']));
+  const rows=[['Person','Product','ASIN','Units','Claimed (AZ)','Finished (AZ)','Claim to finish (min)','On the clock (min)','Per min on the clock','Labor $','Labor $ per unit']]
+    .concat(d.jobs.map(j=>[j.employee||j.worker,j.name,j.asin,j.units,azT(j.startedAt),azT(j.finishedAt),j.rawSec!=null?Math.round(j.rawSec/60):'',j.clockedSec!=null?Math.round(j.clockedSec/60):'',j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'',j.cost!=null?j.cost.toFixed(2):'',j.cost!=null&&j.units?(j.cost/j.units).toFixed(2):'']));
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(q).join(',')).join('\r\n')],{type:'text/csv'}));
   a.download='labeling-'+d.month+'.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
@@ -6759,8 +6760,10 @@ function loadLaborEff(month){
     const th=(t,al)=>'<th style="text-align:'+(al||'center')+'">'+t+'</th>', td=(v,al,st)=>'<td style="text-align:'+(al||'center')+';'+(st||'')+'">'+v+'</td>';
     const n=v=>v==null?'—':v.toLocaleString(), rate=v=>v==null?'—':v.toFixed(2);
     const row=(x,bold)=>'<tr'+(bold?' style="background:#f6f8fa;font-weight:900"':'')+'>'+td(bold?'<b>All</b>':'<b>'+esc(x.name)+'</b>','left')+td(bold?'':x.days)+td((x.hours||0).toFixed(1))+td(n(x.units)+(x.unitsNoPunch?'<div style="font-size:11px;color:#c0392b;font-weight:700">+'+x.unitsNoPunch.toLocaleString()+' with no punches</div>':''))
-      +td(rate(x.perMin),'center','font-size:18px;font-weight:900;color:#c45500')+td(n(x.perHour))+td(rate(x.perMinOnJob),'center','color:#5f6675')+'</tr>';
-    b.innerHTML='<table style="width:100%;table-layout:fixed"><thead><tr>'+th('Person','left')+th('Days')+th('Hours clocked')+th('Units labeled')+th('Per min (clock)')+th('Per hour (clock)')+th('Per min (on job)')+'</tr></thead><tbody>'
+      +td(rate(x.perMin),'center','font-size:18px;font-weight:900;color:#c45500')+td(n(x.perHour))+td(rate(x.perMinOnJob),'center','color:#5f6675')
+      +td(x.pay!=null?'$'+x.pay.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})+(bold?'':'<div style="font-size:11px;color:#5f6675">$'+x.wage+'/hr</div>'):(bold?'—':'<span style="font-size:11px;color:#b7791f">set wage in Team</span>'))
+      +td(x.costPerUnit!=null?'<b style="font-size:17px">$'+x.costPerUnit.toFixed(2)+'</b>'+(x.costPerUnitOnJob!=null?'<div style="font-size:11px;color:#5f6675">$'+x.costPerUnitOnJob.toFixed(2)+' on job</div>':''):'—')+'</tr>';
+    b.innerHTML='<table style="width:100%;table-layout:fixed"><thead><tr>'+th('Person','left')+th('Days')+th('Hours clocked')+th('Units labeled')+th('Per min (clock)')+th('Per hour (clock)')+th('Per min (on job)')+th('Paid')+th('Labor $ / unit')+'</tr></thead><tbody>'
       +d.people.map(x=>row(x)).join('')+(d.people.length>1?row(d.total,true):'')+'</tbody></table>'
       +(d.people.every(x=>!x.units)?'<div class="hint" style="margin-top:8px;color:#c0392b">No prep finished in the app this month by anyone on the team, so there\'s nothing to measure yet. Speed only counts prep jobs started and finished on Pending Prep.</div>':'')
       +(d.people.some(x=>x.unitsNoPunch)?'<div class="hint" style="margin-top:8px;color:#c0392b"><b>Some prep isn\'t counted yet:</b> it was done on days with no Homebase punches uploaded. Import that pay period and it counts.</div>':'')

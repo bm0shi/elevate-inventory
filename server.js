@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prep-crew-1002';
+const BUILD_ID = 'labor-cost-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4330,6 +4330,9 @@ app.get('/api/employees', auth, async (req, res) => {
             (SELECT COUNT(*)::int FROM inv_timecards t WHERE t.employee_id=e.id) AS shifts,
             (SELECT ROUND(SUM(t.actual_hours)::numeric,2) FROM inv_timecards t WHERE t.employee_id=e.id) AS total_hours
      FROM inv_employees e ORDER BY e.active DESC, e.display_name`);
+  // The prep name dropdown uses this list with the warehouse login, so the
+  // wage went to staff too. Wages are owner-only.
+  if (!safeEq(req.headers['x-owner-password'], OWNER_PASSWORD)) for (const e of rows) delete e.wage;
   res.json(rows);
 });
 
@@ -4457,10 +4460,13 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
   const months = (await pool.query(`SELECT DISTINCT to_char(work_date,'YYYY-MM') AS m FROM inv_timecards ORDER BY m DESC`)).rows.map(r => r.m);
   const month = /^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : (months[0] || new Date().toISOString().slice(0, 7));
   const from = month + '-01';
-  const emps = (await pool.query('SELECT id, display_name, homebase_name FROM inv_employees')).rows;
+  const emps = (await pool.query('SELECT id, display_name, homebase_name, wage::float AS wage FROM inv_employees')).rows;
   const keyOf = x => String(x || '').trim().toLowerCase();
   const empByKey = {};
   for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empByKey[keyOf(k)] = e;
+  // Labor cost uses each person's wage from Team (the owner sets it there);
+  // a person without one shows no cost rather than $0.
+  const wageOf = name => { const e = empByKey[keyOf(name)]; return e && e.wage > 0 ? e.wage : null; };
   // Punches for the month, plus a week before (a job claimed in late August
   // and finished in September still gets its August clocked time).
   const cards = (await pool.query(`
@@ -4488,7 +4494,10 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
     return { id: j.id, worker: j.worker || '', employee: any ? sh.map(x => (empByKey[keyOf(x.name)] || {}).display_name || x.name).join(' + ') : null,
       crew: sh.map(x => ({ name: (empByKey[keyOf(x.name)] || {}).display_name || x.name, units: Math.round(x.units), min: Math.round(x.sec / 60) })),
       asin: j.asin, name: j.name, qty: j.qty, isDuo: j.is_duo, units: j.units || 0,
-      startedAt: j.started_at, finishedAt: j.finished_at, rawSec: j.duration_sec, clockedSec: any ? sh.reduce((t, x) => t + x.sec, 0) : null };
+      startedAt: j.started_at, finishedAt: j.finished_at, rawSec: j.duration_sec, clockedSec: any ? sh.reduce((t, x) => t + x.sec, 0) : null,
+      // What the job's labeling time cost: each person's clocked time on it × their wage
+      cost: sh.some(x => x.sec > 0) && sh.every(x => !(x.sec > 0) || wageOf(x.name) != null)
+        ? Math.round(sh.reduce((t, x) => t + x.sec / 3600 * (wageOf(x.name) || 0), 0) * 100) / 100 : null };
   });
   const inMonth = c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 7) === month;
   const people = emps.map(e => {
@@ -4501,16 +4510,23 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
     // better than it was. Those are reported apart (unitsNoPunch).
     const counted = myJobs.filter(j => j.sec > 0), off = myJobs.filter(j => !(j.sec > 0));
     const units = Math.round(counted.reduce((t, j) => t + j.units, 0)), jobSec = counted.reduce((t, j) => t + j.sec, 0);
+    const w = e.wage > 0 ? e.wage : null;
     return { name: e.display_name, days: new Set(myCards.map(c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10))).size,
       hours: Math.round(hours * 100) / 100, jobs: counted.length, units, jobMin: Math.round(jobSec / 60), ...laborRates(units, hours, jobSec),
+      // Paid hours × wage, and that spread over the units labeled (the true
+      // cost per unit, idle and other work included); on-job = labeling time only.
+      wage: w, pay: w != null ? Math.round(hours * w * 100) / 100 : null,
+      costPerUnit: w != null && units > 0 ? Math.round(hours * w / units * 100) / 100 : null,
+      costPerUnitOnJob: w != null && units > 0 && jobSec > 0 ? Math.round(jobSec / 3600 * w / units * 100) / 100 : null,
       jobsNoPunch: off.length, unitsNoPunch: Math.round(off.reduce((t, j) => t + j.units, 0)) };
   }).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
   const um = {};
   for (const c of contribs) if (!c.employee) { const k = c.worker || '(no name)'; um[k] = um[k] || { worker: k, jobs: 0, units: 0 }; um[k].jobs++; um[k].units += Math.round(c.units); }
-  const t = people.reduce((a, x) => ({ hours: a.hours + x.hours, units: a.units + x.units, jobSec: a.jobSec + x.jobMin * 60 }), { hours: 0, units: 0, jobSec: 0 });
+  const t = people.reduce((a, x) => ({ hours: a.hours + x.hours, units: a.units + x.units, jobSec: a.jobSec + x.jobMin * 60, pay: a.pay + (x.pay || 0), noWage: a.noWage || x.wage == null }), { hours: 0, units: 0, jobSec: 0, pay: 0, noWage: false });
   const empName = {}; for (const e of emps) empName[e.id] = e.display_name;
   res.json({ ok: true, month, months, people, unmatched: Object.values(um),
-    total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) },
+    total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec),
+      pay: t.noWage ? null : Math.round(t.pay * 100) / 100, costPerUnit: !t.noWage && t.units > 0 ? Math.round(t.pay / t.units * 100) / 100 : null },
     jobs, shifts: cards.filter(inMonth).map(c => ({ id: c.id, person: empName[c.employee_id] || '?', day: String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10), in: c.clock_in, out: c.clock_out, hours: c.hours })) });
 });
 
