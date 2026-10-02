@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'no-punch-1002';
+const BUILD_ID = 'ts-replace-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4378,15 +4378,28 @@ app.post('/api/timesheets/import', ownerAuth, async (req, res) => {
     s2.cost  += (m.actual_hours || 0) * (m.wage || 0);
   }
 
+  // An upload is the truth for the days it covers: each person's punches in
+  // the file's date range are replaced, not merged. Matching by clock-in let
+  // a corrected clock-in sit next to the old wrong one, counting the day twice
+  // (labor speed and the P&L's labor dollars).
+  const dayOf = d => String(d instanceof Date ? d.toISOString() : d).slice(0, 10);
+  const days = matched.map(m => dayOf(m.work_date)).sort();
+  const range = days.length ? { from: days[0], to: days[days.length - 1] } : null;
+  const empIds = [...new Set(matched.map(m => m.employee_id))];
+  const onFile = range ? (await pool.query('SELECT COUNT(*)::int AS n FROM inv_timecards WHERE employee_id = ANY($1::int[]) AND work_date BETWEEN $2 AND $3',
+    [empIds, range.from, range.to])).rows[0].n : 0;
+
   if (dryRun) {
-    return res.json({ ok: true, dryRun: true, shifts: rows.length, matchedCount: matched.length,
+    return res.json({ ok: true, dryRun: true, shifts: rows.length, matchedCount: matched.length, range, replaces: onFile,
       unmatched: Object.keys(unmatched).map(n => ({ name: n, shifts: unmatched[n].length })),
       summary, warnings });
   }
 
-  let inserted = 0, updated = 0;
+  let inserted = 0, updated = 0, replaced = 0;
+  await withTx(async (db) => {
+  if (range) replaced = (await db.query('DELETE FROM inv_timecards WHERE employee_id = ANY($1::int[]) AND work_date BETWEEN $2 AND $3', [empIds, range.from, range.to])).rowCount;
   for (const m of matched) {
-    const r2 = await pool.query(
+    const r2 = await db.query(
       `INSERT INTO inv_timecards(employee_id, homebase_name, work_date, clock_in, clock_out,
                                  break_minutes, wage, actual_hours, paid_hours, ot_hours)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
@@ -4397,11 +4410,12 @@ app.post('/api/timesheets/import', ownerAuth, async (req, res) => {
        m.break_minutes, m.wage, m.actual_hours, m.paid_hours, m.ot_hours]);
     if (r2.rows[0] && r2.rows[0].was_insert) inserted++; else updated++;
     // keep the employee's current wage in step with the latest punch
-    if (m.wage) await pool.query('UPDATE inv_employees SET wage=$1 WHERE id=$2', [m.wage, m.employee_id]);
+    if (m.wage) await db.query('UPDATE inv_employees SET wage=$1 WHERE id=$2', [m.wage, m.employee_id]);
   }
+  });
 
-  console.log(`[Timesheets] ${inserted} new, ${updated} updated, ${Object.keys(unmatched).length} unmatched names.`);
-  res.json({ ok: true, shifts: rows.length, inserted, updated,
+  console.log(`[Timesheets] ${range ? range.from + '..' + range.to : 'no days'}: replaced ${replaced} punches with ${inserted + updated}; ${Object.keys(unmatched).length} unmatched names.`);
+  res.json({ ok: true, shifts: rows.length, inserted, updated, replaced, range,
     unmatched: Object.keys(unmatched).map(n => ({ name: n, shifts: unmatched[n].length })),
     summary, warnings });
 });
