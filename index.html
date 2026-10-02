@@ -3734,7 +3734,9 @@ function loadPrepPerformance(){
       '<div class="card"><div class="n">'+(t.units||0).toLocaleString()+'</div><div class="l">Units Prepped</div></div>'+
       '<div class="card"><div class="n">'+fmtDur(t.total_sec)+'</div><div class="l">Total Time</div></div>'+
       '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+(t.unitsPerHour!=null?t.unitsPerHour:'—')+'</div><div class="l">Units / Hour</div></div>'+
-      '</div>';
+      '</div>'
+      +'<div class="hint" style="margin:-4px 0 10px">Time counts only while the person was clocked in (Homebase punches) — a job left claimed overnight stops at clock-out.'
+      +(t.rawJobs?' <b style="color:#c0392b">'+t.rawJobs+' job'+(t.rawJobs===1?'':'s')+' still on the raw timer</b> (no punches uploaded for those days yet, or the name isn\'t on the team).':'')+'</div>';
 
     // by worker
     if(d.byWorker && d.byWorker.length){
@@ -3768,7 +3770,7 @@ function loadPrepPerformance(){
           <span style="white-space:nowrap;text-align:right;display:flex;align-items:center;gap:10px">
             <span>
               <b>${r.qty}</b>${r.is_duo?' duos':''} · ${(r.units||0)} units<br>
-              <span style="color:#5a6472">${fmtDur(r.duration_sec)}${uph?' · '+uph+'/hr':''}</span><br>
+              <span style="color:#5a6472">${fmtDur(r.duration_sec)}${r.time_src==='raw'?' <b style="color:#c0392b" title="No clock punches for this job yet — raw claim → finish timer">(raw)</b>':(r.raw_duration_sec&&r.raw_duration_sec-r.duration_sec>1800?' <span title="Claim → finish was '+fmtDur(r.raw_duration_sec)+'" style="color:#9db0c9">(of '+fmtDur(r.raw_duration_sec)+' claimed)</span>':'')}${uph?' · '+uph+'/hr':''}</span><br>
               <span style="color:#9db0c9;font-size:11px">${new Date(r.finished_at).toLocaleString()}</span>
             </span>
             <button onclick="deletePrepLog(${r.id})" title="Delete this entry" style="background:none;border:none;cursor:pointer;font-size:15px;opacity:0.5;padding:4px" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=0.5">🗑</button>
@@ -6583,13 +6585,32 @@ function laborRawToggle(){
   const show=el.style.display==='none'; el.style.display=show?'block':'none'; b.textContent=show?'📋 Hide raw data':'📋 Show raw data';
   if(!show) return;
   const th=(t,al)=>'<th style="text-align:'+(al||'center')+'">'+t+'</th>', td=(v,al,st)=>'<td style="text-align:'+(al||'center')+';'+(st||'')+'">'+v+'</td>';
-  el.innerHTML='<b style="font-size:15px">Prep jobs ('+d.jobs.length+')</b><div class="hint">Arizona time. <b>Claim → finish</b> is the raw timer; <b>On the clock</b> is only the part inside that person\'s Homebase punches — that\'s what the speed uses.</div>'
-    +'<div style="overflow-x:auto"><table style="width:100%;margin-top:6px"><thead><tr>'+th('Person','left')+th('Product','left')+th('Units')+th('Claimed')+th('Finished')+th('Claim → finish')+th('On the clock')+th('Per min')+'</tr></thead><tbody>'
-    +d.jobs.map(j=>'<tr>'+td('<b>'+esc(j.employee||j.worker||'—')+'</b>'+(j.employee?'':' <span style="color:#c0392b;font-size:11px">not on team</span>'),'left')+td(esc(String(j.name||j.asin).slice(0,50))+(j.isDuo?' <b>(duo)</b>':''),'left')+td(j.units.toLocaleString())
+  const cb=(kind,id)=>'<input type="checkbox" class="labDel" data-kind="'+kind+'" data-id="'+Number(id)+'" onchange="laborDelCount()" style="width:18px;height:18px">';
+  const trash=(kind,id)=>'<button onclick="laborDelete(\''+kind+'\','+Number(id)+')" title="Delete" style="background:none;border:none;cursor:pointer;font-size:15px;opacity:.6">🗑</button>';
+  el.innerHTML='<div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap"><button class="action" id="labDelBtn" onclick="laborDelete()" disabled style="background:#c0392b">🗑 Delete ticked (0)</button><span class="hint">Tick old or wrong rows (or use 🗑 on one) to stop them counting.</span></div>'
+    +'<b style="font-size:15px">Prep jobs ('+d.jobs.length+')</b><div class="hint">Arizona time. <b>Claim → finish</b> is the raw timer; <b>On the clock</b> is only the part inside that person\'s Homebase punches — that\'s what the speed uses.</div>'
+    +'<div style="overflow-x:auto"><table style="width:100%;margin-top:6px"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'job\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Product','left')+th('Units')+th('Claimed')+th('Finished')+th('Claim → finish')+th('On the clock')+th('Per min')+th('')+'</tr></thead><tbody>'
+    +d.jobs.map(j=>'<tr>'+td(cb('job',j.id))+td('<b>'+esc(j.employee||j.worker||'—')+'</b>'+(j.employee?'':' <span style="color:#c0392b;font-size:11px">not on team</span>'),'left')+td(esc(String(j.name||j.asin).slice(0,50))+(j.isDuo?' <b>(duo)</b>':''),'left')+td(j.units.toLocaleString())
       +td(azT(j.startedAt))+td(azT(j.finishedAt))+td(hm(j.rawSec),'center',(j.rawSec&&j.clockedSec!=null&&j.rawSec-j.clockedSec>1800)?'color:#c0392b;font-weight:800':'')+td(hm(j.clockedSec),'center','font-weight:800')
-      +td(j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'—')+'</tr>').join('')+'</tbody></table></div>'
-    +'<b style="font-size:15px;display:block;margin-top:14px">Punches ('+d.shifts.length+')</b><div style="overflow-x:auto"><table style="width:100%;margin-top:6px;table-layout:fixed"><thead><tr>'+th('Person','left')+th('Day')+th('Clock in')+th('Clock out')+th('Hours')+'</tr></thead><tbody>'
-    +d.shifts.map(c=>'<tr>'+td('<b>'+esc(c.person)+'</b>','left')+td(c.day)+td(azT(c.in,{hour:'numeric',minute:'2-digit'}))+td(azT(c.out,{hour:'numeric',minute:'2-digit'}))+td((c.hours||0).toFixed(2))+'</tr>').join('')+'</tbody></table></div>';
+      +td(j.clockedSec>0?(j.units/(j.clockedSec/60)).toFixed(2):'—')+td(trash('job',j.id))+'</tr>').join('')+'</tbody></table></div>'
+    +'<b style="font-size:15px;display:block;margin-top:14px">Punches ('+d.shifts.length+')</b><div style="overflow-x:auto"><table style="width:100%;margin-top:6px;table-layout:fixed"><thead><tr>'+th('<input type="checkbox" onchange="laborTickAll(\'punch\',this.checked)" style="width:18px;height:18px">')+th('Person','left')+th('Day')+th('Clock in')+th('Clock out')+th('Hours')+th('')+'</tr></thead><tbody>'
+    +d.shifts.map(c=>'<tr>'+td(cb('punch',c.id))+td('<b>'+esc(c.person)+'</b>','left')+td(c.day)+td(azT(c.in,{hour:'numeric',minute:'2-digit'}))+td(azT(c.out,{hour:'numeric',minute:'2-digit'}))+td((c.hours||0).toFixed(2))+td(trash('punch',c.id))+'</tr>').join('')+'</tbody></table></div>';
+}
+function laborTickAll(kind,on){ document.querySelectorAll('.labDel[data-kind="'+kind+'"]').forEach(x=>x.checked=on); laborDelCount(); }
+function laborDelCount(){ const n=document.querySelectorAll('.labDel:checked').length, b=document.getElementById('labDelBtn'); if(b){ b.disabled=!n; b.textContent='🗑 Delete ticked ('+n+')'; } }
+function laborDelete(kind,id){
+  const jobs=[], punches=[];
+  if(kind) (kind==='job'?jobs:punches).push(id);
+  else document.querySelectorAll('.labDel:checked').forEach(x=>(x.dataset.kind==='job'?jobs:punches).push(+x.dataset.id));
+  if(!jobs.length&&!punches.length) return;
+  let msg='Delete '+[jobs.length?jobs.length+' prep job'+(jobs.length===1?'':'s'):'',punches.length?punches.length+' punch'+(punches.length===1?'':'es'):''].filter(Boolean).join(' and ')+'?\n\nThey stop counting toward labeling speed. Stock is not changed.';
+  if(punches.length) msg+='\n\n⚠️ Punches are also your labor cost in the P&L — deleting them lowers that month\'s labor. Re-importing that Homebase pay period brings them back.';
+  if(!confirm(msg+'\n\nThis cannot be undone.')) return;
+  ownerApi('/api/labor/delete',{method:'POST',body:JSON.stringify({jobs,punches})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not deleted',true); return; }
+    toast('Deleted '+[d.deleted.jobs?d.deleted.jobs+' job(s)':'',d.deleted.punches?d.deleted.punches+' punch(es)':''].filter(Boolean).join(' + '));
+    loadLaborEff((document.getElementById('laborMonth')||{}).value);
+  });
 }
 function laborRawCsv(){
   const d=window._laborEff; if(!d||!d.jobs.length){ toast('No prep jobs this month',true); return; }
