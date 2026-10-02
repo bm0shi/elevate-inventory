@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prep-perf-clock-1002';
+const BUILD_ID = 'punch-az-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -974,6 +974,18 @@ async function initDb() {
         [disp, hb]);
     }
     console.log('[Inventory] Employees + timecards ready.');
+    // One-time: punches imported before the Arizona fix in mkTs were saved 7
+    // hours early (server time zone UTC). Shift them once; the marker row in
+    // inv_cache makes sure it never runs twice. Same transaction, so a crash
+    // can't leave the marker without the shift.
+    try {
+      await withTx(async (db) => {
+        const m = await db.query(`INSERT INTO inv_cache(cache_key, data) VALUES('timecards_az_fixed', '{}'::jsonb) ON CONFLICT (cache_key) DO NOTHING RETURNING cache_key`);
+        if (!m.rows.length) return;
+        const r = await db.query(`UPDATE inv_timecards SET clock_in = clock_in + interval '7 hours', clock_out = clock_out + interval '7 hours' WHERE source = 'homebase-csv'`);
+        console.log(`[Inventory] Timecards moved to Arizona time: ${r.rowCount} punches.`);
+      });
+    } catch (e) { console.error('[Inventory] timecard time-zone fix failed:', e.message); }
     // Ship-from written exactly as in Seller Central's address book (company,
     // full name, "Suite B (BACK)"), in the hope Amazon links our API shipments
     // to that saved address and its equipment profile (box truck with tail

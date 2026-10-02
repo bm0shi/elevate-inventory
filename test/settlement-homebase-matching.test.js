@@ -96,3 +96,9 @@ test('overlapSec: a job left claimed overnight only counts clocked-in time', () 
   assert.equal(overlapSec('2026-09-08T22:00:00Z', '2026-09-09T18:00:00Z', []), 0);   // no punches: nothing to count
   assert.equal(overlapSec('2026-09-09T18:00:00Z', '2026-09-08T22:00:00Z', shifts), 0);
 });
+
+test('Homebase punches are Arizona time, whatever the server time zone', () => {
+  const { mkTs } = require('../lib/homebase');
+  // 8:24 AM on Sep 1 in Arizona (UTC-7) = 15:24 UTC; the bug stored 08:24 UTC (1:24 AM in Arizona)
+  assert.equal(mkTs({ y: 2026, mo: 8, d: 1 }, 8 * 60 + 24).toISOString(), '2026-09-01T15:24:00.000Z');
+});
