@@ -620,6 +620,7 @@
         <select id="laborMonth" onchange="loadLaborEff(this.value)" style="padding:10px;font-size:15px;font-weight:700;border:2px solid #e2e8f0;border-radius:8px"></select>
       </div>
       <div id="laborEffBody" style="margin-top:10px"><div class="hint">Loading…</div></div>
+      <div id="laborTrend" style="margin-top:14px"></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="action" onclick="laborRawToggle()" id="laborRawBtn" style="background:#5a6472">📋 Show raw data</button><button class="action" onclick="laborRawCsv()" style="background:#eef2f6;color:#1f2733">⬇ Download jobs CSV</button></div>
       <div id="laborRaw" style="display:none;margin-top:10px"></div>
     </div>
@@ -6575,6 +6576,7 @@ function importTimesheets(dry){
     if(d.warnings && d.warnings.length) h+='<div class="hint" style="color:#b7791f;margin-top:6px">'+d.warnings.join(' · ')+'</div>';
     h+='</div>';
     out.innerHTML=h;
+    if(!dry){ loadCoverage(); loadLaborEff(); }   // new punches: refresh the speed tables
     if(!dry){ loadEmployees(); loadCoverage(); }
   }).catch(()=>{ out.innerHTML='<div class="hint" style="padding:10px;color:#c0392b">Import failed.</div>'; });
 }
@@ -6621,7 +6623,25 @@ function laborRawCsv(){
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(q).join(',')).join('\r\n')],{type:'text/csv'}));
   a.download='labeling-'+d.month+'.csv'; document.body.appendChild(a); a.click(); a.remove();
 }
+// Week by week: labeled per minute on the clock, with ▲/▼ against the week before.
+function loadLaborTrend(){
+  const el=document.getElementById('laborTrend'); if(!el) return;
+  ownerApi('/api/labor/trend?weeks=8').then(d=>{
+    if(!d||d.ok===false||!d.weeks.length||!d.people.length){ el.innerHTML=''; return; }
+    const lab=w=>new Date(w+'T12:00:00Z').toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'});
+    const th=(t,al)=>'<th style="text-align:'+(al||'center')+'">'+t+'</th>';
+    el.innerHTML='<b style="font-size:16px">📈 Week by week</b><div class="hint">Labeled per minute on the clock, weeks Monday–Sunday (the week of…). ▲ faster / ▼ slower than the week before. Small number = hours clocked that week.</div>'
+      +'<div style="overflow-x:auto"><table style="width:100%;table-layout:fixed;margin-top:6px"><thead><tr>'+th('Person','left')+d.weeks.map(w=>th(lab(w))).join('')+'</tr></thead><tbody>'
+      +d.people.map(p=>'<tr><td style="text-align:left"><b>'+esc(p.name)+'</b></td>'+p.weeks.map((x,i)=>{
+        if(!x||x.perMin==null) return '<td style="text-align:center;color:#9db0c9">—'+(x&&x.hours?'<div style="font-size:11px">'+x.hours+'h</div>':'')+'</td>';
+        const prev=p.weeks.slice(0,i).reverse().find(y=>y&&y.perMin!=null);
+        const arrow=prev?(x.perMin>prev.perMin?' <span style="color:#1e8449">▲</span>':x.perMin<prev.perMin?' <span style="color:#c0392b">▼</span>':''):'';
+        return '<td style="text-align:center"><b style="font-size:17px;color:#c45500">'+x.perMin.toFixed(2)+'</b>'+arrow+'<div style="font-size:11px;color:#5f6675">'+x.hours+'h · '+x.units.toLocaleString()+' u</div></td>';
+      }).join('')+'</tr>').join('')+'</tbody></table></div>';
+  }).catch(()=>{ el.innerHTML=''; });
+}
 function loadLaborEff(month){
+  loadLaborTrend();
   const b=document.getElementById('laborEffBody'); if(!b) return;
   ownerApi('/api/labor/efficiency'+(month?'?month='+encodeURIComponent(month):'')).then(d=>{
     if(!d||d.ok===false){ b.innerHTML='<div class="hint" style="color:#c0392b">'+esc((d&&d.error)||'Could not load')+'</div>'; return; }

@@ -16,7 +16,7 @@ const pdfParse = require('pdf-parse');
 const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
 const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
-const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec } = require('./lib/homebase');
+const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec, weekStart } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
 const smartscout = require('./lib/smartscout');
@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ts-replace-1002';
+const BUILD_ID = 'labor-trend-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4490,6 +4490,41 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
   res.json({ ok: true, month, months, people, unmatched: Object.values(um),
     total: { hours: Math.round(t.hours * 100) / 100, units: t.units, ...laborRates(t.units, t.hours, t.jobSec) },
     jobs, shifts: cards.filter(inMonth).map(c => ({ id: c.id, person: empName[c.employee_id] || '?', day: String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10), in: c.clock_in, out: c.clock_out, hours: c.hours })) });
+});
+
+// Week-by-week labeling speed per person (owner uploads punches weekly to
+// watch trends). Last N weeks ending at the latest punch on file — uploads
+// lag, so "this week" would usually be empty. Same rules as the monthly view:
+// per minute on the clock; only jobs with clocked time count.
+app.get('/api/labor/trend', ownerAuth, async (req, res) => {
+  const n = Math.min(26, Math.max(2, parseInt(req.query.weeks, 10) || 8));
+  const last = (await pool.query('SELECT MAX(work_date) AS d FROM inv_timecards')).rows[0].d;
+  if (!last) return res.json({ ok: true, weeks: [], people: [] });
+  const lastWeek = weekStart(last instanceof Date ? last.toISOString() : last);
+  const weeks = [];
+  for (let i = n - 1; i >= 0; i--) { const d = new Date(lastWeek + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() - 7 * i); weeks.push(d.toISOString().slice(0, 10)); }
+  const from = weeks[0], to = new Date(new Date(lastWeek + 'T12:00:00Z').getTime() + 7 * 86400000).toISOString().slice(0, 10);
+  const emps = (await pool.query('SELECT id, display_name, homebase_name FROM inv_employees')).rows;
+  const keyOf = x => String(x || '').trim().toLowerCase(), empByKey = {};
+  for (const e of emps) for (const k of [e.display_name, e.homebase_name]) if (k) empByKey[keyOf(k)] = e;
+  const cards = (await pool.query(`SELECT employee_id, work_date, clock_in, clock_out, COALESCE(actual_hours,0)::float AS hours FROM inv_timecards
+    WHERE work_date >= ($1::date - interval '7 days') AND work_date < $2::date`, [from, to])).rows;
+  const shiftsOf = {};
+  for (const c of cards) (shiftsOf[c.employee_id] = shiftsOf[c.employee_id] || []).push({ in: c.clock_in, out: c.clock_out });
+  const jobs = (await pool.query(`SELECT worker, units, started_at, finished_at, to_char(finished_at AT TIME ZONE 'America/Phoenix','YYYY-MM-DD') AS day FROM inv_prep_log
+    WHERE (finished_at AT TIME ZONE 'America/Phoenix') >= $1::date AND (finished_at AT TIME ZONE 'America/Phoenix') < $2::date`, [from, to])).rows;
+  const cell = {};   // empId|week → { hours, units, sec }
+  const at = (id, w) => (cell[id + '|' + w] = cell[id + '|' + w] || { hours: 0, units: 0, sec: 0 });
+  for (const c of cards) { const w = weekStart(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date); if (weeks.includes(w)) at(c.employee_id, w).hours += c.hours; }
+  for (const j of jobs) {
+    const e = empByKey[keyOf(j.worker)]; if (!e || !j.started_at) continue;
+    const sec = overlapSec(j.started_at, j.finished_at, shiftsOf[e.id]); if (!(sec > 0)) continue;
+    const w = weekStart(j.day); if (!weeks.includes(w)) continue;
+    const x = at(e.id, w); x.units += j.units || 0; x.sec += sec;
+  }
+  const people = emps.map(e => ({ name: e.display_name, weeks: weeks.map(w => { const x = cell[e.id + '|' + w]; return x ? { hours: Math.round(x.hours * 10) / 10, units: x.units, ...laborRates(x.units, x.hours, x.sec) } : null; }) }))
+    .filter(p => p.weeks.some(Boolean)).sort((a, b) => a.name.localeCompare(b.name));
+  res.json({ ok: true, weeks, people });
 });
 
 // ============================================================
