@@ -134,6 +134,42 @@ test('a prep scan counts down its work order, and undo puts both back', { skip }
   assert.strictEqual(await prepped('TSTB'), p0);
 });
 
+test('a job over 200 is split in half; both halves finish into one Prepped card; a scan spills into part 2', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTBIG','Test Liter','SKU-BIG','X00TESTBIG') ON CONFLICT (asin) DO NOTHING`);
+  const halves = async () => (await pool.query(`SELECT id, qty, split_group, split_part FROM inv_pending_prep WHERE asin='TSTBIG' ORDER BY split_part, id`)).rows;
+  // 300 → 150 + 150, linked; the same tap again (same action id) adds nothing
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTBIG', qty: 300 }, { idem: 'big-1' })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTBIG', qty: 300 }, { idem: 'big-1' })).status, 200);
+  let h = await halves();
+  assert.deepStrictEqual(h.map(x => [x.qty, x.split_part]), [[150, 1], [150, 2]]);
+  assert.strictEqual(h[0].split_group, h[1].split_group);
+  // 101 more rebalances the free halves: 201 / 200
+  await post('/api/pending-prep/add', { asin: 'TSTBIG', qty: 101 });
+  h = await halves();
+  assert.deepStrictEqual(h.map(x => x.qty), [201, 200]);
+  // Each half finishes on its own; Prepped stays ONE row for the product
+  const p0 = await prepped('TSTBIG');
+  assert.strictEqual((await post('/api/pending-prep/complete', { id: h[0].id, qty: 201, completedBy: 'Tester' })).status, 200);
+  const [a, b] = await Promise.all([
+    post('/api/pending-prep/complete', { id: h[1].id, qty: 200, completedBy: 'Tester' }),
+    post('/api/pending-prep/complete', { id: h[1].id, qty: 200, completedBy: 'Tester' }),
+  ]);
+  assert.deepStrictEqual([a.status, b.status].sort(), [200, 409]);
+  assert.strictEqual(await prepped('TSTBIG'), p0 + 401);
+  assert.strictEqual((await one(`SELECT COUNT(*)::int AS n FROM inv_prepped WHERE asin='TSTBIG'`)).n, 1);
+  assert.strictEqual(await pending('TSTBIG'), 0);
+  // A scan of 200 against 150 + 150 empties part 1 and takes 50 from part 2;
+  // undo brings part 1 back, still linked
+  await post('/api/pending-prep/add', { asin: 'TSTBIG', qty: 300 });
+  const g = (await halves())[0].split_group;
+  const s = await post('/api/prep/scan', { code: 'TSTBIG', qty: 200 });
+  assert.strictEqual(s.status, 200);
+  assert.deepStrictEqual((await halves()).map(x => [x.qty, x.split_part]), [[100, 2]]);
+  assert.strictEqual((await post('/api/undo/' + s.body.undoId, {})).status, 200);
+  h = await halves();
+  assert.deepStrictEqual(h.map(x => [x.qty, x.split_part, x.split_group]), [[150, 1, g], [150, 2, g]]);
+});
+
 test('shipping a duo takes one of each bottle; posting the same shipment again is refused', { skip }, async () => {
   const A = await stock('TSTA'), B = await stock('TSTB'), duoPrepped = await prepped('TSTDUO');
   const r = await post('/api/bulk-ship', { shipmentId: 'FBATEST1', shipmentName: 'Test ship', items: [{ code: 'SKU-DUO', qty: 3 }, { code: 'TSTA', qty: 2 }] });

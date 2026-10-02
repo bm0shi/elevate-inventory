@@ -102,6 +102,13 @@
   /* Pending Prep: equal-height cards, button pinned to bottom */
   #pendingPrepBody .pcards { align-items: stretch; }
   .ppcard { height: 100%; }
+  /* Large job split in half: the two halves sit side by side, linked */
+  .ppSplit { grid-column: 1 / -1; border: 2px solid #ff9900; background: #fff8ec; border-radius: 14px; padding: 10px 12px 12px; }
+  .ppSplitHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .ppSplitRow { display: grid; grid-template-columns: minmax(0,1fr) 44px minmax(0,1fr); align-items: stretch; }
+  .ppSplitLink { display: flex; align-items: center; justify-content: center; font-size: 26px; }
+  .ppPart { font-size: 11px; font-weight: 900; letter-spacing: .6px; color: #c45500; margin: 0 0 5px 2px; }
+  @media (max-width: 960px) { .ppSplitRow { grid-template-columns: minmax(0,1fr); } .ppSplitLink { padding: 6px 0; } }
   .ppcard > div:first-child { flex: 1 1 auto; }          /* content row grows */
   .ppcard > div:last-child,
   .ppcard > button:last-child { margin-top: auto; }       /* action pinned to bottom */
@@ -5357,13 +5364,14 @@ function renderPendingPrep(){
       default: return activeFirst(a,b2);
     }
   });
+  items=ppLinkSplits(items);   // the two halves of a split job always sit together
   let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
   if(ppList()){ b.innerHTML=h+ppListRows(items); updateElapsed(); return; }
   // Default view only: divider after the last in-progress card.
   const showDivider=(ppSort==='active_first') && items.some(x=>x.claimed_by) && items.some(x=>!x.claimed_by);
   const lastActiveIdx=showDivider ? items.map(x=>!!x.claimed_by).lastIndexOf(true) : -1;
   h+='<div class="pcards">';
-  h+=items.map((x,idx)=>{
+  const cardHtml=(x,idx)=>{
     const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
     const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`;
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
@@ -5418,7 +5426,18 @@ function renderPendingPrep(){
       ? `<div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;margin:8px 0 2px"><div style="flex:1;height:1px;background:#d8dee6"></div><span style="font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6;text-transform:uppercase">Not started</span><div style="flex:1;height:1px;background:#d8dee6"></div></div>`
       : '';
     return `${divider}<div class="pcard ppcard" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#0d4450':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div><button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
-  }).join('');
+  };
+  for(let i=0;i<items.length;i++){
+    const x=items[i], y=items[i+1];
+    if(ppIsPair(x,y)){
+      h+='<div class="ppSplit"><div class="ppSplitHead"><span style="font-family:Montserrat,sans-serif;font-size:14px;font-weight:900;letter-spacing:.6px;color:#c45500">🔗 LARGE JOB – SPLIT IN HALF</span>'
+        +'<span style="font-size:13px;font-weight:800;color:#5f6675">'+(x.qty+y.qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</span></div>'
+        +'<div class="ppSplitRow"><div><div class="ppPart">PART 1 · '+x.qty.toLocaleString()+'</div>'+cardHtml(x,i)+'</div>'
+        +'<div class="ppSplitLink" title="Same product, split so two people can each take half">🔗</div>'
+        +'<div><div class="ppPart">PART 2 · '+y.qty.toLocaleString()+'</div>'+cardHtml(y,i+1)+'</div></div></div>';
+      i++;
+    } else h+=cardHtml(x,i);
+  }
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
   b.innerHTML=h;
   updateElapsed();
@@ -5464,6 +5483,7 @@ function ppListRows(items){
     const g=SK[so.key];
     items=items.slice().sort((p,q)=>{ const u=g(p), v=g(q); if(u==null&&v==null) return 0; if(u==null) return 1; if(v==null) return -1; return (v-u)*so.dir || String(p.name).localeCompare(String(q.name)); });
   }
+  items=ppLinkSplits(items);
   const th=(k,label,title,left)=>'<td onclick="setPpListSort(\''+k+'\')" style="padding:4px 8px;cursor:pointer;user-select:none;'+(left?'':'text-align:center;')+(so.key===k?'color:#0d4450;font-weight:800':'')+'"'+(title?' title="'+title+' · click to sort"':' title="Click to sort"')+'>'+label+(so.key===k?(so.dir===1?' ▼':' ▲'):'')+'</td>';
   return '<div class="box" style="padding:6px 8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
     +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td>'
@@ -5473,9 +5493,10 @@ function ppListRows(items){
     +th('days','Days covered','Total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
     +th('daysPrep','Days covered (with pending prep)','Same as Days covered, adding everything queued in Pending Prep for this listing')
     +th('plan','Plan','Ticked first')+th('status','Status','In progress first',1)+'</tr>'
-    +items.map(x=>{
+    +items.map((x,ri)=>{
       const claimed=!!x.claimed_by;
       const crew=(x.crew&&x.crew.length)?x.crew:(x.claimed_by?[{employee:x.claimed_by,since:x.claimed_at}]:[]);
+      const pairFirst=ppIsPair(x,items[ri+1]), pairSecond=ppIsPair(items[ri-1],x), inPair=pairFirst||pairSecond;
       const safeName=String(x.name).replace(/'/g,"\\'").replace(/"/g,'');
       const img=x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'" onmouseenter="picZoom(this)" onmouseleave="picZoomOff()" style="cursor:zoom-in;width:90px!important;height:90px!important;object-fit:contain;border-radius:8px;background:#fff;border:1px solid #eef2f6;display:block">':'<div style="width:90px;height:90px;border-radius:8px;background:#f4f6f9;display:flex;align-items:center;justify-content:center;font-size:34px">📦</div>';
       const loc=x.is_duo?'':'<span style="background:'+(x.location?'#0d4450':'#fdeceb')+';color:'+(x.location?'#fff':'#c0392b')+';border-radius:4px;padding:1px 6px;font-weight:800;font-size:12px">📍 '+esc(x.location||'none')+'</span>';
@@ -5487,7 +5508,8 @@ function ppListRows(items){
           +'<button onclick="releasePrepJob('+x.id+')" style="padding:6px 10px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Release</button></div>'
         : '<button onclick="claimPrepJob('+x.id+')" style="padding:7px 12px;font-size:12px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">▶ Start prep</button>';
       // Duo rows tinted like Smart Scout Orders → By listing, so they stand out.
-      return '<tr style="'+(claimed?'background:#f0faf4':x.is_duo?'background:#fdebe6':'')+'"><td style="'+td+';width:98px">'+img+'</td>'
+      return (pairFirst?'<tr><td colspan="20" style="padding:8px 10px 4px;background:#fff8ec;border-top:2px solid #ff9900;border-left:4px solid #ff9900;font-size:12px;font-weight:900;letter-spacing:.6px;color:#c45500">🔗 LARGE JOB – SPLIT IN HALF · '+(x.qty+items[ri+1].qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</td></tr>':'')
+        +'<tr style="'+(claimed?'background:#f0faf4':inPair?'background:#fff8ec':x.is_duo?'background:#fdebe6':'')+(inPair?';border-left:4px solid #ff9900':'')+(pairSecond?';border-bottom:2px solid #ff9900':'')+'"><td style="'+td+';width:98px">'+(inPair?'<div class="ppPart">'+(pairFirst?'🔗 PART 1':'🔗 PART 2')+'</div>':'')+img+'</td>'
         +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
         +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div></td>'
@@ -5536,7 +5558,27 @@ function sendTickedToProduction(){
   _prod=null; window._nsNext='ticked';
   if(t) t.click(); else prodOpen();
 }
+// Split jobs: the two halves share split_group; keep them next to each other
+// in every sort (at the first half's place), part 1 then part 2.
+function ppLinkSplits(items){
+  const by={}; for(const x of items) if(x.split_group!=null) (by[x.split_group]=by[x.split_group]||[]).push(x);
+  const out=[], seen=new Set();
+  for(const x of items){ if(seen.has(x.id)) continue;
+    const g=(x.split_group!=null&&by[x.split_group].length>1)?by[x.split_group].slice().sort((a,b)=>(a.split_part||0)-(b.split_part||0)||a.id-b.id):[x];
+    for(const y of g){ seen.add(y.id); out.push(y); } }
+  return out;
+}
+function ppIsPair(x,y){ return !!(x&&y&&x.split_group!=null&&x.split_group===y.split_group); }
 function toggleInPlan(id, on){
+  // A split job is one product: ticking either half ticks both
+  const all=(window._pendingPrepData&&window._pendingPrepData.items)||[], me=all.find(i=>i.id===id);
+  const ids=me&&me.split_group!=null?all.filter(i=>i.split_group===me.split_group).map(i=>i.id):[id];
+  if(ids.length>1) return api('/api/pending-prep/in-plan-many',{method:'POST',body:JSON.stringify({ids,inPlan:on})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Not saved',true); return; }
+    toast(on?'Both halves marked as added to shipment plan':'Unmarked');
+    for(const it of all) if(ids.includes(it.id)){ it.in_plan=on; it.in_plan_at=on?new Date().toISOString():null; }
+    renderPendingPrep();
+  });
   api('/api/pending-prep/in-plan',{method:'POST',body:JSON.stringify({id,inPlan:on})}).then(d=>{
     if(d.error){ toast(d.error,true); return; }
     toast(on?'Marked as added to shipment plan':'Unmarked');

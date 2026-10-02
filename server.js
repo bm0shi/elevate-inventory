@@ -19,6 +19,7 @@ const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = requ
 const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec, weekStart, crewShares } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
+const { splitPlan, SPLIT_OVER } = require('./lib/prep-split');
 const smartscout = require('./lib/smartscout');
 const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
@@ -84,7 +85,8 @@ async function applyUndo(db, id) {
       await db.query('DELETE FROM inv_shrink WHERE id=$1', [op.id]);
     } else if (op.t === 'pending' && op.qty > 0) {
       const up = await db.query('UPDATE inv_pending_prep SET qty = qty + $2 WHERE id=$1', [op.id, op.qty]);
-      if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [op.asin, op.qty, !!op.is_duo]);
+      // A half that was scanned out comes back still linked to its partner
+      if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part) VALUES($1,$2,$3,$4,$5)', [op.asin, op.qty, !!op.is_duo, op.group ?? null, op.part ?? null]);
     }
   }
   await db.query('UPDATE inv_undo SET undone_at=now() WHERE id=$1', [id]);
@@ -412,7 +414,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'labor-cost-1002';
+const BUILD_ID = 'prep-split-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -493,6 +495,9 @@ async function initDb() {
     );
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS in_plan BOOLEAN DEFAULT false;
+    -- A job over 200 is two linked halves (lib/prep-split.js): same split_group, part 1 / 2
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS split_group INTEGER;
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS split_part SMALLINT;
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS in_plan_at TIMESTAMPTZ;
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
@@ -990,6 +995,20 @@ async function initDb() {
         [disp, hb]);
     }
     console.log('[Inventory] Employees + timecards ready.');
+    // Jobs already over 200 when splitting arrived: split the unclaimed ones
+    // into linked halves (same rule as adding, lib/prep-split.js). A job
+    // someone is working is left alone. The total to prep doesn't change.
+    try {
+      await withTx(async (db) => {
+        const big = (await db.query(`SELECT id, qty FROM inv_pending_prep WHERE split_group IS NULL AND claimed_by IS NULL AND qty > $1 FOR UPDATE SKIP LOCKED`, [SPLIT_OVER])).rows;
+        for (const r of big) {
+          await db.query('UPDATE inv_pending_prep SET qty=$2, split_group=$1, split_part=1 WHERE id=$1', [r.id, Math.ceil(r.qty / 2)]);
+          await db.query(`INSERT INTO inv_pending_prep(asin, qty, is_duo, in_plan, in_plan_at, split_group, split_part)
+            SELECT asin, $2, is_duo, in_plan, in_plan_at, id, 2 FROM inv_pending_prep WHERE id=$1`, [r.id, Math.floor(r.qty / 2)]);
+        }
+        if (big.length) console.log(`[Inventory] Split ${big.length} large prep job(s) in half.`);
+      });
+    } catch (e) { console.error('[Inventory] splitting large prep jobs failed:', e.message); }
     // One-time: punches imported before the Arizona fix in mkTs were saved 7
     // hours early (server time zone UTC). Shift them once; the marker row in
     // inv_cache makes sure it never runs twice. Same transaction, so a crash
@@ -7446,11 +7465,20 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
       const sh = await duoShortfall(c, requestAsin, q, 0);
       if (sh.length) return sh;
     }
-    const ex = await c.query('SELECT id, qty FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 ORDER BY id LIMIT 1', [requestAsin, duoFlag]);
-    if (ex.rows.length) {
-      await c.query('UPDATE inv_pending_prep SET qty = qty + $1 WHERE id=$2', [q, ex.rows[0].id]);
-    } else {
-      await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo) VALUES($1,$2,$3)', [requestAsin, q, duoFlag]);
+    // Over 200 units the job becomes two linked halves so two people can each
+    // take one (splitPlan); a half someone is working never shrinks.
+    const ex = await c.query('SELECT id, qty, claimed_by, split_group FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 ORDER BY id FOR UPDATE', [requestAsin, duoFlag]);
+    const plan = splitPlan(ex.rows.map(x => ({ id: x.id, qty: x.qty, claimed: !!x.claimed_by, group: x.split_group })), q);
+    for (const u of plan.updates) {
+      if (u.group !== undefined) await c.query('UPDATE inv_pending_prep SET qty=$2, split_group=$3, split_part=$4 WHERE id=$1', [u.id, u.qty, u.group, u.part]);
+      else await c.query('UPDATE inv_pending_prep SET qty=$2 WHERE id=$1', [u.id, u.qty]);
+    }
+    let newGroup = null;
+    for (const ins of plan.inserts) {
+      const g = ins.group === 'new' ? newGroup : (ins.group ?? null);
+      const row = (await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part) VALUES($1,$2,$3,$4,$5) RETURNING id',
+        [requestAsin, ins.qty, duoFlag, g, ins.part ?? null])).rows[0];
+      if (ins.group === 'new' && newGroup == null) { newGroup = row.id; await c.query('UPDATE inv_pending_prep SET split_group=$1 WHERE id=$1', [row.id]); }
     }
     return null;
   });
@@ -7461,7 +7489,7 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, p.name, p.sku, p.fnsku, p.image, p.location,
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, pp.split_group, pp.split_part, p.name, p.sku, p.fnsku, p.image, p.location,
             COALESCE(st.onhand,0) AS onhand
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      LEFT JOIN inv_stock st ON st.asin = pp.asin
@@ -8046,16 +8074,22 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     // scans at once used to both read 10 and both write 9.
     let pendingInfo = null;
     const undoOps = [{ t: 'prepped', asin: prod.asin, qty: -q }];
-    const pend = await db.query('SELECT id, qty, is_duo FROM inv_pending_prep WHERE asin=$1 ORDER BY id LIMIT 1 FOR UPDATE', [prod.asin]);
+    // A split job is two rows: the scan counts down part 1, then spills into part 2.
+    const pend = await db.query('SELECT id, qty, is_duo, split_group, split_part FROM inv_pending_prep WHERE asin=$1 ORDER BY id FOR UPDATE', [prod.asin]);
     if (pend.rows.length) {
-      undoOps.push({ t: 'pending', id: pend.rows[0].id, asin: prod.asin, is_duo: pend.rows[0].is_duo, qty: Math.min(q, pend.rows[0].qty) });
-      const remaining = pend.rows[0].qty - q;
-      pendingInfo = { requested: pend.rows[0].qty, scanned: q, remaining: Math.max(0, remaining), over: remaining < 0 ? Math.abs(remaining) : 0 };
-      if (remaining <= 0) {
-        await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [pend.rows[0].id]);
-        await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [pend.rows[0].id]);
+      const requested = pend.rows.reduce((t, x) => t + x.qty, 0);
+      let left = q;
+      for (const row of pend.rows) {
+        if (left <= 0) break;
+        const take = Math.min(left, row.qty);
+        undoOps.push({ t: 'pending', id: row.id, asin: prod.asin, is_duo: row.is_duo, qty: take, group: row.split_group, part: row.split_part });
+        if (row.qty - take <= 0) {
+          await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [row.id]);
+          await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [row.id]);
+        } else await db.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [row.qty - take, row.id]);
+        left -= take;
       }
-      else await db.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [remaining, pend.rows[0].id]);
+      pendingInfo = { requested, scanned: q, remaining: Math.max(0, requested - q), over: Math.max(0, q - requested) };
     }
     await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
       ['prep', prod.asin, prod.name, q, isBundle ? 'Prepped duo' : 'Prepped']);
