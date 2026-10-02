@@ -412,7 +412,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'punch-az-1002';
+const BUILD_ID = 'no-punch-1002';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4460,9 +4460,14 @@ app.get('/api/labor/efficiency', ownerAuth, async (req, res) => {
     const myJobs = jobs.filter(j => j.employee === e.display_name);
     if (!myCards.length && !myJobs.length) return null;
     const hours = myCards.reduce((t, c) => t + c.hours, 0);
-    const units = myJobs.reduce((t, j) => t + j.units, 0), jobSec = myJobs.reduce((t, j) => t + (j.clockedSec || 0), 0);
+    // Only jobs with clocked time count: a job on a day whose punches aren't
+    // uploaded yet added its units against zero hours and made the rate look
+    // better than it was. Those are reported apart (unitsNoPunch).
+    const counted = myJobs.filter(j => j.clockedSec > 0), off = myJobs.filter(j => !(j.clockedSec > 0));
+    const units = counted.reduce((t, j) => t + j.units, 0), jobSec = counted.reduce((t, j) => t + j.clockedSec, 0);
     return { name: e.display_name, days: new Set(myCards.map(c => String(c.work_date instanceof Date ? c.work_date.toISOString() : c.work_date).slice(0, 10))).size,
-      hours: Math.round(hours * 100) / 100, jobs: myJobs.length, units, jobMin: Math.round(jobSec / 60), ...laborRates(units, hours, jobSec) };
+      hours: Math.round(hours * 100) / 100, jobs: counted.length, units, jobMin: Math.round(jobSec / 60), ...laborRates(units, hours, jobSec),
+      jobsNoPunch: off.length, unitsNoPunch: off.reduce((t, j) => t + j.units, 0) };
   }).filter(Boolean).sort((a, b) => a.name.localeCompare(b.name));
   const um = {};
   for (const j of jobs) if (!j.employee) { const k = j.worker || '(no name)'; um[k] = um[k] || { worker: k, jobs: 0, units: 0 }; um[k].jobs++; um[k].units += j.units; }
