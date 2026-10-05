@@ -119,6 +119,22 @@ test('a short invoice line is saved as owed; late units come in once, never past
   assert.strictEqual(list.find(i => i.order_number === 'INV-T3').owed, 0);
 });
 
+test('Shortages: an owed line is listed; marking it credited moves it to history without touching stock', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES ('INV-T4','10/1/26','pending')`);
+  await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES ('INV-T4','444','Test Conditioner','TSTB',30,24)`);
+  assert.strictEqual((await post('/api/invoices/INV-T4/complete', {})).status, 200);
+  const get = async () => (await (await fetch(`http://localhost:${PORT}/api/shortages`, { headers: H() })).json()).rows.find(r => r.order_number === 'INV-T4');
+  let r = await get();
+  assert.deepStrictEqual([r.invoice_date, r.qty_expected, r.qty_received, r.qty_owed], ['10/1/26', 30, 24, 6]);
+  const b0 = (await stock('TSTB')).onhand;
+  assert.strictEqual((await post('/api/invoices/INV-T4/clear-owed', { id: r.id })).status, 200);
+  assert.strictEqual((await post('/api/invoices/INV-T4/clear-owed', { id: r.id })).status, 404);
+  r = await get();
+  assert.deepStrictEqual([r.qty_owed, r.credited_qty], [0, 6]);
+  assert.strictEqual((await stock('TSTB')).onhand, b0);
+  assert.strictEqual((await post('/api/invoices/INV-T4/receive-late', { id: r.id, qty: 1 })).status, 409);
+});
+
 test('an invoice with an unmapped line stops instead of silently dropping units', { skip }, async () => {
   await pool.query(`INSERT INTO inv_invoices(order_number, status) VALUES ('INV-T2','pending')`);
   await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES ('INV-T2','222','Mystery item',NULL,5,5)`);

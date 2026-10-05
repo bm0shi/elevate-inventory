@@ -261,6 +261,27 @@
     <button class="tab" onclick="showTab('admin',event)" style="background:#7a4fb5;color:#fff;margin-left:auto">🔒 ADMIN</button>
   </div>
 
+  <div id="shortages" class="panel">
+    <button class="action" onclick="closeShortages()" style="margin-bottom:12px;background:#5a6472">← Back to Order Check-In</button>
+    <div class="box" style="text-align:center">
+      <b style="font-size:17px">Owed by Cosmoprof</b>
+      <div class="hint" style="margin-top:2px">Lines that came in short at check-in. Use this list to ask Cosmoprof for a credit. When the units arrive instead, open the invoice and tap <b>Receive late units</b>.</div>
+      <div id="shortTotals" style="margin-top:8px;font-weight:800;font-size:15px"></div>
+      <div style="display:flex;gap:8px;justify-content:center;margin-top:10px;flex-wrap:wrap">
+        <button class="action" onclick="copyShortages()" style="background:#0d4450;min-width:170px">📋 Copy for Cosmoprof</button>
+        <button class="action" onclick="printShortages()" style="background:#5a6472;min-width:170px">🖨 Print</button>
+      </div>
+    </div>
+    <div class="box" id="shortOpen" style="overflow-x:auto"></div>
+    <div class="box">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <b style="font-size:15px">Credited</b>
+        <button onclick="toggleShortHist()" id="shortHistBtn" style="padding:6px 12px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Show</button>
+      </div>
+      <div id="shortHist" style="display:none;margin-top:10px;overflow-x:auto"></div>
+    </div>
+  </div>
+
   <div id="receive" class="panel">
     <div class="box">
       <label>Scan UPC (or type ASIN/SKU + Enter)</label>
@@ -361,6 +382,7 @@
   </div>
 
   <div id="reconcile" class="panel">
+    <button class="action full" onclick="openShortages()" style="margin-bottom:12px;padding:18px;font-size:18px;background:#c0392b">⚠ Shortages <span id="shortBadge" style="display:none;margin-left:6px;padding:2px 10px;border-radius:10px;background:#fff;color:#c0392b;font-size:14px;font-weight:800"></span></button>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Add Cosmoprof Invoice(s)</div>
       <div class="hint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
@@ -2251,6 +2273,11 @@ function enterApp(pw){
   loadProducts();
   loadPendingPrep();
   loadTeam();
+  refreshShortBadge();
+}
+// The red count on the Shortages tab: units Cosmoprof still owes.
+function refreshShortBadge(){
+  api('/api/shortages').then(d=>{ if(d && d.rows) setShortBadge(d.rows.reduce((n,r)=>n+(r.qty_owed||0),0)); }).catch(()=>{});
 }
 
 function doLogin() {
@@ -2441,7 +2468,7 @@ function loadProducts(){ loadSsPicks(); return api('/api/products').then(d=>{
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='prod'){ prodOpen(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
   if(t==='count'){ countInit(); }
-  if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList();}
+  if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList(); refreshShortBadge();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
 }
@@ -8590,7 +8617,7 @@ function receiveLate(id){
     window._lateBusy=false;
     if(!d || d.ok===false){ alert((d&&d.error)||'Not saved.'); return; }
     toast('+'+d.added+' added to On Hand'+(d.owed?' · '+d.owed+' still owed':' · nothing owed now'));
-    renderReconLines(); loadProducts();
+    renderReconLines(); loadProducts(); refreshShortBadge();
     const mgr=document.getElementById('invManager'); if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   }).catch(()=>{ window._lateBusy=false; alert('Could not reach the server. Nothing was added. Try again.'); });
 }
@@ -8600,7 +8627,7 @@ function clearOwed(id){
   api('/api/invoices/'+currentInvoice+'/clear-owed',{method:'POST',body:JSON.stringify({id:id})}).then(d=>{
     if(!d || d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
     toast('Marked as credited');
-    renderReconLines();
+    renderReconLines(); refreshShortBadge();
     const mgr=document.getElementById('invManager'); if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   });
 }
@@ -8756,8 +8783,109 @@ function runCompleteInvoice(c, force, skipStock){
     }
     alert(msg);
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
-    loadInvoiceList(); loadLocations(); loadProducts();
+    loadInvoiceList(); loadLocations(); loadProducts(); refreshShortBadge();
   }).catch(e=>{ window._completing=false; alert('Could not complete the invoice: '+(e&&e.message||e)+'\n\nNothing was added. Check the connection and try again.'); });
+}
+
+// ==================== SHORTAGES ====================
+// What Cosmoprof still owes, one row per short invoice line, for credit
+// follow-up. Units only: no cost here (warehouse screen).
+let _short=[];
+function shortTable(rows, credited){
+  const th='padding:7px 6px;font-size:11.5px;color:#5a6472;text-align:center';
+  const td='padding:8px 6px;border-bottom:1px solid #eef2f6;text-align:center;font-variant-numeric:tabular-nums';
+  return '<table style="width:100%;min-width:720px;table-layout:fixed;border-collapse:collapse;font-size:13px"><thead><tr>'
+    +'<th style="'+th+';width:96px">Invoice #</th><th style="'+th+';width:84px">Invoice date</th><th style="'+th+';width:78px">Cosmo #</th>'
+    +'<th style="'+th+';text-align:left">Product</th><th style="'+th+';width:72px">Ordered</th><th style="'+th+';width:72px">Shipped</th>'
+    +'<th style="'+th+';width:72px">'+(credited?'Credited':'Short')+'</th><th style="'+th+';width:'+(credited?'90':'190')+'px">'+(credited?'Credited on':'')+'</th></tr></thead><tbody>'
+    +rows.map(r=>'<tr><td style="'+td+';font-weight:700">'+esc(r.order_number)+'</td>'
+      +'<td style="'+td+'">'+esc(r.invoice_date||'—')+'</td>'
+      +'<td style="'+td+';font-family:monospace">'+esc(r.cosmo_num||'')+'</td>'
+      +'<td style="'+td+';text-align:left;line-height:1.3">'+esc(r.description||r.name||'')+'</td>'
+      +'<td style="'+td+'">'+r.qty_expected+'</td>'
+      +'<td style="'+td+'">'+r.qty_received+'</td>'
+      +'<td style="'+td+';font-weight:800;color:'+(credited?'#1e8449':'#c0392b')+'">'+(credited?r.credited_qty:r.qty_owed)+'</td>'
+      +'<td style="'+td+'">'+(credited
+        ? (r.credited_at?new Date(r.credited_at).toLocaleDateString('en-US',{month:'numeric',day:'numeric',year:'2-digit'}):'')
+        : '<button onclick="shortOpenInvoice(\''+esc(r.order_number)+'\')" style="padding:6px 9px;font-size:11.5px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:5px;cursor:pointer">Open</button> '
+          +'<button onclick="shortCredited('+r.id+')" style="padding:6px 9px;font-size:11.5px;font-weight:700;background:#1e8449;color:#fff;border:none;border-radius:5px;cursor:pointer">Credited ✓</button>')
+      +'</td></tr>').join('')
+    +'</tbody></table>';
+}
+function loadShortages(){
+  const box=document.getElementById('shortOpen'); if(!box) return;
+  box.innerHTML='<div class="hint" style="text-align:center">Loading…</div>';
+  api('/api/shortages').then(d=>{
+    if(!d || d.ok===false){ box.innerHTML='<div class="hint" style="color:#c0392b;text-align:center">'+esc((d&&d.error)||'Could not load shortages.')+'</div>'; return; }
+    _short=d.rows||[];
+    const open=_short.filter(r=>r.qty_owed>0), done=_short.filter(r=>r.credited_qty>0);
+    const units=open.reduce((n,r)=>n+r.qty_owed,0), invs=new Set(open.map(r=>r.order_number)).size;
+    document.getElementById('shortTotals').innerHTML=open.length
+      ? '<span style="color:#c0392b">'+units+' unit'+(units===1?'':'s')+' short · '+open.length+' line'+(open.length===1?'':'s')+' · '+invs+' invoice'+(invs===1?'':'s')+'</span>'
+      : '<span style="color:#1e8449">Nothing owed right now ✓</span>';
+    setShortBadge(units);
+    box.innerHTML=open.length?shortTable(open,false):'<div class="hint" style="text-align:center">No open shortages.</div>';
+    document.getElementById('shortHist').innerHTML=done.length?shortTable(done,true):'<div class="hint" style="text-align:center">Nothing credited yet.</div>';
+  }).catch(()=>{ box.innerHTML='<div class="hint" style="color:#c0392b;text-align:center">Could not load shortages.</div>'; });
+}
+function setShortBadge(units){
+  const b=document.getElementById('shortBadge'); if(!b) return;
+  b.textContent=units+' unit'+(units===1?'':'s')+' owed'; b.style.display=units>0?'inline-block':'none';
+}
+// Shortages lives inside Order Check-In (no tab of its own): the big button
+// swaps the panel, and the Order Check-In tab stays highlighted.
+function openShortages(){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('shortages').classList.add('active');
+  loadShortages(); window.scrollTo(0,0);
+}
+function closeShortages(){
+  document.getElementById('shortages').classList.remove('active');
+  document.getElementById('reconcile').classList.add('active');
+  loadInvoiceList(); refreshShortBadge();
+}
+function toggleShortHist(){
+  const w=document.getElementById('shortHist'), b=document.getElementById('shortHistBtn');
+  const showing=w.style.display!=='none';
+  w.style.display=showing?'none':'block'; b.textContent=showing?'Show':'Hide';
+}
+function shortOpenInvoice(order){
+  closeShortages();
+  openInvoiceFromManager(order);
+}
+function shortCredited(id){
+  const r=_short.find(x=>x.id===id); if(!r) return;
+  if(!confirm('Cosmoprof credited the '+r.qty_owed+' missing "'+String(r.description||r.name||'').slice(0,40)+'" on invoice #'+r.order_number+'?\n\nIt moves to Credited. On Hand does not change.')) return;
+  api('/api/invoices/'+encodeURIComponent(r.order_number)+'/clear-owed',{method:'POST',body:JSON.stringify({id:id})}).then(d=>{
+    if(!d || d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
+    toast('Marked as credited'); loadShortages();
+  }).catch(()=>toast('Not saved — check the connection',true));
+}
+function shortRowsOpen(){ return _short.filter(r=>r.qty_owed>0); }
+// Tab-separated, so it pastes into an email as plain lines or into Excel as columns.
+function copyShortages(){
+  const rows=shortRowsOpen();
+  if(!rows.length){ toast('Nothing owed to copy'); return; }
+  const lines=[['Invoice #','Invoice date','Cosmo #','Product','Ordered','Shipped','Short'].join('\t')]
+    .concat(rows.map(r=>[r.order_number, r.invoice_date||'', r.cosmo_num||'', r.description||r.name||'', r.qty_expected, r.qty_received, r.qty_owed].join('\t')));
+  const txt=lines.join('\n');
+  const done=()=>toast('Copied '+rows.length+' line'+(rows.length===1?'':'s')+' — paste into the email or a spreadsheet');
+  if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(()=>prompt('Copy this:',txt));
+  else prompt('Copy this:',txt);
+}
+function printShortages(){
+  const rows=shortRowsOpen();
+  if(!rows.length){ toast('Nothing owed to print'); return; }
+  const units=rows.reduce((n,r)=>n+r.qty_owed,0);
+  const w=window.open('','_blank'); if(!w){ toast('Allow pop-ups to print',true); return; }
+  const td='padding:6px;border:1px solid #ccc;text-align:center';
+  w.document.write('<!doctype html><meta charset="utf-8"><title>Cosmoprof shortages</title><body style="font-family:Arial,sans-serif;font-size:12px;margin:24px">'
+    +'<h2 style="margin:0 0 4px">Shortages: credit request</h2><div style="margin-bottom:12px">'+new Date().toLocaleDateString('en-US')+' · '+units+' units short · '+rows.length+' lines</div>'
+    +'<table style="width:100%;border-collapse:collapse"><thead><tr>'+['Invoice #','Invoice date','Cosmo #','Product','Ordered','Shipped','Short'].map(h=>'<th style="'+td+';background:#eee">'+h+'</th>').join('')+'</tr></thead><tbody>'
+    +rows.map(r=>'<tr><td style="'+td+'">'+esc(r.order_number)+'</td><td style="'+td+'">'+esc(r.invoice_date||'')+'</td><td style="'+td+'">'+esc(r.cosmo_num||'')+'</td>'
+      +'<td style="'+td+';text-align:left">'+esc(r.description||r.name||'')+'</td><td style="'+td+'">'+r.qty_expected+'</td><td style="'+td+'">'+r.qty_received+'</td><td style="'+td+';font-weight:700">'+r.qty_owed+'</td></tr>').join('')
+    +'</tbody></table></body>');
+  w.document.close(); w.focus(); w.print();
 }
 
 // ---- BUNDLES ----
