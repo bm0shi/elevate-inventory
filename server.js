@@ -414,7 +414,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'divider-fix-1002';
+const BUILD_ID = 'invoice-short-1003';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -563,6 +563,10 @@ async function initDb() {
     -- tables don't exist yet, and one failed statement rolls back the batch.
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
+    -- Units Cosmoprof still owes on a checked-in invoice: set at complete for a
+    -- line that came in short, counted down when the late units are received
+    -- on the same invoice (or cleared when Cosmoprof credits them instead).
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS qty_owed INTEGER NOT NULL DEFAULT 0;
     -- Replies to stock-changing requests, keyed by the client's action id, so
     -- a retried or double-sent action is answered from here instead of
     -- being applied twice. Pruned after two days.
@@ -3091,7 +3095,8 @@ app.get('/api/invoices', auth, async (req, res) => {
     `SELECT i.order_number, i.invoice_date, i.status, i.created_at,
             COUNT(ii.id)::int AS lines,
             COALESCE(SUM(ii.qty_expected),0)::int AS expected,
-            COALESCE(SUM(ii.qty_received),0)::int AS received
+            COALESCE(SUM(ii.qty_received),0)::int AS received,
+            COALESCE(SUM(ii.qty_owed),0)::int AS owed
      FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
      GROUP BY i.order_number, i.invoice_date, i.status, i.created_at
      ORDER BY i.created_at DESC LIMIT 100`);
@@ -3111,7 +3116,7 @@ app.post('/api/invoices/:orderNumber/date', auth, async (req, res) => {
 // Get one invoice's line items (with mapping + progress)
 app.get('/api/invoices/:orderNumber', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT ii.cosmo_num, ii.description, ii.asin, p.name, ii.qty_expected, ii.qty_received
+    `SELECT ii.id, ii.cosmo_num, ii.description, ii.asin, p.name, ii.qty_expected, ii.qty_received, ii.qty_owed
      FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin = ii.asin
      WHERE ii.order_number=$1 ORDER BY ii.id`, [req.params.orderNumber]);
 
@@ -5065,8 +5070,15 @@ app.post('/api/invoices/:orderNumber/set-line', auth, pendingInvoiceOnly, async 
   const { asin, qty_received } = req.body;
   const qr = parseInt(qty_received) || 0;
   if (qr < 0 || qr > MAX_QTY) return res.status(400).json({ ok: false, error: `Quantity must be 0–${MAX_QTY}.` });
-  await pool.query('UPDATE inv_invoice_items SET qty_received=$1 WHERE order_number=$2 AND asin=$3',
-    [qr, req.params.orderNumber, asin]);
+  // By line id when the screen sends one (the Received box): two lines can
+  // share an ASIN, and typing one count must not overwrite the other.
+  const id = parseInt(req.body.id);
+  if (id) {
+    await pool.query('UPDATE inv_invoice_items SET qty_received=$1 WHERE order_number=$2 AND id=$3', [qr, req.params.orderNumber, id]);
+  } else {
+    await pool.query('UPDATE inv_invoice_items SET qty_received=$1 WHERE order_number=$2 AND asin=$3',
+      [qr, req.params.orderNumber, asin]);
+  }
   res.json({ ok: true });
 });
 
@@ -5146,7 +5158,7 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     }
   }
   const lines = await db.query(
-    'SELECT asin, cosmo_num, description, qty_expected, qty_received, unit_cost FROM inv_invoice_items WHERE order_number=$1',
+    'SELECT id, asin, cosmo_num, description, qty_expected, qty_received, unit_cost FROM inv_invoice_items WHERE order_number=$1',
     [order]);
   const invMeta = await db.query('SELECT invoice_date FROM inv_invoices WHERE order_number=$1', [order]);
   const invDate = invMeta.rows[0] ? invMeta.rows[0].invoice_date : null;
@@ -5224,6 +5236,12 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     if (l.qty_received !== l.qty_expected) {
       discrepancies.push({ description: l.description, expected: l.qty_expected, received: l.qty_received });
     }
+    // A short line is owed by Cosmoprof, so the late units can be checked in
+    // on this invoice when they arrive. Recorded with skipStock too: what
+    // Cosmoprof owes doesn't depend on how On Hand was counted.
+    if (!dryRun && l.qty_received < l.qty_expected) {
+      await db.query('UPDATE inv_invoice_items SET qty_owed=$1 WHERE id=$2', [l.qty_expected - l.qty_received, l.id]);
+    }
   }
 
   if (!dryRun) {
@@ -5244,6 +5262,57 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     if (skipStock) console.log(`[Invoice] ${order} recorded WITHOUT adding ${out.body.added} units (already on hand).`);
   }
   res.status(out.status).json(out.body);
+});
+
+// Late units: Cosmoprof sends what a checked-in invoice came in short. Only a
+// short line takes them, and never more than it is still owed, so the same
+// units can't be added twice (the idempotency middleware also replays a
+// double tap). Adds to On Hand and to the invoice's cost lot.
+app.post('/api/invoices/:orderNumber/receive-late', auth, async (req, res) => {
+  const order = req.params.orderNumber;
+  const id = parseInt(req.body && req.body.id);
+  const qty = Number(req.body && req.body.qty);
+  if (!id) return res.status(400).json({ ok: false, error: 'Pick the line the units are for.' });
+  if (badQty(qty)) return res.status(400).json({ ok: false, error: `Quantity must be 1–${MAX_QTY}.` });
+  const out = await withTx(async (db) => {
+    const inv = await db.query('SELECT status, invoice_date FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [order]);
+    if (!inv.rows.length) return { status: 404, body: { ok: false, error: 'Invoice not found' } };
+    if (inv.rows[0].status !== 'received') {
+      return { status: 409, body: { ok: false, error: 'This invoice is not checked in yet. Type the count in the Received box instead.' } };
+    }
+    const ln = await db.query('SELECT id, asin, description, qty_received, qty_owed, unit_cost FROM inv_invoice_items WHERE id=$1 AND order_number=$2 FOR UPDATE', [id, order]);
+    const l = ln.rows[0];
+    if (!l || !l.asin) return { status: 404, body: { ok: false, error: 'Line not found on this invoice.' } };
+    if (!(l.qty_owed > 0)) return { status: 409, body: { ok: false, error: 'Nothing is owed on this line.' } };
+    if (qty > l.qty_owed) {
+      return { status: 409, body: { ok: false, error: `Only ${l.qty_owed} still owed on this line. Use Receiving for any extra units.` } };
+    }
+    await db.query('INSERT INTO inv_stock(asin, onhand) VALUES($2,$1) ON CONFLICT (asin) DO UPDATE SET onhand = inv_stock.onhand + $1', [qty, l.asin]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) SELECT $1,$2,name,$3,$4 FROM inv_products WHERE asin=$2',
+      ['in', l.asin, qty, 'Late units, invoice ' + order]);
+    await db.query('UPDATE inv_invoice_items SET qty_received = qty_received + $1, qty_owed = qty_owed - $1 WHERE id=$2', [qty, id]);
+    if (l.unit_cost != null) {
+      await db.query(
+        `INSERT INTO inv_cost_history(asin, order_number, invoice_date, unit_cost, qty) VALUES($1,$2,$3,$4,$5)
+         ON CONFLICT (order_number, asin) DO UPDATE SET qty = inv_cost_history.qty + $5`,
+        [l.asin, order, inv.rows[0].invoice_date, l.unit_cost, qty]);
+    }
+    return { status: 200, body: { ok: true, added: qty, owed: l.qty_owed - qty, received: l.qty_received + qty } };
+  });
+  if (out.status === 200) {
+    try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend failed (non-fatal):', e.message); }
+  }
+  res.status(out.status).json(out.body);
+});
+
+// Cosmoprof credited a shortage instead of sending it: stop showing it as
+// owed. Moves no stock.
+app.post('/api/invoices/:orderNumber/clear-owed', auth, async (req, res) => {
+  const id = parseInt(req.body && req.body.id);
+  if (!id) return res.status(400).json({ ok: false, error: 'Pick the line.' });
+  const r = await pool.query('UPDATE inv_invoice_items SET qty_owed=0 WHERE id=$1 AND order_number=$2 RETURNING id', [id, req.params.orderNumber]);
+  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Line not found on this invoice.' });
+  res.json({ ok: true });
 });
 
 // Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs

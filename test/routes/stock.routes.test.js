@@ -85,6 +85,40 @@ test('an invoice checks in once, even when two tablets complete it at the same m
   assert.strictEqual((await stock('TSTA')).onhand, before + 12);
 });
 
+test('a short invoice line is saved as owed; late units come in once, never past what is owed', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_invoices(order_number, status) VALUES ('INV-T3','pending')`);
+  await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES ('INV-T3','333','Test Shampoo','TSTA',197,0,5.00),('INV-T3','334','Test Conditioner','TSTB',10,0,4.00)`);
+  const lines = (await pool.query(`SELECT id, asin FROM inv_invoice_items WHERE order_number='INV-T3' ORDER BY id`)).rows;
+  const [la, lb] = lines;
+  // typed counts, by line
+  assert.strictEqual((await post('/api/invoices/INV-T3/set-line', { id: la.id, qty_received: 149 })).status, 200);
+  assert.strictEqual((await post('/api/invoices/INV-T3/set-line', { id: lb.id, qty_received: 10 })).status, 200);
+  // late units are refused before the invoice is checked in
+  assert.strictEqual((await post('/api/invoices/INV-T3/receive-late', { id: la.id, qty: 5 })).status, 409);
+  const a0 = (await stock('TSTA')).onhand;
+  assert.strictEqual((await post('/api/invoices/INV-T3/complete', {})).status, 200);
+  assert.strictEqual((await stock('TSTA')).onhand, a0 + 149);
+  assert.strictEqual((await one('SELECT qty_owed FROM inv_invoice_items WHERE id=$1', [la.id])).qty_owed, 48);
+  assert.strictEqual((await one('SELECT qty_owed FROM inv_invoice_items WHERE id=$1', [lb.id])).qty_owed, 0);
+  // a double tap of the same late receipt adds once
+  const [r1, r2] = await Promise.all([
+    post('/api/invoices/INV-T3/receive-late', { id: la.id, qty: 40 }, { idem: 'late-1' }),
+    post('/api/invoices/INV-T3/receive-late', { id: la.id, qty: 40 }, { idem: 'late-1' })]);
+  assert.ok([r1.status, r2.status].includes(200));
+  assert.strictEqual((await stock('TSTA')).onhand, a0 + 189);
+  // more than is still owed (8) is refused; nothing owed on a full line
+  assert.strictEqual((await post('/api/invoices/INV-T3/receive-late', { id: la.id, qty: 9 })).status, 409);
+  assert.strictEqual((await post('/api/invoices/INV-T3/receive-late', { id: lb.id, qty: 1 })).status, 409);
+  assert.strictEqual((await post('/api/invoices/INV-T3/receive-late', { id: la.id, qty: 8 })).status, 200);
+  assert.strictEqual((await stock('TSTA')).onhand, a0 + 197);
+  const row = await one('SELECT qty_received, qty_owed FROM inv_invoice_items WHERE id=$1', [la.id]);
+  assert.deepStrictEqual([row.qty_received, row.qty_owed], [197, 0]);
+  assert.strictEqual((await one(`SELECT qty FROM inv_cost_history WHERE order_number='INV-T3' AND asin='TSTA'`)).qty, 197);
+  assert.strictEqual((await post('/api/invoices/INV-T3/receive-late', { id: la.id, qty: 1 })).status, 409);
+  const list = await (await fetch(`http://localhost:${PORT}/api/invoices`, { headers: H() })).json();
+  assert.strictEqual(list.find(i => i.order_number === 'INV-T3').owed, 0);
+});
+
 test('an invoice with an unmapped line stops instead of silently dropping units', { skip }, async () => {
   await pool.query(`INSERT INTO inv_invoices(order_number, status) VALUES ('INV-T2','pending')`);
   await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES ('INV-T2','222','Mystery item',NULL,5,5)`);

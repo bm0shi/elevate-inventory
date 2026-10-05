@@ -405,7 +405,7 @@
       <div id="invManager" style="display:none;margin-top:10px"></div>
     </div>
     <div id="reconcileWork" style="display:none">
-      <div class="box">
+      <div class="box" id="reconScanBox">
         <label>Scan items as you unpack</label>
         <div style="display:flex;gap:8px">
           <input type="text" id="scanRecon" placeholder="Scan barcode..." autocomplete="off" style="flex:1">
@@ -419,12 +419,14 @@
       <div id="newUpcPanel"></div>
       <div id="reconLines"></div>
       <div id="reconPreview"></div>
+      <div id="reconActions">
       <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
         <button class="action" onclick="receiveAllExpected()" style="flex:1;min-width:190px;background:#008296">✓ Receive All As Expected</button>
         <button class="action" onclick="practiceInvoice()" style="flex:1;min-width:190px;background:#7a4fb5">🧪 Practice Run — nothing saved</button>
       </div>
       <button class="action full" onclick="completeInvoice()" style="margin-top:8px">Mark Complete → Add to On Hand</button>
       <button class="action full" onclick="completeInvoiceNoStock()" style="margin-top:8px;background:#b7791f">📋 Already Received — record WITHOUT changing quantities</button>
+      </div>
       <button class="action danger full" onclick="deleteInvoice()" style="margin-top:8px">Delete This Invoice</button>
     </div>
   </div>
@@ -6109,7 +6111,9 @@ function renderInvoiceManager(){
                +' <a href="#" onclick="event.stopPropagation();setInvoiceDate(\''+i.order_number+'\');return false" style="color:#008296;font-size:12px">set date</a>')
           +'</span></div>'
         +'<div style="font-size:11.5px;color:#8a97a6;margin-top:2px">'+i.lines+' line'+(i.lines===1?'':'s')+' · '+i.received+' / '+i.expected+' units received</div>'
-        +'</div>'+badge
+        +'</div>'
+        +(i.owed>0?'<span style="font-size:10.5px;font-weight:800;padding:3px 8px;border-radius:5px;white-space:nowrap;background:#fdeceb;color:#c0392b" title="Open it to check in the late units">Short '+i.owed+' — owed by Cosmoprof</span>':'')
+        +badge
         +'<button onclick="openInvoiceFromManager(\''+i.order_number+'\')" style="padding:6px 11px;font-size:11.5px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:5px;cursor:pointer">Open</button>'
         +'<button onclick="deleteInvoiceByNumber(\''+i.order_number+'\',\''+i.status+'\','+i.received+')" style="padding:6px 11px;font-size:11.5px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:5px;cursor:pointer">Delete</button>'
         +'</div>';
@@ -8439,19 +8443,40 @@ function showReconPreview(d){
   box.scrollIntoView({behavior:'smooth',block:'nearest'});
 }
 
+// A line's colour and status word from its counts.
+function reconStatus(l){
+  const exp=l.qty_expected, rec=l.qty_received;
+  if(!l.asin) return { bg:'#fdf6e3', html:'<span style="color:#b7791f;font-weight:800">⚠ NOT LINKED</span>' };
+  if(rec===exp && rec>0) return { bg:'#eafaf1', html:'<span style="color:#1e8449">✓ match</span>' };
+  if(rec>exp) return { bg:'#fdf0ee', html:'<span style="color:#c0392b">over +'+(rec-exp)+'</span>' };
+  if(rec>0) return { bg:'#fdf0ee', html:'<span style="color:#c0392b">short '+(exp-rec)+'</span>' };
+  return { bg:'', html:'<span style="color:#9db0c9">not received</span>' };
+}
+let _reconLines=[], _reconDone=false;
 function renderReconLines(){
   if(!currentInvoice)return;
-  api('/api/invoices/'+currentInvoice).then(lines=>{
+  const order=currentInvoice;
+  Promise.all([api('/api/invoices/'+order), api('/api/invoices')]).then(([lines,list])=>{
+    if(order!==currentInvoice) return;
+    const inv=(list||[]).find(i=>i.order_number===order);
+    const done=!!(inv && inv.status==='received');
+    _reconLines=lines; _reconDone=done;
+    // A checked-in invoice can't be scanned or completed again; only its
+    // late units are taken, on the short lines below.
+    document.getElementById('reconScanBox').style.display=done?'none':'';
+    document.getElementById('reconActions').style.display=done?'none':'';
     const b=document.getElementById('reconLines');
-    b.innerHTML='<div class="hint" style="margin-bottom:8px">Confirm the expected quantity for each item (from your paper invoice), then scan to receive. Tap the expected number to edit it.</div>'+
+    const owedTotal=lines.reduce((n,l)=>n+(l.qty_owed||0),0);
+    b.innerHTML=(done
+      ? '<div class="box" style="margin-bottom:8px;text-align:center;border:2px solid '+(owedTotal?'#c0392b':'#1e8449')+'">'
+        +'<b style="color:'+(owedTotal?'#c0392b':'#1e8449')+'">✓ Checked in'+(owedTotal?' · Short '+owedTotal+' — owed by Cosmoprof':'')+'</b>'
+        +(owedTotal?'<div class="hint" style="margin-top:4px">When the missing units arrive, tap <b>Receive late units</b> on that line. They go into On Hand.</div>':'')+'</div>'
+      : '<div class="hint" style="margin-bottom:8px">Type what came in into each <b>Received</b> box (or scan). <b>✓ Receive All As Expected</b> fills every line with the invoice amount, so press it first, then fix only the short lines.</div>')+
     lines.map(l=>{
       const exp=l.qty_expected, rec=l.qty_received;
-      let cls='', status='';
-      if(!l.asin){ cls='style="background:#fdf6e3;border:2px solid #b7791f"'; status='<span style="color:#b7791f;font-weight:800">⚠ NOT LINKED</span>'; }
-      else if(rec===exp && rec>0){ cls='style="background:#eafaf1"'; status='<span style="color:#1e8449">✓ match</span>'; }
-      else if(rec>exp){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">over +'+(rec-exp)+'</span>'; }
-      else if(rec>0){ cls='style="background:#fdf0ee"'; status='<span style="color:#c0392b">short '+(exp-rec)+'</span>'; }
-      else { status='<span style="color:#9db0c9">not scanned</span>'; }
+      const st=reconStatus(l);
+      const cls=!l.asin?'style="background:#fdf6e3;border:2px solid #b7791f"':(st.bg?'style="background:'+st.bg+'"':'');
+      const status=st.html;
       const nm=l.name||l.description;
       // Unmapped line -> resolve it by picking the product (no case opening).
       let locBlock='';
@@ -8495,15 +8520,83 @@ function renderReconLines(){
           +'<select data-locasin="'+l.asin+'" style="width:100%;padding:8px;border:1.5px solid '+(st==='new'?'#c0392b':'#e2e8f0')+';border-radius:6px;font-size:13px;background:#fff">'+locOptions(pre,l.asin)+'</select>'
           +'</div>';
       }
-      return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
+      if(done){
+        // History now: counts are fixed; only what is still owed can come in.
+        const owed=l.qty_owed||0;
+        locBlock=owed>0
+          ? '<div style="margin-top:9px;padding:9px 10px;background:#fff;border:1.5px solid #c0392b;border-radius:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+            +'<b style="flex:1;color:#c0392b;font-size:13px">Short '+owed+' — owed by Cosmoprof</b>'
+            +'<button onclick="receiveLate('+l.id+')" style="padding:7px 12px;font-size:12px;font-weight:700;background:#1e8449;color:#fff;border:none;border-radius:5px;cursor:pointer">Receive late units</button>'
+            +'<button onclick="clearOwed('+l.id+')" style="padding:7px 12px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer">Credited instead</button>'
+            +'</div>'
+          : '';
+        return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
         <div style="font-weight:700;font-size:13px">${esc(nm)}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
-          <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:64px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
+          <span class="pmeta">Cosmo# ${esc(l.cosmo_num)}${l.asin?' · <span style="font-family:monospace">'+l.asin+'</span>':''}</span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${rec} / ${exp} &nbsp; ${status}</span>
         </div>
         ${locBlock}
       </div>`;
+      }
+      const recBox=l.asin
+        ? `<label style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;font-weight:700;color:#5a6472">Received <input type="number" min="0" inputmode="numeric" value="${rec}" data-line="${l.id}" onchange="setReceived(this)" style="width:72px;padding:5px;border:1.5px solid #008296;border-radius:5px;font-size:15px;font-weight:800;text-align:center"></label> / ${exp}`
+        : `${rec} / ${exp}`;
+      return `<div class="box" ${cls} id="rline_${l.id}" style="margin-bottom:6px;padding:12px">
+        <div style="font-weight:700;font-size:13px">${esc(nm)}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px;flex-wrap:wrap">
+          <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:64px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
+          <span style="font-weight:700;font-size:15px;white-space:nowrap">${recBox} &nbsp; <span id="rstat_${l.id}">${status}</span></span>
+        </div>
+        ${locBlock}
+      </div>`;
     }).join('');
+  });
+}
+// The Received box: saves this line's count. Updates the line in place, so
+// typing down the list doesn't lose the cursor to a full redraw.
+function setReceived(inp){
+  const id=+inp.getAttribute('data-line');
+  const l=_reconLines.find(x=>x.id===id); if(!l) return;
+  const raw=String(inp.value).trim();
+  const q=raw===''?0:Number(raw);
+  if(!Number.isInteger(q) || q<0){ toast('Type a whole number',true); inp.value=l.qty_received; return; }
+  if(q>0 && !qtyOk(q)){ inp.value=l.qty_received; return; }
+  api('/api/invoices/'+currentInvoice+'/set-line',{method:'POST',body:JSON.stringify({id:id, asin:l.asin, qty_received:q})}).then(d=>{
+    if(invoiceLocked(d)){ inp.value=l.qty_received; return; }
+    l.qty_received=q;
+    const st=reconStatus(l);
+    const box=document.getElementById('rline_'+id); if(box) box.style.background=st.bg||'';
+    const s=document.getElementById('rstat_'+id); if(s) s.innerHTML=st.html;
+  }).catch(()=>{ toast('Not saved — check the connection',true); inp.value=l.qty_received; });
+}
+// Late units for a short line on a checked-in invoice. Never more than is
+// owed; the server checks again.
+function receiveLate(id){
+  const l=_reconLines.find(x=>x.id===id); if(!l) return;
+  const owed=l.qty_owed||0;
+  const s=prompt('How many of "'+String(l.name||l.description||'').slice(0,40)+'" arrived?\n\nStill owed: '+owed+'. They will be added to On Hand.', String(owed));
+  if(s===null) return;
+  const q=parseInt(s,10);
+  if(!q || q<1){ toast('Enter a quantity',true); return; }
+  if(q>owed){ alert('Only '+owed+' are owed on this line.\n\nUse Receiving for any extra units.'); return; }
+  if(window._lateBusy) return; window._lateBusy=true;
+  api('/api/invoices/'+currentInvoice+'/receive-late',{method:'POST',idem:newIdem(),body:JSON.stringify({id:id, qty:q})}).then(d=>{
+    window._lateBusy=false;
+    if(!d || d.ok===false){ alert((d&&d.error)||'Not saved.'); return; }
+    toast('+'+d.added+' added to On Hand'+(d.owed?' · '+d.owed+' still owed':' · nothing owed now'));
+    renderReconLines(); loadProducts();
+    const mgr=document.getElementById('invManager'); if(mgr && mgr.style.display!=='none') renderInvoiceManager();
+  }).catch(()=>{ window._lateBusy=false; alert('Could not reach the server. Nothing was added. Try again.'); });
+}
+function clearOwed(id){
+  const l=_reconLines.find(x=>x.id===id); if(!l) return;
+  if(!confirm('Cosmoprof credited the '+(l.qty_owed||0)+' missing "'+String(l.name||l.description||'').slice(0,40)+'" instead of sending them?\n\nThey stop showing as owed. On Hand does not change.')) return;
+  api('/api/invoices/'+currentInvoice+'/clear-owed',{method:'POST',body:JSON.stringify({id:id})}).then(d=>{
+    if(!d || d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
+    toast('Marked as credited');
+    renderReconLines();
+    const mgr=document.getElementById('invManager'); if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   });
 }
 function updateExpected(inp){
@@ -8582,8 +8675,40 @@ function completeInvoice(force, skipStock){
   const c=collectLocations();
   if(!force && !skipStock){
     if(c.missing && !confirm(c.missing+' item'+(c.missing===1?' has':'s have')+' no pallet location set.\n\nYou can add locations later from the On Hand page, but the prep team will not see where to walk.\n\nContinue anyway?')) return;
-    if(!confirm('Mark invoice '+currentInvoice+' complete? Received quantities will be added to On Hand.'))return;
+    // Short lines get a list to check before anything is added: a count
+    // left at 0 by mistake would otherwise go in as a shortage.
+    const order=currentInvoice;
+    api('/api/invoices/'+order).then(lines=>{
+      const short=(lines||[]).filter(l=>l.asin && l.qty_received<l.qty_expected);
+      if(short.length){ showShortWarn(order, short, ()=>runCompleteInvoice(c, force, skipStock)); return; }
+      if(!confirm('Mark invoice '+order+' complete? Received quantities will be added to On Hand.'))return;
+      runCompleteInvoice(c, force, skipStock);
+    }).catch(()=>toast('Could not load the invoice. Nothing was changed.',true));
+    return;
   }
+  runCompleteInvoice(c, force, skipStock);
+}
+function showShortWarn(order, short, onGo){
+  const units=short.reduce((n,l)=>n+(l.qty_expected-l.qty_received),0);
+  const m=document.createElement('div'); m.id='shortWarnModal';
+  m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;overflow:auto';
+  const td='padding:7px 6px;border-bottom:1px solid #eef2f6;text-align:center;font-variant-numeric:tabular-nums';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:560px;width:100%;text-align:center">'
+    +'<div style="font-size:17px;font-weight:800;color:#c0392b">⚠ '+short.length+' line'+(short.length===1?' is':'s are')+' short · '+units+' unit'+(units===1?'':'s')+'</div>'
+    +'<div class="hint" style="margin:4px 0 10px">Only what was received goes into On Hand. The missing units are saved on invoice #'+esc(order)+' as owed by Cosmoprof, and can be checked in later.</div>'
+    +'<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px"><thead><tr style="color:#5a6472;font-size:11.5px">'
+    +'<th style="text-align:left;padding:5px 6px">Product</th><th style="width:72px">Invoice</th><th style="width:72px">Received</th><th style="width:64px">Short</th></tr></thead><tbody>'
+    +short.map(l=>'<tr><td style="padding:7px 6px;border-bottom:1px solid #eef2f6;text-align:left">'+esc(String(l.name||l.description||'').slice(0,60))+'</td>'
+      +'<td style="'+td+'">'+l.qty_expected+'</td><td style="'+td+';font-weight:800">'+l.qty_received+'</td>'
+      +'<td style="'+td+';font-weight:800;color:#c0392b">'+(l.qty_expected-l.qty_received)+'</td></tr>').join('')
+    +'</tbody></table>'
+    +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" id="shortBack" style="flex:1;background:#e2e8f0;color:#1f2733">Go back</button>'
+    +'<button class="action" id="shortGo" style="flex:1;background:#c0392b">Complete with shortages</button></div></div>';
+  document.body.appendChild(m);
+  document.getElementById('shortBack').onclick=()=>m.remove();
+  document.getElementById('shortGo').onclick=()=>{ m.remove(); onGo(); };
+}
+function runCompleteInvoice(c, force, skipStock){
   // One request at a time: a second tap while the first is still running
   // used to add the invoice's stock twice.
   if(window._completing) return;
@@ -8606,6 +8731,7 @@ function completeInvoice(force, skipStock){
     if(d.unmappedCount) msg+='\nDISCARDED (not linked): '+d.unmappedCount+' line'+(d.unmappedCount===1?'':'s')+'.';
     if(d.discrepancies && d.discrepancies.length){
       msg+='\n\nDISCREPANCIES:\n'+d.discrepancies.map(x=>`${x.description}: expected ${x.expected}, received ${x.received}`).join('\n');
+      if(d.discrepancies.some(x=>x.received<x.expected)) msg+='\n\nShort units are saved as owed by Cosmoprof. When they arrive: All invoices → Open → Receive late units.';
     }
     alert(msg);
     currentInvoice=null; document.getElementById('reconcileWork').style.display='none';
