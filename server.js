@@ -414,7 +414,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'invoice-short-1003';
+const BUILD_ID = 'invoice-verify-1004';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3116,7 +3116,12 @@ app.post('/api/invoices/:orderNumber/date', auth, async (req, res) => {
 // Get one invoice's line items (with mapping + progress)
 app.get('/api/invoices/:orderNumber', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT ii.id, ii.cosmo_num, ii.description, ii.asin, p.name, ii.qty_expected, ii.qty_received, ii.qty_owed
+    `SELECT ii.id, ii.cosmo_num, ii.description, ii.asin, p.name, ii.qty_expected, ii.qty_received, ii.qty_owed,
+            -- Typed counts go to whatever the line is linked to. Only a barcode
+            -- scan proves the Cosmo# link, so the screen flags the unproven ones
+            -- (and products with no barcode saved) for one bottle to be scanned.
+            EXISTS(SELECT 1 FROM inv_cosmo_map c WHERE c.cosmo_num=ii.cosmo_num AND c.asin=ii.asin AND c.verified) AS verified,
+            EXISTS(SELECT 1 FROM inv_upcs u WHERE u.asin=ii.asin) AS has_upc
      FROM inv_invoice_items ii LEFT JOIN inv_products p ON p.asin = ii.asin
      WHERE ii.order_number=$1 ORDER BY ii.id`, [req.params.orderNumber]);
 
