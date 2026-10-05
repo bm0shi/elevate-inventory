@@ -8471,7 +8471,8 @@ function renderReconLines(){
       ? '<div class="box" style="margin-bottom:8px;text-align:center;border:2px solid '+(owedTotal?'#c0392b':'#1e8449')+'">'
         +'<b style="color:'+(owedTotal?'#c0392b':'#1e8449')+'">✓ Checked in'+(owedTotal?' · Short '+owedTotal+' — owed by Cosmoprof':'')+'</b>'
         +(owedTotal?'<div class="hint" style="margin-top:4px">When the missing units arrive, tap <b>Receive late units</b> on that line. They go into On Hand.</div>':'')+'</div>'
-      : '<div class="hint" style="margin-bottom:8px">Type what came in into each <b>Received</b> box (or scan). <b>✓ Receive All As Expected</b> fills every line with the invoice amount, so press it first, then fix only the short lines.</div>')+
+      : '<div class="hint" style="margin-bottom:8px">Type what came in into each <b>Received</b> box (or scan). <b>✓ Receive All As Expected</b> fills every line with the invoice amount, so press it first, then fix only the short lines.'
+        +(lines.some(l=>l.asin && !l.verified)?' Lines tagged <b style="color:#b7791f">⚠ Not verified</b>: scan one bottle of each <b>before</b> Receive All (a scan adds to the count; Receive All then sets it to the invoice amount).':'')+'</div>')+
     lines.map(l=>{
       const exp=l.qty_expected, rec=l.qty_received;
       const st=reconStatus(l);
@@ -8539,11 +8540,15 @@ function renderReconLines(){
         ${locBlock}
       </div>`;
       }
+      const tags=l.asin
+        ? (!l.verified?' <span style="font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:5px;background:#fdf6e3;color:#b7791f;white-space:nowrap" title="No barcode has confirmed this link. Typed counts go to the product it is linked to.">⚠ Not verified — scan one bottle</span>':'')
+          +(!l.has_upc?' <span style="font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:#eef2f6;color:#5a6472;white-space:nowrap" title="This product has no barcode saved. Scanning a bottle saves it.">no barcode on file</span>':'')
+        : '';
       const recBox=l.asin
         ? `<label style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;font-weight:700;color:#5a6472">Received <input type="number" min="0" inputmode="numeric" value="${rec}" data-line="${l.id}" onchange="setReceived(this)" style="width:72px;padding:5px;border:1.5px solid #008296;border-radius:5px;font-size:15px;font-weight:800;text-align:center"></label> / ${exp}`
         : `${rec} / ${exp}`;
       return `<div class="box" ${cls} id="rline_${l.id}" style="margin-bottom:6px;padding:12px">
-        <div style="font-weight:700;font-size:13px">${esc(nm)}</div>
+        <div style="font-weight:700;font-size:13px">${esc(nm)}${tags}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px;flex-wrap:wrap">
           <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:64px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${recBox} &nbsp; <span id="rstat_${l.id}">${status}</span></span>
@@ -8680,7 +8685,8 @@ function completeInvoice(force, skipStock){
     const order=currentInvoice;
     api('/api/invoices/'+order).then(lines=>{
       const short=(lines||[]).filter(l=>l.asin && l.qty_received<l.qty_expected);
-      if(short.length){ showShortWarn(order, short, ()=>runCompleteInvoice(c, force, skipStock)); return; }
+      const unver=(lines||[]).filter(l=>l.asin && !l.verified && l.qty_received>0);
+      if(short.length || unver.length){ showShortWarn(order, short, ()=>runCompleteInvoice(c, force, skipStock), unver); return; }
       if(!confirm('Mark invoice '+order+' complete? Received quantities will be added to On Hand.'))return;
       runCompleteInvoice(c, force, skipStock);
     }).catch(()=>toast('Could not load the invoice. Nothing was changed.',true));
@@ -8688,22 +8694,37 @@ function completeInvoice(force, skipStock){
   }
   runCompleteInvoice(c, force, skipStock);
 }
-function showShortWarn(order, short, onGo){
+function showShortWarn(order, short, onGo, unver){
+  unver=unver||[];
   const units=short.reduce((n,l)=>n+(l.qty_expected-l.qty_received),0);
   const m=document.createElement('div'); m.id='shortWarnModal';
   m.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px;overflow:auto';
   const td='padding:7px 6px;border-bottom:1px solid #eef2f6;text-align:center;font-variant-numeric:tabular-nums';
-  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:560px;width:100%;text-align:center">'
-    +'<div style="font-size:17px;font-weight:800;color:#c0392b">⚠ '+short.length+' line'+(short.length===1?' is':'s are')+' short · '+units+' unit'+(units===1?'':'s')+'</div>'
+  // Lines whose Cosmo# link no barcode has confirmed: their units go to the
+  // linked product, right or wrong.
+  const unverBlock=unver.length
+    ? '<div style="font-size:16px;font-weight:800;color:#b7791f">⚠ '+unver.length+' line'+(unver.length===1?' is':'s are')+' not verified</div>'
+      +'<div class="hint" style="margin:4px 0 8px">No barcode has confirmed these links yet. If one is linked to the wrong product, its units go onto that product. Go back and scan one bottle of each to be sure.</div>'
+      +'<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;margin-bottom:14px"><thead><tr style="color:#5a6472;font-size:11.5px">'
+      +'<th style="text-align:left;padding:5px 6px">Invoice says</th><th style="text-align:left;padding:5px 6px">Linked to</th><th style="width:72px">Received</th></tr></thead><tbody>'
+      +unver.map(l=>'<tr><td style="padding:7px 6px;border-bottom:1px solid #eef2f6;text-align:left">'+esc(String(l.description||'').slice(0,50))+'</td>'
+        +'<td style="padding:7px 6px;border-bottom:1px solid #eef2f6;text-align:left">'+esc(String(l.name||l.asin||'').slice(0,50))+'</td>'
+        +'<td style="'+td+';font-weight:800">'+l.qty_received+'</td></tr>').join('')
+      +'</tbody></table>'
+    : '';
+  const shortBlock=!short.length ? '' : '<div style="font-size:17px;font-weight:800;color:#c0392b">⚠ '+short.length+' line'+(short.length===1?' is':'s are')+' short · '+units+' unit'+(units===1?'':'s')+'</div>'
     +'<div class="hint" style="margin:4px 0 10px">Only what was received goes into On Hand. The missing units are saved on invoice #'+esc(order)+' as owed by Cosmoprof, and can be checked in later.</div>'
     +'<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px"><thead><tr style="color:#5a6472;font-size:11.5px">'
     +'<th style="text-align:left;padding:5px 6px">Product</th><th style="width:72px">Invoice</th><th style="width:72px">Received</th><th style="width:64px">Short</th></tr></thead><tbody>'
     +short.map(l=>'<tr><td style="padding:7px 6px;border-bottom:1px solid #eef2f6;text-align:left">'+esc(String(l.name||l.description||'').slice(0,60))+'</td>'
       +'<td style="'+td+'">'+l.qty_expected+'</td><td style="'+td+';font-weight:800">'+l.qty_received+'</td>'
       +'<td style="'+td+';font-weight:800;color:#c0392b">'+(l.qty_expected-l.qty_received)+'</td></tr>').join('')
-    +'</tbody></table>'
+    +'</tbody></table>';
+  const goLabel=short.length&&unver.length?'Complete anyway':short.length?'Complete with shortages':'Complete without scanning';
+  m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:560px;width:100%;text-align:center">'
+    +unverBlock+shortBlock
     +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" id="shortBack" style="flex:1;background:#e2e8f0;color:#1f2733">Go back</button>'
-    +'<button class="action" id="shortGo" style="flex:1;background:#c0392b">Complete with shortages</button></div></div>';
+    +'<button class="action" id="shortGo" style="flex:1;background:#c0392b">'+goLabel+'</button></div></div>';
   document.body.appendChild(m);
   document.getElementById('shortBack').onclick=()=>m.remove();
   document.getElementById('shortGo').onclick=()=>{ m.remove(); onGo(); };
