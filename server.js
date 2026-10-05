@@ -414,7 +414,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'invoice-verify-1004';
+const BUILD_ID = 'shortages-tab-1005';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -567,6 +567,9 @@ async function initDb() {
     -- line that came in short, counted down when the late units are received
     -- on the same invoice (or cleared when Cosmoprof credits them instead).
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS qty_owed INTEGER NOT NULL DEFAULT 0;
+    -- What Cosmoprof credited instead of sending, kept for the Shortages history.
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS credited_qty INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ;
     -- Replies to stock-changing requests, keyed by the client's action id, so
     -- a retried or double-sent action is answered from here instead of
     -- being applied twice. Pruned after two days.
@@ -5315,9 +5318,24 @@ app.post('/api/invoices/:orderNumber/receive-late', auth, async (req, res) => {
 app.post('/api/invoices/:orderNumber/clear-owed', auth, async (req, res) => {
   const id = parseInt(req.body && req.body.id);
   if (!id) return res.status(400).json({ ok: false, error: 'Pick the line.' });
-  const r = await pool.query('UPDATE inv_invoice_items SET qty_owed=0 WHERE id=$1 AND order_number=$2 RETURNING id', [id, req.params.orderNumber]);
-  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Line not found on this invoice.' });
+  const r = await pool.query(
+    `UPDATE inv_invoice_items SET credited_qty = credited_qty + qty_owed, credited_at = now(), qty_owed = 0
+     WHERE id=$1 AND order_number=$2 AND qty_owed > 0 RETURNING id`, [id, req.params.orderNumber]);
+  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Nothing owed on that line.' });
   res.json({ ok: true });
+});
+
+// Shortages tab: every line Cosmoprof still owes, plus what they credited,
+// for following up on credits. Units only (no cost), so warehouse login.
+app.get('/api/shortages', auth, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT ii.id, ii.order_number, i.invoice_date, i.completed_at, ii.cosmo_num, ii.description, ii.asin,
+            p.name, ii.qty_expected, ii.qty_received, ii.qty_owed, ii.credited_qty, ii.credited_at
+     FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number = ii.order_number
+     LEFT JOIN inv_products p ON p.asin = ii.asin
+     WHERE i.status = 'received' AND (ii.qty_owed > 0 OR ii.credited_qty > 0)
+     ORDER BY i.completed_at DESC NULLS LAST, ii.order_number, ii.id`);
+  res.json({ ok: true, rows });
 });
 
 // Upload an Amazon shipment plan file (TSV) to bulk-import FNSKUs
