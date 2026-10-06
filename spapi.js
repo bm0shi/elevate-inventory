@@ -6,7 +6,7 @@
 // ============================================================
 const axios = require('axios');
 const qs = require('querystring');
-const { parseOrdersReport } = require('./lib/velocity');
+const { parseOrdersReport, reportWindows } = require('./lib/velocity');
 
 // Overridable only for local testing against a fake Amazon; never set in Railway.
 const SP_API_BASE = process.env.SPAPI_BASE_URL || 'https://sellingpartnerapi-na.amazon.com';
@@ -288,38 +288,45 @@ async function getFbaInventory(onProgress, sellerSkus) {
   return results;
 }
 
-// Sales velocity via the ALL ORDERS report (one report, not per-order calls = fast)
-// Returns { bySku, byAsin } units sold in the window (lib/velocity.js).
+// Sales velocity via the ALL ORDERS report (one report per 30 days, not
+// per-order calls = fast). Returns { bySku, byAsin, lines, units }
+// (lib/velocity.js).
+//
+// Amazon allows at most 30 days per order report, so a 60-day window used to
+// fail and the saved sales never refreshed (the Smart Scout attack list read
+// 0 units everywhere). The window is now pulled in 30-day pieces, side by
+// side. A piece Amazon CANCELS has no orders in it (that is how Amazon says
+// "no data"), so it counts as empty rather than failing the whole pull.
 async function getSalesVelocity(days = 30) {
   const token = await getAccessToken();
   const zlib = require('zlib');
-  const after = new Date(Date.now() - days*24*60*60*1000).toISOString();
-
-  // 1. Request the flat-file all-orders report
-  const createResp = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, {
-    reportType: 'GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL',
-    marketplaceIds: [MARKETPLACE_ID],
-    dataStartTime: after,
-  }, { headers: { 'x-amz-access-token': token, 'Content-Type': 'application/json' } });
-
-  const reportId = createResp.data.reportId;
-  // 2. Poll for completion (up to ~90s)
-  let docId = null;
-  for (let i=0;i<18;i++){
-    await sleep(5000);
-    const st = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`, { headers:{'x-amz-access-token':token} });
-    const status = st.data.processingStatus;
-    if (status==='DONE'){ docId = st.data.reportDocumentId; break; }
-    if (status==='CANCELLED'||status==='FATAL') throw new Error('Report '+status);
-  }
-  if(!docId) throw new Error('Report timed out — try again in a moment');
-
-  // 3. Download + parse
-  const doc = await http.get(`${SP_API_BASE}/reports/2021-06-30/documents/${docId}`, { headers:{'x-amz-access-token':token} });
-  const dl = await http.get(doc.data.url, { responseType:'arraybuffer' });
-  let body = doc.data.compressionAlgorithm==='GZIP' ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8') : Buffer.from(dl.data).toString('utf-8');
-
-  return parseOrdersReport(body, Date.parse(after));
+  const now = Date.now();
+  const after = new Date(now - days*24*60*60*1000).toISOString();
+  const pull = async ([start, end]) => {
+    const createResp = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, {
+      reportType: 'GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL',
+      marketplaceIds: [MARKETPLACE_ID],
+      dataStartTime: start,
+      dataEndTime: end,
+    }, { headers: { 'x-amz-access-token': token, 'Content-Type': 'application/json' } });
+    const reportId = createResp.data.reportId;
+    // Poll for completion (up to ~2 min)
+    let docId = null;
+    for (let i=0;i<24;i++){
+      await sleep(5000);
+      const st = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`, { headers:{'x-amz-access-token':token} });
+      const status = st.data.processingStatus;
+      if (status==='DONE'){ docId = st.data.reportDocumentId; break; }
+      if (status==='CANCELLED') return '';
+      if (status==='FATAL') throw new Error(`Amazon could not build the orders report for ${start.slice(0,10)} to ${end.slice(0,10)} (FATAL)`);
+    }
+    if(!docId) throw new Error('Report timed out — try again in a moment');
+    const doc = await http.get(`${SP_API_BASE}/reports/2021-06-30/documents/${docId}`, { headers:{'x-amz-access-token':token} });
+    const dl = await http.get(doc.data.url, { responseType:'arraybuffer' });
+    return doc.data.compressionAlgorithm==='GZIP' ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8') : Buffer.from(dl.data).toString('utf-8');
+  };
+  const bodies = await Promise.all(reportWindows(days, now).map(pull));
+  return parseOrdersReport(bodies, Date.parse(after));
 }
 
 // Amazon's restock recommendation (Seller Central → Restock Inventory), raw
