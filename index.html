@@ -4536,15 +4536,23 @@ function renderSendNext(){
   }
   window._snRows=rows.filter(r=>r.send>0).map(r=>({asin:r.l.asin, sku:r.l.sku||'', name:r.l.name, isBundle:r.l.isDuo, qty:r.send, on:true, available:r.canMake+0, daysAtFba:r.cover!=null?Math.round(r.cover):null}));
   const totalSend=rows.reduce((n,r)=>n+r.send,0), toSend=rows.filter(r=>r.send>0).length;
+  // Click a header to sort. Display only: free bottles were already shared
+  // out most-urgent-first above, so the Send numbers don't change with the sort.
+  const SN={ name:r=>String(r.l.name||r.l.asin).toLowerCase(), sold:r=>r.dm.perDay, amz:r=>r.l.atAmazon, way:r=>r.l.onTheWay,
+             prep:r=>r.l.queued||0, cover:r=>r.cover, need:r=>r.need, send:r=>r.send, amzsays:r=>r.l.amazonRestock?(r.l.amazonRestock.qty||0):null };
+  const snKey=SN[st.snSort]?st.snSort:'cover', snDir=st.snDir===-1?-1:1, snGet=SN[snKey];
+  const shownRows=rows.filter(r=>r.dm.perDay>0).sort((a,c)=>{ const x=snGet(a), y=snGet(c); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*snDir; });
+  const snTh=(k,t,right,tip)=>'<td onclick="sendNextSort(\''+k+'\')" title="'+esc(tip||'Click to sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(snKey===k?'color:#0d4450;font-weight:900':'')+'">'+t+(snKey===k?(snDir===1?' ▲':' ▼'):'')+'</td>';
   const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
   let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b style="font-size:16px">📦 Send Next</b>'
-    +'<div class="hint">What each Amazon listing needs to reach '+st.target+' days of stock, singles and duos separately, from bottles you have free now. Most urgent first.</div></div>'
+    +'<div class="hint">What each Amazon listing needs to reach '+st.target+' days of stock, singles and duos separately, from bottles you have free now. Most urgent first; click a column header to sort.</div></div>'
     +(toSend?'<button class="action" onclick="snToBuilder()" style="background:#008296">Use these '+toSend+' ('+totalSend+' units) → draft shipment</button>':'')+'</div>'
     +'<div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;align-items:center">'+planBasisPicker(st)+planNum('target','Target days at Amazon',st)+'</div>'
     +'<div class="hint" style="margin-top:6px">'+esc(planAsOf(d))+'</div></div>';
   h+='<div class="box" style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
-    +'<td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Sells / mo</td><td style="padding:6px 8px;text-align:right">At Amazon</td><td style="padding:6px 8px;text-align:right">On the way</td><td style="padding:6px 8px;text-align:right">In prep</td><td style="padding:6px 8px;text-align:right">Days covered</td><td style="padding:6px 8px;text-align:right">Needs</td><td style="padding:6px 8px;text-align:right">Send</td><td style="padding:6px 8px;text-align:right" title="Amazon\'s restock recommendation (Seller Central → Restock Inventory), for comparison. Hover a number for details.">Amazon says</td></tr>'
-    +rows.filter(r=>r.dm.perDay>0).map(r=>{
+    +snTh('name','Listing',0)+snTh('sold','Sells / mo',1)+snTh('amz','At Amazon',1)+snTh('way','On the way',1)+snTh('prep','In prep',1)+snTh('cover','Days covered',1)+snTh('need','Needs',1)+snTh('send','Send',1)
+    +snTh('amzsays','Amazon says',1,"Amazon's restock recommendation (Seller Central → Restock Inventory), for comparison. Hover a number for details. Click to sort.")+'</tr>'
+    +shownRows.map(r=>{
       const c=r.cover, cc=c==null?'#8a97a6':c<30?'#c0392b':c<st.target?'#b7791f':'#1e8449';
       return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b style="color:'+(r.l.isDuo?'#c0392b':'#0d4450')+'">'+(r.l.isDuo?'DUO':'SINGLE')+'</b> '+esc(String(r.l.name||r.l.asin))+'<div class="hint">'+esc(r.l.asin)+(r.l.sku?' · '+esc(r.l.sku):'')+'</div></td>'
         +'<td style="'+td+'">'+(r.dm.perDay?Math.round(r.dm.perDay*30).toLocaleString():'—')+'<div class="hint" style="max-width:220px;margin-left:auto">'+esc(planSrcNote(r.l,r.dm))+'</div></td>'
@@ -4562,6 +4570,11 @@ function renderSendNext(){
     +'Refresh the inputs with Sync with Amazon (stock), Velocity (our sales) and Market Data (Keepa). '
     +'Amazon says = Amazon\'s own restock recommendation, pulled with the morning sync; it\'s there to compare, not to plan from. The note under it is the difference from our Needs.</div>';
   box.innerHTML=h;
+}
+function sendNextSort(k){
+  const st=planSet();
+  if((st.snSort||'cover')===k) planSave('snDir', st.snDir===-1?1:-1);
+  else { st.snSort=k; st.snDir=(k==='name'||k==='cover')?1:-1; localStorage_set('planSettings', JSON.stringify(st)); renderPlan(window._planView); }
 }
 function snToBuilder(){
   // Hand the plan to the existing draft-shipment builder (edit, send to Pending Prep, or download).
