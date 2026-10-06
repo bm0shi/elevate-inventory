@@ -220,6 +220,37 @@ test('a job over 200 is split in half; both halves finish into one Prepped card;
   assert.deepStrictEqual(h.map(x => [x.qty, x.split_part, x.split_group]), [[150, 1, g], [150, 2, g]]);
 });
 
+test('next batch: held from the floor (no merge, claim, scan or finish), released once onto the list', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTNXT','Test Next','SKU-NXT','X00TESTNXT') ON CONFLICT (asin) DO NOTHING`);
+  await pool.query(`INSERT INTO inv_employees(display_name, active) VALUES ('Tester', true) ON CONFLICT DO NOTHING`);
+  const rows = async () => (await pool.query(`SELECT id, qty, staged, split_part FROM inv_pending_prep WHERE asin='TSTNXT' ORDER BY staged, split_part NULLS FIRST, id`)).rows;
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTNXT', qty: 120 })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTNXT', qty: 100, staged: true })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTNXT', qty: 80, staged: true })).status, 200);
+  let r = await rows();
+  // the floor's job is still 120; the next batch is one held row of 180
+  assert.deepStrictEqual(r.map(x => [x.qty, x.staged]), [[120, false], [180, true]]);
+  assert.strictEqual(await pending('TSTNXT'), 300);   // both count as spoken for
+  const held = r[1].id;
+  // the floor's list doesn't show it as a job; it can't be claimed or finished
+  const list = await (await fetch(`http://localhost:${PORT}/api/pending-prep/list`, { headers: H() })).json();
+  assert.ok(!list.items.some(x => x.id === held));
+  assert.deepStrictEqual([list.next.jobs, list.next.units], [1, 180]);
+  assert.strictEqual((await post('/api/pending-prep/claim', { id: held, name: 'Tester' })).status, 409);
+  assert.strictEqual((await post('/api/pending-prep/complete', { id: held, qty: 10, completedBy: 'Tester' })).status, 409);
+  // a prep scan counts down the live job only
+  assert.strictEqual((await post('/api/prep/scan', { code: 'TSTNXT', qty: 20 })).status, 200);
+  r = await rows();
+  assert.deepStrictEqual(r.map(x => [x.qty, x.staged]), [[100, false], [180, true]]);
+  // release (double tap = one release): 100 + 180 = 280 on the floor, split in half
+  const [a, b] = await Promise.all([post('/api/pending-prep/next/release', {}, { idem: 'rel-1' }), post('/api/pending-prep/next/release', {}, { idem: 'rel-1' })]);
+  assert.ok([a.status, b.status].includes(200));
+  r = await rows();
+  assert.deepStrictEqual(r.map(x => [x.qty, x.staged, x.split_part]), [[140, false, 1], [140, false, 2]]);
+  assert.strictEqual(await pending('TSTNXT'), 280);
+  assert.strictEqual((await post('/api/pending-prep/next/release', {})).body.released, 0);
+});
+
 test('shipping a duo takes one of each bottle; posting the same shipment again is refused', { skip }, async () => {
   const A = await stock('TSTA'), B = await stock('TSTB'), duoPrepped = await prepped('TSTDUO');
   const r = await post('/api/bulk-ship', { shipmentId: 'FBATEST1', shipmentName: 'Test ship', items: [{ code: 'SKU-DUO', qty: 3 }, { code: 'TSTA', qty: 2 }] });
