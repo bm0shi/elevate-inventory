@@ -484,6 +484,7 @@
     <button class="action full" onclick="showPickList()" style="margin-bottom:12px;background:#0d4450">🗺 Pick list — walk the racks in order</button>
     <div id="capBar"></div>
     <div id="pendingPrepBody"></div>
+    <div id="ppNextBatch"></div>
     <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
   <div id="prep" class="panel">
@@ -4025,6 +4026,7 @@ function requestPrep(asin, canDuo){
           <span><b style="color:#c0392b">DUOS</b> <span style="color:#5a6472;font-size:12px">— uses this + its partner</span></span>
         </label>`}
       </div>` : ''}
+      ${prepTargetHtml('prepTarget')}
       <div style="display:flex;gap:8px;margin-top:18px">
         <button onclick="closePrepModal()" style="flex:1;padding:12px;font-size:14px;font-weight:700;background:#e2e8f0;color:#1f2733;border:none;border-radius:8px;cursor:pointer">Cancel</button>
         <button onclick="submitPrepRequest('${asin}')" style="flex:2;padding:12px;font-size:14px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">🔧 Add to Pending Prep</button>
@@ -4047,11 +4049,12 @@ function submitPrepRequest(asin){
     alert('⛔ NOT ENOUGH STOCK\n\n'+qty+' × '+(duoEl.dataset.name||'this duo')+'\n\nOne of its bottles is short: you can build '+can+' at most right now.'+(can>0?'\n\nLower the quantity to '+can+' or less.':''));
     return;
   }
+  const staged=prepTargetNext('prepTarget');
   closePrepModal();
-  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo,duoAsin})}).then(d=>{
+  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo,duoAsin,staged})}).then(d=>{
     if(!d || d.ok===false || d.error){ if(d&&d.notEnough) alert('⛔ NOT ENOUGH STOCK\n\n'+d.error); else toast((d&&d.error)||'Could not add',true); loadProducts(); return; }
     const dn=d.isDuo?(((products||[]).find(x=>x.asin===d.asin)||{}).name||d.asin):'';
-    toast('Added to Pending Prep: '+qty+(d.isDuo?' duos — '+String(dn).slice(0,40):' units'));
+    toast((d.staged?'Added to the NEXT BATCH: ':'Added to Pending Prep: ')+qty+(d.isDuo?' duos — '+String(dn).slice(0,40):' units'));
     loadProducts();
   });
 }
@@ -4071,10 +4074,77 @@ function prepGoBuild(sid, asin){
   const t=[...document.querySelectorAll('.tab')].find(x=>(x.getAttribute('onclick')||'').includes("'prod'"));
   if(t) t.click(); else prodOpen();
 }
+// ---- NEXT BATCH ----
+// Jobs planned while the floor is still on the current list. The floor sees
+// one grey line; the jobs can't be started until "Release next batch".
+// A picker on each "add to Pending Prep" place chooses Current or Next batch.
+function prepTargetHtml(id){
+  const opt=(v,label,col)=>'<label style="text-transform:none;letter-spacing:0;display:flex;align-items:center;gap:6px;flex:1;justify-content:center;padding:9px;border:2px solid '+col+';border-radius:8px;cursor:pointer;font-size:13px;font-weight:700;color:#1f2733">'
+    +'<input type="radio" name="'+id+'" value="'+v+'"'+(v==='current'?' checked':'')+' style="width:16px;height:16px">'+label+'</label>';
+  return '<div style="display:flex;gap:8px;margin-top:12px">'+opt('current','Current list','#e2e8f0')+opt('next','Next batch (held)','#d9cce9')+'</div>';
+}
+function prepTargetNext(id){ const el=document.querySelector('input[name="'+id+'"]:checked'); return !!(el && el.value==='next'); }
+function renderNextBatch(){
+  const el=document.getElementById('ppNextBatch'); if(!el) return;
+  const d=window._pendingPrepData, n=d&&d.next;
+  if(!n || !n.jobs){ el.innerHTML=''; return; }
+  const open=!!window._nextOpen;
+  let h='<div class="box" style="margin-top:14px;background:#f4f6f9;border:1.5px dashed #b8c2cf;color:#5a6472">'
+    +'<div onclick="window._nextOpen=!window._nextOpen;renderNextBatch()" style="cursor:pointer;display:flex;justify-content:center;align-items:center;gap:10px;font-weight:800;font-size:14px">'
+    +'<span>NEXT BATCH: '+n.jobs+' job'+(n.jobs===1?'':'s')+' · '+n.units.toLocaleString()+' units — not released yet</span>'
+    +'<span style="font-size:12px;font-weight:700;color:#7a8696">'+(open?'▲ hide':'▼ show')+'</span></div>';
+  if(open){
+    const td='padding:7px 6px;border-top:1px solid #e2e8f0;text-align:center';
+    h+='<div class="hint" style="text-align:center;margin:6px 0 8px">Don\'t start these yet. They open on the list above once the batch is released.</div>'
+      +'<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;color:#1f2733"><thead><tr style="font-size:11px;color:#5a6472">'
+      +'<th style="text-align:left;padding:6px">Product</th><th style="width:90px">Qty</th><th style="width:80px">Location</th><th style="width:200px"></th></tr></thead><tbody>'
+      +n.items.map(x=>'<tr><td style="'+td+';text-align:left">'+(x.is_duo?'<b style="color:#c0392b;font-size:11px">DUO</b> ':'')+esc(x.name||x.asin)+'</td>'
+        +'<td style="'+td+';font-weight:800">'+x.qty+'</td><td style="'+td+'">'+esc(x.location||'—')+'</td>'
+        +'<td style="'+td+'"><button onclick="nextBatchEdit('+x.id+')" style="padding:5px 9px;font-size:11.5px;font-weight:700;background:#eef2f6;color:#1f2733;border:none;border-radius:5px;cursor:pointer">Change qty</button> '
+        +'<button onclick="nextBatchRemove('+x.id+')" style="padding:5px 9px;font-size:11.5px;font-weight:700;background:#fdeceb;color:#c0392b;border:none;border-radius:5px;cursor:pointer">Remove</button></td></tr>').join('')
+      +'</tbody></table>'
+      +'<div style="text-align:center;margin-top:12px"><button class="action" onclick="releaseNextBatch()" style="background:#7a4fb5;min-width:260px">▶ Release next batch to the floor</button></div>';
+  }
+  el.innerHTML=h+'</div>';
+}
+function nextBatchItem(id){ const n=(window._pendingPrepData||{}).next; return n && n.items.find(x=>x.id===id); }
+function nextBatchEdit(id){
+  const x=nextBatchItem(id); if(!x) return;
+  const v=prompt('New quantity for '+String(x.name||x.asin).slice(0,50)+' (next batch):', String(x.qty));
+  if(v===null) return;
+  const q=parseInt(v,10);
+  if(!(q>=0)){ toast('Enter a number',true); return; }
+  if(q>0 && !qtyOk(q)) return;
+  api('/api/pending-prep/set',{method:'POST',body:JSON.stringify({id, qty:q})}).then(d=>{
+    if(!d || d.ok===false){ if(d&&d.notEnough) alert('⛔ NOT ENOUGH STOCK\n\n'+d.error); else toast((d&&d.error)||'Not saved',true); return; }
+    toast(q?'Next batch updated':'Removed from next batch'); loadPendingPrep();
+  });
+}
+function nextBatchRemove(id){
+  const x=nextBatchItem(id); if(!x) return;
+  if(!confirm('Remove '+String(x.name||x.asin).slice(0,50)+' ('+x.qty+') from the next batch?')) return;
+  api('/api/pending-prep/set',{method:'POST',body:JSON.stringify({id, qty:0})}).then(d=>{
+    if(!d || d.ok===false){ toast((d&&d.error)||'Not removed',true); return; }
+    toast('Removed from next batch'); loadPendingPrep();
+  });
+}
+function releaseNextBatch(){
+  const n=(window._pendingPrepData||{}).next; if(!n||!n.jobs) return;
+  if(!confirm('Release the next batch to the floor?\n\n'+n.jobs+' job'+(n.jobs===1?'':'s')+' · '+n.units+' units join the Pending Prep list now. An item already on the list is added to its job; jobs over 200 are split in half.')) return;
+  if(window._releasing) return; window._releasing=true;
+  api('/api/pending-prep/next/release',{method:'POST',idem:newIdem()}).then(d=>{
+    window._releasing=false;
+    if(!d || d.ok===false){ toast((d&&d.error)||'Not released',true); return; }
+    window._nextOpen=false;
+    toast('Released '+d.released+' job'+(d.released===1?'':'s')+' ('+d.units+' units) to the floor');
+    loadPendingPrep();
+  }).catch(()=>{ window._releasing=false; toast('Not released — check the connection',true); });
+}
 function loadPendingPrep(){
   api('/api/pending-prep/list').then(d=>{
     window._pendingPrepData=d;
     renderPendingPrep();
+    renderNextBatch();
   });
   loadCapacity();
 }
@@ -4176,6 +4246,7 @@ function renderShipBuilder(){
       +'<td style="text-align:right;padding:6px"><input type="number" min="0" max="'+r.available+'" value="'+r.qty+'" onchange="_sb.rows['+i+'].qty=Math.max(0,Math.min('+r.available+',parseInt(this.value)||0));renderShipBuilder()" style="width:80px;text-align:right;padding:5px"></td></tr>').join('')
     +'</tbody></table>'
     +(noSku?'<div class="hint" style="color:#c0392b;margin-top:8px">'+noSku+' product'+(noSku===1?' has':'s have')+' no Seller SKU on file and will be left out of the Amazon file.</div>':'')
+    +prepTargetHtml('sbTarget')
     +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'
     +'<button class="action" onclick="shipBuilderToPrep()" style="flex:1;min-width:220px;background:#7a4fb5">🔧 Send to Pending Prep</button>'
     +'<button class="action" onclick="shipBuilderDownload()" style="flex:1;min-width:220px;background:#0d4450">⬇ Download file for Send to Amazon</button></div>'
@@ -4185,18 +4256,19 @@ function renderShipBuilder(){
 function shipBuilderToPrep(){
   const on=_sb.rows.filter(r=>r.on&&r.qty>0);
   if(!on.length){ toast('Nothing selected',true); return; }
-  if(!confirm('Add '+on.length+' work order'+(on.length===1?'':'s')+' ('+on.reduce((n,r)=>n+r.qty,0)+' units) to Pending Prep?')) return;
+  const staged=prepTargetNext('sbTarget');
+  if(!confirm('Add '+on.length+' work order'+(on.length===1?'':'s')+' ('+on.reduce((n,r)=>n+r.qty,0)+' units) to '+(staged?'the NEXT BATCH (held from the floor until released)':'Pending Prep')+'?')) return;
   let ok=0, fail=[];
   (async()=>{
     for(const r of on){
       // one id per line, kept across retries, so pressing it again can't double the orders
       const key=_sb.idem[r.asin]||(_sb.idem[r.asin]=newIdem());
       try{
-        const d=await api('/api/pending-prep/add',{method:'POST',idem:key,body:JSON.stringify({asin:r.asin,qty:r.qty,isDuo:r.isBundle})});
+        const d=await api('/api/pending-prep/add',{method:'POST',idem:key,body:JSON.stringify({asin:r.asin,qty:r.qty,isDuo:r.isBundle,staged})});
         if(d&&d.ok) ok++; else fail.push(r.name+': '+((d&&(d.error||d.message))||'failed'));
       }catch(e){ fail.push(r.name+': connection problem'); }
     }
-    alert('✓ '+ok+' work order'+(ok===1?'':'s')+' added to Pending Prep.'+(fail.length?'\n\nNot added:\n'+fail.join('\n'):''));
+    alert('✓ '+ok+' work order'+(ok===1?'':'s')+' added to '+(staged?'the next batch':'Pending Prep')+'.'+(fail.length?'\n\nNot added:\n'+fail.join('\n'):''));
     loadPendingPrep();
   })();
 }

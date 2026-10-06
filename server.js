@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'velocity-30d-1007';
+const BUILD_ID = 'next-batch-1008';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -500,6 +500,10 @@ async function initDb() {
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS split_group INTEGER;
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS split_part SMALLINT;
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS in_plan_at TIMESTAMPTZ;
+    -- Next batch: planned while the floor is still on the current list. Held
+    -- back from the floor (can't be claimed, scanned or completed) until
+    -- released, but its units count as spoken for like any pending prep.
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS staged BOOLEAN NOT NULL DEFAULT false;
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
       qty INTEGER NOT NULL DEFAULT 0,
@@ -1008,7 +1012,7 @@ async function initDb() {
     // someone is working is left alone. The total to prep doesn't change.
     try {
       await withTx(async (db) => {
-        const big = (await db.query(`SELECT id, qty FROM inv_pending_prep WHERE split_group IS NULL AND claimed_by IS NULL AND qty > $1 FOR UPDATE SKIP LOCKED`, [SPLIT_OVER])).rows;
+        const big = (await db.query(`SELECT id, qty FROM inv_pending_prep WHERE split_group IS NULL AND claimed_by IS NULL AND NOT staged AND qty > $1 FOR UPDATE SKIP LOCKED`, [SPLIT_OVER])).rows;
         for (const r of big) {
           await db.query('UPDATE inv_pending_prep SET qty=$2, split_group=$1, split_part=1 WHERE id=$1', [r.id, Math.ceil(r.qty / 2)]);
           await db.query(`INSERT INTO inv_pending_prep(asin, qty, is_duo, in_plan, in_plan_at, split_group, split_part)
@@ -7540,8 +7544,28 @@ async function lockDuoBottles(db, duoAsin) {
   for (const r of c.rows) await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bottle:' + r.component_asin]);
 }
 
+// Put q of an item on the floor's list: merges with its open job, and over
+// 200 units it becomes two linked halves so two people can each take one
+// (splitPlan); a half someone is working never shrinks.
+async function addLivePrep(c, requestAsin, duoFlag, q) {
+  const ex = await c.query('SELECT id, qty, claimed_by, split_group FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 AND NOT staged ORDER BY id FOR UPDATE', [requestAsin, duoFlag]);
+  const plan = splitPlan(ex.rows.map(x => ({ id: x.id, qty: x.qty, claimed: !!x.claimed_by, group: x.split_group })), q);
+  for (const u of plan.updates) {
+    if (u.group !== undefined) await c.query('UPDATE inv_pending_prep SET qty=$2, split_group=$3, split_part=$4 WHERE id=$1', [u.id, u.qty, u.group, u.part]);
+    else await c.query('UPDATE inv_pending_prep SET qty=$2 WHERE id=$1', [u.id, u.qty]);
+  }
+  let newGroup = null;
+  for (const ins of plan.inserts) {
+    const g = ins.group === 'new' ? newGroup : (ins.group ?? null);
+    const row = (await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part) VALUES($1,$2,$3,$4,$5) RETURNING id',
+      [requestAsin, ins.qty, duoFlag, g, ins.part ?? null])).rows[0];
+    if (ins.group === 'new' && newGroup == null) { newGroup = row.id; await c.query('UPDATE inv_pending_prep SET split_group=$1 WHERE id=$1', [row.id]); }
+  }
+}
+
 app.post('/api/pending-prep/add', auth, async (req, res) => {
   const { asin, qty, isDuo, duoAsin } = req.body;
+  const staged = !!req.body.staged;
   const q = parseInt(qty);
   if (!asin || !q || badQty(q)) return res.status(400).json({ ok: false, error: `asin + qty (1–${MAX_QTY}) required` });
 
@@ -7581,25 +7605,35 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
       const sh = await duoShortfall(c, requestAsin, q, 0);
       if (sh.length) return sh;
     }
-    // Over 200 units the job becomes two linked halves so two people can each
-    // take one (splitPlan); a half someone is working never shrinks.
-    const ex = await c.query('SELECT id, qty, claimed_by, split_group FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 ORDER BY id FOR UPDATE', [requestAsin, duoFlag]);
-    const plan = splitPlan(ex.rows.map(x => ({ id: x.id, qty: x.qty, claimed: !!x.claimed_by, group: x.split_group })), q);
-    for (const u of plan.updates) {
-      if (u.group !== undefined) await c.query('UPDATE inv_pending_prep SET qty=$2, split_group=$3, split_part=$4 WHERE id=$1', [u.id, u.qty, u.group, u.part]);
-      else await c.query('UPDATE inv_pending_prep SET qty=$2 WHERE id=$1', [u.id, u.qty]);
+    if (staged) {
+      // Next batch: one held row per item, never merged into a live job
+      // (the floor's "Detangler 120" mustn't turn into 300). Split on release.
+      const ex = await c.query('SELECT id FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 AND staged ORDER BY id LIMIT 1 FOR UPDATE', [requestAsin, duoFlag]);
+      if (ex.rows.length) await c.query('UPDATE inv_pending_prep SET qty = qty + $2 WHERE id=$1', [ex.rows[0].id, q]);
+      else await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, staged) VALUES($1,$2,$3,true)', [requestAsin, q, duoFlag]);
+      return null;
     }
-    let newGroup = null;
-    for (const ins of plan.inserts) {
-      const g = ins.group === 'new' ? newGroup : (ins.group ?? null);
-      const row = (await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part) VALUES($1,$2,$3,$4,$5) RETURNING id',
-        [requestAsin, ins.qty, duoFlag, g, ins.part ?? null])).rows[0];
-      if (ins.group === 'new' && newGroup == null) { newGroup = row.id; await c.query('UPDATE inv_pending_prep SET split_group=$1 WHERE id=$1', [row.id]); }
-    }
+    await addLivePrep(c, requestAsin, duoFlag, q);
     return null;
   });
   if (short) return res.status(400).json({ ok: false, error: duoShortMsg(q, short), short, notEnough: true });
-  res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag });
+  res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag, staged });
+});
+
+// Release the next batch onto the floor's list: each held job joins the
+// live list as if added now (merging with an open job for the same item,
+// split over 200). One transaction, so a double tap releases once.
+app.post('/api/pending-prep/next/release', auth, async (req, res) => {
+  const out = await withTx(async (c) => {
+    const rows = (await c.query('SELECT id, asin, qty, is_duo FROM inv_pending_prep WHERE staged ORDER BY id FOR UPDATE')).rows;
+    for (const r of rows) {
+      await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['pending-prep:' + r.asin]);
+      await c.query('DELETE FROM inv_pending_prep WHERE id=$1', [r.id]);
+      if (r.qty > 0) await addLivePrep(c, r.asin, r.is_duo, r.qty);
+    }
+    return { jobs: rows.length, units: rows.reduce((n, r) => n + Math.max(0, r.qty), 0) };
+  });
+  res.json({ ok: true, released: out.jobs, units: out.units });
 });
 
 // List pending prep (worker's task list)
@@ -7609,7 +7643,13 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
             COALESCE(st.onhand,0) AS onhand
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      LEFT JOIN inv_stock st ON st.asin = pp.asin
-     WHERE pp.qty > 0 ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
+     WHERE pp.qty > 0 AND NOT pp.staged ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
+  // The next batch, shown to the floor only as one grey line (not workable).
+  const nextRows = (await pool.query(
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, p.name, p.image, p.location
+     FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
+     WHERE pp.staged AND pp.qty > 0 ORDER BY p.name`)).rows;
+  const next = { items: nextRows, jobs: nextRows.length, units: nextRows.reduce((n, r) => n + r.qty, 0) };
   // for duos, also return the component names so the worker knows what to grab
   const out = [];
   for (const r of rows.rows) {
@@ -7658,7 +7698,7 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     for (const r of os.rows) (openShipments[r.asin] = openShipments[r.asin] || []).push({ shipmentId: r.shipment_id, name: r.name, fc: r.fc, planned: r.planned, built: r.built });
   } catch (e) { console.error('[Pending prep] open shipments:', e.message); }
 
-  res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount, openShipments });
+  res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount, openShipments, next });
 });
 
 // Tick / untick many jobs at once (Pending Prep "Select all"). Only the
@@ -7667,7 +7707,7 @@ app.post('/api/pending-prep/in-plan-many', auth, async (req, res) => {
   const ids = (Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map(x => parseInt(x, 10)).filter(x => x > 0).slice(0, 2000);
   if (!ids.length) return res.status(400).json({ ok: false, error: 'Nothing to tick.' });
   const on = !!req.body.inPlan;
-  const r = await pool.query(on ? 'UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE id = ANY($1)'
+  const r = await pool.query(on ? 'UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE id = ANY($1) AND NOT staged'
                                 : 'UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id = ANY($1)', [ids]);
   res.json({ ok: true, changed: r.rowCount });
 });
@@ -7675,11 +7715,12 @@ app.post('/api/pending-prep/in-plan-many', auth, async (req, res) => {
 app.post('/api/pending-prep/in-plan', auth, async (req, res) => {
   const { id, inPlan } = req.body;
   if (!id) return res.status(400).json({ error: 'id required' });
-  if (inPlan) await pool.query('UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE id=$1', [id]);
+  if (inPlan) await pool.query('UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE id=$1 AND NOT staged', [id]);
   else await pool.query('UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id=$1', [id]);
   res.json({ ok: true });
 });
 
+const NEXT_BATCH_MSG = 'This job is in the next batch. It opens once the next batch is released.';
 // Claim a prep job (worker starts on it)
 // Resolve a submitted name to an active team member, or null.
 async function resolveEmployee(name) {
@@ -7712,8 +7753,9 @@ app.post('/api/pending-prep/crew/join', auth, async (req, res) => {
   // Owner's rule: only duo jobs take a second or third person. A single-SKU
   // job is one person's (big ones are split in half, one person per half),
   // so each person's speed is their own.
-  const job = await pool.query('SELECT is_duo FROM inv_pending_prep WHERE id=$1', [id]);
+  const job = await pool.query('SELECT is_duo, staged FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ ok: false, error: 'Job not found' });
+  if (job.rows[0].staged) return res.status(409).json({ ok: false, error: NEXT_BATCH_MSG });
   if (!job.rows[0].is_duo) return res.status(409).json({ ok: false, error: 'Only duo jobs can have more than one person. Take your own job (or the other half of a split job).' });
 
   const dup = await pool.query(
@@ -7757,8 +7799,9 @@ app.post('/api/pending-prep/claim', auth, async (req, res) => {
   const canonical = await resolveEmployee(who);
   if (!canonical) return res.status(400).json({ error: 'Pick your name from the list — free text is not accepted.' });
 
-  const cur = await pool.query('SELECT claimed_by, is_duo, split_group, split_part FROM inv_pending_prep WHERE id=$1', [id]);
+  const cur = await pool.query('SELECT claimed_by, is_duo, split_group, split_part, staged FROM inv_pending_prep WHERE id=$1', [id]);
   if (!cur.rows.length) return res.status(404).json({ error: 'Job not found' });
+  if (cur.rows[0].staged) return res.status(409).json({ ok: false, error: NEXT_BATCH_MSG });
   // Split job: part 2 starts only once part 1 is being worked on or done
   // (owner's rule), so a lone worker always takes part 1.
   if (cur.rows[0].split_part === 2 && cur.rows[0].split_group != null) {
@@ -7892,8 +7935,9 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
   const q = parseInt(qty);
   if (!id || badQty(q)) return res.status(400).json({ error: `id + qty (1–${MAX_QTY}) required` });
 
-  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at FROM inv_pending_prep WHERE id=$1', [id]);
+  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at, staged FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ error: 'Job not found' });
+  if (job.rows[0].staged) return res.status(409).json({ ok: false, error: NEXT_BATCH_MSG });
   const { asin, qty: requested, is_duo } = job.rows[0];
   const who = (completedBy || job.rows[0].claimed_by || 'unknown').trim();
 
@@ -8207,7 +8251,7 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     let pendingInfo = null;
     const undoOps = [{ t: 'prepped', asin: prod.asin, qty: -q }];
     // A split job is two rows: the scan counts down part 1, then spills into part 2.
-    const pend = await db.query('SELECT id, qty, is_duo, split_group, split_part FROM inv_pending_prep WHERE asin=$1 ORDER BY id FOR UPDATE', [prod.asin]);
+    const pend = await db.query('SELECT id, qty, is_duo, split_group, split_part FROM inv_pending_prep WHERE asin=$1 AND NOT staged ORDER BY id FOR UPDATE', [prod.asin]);
     if (pend.rows.length) {
       const requested = pend.rows.reduce((t, x) => t + x.qty, 0);
       let left = q;
