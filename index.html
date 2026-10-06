@@ -3091,7 +3091,7 @@ function loadVelocity(){
   ownerApi('/api/velocity?days='+days).then(d=>{
     btn.textContent='Load'; btn.disabled=false;
     if(d.error){ document.getElementById('velocityBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+esc(d.error)+'</div>'; return; }
-    window._velData=d.items; window._velDays=d.days; window._velSort={col:'sold',dir:-1}; window._velLoadedAt=new Date();
+    window._velData=d.items; window._velDays=d.days; window._velSort={col:'sold',dir:-1}; window._velLoadedAt=new Date(); window._velReport=d.report||null;
     renderVelocity();
   });
 }
@@ -3123,6 +3123,16 @@ function renderVelocity(){
     return `<tr><td>${link}</td><td>${x.sold}</td><td>${x.perDay}</td><td>${x.onhand}</td><td ${col}>${dl}</td></tr>`;
   }).join('');
   h+='</tbody></table><div class="hint">Click a product name to open its Amazon listing. Red = under 21 days of stock left. Based on last '+window._velDays+' days of Amazon sales.'+(window._velLoadedAt?' · Last loaded: '+window._velLoadedAt.toLocaleString():'')+'</div>';
+  // What Amazon's orders report held: tells "nothing sold" from "the pull came back empty".
+  const R=window._velReport;
+  if(R){
+    const nic=(R.notInCatalog||[]);
+    h='<div class="box" style="text-align:center;margin-bottom:10px;border:2px solid '+(R.units?'#1e8449':'#c0392b')+'">'
+      +'<b style="color:'+(R.units?'#1e8449':'#c0392b')+'">Amazon orders report: '+R.units.toLocaleString()+' units on '+R.lines.toLocaleString()+' order lines · '+R.matched.toLocaleString()+' units on your catalog products</b>'
+      +(R.units?'':'<div class="hint" style="margin-top:4px">The report came back with no orders. If you know you sold, the Amazon connection may be missing the Orders/Reports permission.</div>')
+      +(R.notInCatalogUnits?'<div class="hint" style="margin-top:4px">'+R.notInCatalogUnits.toLocaleString()+' units sold on ASINs not in your catalog: '+nic.slice(0,8).map(x=>esc(x.asin)+' ('+x.units+')').join(', ')+(nic.length>8?'…':'')+'</div>':'')
+      +'</div>'+h;
+  }
   b.innerHTML=h;
 }
 
@@ -4925,7 +4935,9 @@ function renderSmartScout(){
       +'<div>A fair share (pie ÷ sellers on each listing) would be <b>'+n(T.fair)+'</b>/mo, <b>'+pct(T.fair/T.pie)+'</b>. '
       +(T.fair>T.ours?'You\'re <b style="color:#c0392b">'+n(T.fair-T.ours)+'</b>/mo short of it.':'You\'re above it.')+'</div>'
     +'</div></div>'
-    +'<div class="hint" style="margin-top:6px">Your sales: last '+d.salesDays+' days (Admin → Velocity). Brand files cover '+d.listings.length+' listings in total; '+d.listings.filter(l=>l.carried).length+' of them are in your catalog.'+(sellers.length&&!us?' <b style="color:#c0392b">None of the seller files is marked as you</b> — use "This is you" in the Sellers table.':'')+'</div></div>';
+    +(d.salesReport&&!d.salesReport.units?'<div style="margin-top:6px;padding:8px;border-radius:6px;background:#fdeceb;color:#c0392b;font-weight:700">⚠ Your last sales pull from Amazon came back empty, so "Your units" reads 0. Reload it in Admin → Velocity.</div>':'')
+    +(!d.salesReport?'<div style="margin-top:6px;padding:8px;border-radius:6px;background:#fdf6e3;color:#b7791f;font-weight:700">⚠ Your sales here are from an older pull. Reload Admin → Velocity (60 days) to refresh them.</div>':'')
+    +'<div class="hint" style="margin-top:6px">Your sales: last '+d.salesDays+' days (Admin → Velocity'+(d.asOf&&d.asOf.sales?', pulled '+new Date(d.asOf.sales).toLocaleString('en-US',{month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'}):'')+(d.salesReport?', '+d.salesReport.units.toLocaleString()+' units in the report':'')+'). Brand files cover '+d.listings.length+' listings in total; '+d.listings.filter(l=>l.carried).length+' of them are in your catalog.'+(sellers.length&&!us?' <b style="color:#c0392b">None of the seller files is marked as you</b> — use "This is you" in the Sellers table.':'')+'</div></div>';
 
   // Seller files
   if(sellers.length){

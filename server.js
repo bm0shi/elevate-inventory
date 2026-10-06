@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'velocity-asin-1006';
+const BUILD_ID = 'velocity-30d-1007';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6819,6 +6819,14 @@ function startAmazonSync(trigger) {
       await saveCache('amazon_restock', rs);
       result.restockSkus = Object.keys(rs.bySku).length;
     } catch (e) { result.errors.push('restock report: ' + e.message); }
+    // Our sales, same window as the last pull (60 days if never set), so the
+    // attack list and the forecast are fresh each morning.
+    try {
+      amazonSync.step = 'Reading our sales (orders report)…';
+      const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'")).rows[0];
+      const v = await refreshVelocity((prev && prev.data && prev.data.days) || 60);
+      result.salesUnits = v.report.units;
+    } catch (e) { result.errors.push('sales report: ' + e.message); }
     // Package sizes for listings that don't have one yet (new products), for
     // the FBA capacity bar. Only the missing ones: sizes rarely change.
     try {
@@ -7307,6 +7315,7 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
   const hid = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='ss_attack_hidden'")).rows[0];
   const hidden = (hid && hid.data) || { asins: [], brands: [] };
   res.json({ ok: true, listings, sellers: Object.values(sellers), ours: oursOnSellers, hidden, salesDays: velDays,
+    salesReport: (velC && velC.data && velC.data.report) || null,
     asOf: { keepa: mktC && mktC.updated_at, sales: velC && velC.updated_at } });
 });
 
@@ -7453,12 +7462,11 @@ setInterval(async () => {
   } catch (e) { console.error('[Sync] daily check failed:', e.message); }
 }, 60 * 1000).unref();
 
-// Sales velocity (OWNER only) — units sold per SKU + days of stock left
-app.get('/api/velocity', ownerAuth, async (req, res) => {
-  const days = parseInt(req.query.days) || 30;
-  let sales;
-  try { sales = await getSalesVelocity(days); }
-  catch(err){ return res.status(400).json({ error: err.message }); }
+// Sales velocity (OWNER only) — units sold per SKU + days of stock left.
+// Also refreshed by the morning sync, so the Smart Scout attack list and the
+// forecast never sit on an old (or failed) pull.
+async function refreshVelocity(days) {
+  const sales = await getSalesVelocity(days);
   // Every catalog product, stock row or not (a listing with nothing on our
   // shelf still sells), counted by ASIN across all our SKUs.
   const ours = await pool.query('SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0)::int AS onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
@@ -7470,9 +7478,22 @@ app.get('/api/velocity', ownerAuth, async (req, res) => {
     out.push({ asin:r.asin, name:r.name, sku:r.sku, sold, perDay: Math.round(perDay*10)/10, onhand:r.onhand, daysLeft });
   }
   out.sort((a,b)=>b.sold-a.sold);
-  const result = { days, items: out };
+  // What the report held, so "0 sold everywhere" can be told apart from a
+  // pull that came back empty, and sales on ASINs missing from the catalog show.
+  const known = new Set(ours.rows.map(r => r.asin));
+  const notInCatalog = Object.entries(sales.byAsin || {}).filter(([a]) => !known.has(a))
+    .map(([asin, units]) => ({ asin, units })).sort((a, b) => b.units - a.units);
+  const report = { lines: sales.lines || 0, units: sales.units || 0, matched: out.reduce((n, x) => n + x.sold, 0),
+    notInCatalog: notInCatalog.slice(0, 50), notInCatalogUnits: notInCatalog.reduce((n, x) => n + x.units, 0) };
+  const result = { days, items: out, report, pulledAt: new Date().toISOString() };
   await saveCache('velocity', result);
-  res.json(result);
+  console.log(`[Velocity] ${days}d: ${report.lines} order lines, ${report.units} units (${report.matched} on catalog products).`);
+  return result;
+}
+app.get('/api/velocity', ownerAuth, async (req, res) => {
+  const days = Math.min(365, parseInt(req.query.days) || 30);
+  try { res.json(await refreshVelocity(days)); }
+  catch(err){ return res.status(400).json({ error: err.message }); }
 });
 
 app.get('/api/dashboard-owner', ownerAuth, async (req, res) => {
