@@ -2320,7 +2320,7 @@ let ssPicks=new Set();
 let _demand=null;
 function loadDemand(){
   if(loadDemand._busy) return Promise.resolve(); loadDemand._busy=true;
-  return api('/api/demand').then(d=>{ if(d&&d.ok){ _demand=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); } }).catch(()=>{}).finally(()=>{ loadDemand._busy=false; });
+  return api('/api/demand').then(d=>{ if(d&&d.ok){ _demand=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadDemand._busy=false; });
 }
 // Monthly units we'll sell of a listing, and where the number came from:
 // best estimate → else the other sellers' SmartScout average → else Keepa's
@@ -2336,7 +2336,7 @@ function demandRate(asin, keepaSold){
 let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo (On Hand "3P Avg / Mo", Pending Prep)
 function loadSsAvg(){
   if(loadSsAvg._busy) return Promise.resolve(); loadSsAvg._busy=true;
-  return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
+  return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
 }
 function loadSsPicks(){
   return api('/api/ss-picks').then(d=>{ if(d&&d.ok){ ssPicks=new Set(d.asins); ssPicksPaint(); } }).catch(()=>{});
@@ -4094,19 +4094,55 @@ function renderNextBatch(){
     +'<span>NEXT BATCH: '+n.jobs+' job'+(n.jobs===1?'':'s')+' · '+n.units.toLocaleString()+' units — not released yet</span>'
     +'<span style="font-size:12px;font-weight:700;color:#7a8696">'+(open?'▲ hide':'▼ show')+'</span></div>';
   if(open){
-    const td='padding:7px 6px;border-top:1px solid #e2e8f0;text-align:center';
+    // Same numbers as the Pending Prep list view: Amazon stock + on the way,
+    // the other sellers' SmartScout average, days covered at the best-estimate
+    // rate (demandRate), and Keepa's rank / monthly sales for the listing.
+    if(!ssAvg) loadSsAvg();
+    const queued={}; for(const y of (d.items||[])) queued[y.asin]=(queued[y.asin]||0)+(y.qty||0);
+    const rowsN=n.items.map(x=>{
+      const p=(products||[]).find(y=>y.asin===x.asin)||{}, known=!!p.fba_as_of;
+      const total=Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0);
+      const R=demandRate(x.asin, p.monthlySold), mo=R.mo||null, perDay=mo>0?mo/30:null;
+      const av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null;
+      return {x, total:known?total:null, avg:av, days:known&&perDay?total/perDay:null,
+        daysAll:known&&perDay?(total+(queued[x.asin]||0)+x.qty)/perDay:null, prep:queued[x.asin]||0,
+        rank:p.salesRank, sold:p.monthlySold, est:R.est, note:mo>0?'selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':''};
+    });
+    const NK={ name:r=>String(r.x.name||r.x.asin).toLowerCase(), qty:r=>r.x.qty, total:r=>r.total, avg:r=>r.avg, days:r=>r.days, daysAll:r=>r.daysAll, rank:r=>r.rank, sold:r=>r.sold };
+    let so={}; try{ so=JSON.parse(localStorage_get('nextSort')||'{}'); }catch(e){}
+    if(NK[so.key]){ const g=NK[so.key], dir=so.dir||1;
+      rowsN.sort((a,c)=>{ const u=g(a), v=g(c); if(u==null&&v==null) return 0; if(u==null) return 1; if(v==null) return -1; return (u<v?-1:u>v?1:0)*dir; }); }
+    const th=(k,label,w,tip,left)=>'<th onclick="nextBatchSort(\''+k+'\')" title="'+esc((tip?tip+' · ':'')+'Click to sort')+'" style="cursor:pointer;user-select:none;padding:6px;'+(w?'width:'+w+'px;':'')+(left?'text-align:left;':'')+'">'+label+(so.key===k?(so.dir===-1?' ▼':' ▲'):'')+'</th>';
+    const td='padding:7px 6px;border-top:1px solid #e2e8f0;text-align:center;font-variant-numeric:tabular-nums';
+    const dColor=v=>v==null?'#8a97a6':v<21?'#c0392b':v<45?'#b7791f':'#1e8449';
+    const days=(v,est)=>v==null?'—':Math.round(v)+'d'+(est?'*':'');
     h+='<div class="hint" style="text-align:center;margin:6px 0 8px">Don\'t start these yet. They open on the list above once the batch is released.</div>'
-      +'<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:13px;color:#1f2733"><thead><tr style="font-size:11px;color:#5a6472">'
-      +'<th style="text-align:left;padding:6px">Product</th><th style="width:90px">Qty</th><th style="width:80px">Location</th><th style="width:200px"></th></tr></thead><tbody>'
-      +n.items.map(x=>'<tr><td style="'+td+';text-align:left">'+(x.is_duo?'<b style="color:#c0392b;font-size:11px">DUO</b> ':'')+esc(x.name||x.asin)+'</td>'
+      +'<div style="overflow-x:auto"><table style="width:100%;min-width:1100px;table-layout:fixed;border-collapse:collapse;font-size:13px;color:#1f2733"><thead><tr style="font-size:11px;color:#5a6472">'
+      +th('name','Product',0,'',1)+th('qty','Qty',62)+'<th style="width:70px;padding:6px">Location</th>'
+      +th('total','At Amazon + transit',96,'At Amazon (in stock) plus on the way to Amazon, for this listing')
+      +th('avg','Avg (Smart Scout)',90,'SmartScout: average sales per month of the other sellers on this listing (not you)')
+      +th('days','Days covered',82,'At Amazon + transit ÷ daily sales (best estimate, same as Send Next). * = rough fallback')
+      +th('daysAll','Days covered + pending prep + this batch',118,'At Amazon + transit + what is in Pending Prep now + this next-batch job, ÷ daily sales')
+      +th('rank','Keepa rank',84,'Keepa sales rank for the listing')
+      +th('sold','Keepa sold / mo',84,'Keepa: units bought on the whole listing last month (all sellers, Amazon included)')
+      +'<th style="width:190px"></th></tr></thead><tbody>'
+      +rowsN.map(r=>{ const x=r.x;
+        return '<tr><td style="'+td+';text-align:left;line-height:1.3">'+(x.is_duo?'<b style="color:#c0392b;font-size:11px">DUO</b> ':'')+esc(x.name||x.asin)+'</td>'
         +'<td style="'+td+';font-weight:800">'+x.qty+'</td><td style="'+td+'">'+esc(x.location||'—')+'</td>'
+        +'<td style="'+td+';font-weight:700;color:#2563a8">'+(r.total==null?'—':r.total.toLocaleString())+'</td>'
+        +'<td style="'+td+';font-weight:700;color:#7a4fb5">'+(r.avg==null?'—':'~'+Math.round(r.avg).toLocaleString())+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+dColor(r.days)+'" title="'+esc(r.note)+'">'+days(r.days,r.est)+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+dColor(r.daysAll)+'" title="'+esc((r.total!=null?r.total+' at Amazon + transit + '+r.prep+' in pending prep + '+x.qty+' this batch · ':'')+r.note)+'">'+days(r.daysAll,r.est)+'</td>'
+        +'<td style="'+td+'">'+(r.rank==null?'—':'#'+Number(r.rank).toLocaleString())+'</td>'
+        +'<td style="'+td+'">'+(r.sold==null?'—':Number(r.sold).toLocaleString())+'</td>'
         +'<td style="'+td+'"><button onclick="nextBatchEdit('+x.id+')" style="padding:5px 9px;font-size:11.5px;font-weight:700;background:#eef2f6;color:#1f2733;border:none;border-radius:5px;cursor:pointer">Change qty</button> '
-        +'<button onclick="nextBatchRemove('+x.id+')" style="padding:5px 9px;font-size:11.5px;font-weight:700;background:#fdeceb;color:#c0392b;border:none;border-radius:5px;cursor:pointer">Remove</button></td></tr>').join('')
-      +'</tbody></table>'
+        +'<button onclick="nextBatchRemove('+x.id+')" style="padding:5px 9px;font-size:11.5px;font-weight:700;background:#fdeceb;color:#c0392b;border:none;border-radius:5px;cursor:pointer">Remove</button></td></tr>'; }).join('')
+      +'</tbody></table></div>'
       +'<div style="text-align:center;margin-top:12px"><button class="action" onclick="releaseNextBatch()" style="background:#7a4fb5;min-width:260px">▶ Release next batch to the floor</button></div>';
   }
   el.innerHTML=h+'</div>';
 }
+function nextBatchSort(k){ let o={}; try{ o=JSON.parse(localStorage_get('nextSort')||'{}'); }catch(e){} localStorage_set('nextSort', JSON.stringify({key:k, dir:o.key===k?-(o.dir||1):(k==='name'||k==='days'||k==='daysAll'||k==='rank'?1:-1)})); renderNextBatch(); }
 function nextBatchItem(id){ const n=(window._pendingPrepData||{}).next; return n && n.items.find(x=>x.id===id); }
 function nextBatchEdit(id){
   const x=nextBatchItem(id); if(!x) return;
