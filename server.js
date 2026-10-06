@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'next-batch-cols-1010';
+const BUILD_ID = 'cases-1011';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -504,6 +504,9 @@ async function initDb() {
     -- back from the floor (can't be claimed, scanned or completed) until
     -- released, but its units count as spoken for like any pending prep.
     ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS staged BOOLEAN NOT NULL DEFAULT false;
+    -- Bottles per Cosmoprof case (On Hand shows stock in cases; Prep takes a
+    -- number of cases). NULL = the usual 12.
+    ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS case_qty INTEGER;
     CREATE TABLE IF NOT EXISTS inv_prepped (
       asin TEXT PRIMARY KEY REFERENCES inv_products(asin),
       qty INTEGER NOT NULL DEFAULT 0,
@@ -1232,12 +1235,21 @@ app.get('/api/find/:code', auth, async (req, res) => {
 });
 
 // full product list (for the "which product?" picker + on-hand view)
+// Bottles per case for one product (default 12 when never set).
+app.post('/api/products/:asin/case-qty', auth, async (req, res) => {
+  const n = parseInt(req.body && req.body.caseQty, 10);
+  if (!(n >= 1 && n <= 500)) return res.status(400).json({ ok: false, error: 'Bottles per case must be 1–500.' });
+  const r = await pool.query('UPDATE inv_products SET case_qty=$2 WHERE asin=$1', [req.params.asin, n]);
+  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Product not found' });
+  res.json({ ok: true, caseQty: n });
+});
+
 app.get('/api/products', auth, async (req, res) => {
   // "prepped" here = units of THIS asin committed to prep, counting:
   //  - direct prepped of this asin (singles), PLUS
   //  - prepped bundles that consume this asin as a component
   const { rows } = await pool.query(
-    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, p.location, p.hazmat, p.hazmat_source, s.onhand, s.transit,
+    `SELECT p.asin, p.sku, p.name, p.upc, p.fnsku, p.image, p.location, p.hazmat, p.hazmat_source, p.case_qty, s.onhand, s.transit,
       (
         COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)
         + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)
@@ -7639,14 +7651,14 @@ app.post('/api/pending-prep/next/release', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, pp.split_group, pp.split_part, p.name, p.sku, p.fnsku, p.image, p.location,
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, pp.split_group, pp.split_part, p.name, p.sku, p.fnsku, p.image, p.location, p.case_qty,
             COALESCE(st.onhand,0) AS onhand
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      LEFT JOIN inv_stock st ON st.asin = pp.asin
      WHERE pp.qty > 0 AND NOT pp.staged ORDER BY (pp.claimed_by IS NULL), pp.created_at`);
   // The next batch, shown to the floor only as one grey line (not workable).
   const nextRows = (await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, p.name, p.image, p.location
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, p.name, p.image, p.location, p.case_qty
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      WHERE pp.staged AND pp.qty > 0 ORDER BY p.name`)).rows;
   const next = { items: nextRows, jobs: nextRows.length, units: nextRows.reduce((n, r) => n + r.qty, 0) };
@@ -7656,7 +7668,7 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     let components = [];
     if (r.is_duo) {
       const c = await pool.query(
-        `SELECT b.component_asin AS asin, p.name, p.location, COALESCE(s.onhand,0) AS onhand, COALESCE(b.qty,1) AS per
+        `SELECT b.component_asin AS asin, p.name, p.location, p.case_qty, COALESCE(s.onhand,0) AS onhand, COALESCE(b.qty,1) AS per
          FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin
          LEFT JOIN inv_stock s ON s.asin=b.component_asin
          WHERE b.bundle_asin=$1`, [r.asin]);
