@@ -21,6 +21,7 @@ const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
 const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
 const { splitPlan, SPLIT_OVER } = require('./lib/prep-split');
 const smartscout = require('./lib/smartscout');
+const velocity = require('./lib/velocity');
 const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
 const capacity = require('./lib/capacity');
@@ -414,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'shortages-tab-1005';
+const BUILD_ID = 'velocity-asin-1006';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7458,10 +7459,12 @@ app.get('/api/velocity', ownerAuth, async (req, res) => {
   let sales;
   try { sales = await getSalesVelocity(days); }
   catch(err){ return res.status(400).json({ error: err.message }); }
-  const ours = await pool.query('SELECT p.asin, p.sku, p.name, s.onhand FROM inv_products p JOIN inv_stock s ON s.asin=p.asin');
+  // Every catalog product, stock row or not (a listing with nothing on our
+  // shelf still sells), counted by ASIN across all our SKUs.
+  const ours = await pool.query('SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0)::int AS onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
   const out = [];
   for (const r of ours.rows) {
-    const sold = sales[r.sku] || 0;
+    const sold = velocity.unitsFor(sales, r.asin, r.sku);
     const perDay = sold/days;
     const daysLeft = perDay>0 ? Math.round(r.onhand/perDay) : null;
     out.push({ asin:r.asin, name:r.name, sku:r.sku, sold, perDay: Math.round(perDay*10)/10, onhand:r.onhand, daysLeft });
