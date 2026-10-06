@@ -6,6 +6,7 @@
 // ============================================================
 const axios = require('axios');
 const qs = require('querystring');
+const { parseOrdersReport } = require('./lib/velocity');
 
 // Overridable only for local testing against a fake Amazon; never set in Railway.
 const SP_API_BASE = process.env.SPAPI_BASE_URL || 'https://sellingpartnerapi-na.amazon.com';
@@ -288,6 +289,7 @@ async function getFbaInventory(onProgress, sellerSkus) {
 }
 
 // Sales velocity via the ALL ORDERS report (one report, not per-order calls = fast)
+// Returns { bySku, byAsin } units sold in the window (lib/velocity.js).
 async function getSalesVelocity(days = 30) {
   const token = await getAccessToken();
   const zlib = require('zlib');
@@ -317,27 +319,7 @@ async function getSalesVelocity(days = 30) {
   const dl = await http.get(doc.data.url, { responseType:'arraybuffer' });
   let body = doc.data.compressionAlgorithm==='GZIP' ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8') : Buffer.from(dl.data).toString('utf-8');
 
-  const lines = body.split(/\r?\n/).filter(l=>l);
-  if(!lines.length) return {};
-  const headers = lines[0].split('\t');
-  const skuIdx = headers.indexOf('sku');
-  const qtyIdx = headers.indexOf('quantity');
-  const statusIdx = headers.indexOf('item-status');
-  // The report selects orders by LAST UPDATE. An order placed before the
-  // window but shipped/refunded inside it was counted, inflating velocity.
-  const dateIdx = headers.indexOf('purchase-date');
-  const afterMs = Date.parse(after);
-  const skuUnits = {};
-  for(let i=1;i<lines.length;i++){
-    const c = lines[i].split('\t');
-    const sku = c[skuIdx];
-    const qty = parseInt(c[qtyIdx])||0;
-    const st = (c[statusIdx]||'').toLowerCase();
-    if(!sku || qty<=0 || st==='cancelled') continue;
-    if(dateIdx >= 0){ const pd = Date.parse(c[dateIdx]); if(!isNaN(pd) && pd < afterMs) continue; }
-    skuUnits[sku] = (skuUnits[sku]||0) + qty;
-  }
-  return skuUnits;
+  return parseOrdersReport(body, Date.parse(after));
 }
 
 // Amazon's restock recommendation (Seller Central → Restock Inventory), raw
