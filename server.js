@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'duo-fit-1014';
+const BUILD_ID = 'pend-split-1015';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1258,6 +1258,12 @@ app.get('/api/products', auth, async (req, res) => {
         COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)
         + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)
       )::int AS pending_prep,
+      -- The same two numbers split by how the bottles are going out: as this
+      -- single, or inside duos (owner: "did I add it as a duo or a single?").
+      COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)::int AS pending_single,
+      COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)::int AS pending_duo,
+      COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)::int AS prepped_single,
+      COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)::int AS prepped_duo,
       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
       EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle,
       (SELECT json_agg(json_build_object('at', x.created_at, 'delta', x.delta) ORDER BY x.id) FROM inv_shrink x WHERE x.asin=p.asin) AS shrink
