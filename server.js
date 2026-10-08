@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'mkt-floor-amz-tabs-1019';
+const BUILD_ID = 'fba-429-1020';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6146,7 +6146,12 @@ app.get('/api/fba-discrepancies', auth, async (req, res) => {
 });
 
 // Generic cache get/set (so loaded data survives page refresh)
-app.get('/api/cache/:key', auth, async (req, res) => {
+// Saved data by key. Staff screens only read 'fba_inventory' (units); every
+// other key (velocity = our sales, inventory_value, market data, restock
+// priority…) is owner data and needs the owner password. This route used to
+// hand any key to the warehouse login.
+const STAFF_CACHE_KEYS = new Set(['fba_inventory']);
+app.get('/api/cache/:key', auth, (req, res, next) => STAFF_CACHE_KEYS.has(req.params.key) ? next() : ownerAuth(req, res, next), async (req, res) => {
   const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [req.params.key]);
   if (!r.rows.length) return res.json({ cached: false });
   res.json({ cached: true, data: r.rows[0].data, updated_at: r.rows[0].updated_at });
@@ -6780,7 +6785,17 @@ app.post('/api/set-cost', ownerAuth, async (req, res) => {
 // Pull Amazon's stock picture: every page of FBA inventory, plus what's on
 // the way in open shipments. Saves the 'fba_inventory' cache the On Hand
 // cards, restock plan and products-to-add read. onProgress(text) is optional.
-async function pullFbaInventory(onProgress) {
+// One stock pull at a time: the FBA Inventory button pressed during Sync
+// with Amazon (or the morning sync) used to start a second pull in
+// parallel, and the doubled requests hit Amazon's limit (429). A second
+// caller now waits for, and gets, the pull already running.
+let fbaPullPromise = null;
+function pullFbaInventory(onProgress) {
+  if (fbaPullPromise) { if (onProgress) onProgress('A stock pull is already running — waiting for it…'); return fbaPullPromise; }
+  fbaPullPromise = pullFbaInventoryRun(onProgress).finally(() => { fbaPullPromise = null; });
+  return fbaPullPromise;
+}
+async function pullFbaInventoryRun(onProgress) {
   let fba;
   fba = await getFbaInventory(onProgress);
   const fbaPages = fba._pages || 0;
