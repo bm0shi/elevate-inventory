@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'transit-view-1017';
+const BUILD_ID = 'other-ship-1018';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -706,6 +706,21 @@ async function initDb() {
     -- RECEIVING, CLOSED…), shown on Admin → Shipments next to ours.
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS amz_status TEXT;
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS amz_status_at TIMESTAMPTZ;
+    -- Shipments sent to Amazon from somewhere else (the owner's old location),
+    -- kept in the system for their status and counts only. Deliberately a
+    -- separate table: nothing that moves stock (check-ins, Mark Received,
+    -- cancel, transit split) reads it, so they can never touch On Hand or
+    -- "on the way" here.
+    CREATE TABLE IF NOT EXISTS inv_other_shipments (
+      shipment_id TEXT PRIMARY KEY,
+      shipment_name TEXT,
+      origin TEXT,
+      fc TEXT,
+      amz_status TEXT,
+      items JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ
+    );
     -- Per-shipment line items (what we sent, tagged to a shipment)
     CREATE TABLE IF NOT EXISTS inv_shipment_items (
       id SERIAL PRIMARY KEY,
@@ -1990,6 +2005,55 @@ app.get('/api/shipments', auth, async (req, res) => {
   res.json(rows);
 });
 
+// SKU -> product (catalog SKU first, then SKUs Amazon reported), the same
+// lookups the stock pull uses.
+async function skuProductMap() {
+  const m = {};
+  for (const r of (await pool.query(`SELECT p.sku, p.asin, p.name FROM inv_products p WHERE p.sku IS NOT NULL
+      UNION ALL SELECT m.sku, m.asin, p.name FROM inv_sku_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.asin IS NOT NULL`)).rows)
+    if (!m[r.sku]) m[r.sku] = { asin: r.asin, name: r.name };
+  return m;
+}
+// Read one or more "other location" shipments from Amazon and save their
+// status and shipped / received per product. No stock is touched.
+async function refreshOtherShipments(ids) {
+  if (!ids.length) return 0;
+  const info = await getShipmentsInfo(ids);
+  const skus = await skuProductMap();
+  let n = 0;
+  for (const id of ids) {
+    const i = info[String(id).toUpperCase()];
+    if (!i) continue;
+    const items = (await getShipmentReceivedItems(id)).map(it => ({ sku: it.sku, asin: (skus[it.sku] || {}).asin || null,
+      name: (skus[it.sku] || {}).name || it.sku, shipped: it.shipped || 0, received: it.received || 0 }));
+    await pool.query(`UPDATE inv_other_shipments SET amz_status=$2, fc=COALESCE(NULLIF($3,''), fc), shipment_name=COALESCE(NULLIF(shipment_name,''), $4),
+      items=$5, updated_at=now() WHERE shipment_id=$1`, [id, i.status, i.fc, i.name, JSON.stringify(items)]);
+    n++;
+  }
+  return n;
+}
+// Keep a shipment from another location in the system (status and counts
+// only). Refused for a shipment the app already recorded with stock.
+app.post('/api/other-shipments', auth, async (req, res) => {
+  const sid = shipIdOk(req.body && req.body.shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'Enter the FBA shipment ID (e.g. FBA19ABC1234).' });
+  const origin = String((req.body && req.body.origin) || 'Old location').trim().slice(0, 40) || 'Old location';
+  if ((await pool.query('SELECT 1 FROM inv_shipments WHERE upper(shipment_id)=$1', [sid])).rows.length)
+    return res.status(409).json({ ok: false, error: `${sid} is already in the app as a shipment from this warehouse. Nothing changed.` });
+  const info = await getShipmentsInfo([sid]);
+  if (!info[sid]) return res.status(404).json({ ok: false, error: `Amazon has no shipment ${sid}. Check the ID.` });
+  await pool.query(`INSERT INTO inv_other_shipments(shipment_id, shipment_name, origin, fc, amz_status) VALUES($1,$2,$3,$4,$5)
+    ON CONFLICT (shipment_id) DO UPDATE SET origin=$3`, [sid, info[sid].name, origin, info[sid].fc, info[sid].status]);
+  await refreshOtherShipments([sid]);
+  res.json({ ok: true, shipmentId: sid, status: info[sid].status });
+});
+app.post('/api/other-shipments/remove', auth, async (req, res) => {
+  const sid = shipIdOk(req.body && req.body.shipmentId);
+  if (!sid) return res.status(400).json({ ok: false, error: 'bad shipment id' });
+  const r = await pool.query('DELETE FROM inv_other_shipments WHERE shipment_id=$1', [sid]);
+  res.json({ ok: true, removed: r.rowCount });
+});
+
 // Admin → In Transit: the app's in-transit shipments merged with every
 // shipment Amazon has open (from the last update), with Amazon's status and
 // shipped / received per product. Units only. Shipments the app never
@@ -2003,11 +2067,9 @@ app.get('/api/transit-view', auth, async (req, res) => {
   const byId = {}; for (const r of app_) byId[String(r.shipment_id).toUpperCase()] = r;
   const cache = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='inbound_open'")).rows[0];
   const open = (cache && cache.data && cache.data.shipments) || [];
-  // SKU -> product, the same lookups the stock pull uses
-  const skuMap = {};
-  for (const r of (await pool.query(`SELECT p.sku, p.asin, p.name FROM inv_products p WHERE p.sku IS NOT NULL
-      UNION ALL SELECT m.sku, m.asin, p.name FROM inv_sku_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.asin IS NOT NULL`)).rows)
-    if (!skuMap[r.sku]) skuMap[r.sku] = { asin: r.asin, name: r.name };
+  const others = {};
+  for (const o of (await pool.query('SELECT shipment_id, origin FROM inv_other_shipments')).rows) others[String(o.shipment_id).toUpperCase()] = o.origin || 'Other location';
+  const skuMap = await skuProductMap();
   const rows = [], seen = new Set();
   for (const sh of open) {
     const key = String(sh.id).toUpperCase(); seen.add(key);
@@ -2015,7 +2077,7 @@ app.get('/api/transit-view', auth, async (req, res) => {
     const items = (sh.items || []).map(it => ({ sku: it.sku, asin: (skuMap[it.sku] || {}).asin || null, name: (skuMap[it.sku] || {}).name || it.sku,
                                                 shipped: it.shipped || 0, received: it.received || 0 }));
     rows.push({ id: sh.id, name: sh.name || (a && a.shipment_name) || '', amzStatus: sh.status || (a && a.amz_status) || null, fc: sh.fc || '',
-                inApp: !!a, appStatus: a ? a.status : null, sentAt: a ? a.created_at : null,
+                inApp: !!a, appStatus: a ? a.status : null, sentAt: a ? a.created_at : null, other: others[key] || null,
                 shipped: items.reduce((n, x) => n + x.shipped, 0), received: items.reduce((n, x) => n + x.received, 0), appUnits: a ? a.units : null, items });
   }
   // App shipments still in transit that Amazon's open list doesn't have
@@ -2056,6 +2118,20 @@ app.get('/api/all-shipments', auth, async (req, res) => {
     (byShip[it.shipment_id] = byShip[it.shipment_id] || []).push(it);
   }
   const out = ships.rows.map(s => ({ ...s, items: byShip[s.shipment_id] || [] }));
+  // Shipments from another location: listed with their Amazon counts, marked,
+  // and never offered the stock buttons (cancel / replace / costs).
+  const prods = {};
+  for (const p of (await pool.query('SELECT asin, name, sku, fnsku, image FROM inv_products')).rows) prods[p.asin] = p;
+  for (const o of (await pool.query('SELECT * FROM inv_other_shipments ORDER BY created_at DESC')).rows) {
+    const st = String(o.amz_status || '').toUpperCase();
+    const recvd = ['CHECKED_IN', 'RECEIVING', 'CLOSED'].includes(st);
+    const items = (o.items || []).map(it => ({ shipment_id: o.shipment_id, asin: it.asin, qty: it.shipped, qty_received: recvd ? it.received : null,
+      name: (prods[it.asin] || {}).name || it.name || it.sku, sku: it.sku, fnsku: (prods[it.asin] || {}).fnsku || null, image: (prods[it.asin] || {}).image || null }));
+    out.push({ shipment_id: o.shipment_id, shipment_name: o.shipment_name, status: recvd ? 'received' : 'in_transit', created_at: o.created_at,
+      received_at: null, has_discrepancy: st === 'CLOSED' && items.some(i => i.qty_received != null && i.qty_received < i.qty),
+      amz_status: o.amz_status, amz_status_at: o.updated_at, other: o.origin || 'Other location', items });
+  }
+  out.sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
   res.json(out);
 });
 
@@ -2995,6 +3071,12 @@ function refreshShipmentsFromAmazon(trigger) {
       const r = await reconcileInTransit();
       if (r && r.ok === false) errors.push(r.error); else result.checkedIn = (r && r.shipments) || 0;
     } catch (e) { errors.push(e.message); }
+    // Shipments from another location: status and counts only, until closed.
+    try {
+      const ids = (await pool.query(`SELECT shipment_id FROM inv_other_shipments
+        WHERE COALESCE(amz_status,'') NOT IN ('CLOSED','CANCELLED','DELETED')`)).rows.map(r => r.shipment_id);
+      if (ids.length) { shipRefresh.step = 'Reading shipments from other locations…'; result.other = await refreshOtherShipments(ids); }
+    } catch (e) { errors.push('other-location shipments: ' + e.message); }
     // Every shipment Amazon has open, with shipped / received per SKU, for
     // Admin → In Transit (it used to list only what the app recorded, so a
     // shipment made in Send to Amazon and never posted here was missing).
