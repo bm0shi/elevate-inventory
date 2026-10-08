@@ -881,6 +881,7 @@
         <button class="action" onclick="loadToAdd()" id="toaddBtn" style="padding:10px 16px">Load</button>
       </div>
     </div>
+    <div id="hazScanResult" style="display:none;margin:0 0 10px;padding:9px 12px;border-radius:8px;font-size:13px;text-align:center"></div>
     <div id="toaddBody"></div>
   </div>
 <div id="sub-market" class="subpanel">
@@ -8508,8 +8509,15 @@ function pollHazmat(){
     const b=document.getElementById('hazScanBtn');
     if(j.running){ if(b) b.textContent=j.progress||'checking…'; setTimeout(pollHazmat,4000); return; }
     if(b){ b.disabled=false; b.textContent='⚠️ Check hazmat with Amazon'; }
-    if(j.error){ toast('Hazmat scan failed: '+j.error,true); return; }
-    toast(j.progress||'Done');
+    // The result stays on screen (a toast was gone before it could be read).
+    const r=document.getElementById('hazScanResult');
+    if(r){
+      r.style.display='block';
+      r.style.background=j.error?'#fdeceb':'#eef4fb'; r.style.color=j.error?'#c0392b':'#2563a8';
+      r.innerHTML='<b>Hazmat check'+(j.error?' failed':' done')+':</b> '+esc(j.error||j.progress||'')
+        +(!j.error&&j.firstError?'<div style="font-size:11px;color:#c0392b;margin-top:3px">Amazon refused some: '+esc(j.firstError)+'</div>':'');
+    }
+    if(j.error){ toast('Hazmat scan failed',true); return; }
     loadToAdd();
   }).catch(()=>setTimeout(pollHazmat,5000));
 }
