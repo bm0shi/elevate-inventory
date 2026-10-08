@@ -879,8 +879,8 @@
         <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#2563a8;white-space:nowrap" title="Default FBA fulfillment fee per unit when Keepa does not supply it.">FBA fee $
           <input type="number" step="0.01" id="fbaFee" placeholder="auto" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:74px;padding:10px;border:2px solid #e2e8f0;border-radius:6px;font-size:14px">
         </label>
-        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#b7791f;white-space:nowrap" title="Blank = auto (fair share based on seller count + Amazon). Enter a number to override with your real-world capture rate.">Capture %
-          <input type="number" id="capturePct" placeholder="auto" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:72px;padding:10px;border:2px solid #b7791f;border-radius:6px;font-size:14px">
+        <label style="display:flex;align-items:center;gap:5px;font-size:13px;font-weight:700;color:#b7791f;white-space:nowrap" title="Our share of the pie: what Amazon leaves for the other sellers each month. 25% = one of four sellers. Move it up or down to see what happens.">Our share of the pie %
+          <input type="number" id="capturePct" value="25" min="0" max="100" onkeyup="renderToAdd()" onchange="renderToAdd()" style="width:68px;padding:10px;border:2px solid #b7791f;border-radius:6px;font-size:14px">
         </label>
         <input type="text" id="toaddSearch" placeholder="Search..." onkeyup="renderToAdd()" style="flex:1;min-width:150px;padding:10px;border:2px solid #e2e8f0;border-radius:6px">
         <button class="action" onclick="loadToAdd()" id="toaddBtn" style="padding:10px 16px">Load</button>
@@ -3365,12 +3365,18 @@ function renderToAdd(){
   const minProfit=parseFloat((document.getElementById('toaddMinProfit')||{}).value)||0;
   const margin=(parseFloat((document.getElementById('marginPct')||{}).value)||15)/100;
   const coverMonths=parseFloat((document.getElementById('coverMonths')||{}).value)||3;
-  const captureOverride=parseFloat((document.getElementById('capturePct')||{}).value);
-  // profit model: MAX = you capture the whole market; REALISTIC = fair-share adjusted
+  // Owner's model: the pie = what Amazon leaves for the other sellers each
+  // month (SmartScout); we get our share of it (default 25%, one of four
+  // sellers), adjustable to see what happens. Amazon's own numbers aren't used.
+  const sharePct=(()=>{ const v=parseFloat((document.getElementById('capturePct')||{}).value); return isNaN(v)?25:Math.max(0,Math.min(100,v)); })();
+  const share=sharePct/100;
   const defRefPct=parseFloat((document.getElementById('refPct')||{}).value)||15;
   const defFbaFee=parseFloat((document.getElementById('fbaFee')||{}).value);
   d.forEach(x=>{
-    const u = x.ssUnits!=null?x.ssUnits:(x.keepaMonthly||0);
+    // The pie; without SmartScout data for the listing, Keepa's listing total
+    // stands in (marked *, it includes Amazon's sales).
+    x._pieEst = x.pie==null;
+    const u = x.pie!=null ? x.pie : (x.keepaMonthly||0);
     x._units = u;
     const price = x.buyBoxPrice||0;
     // ---- NET DEPOSIT = price − Amazon referral fee − FBA fulfillment fee ----
@@ -3383,33 +3389,9 @@ function renderToAdd(){
     x._netDepositMo = x._netDeposit * u;
 
     x._profitUnit = price*margin;
-    x._profitMoMax = x._profitUnit * u;
-
-    // --- capture rate ---
-    let cap; x._capSrc='';
-    if(!isNaN(captureOverride) && captureOverride>0){
-      cap = captureOverride/100;                       // user override
-    } else if(x.join && x.join.units!=null && u>0){
-      // Owner's rule: 75% of the other sellers' average (their files), shrunk
-      // for us joining Amazon's leftovers; no seller files → the pie split
-      // with us in. See joinRate in lib/demand.js.
-      cap = x.join.units/u;
-      x._capSrc = x.join.src==='peers' ? '75% of '+x.join.peers.join('/')+' avg' + (x.carried?'':' ÷ '+x.join.split+' sellers') : '75% of pie ÷ '+x.join.split+' sellers';
-    } else {
-      x._capSrc = 'no Smart Scout data · even split';
-      const sellers = (x.sellers!=null && x.sellers>0) ? x.sellers : 3;   // assume 3 if unknown
-      cap = 1/(sellers+1);                             // fair share once you join
-      if(x.amazonHasBuyBox){
-        // Amazon in the buy box takes most of it; their OOS% gives some back
-        const oos = (x.amazonOOS!=null ? x.amazonOOS : 0)/100;
-        cap = cap * (0.4 + 0.6*oos);
-      } else if(x.amazonOOS!=null && x.amazonOOS>30){
-        cap = cap * 1.15;                              // Amazon frequently out = more room
-      }
-      cap = Math.min(cap, 0.6);                        // sanity ceiling
-    }
-    x._capture = cap;
-    x._unitsReal = u * cap;
+    x._capture = share;
+    x._capSrc = sharePct+'% of '+(x._pieEst?'listing*':'pie');
+    x._unitsReal = u * share;
     x._profitMo = x._profitUnit * x._unitsReal;        // REALISTIC profit (filters/sorts use this)
     x._netDepositMoReal = x._netDeposit * x._unitsReal; // REALISTIC monthly Amazon deposit
     // ---- ORDER QTY: cover N months of realistic demand, minus everything we already have ----
@@ -3458,20 +3440,15 @@ function renderToAdd(){
   const notCarried=d.filter(x=>!x.carried);
   // revenue potential of what's currently shown and not carried
   const shownNotCarried = list.filter(x=>!x.carried);
-  const revPot = shownNotCarried.reduce((s,x)=>{
-    const u = x.ssUnits!=null?x.ssUnits:(x.keepaMonthly||0);
-    return s + (u * (x.buyBoxPrice||0));
-  },0);
+  const revPot = shownNotCarried.reduce((s,x)=>s + ((x._units||0) * (x.buyBoxPrice||0)),0);
   let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Tracked SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+shownNotCarried.length+'</div><div class="l">Not Carried (shown)</div></div>'+
-    (revPot>0?'<div class="card"><div class="n">$'+Math.round(revPot).toLocaleString()+'</div><div class="l">Mkt Revenue / mo (shown)</div></div>':'')+
+    (revPot>0?'<div class="card"><div class="n">$'+Math.round(revPot).toLocaleString()+'</div><div class="l">Pie Revenue / mo (shown)</div></div>':'')+
     (function(){
-      const mx=shownNotCarried.reduce((s,x)=>s+(x._profitMoMax||0),0);
       const pp=shownNotCarried.reduce((s,x)=>s+(x._profitMo||0),0);
       let c='';
-      if(mx>0) c+='<div class="card"><div class="n">$'+Math.round(mx).toLocaleString()+'</div><div class="l">Max Profit / mo</div></div>';
       const nd=shownNotCarried.reduce((s,x)=>s+(x._netDepositMoReal||0),0);
       if(nd>0) c+='<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+Math.round(nd).toLocaleString()+'</div><div class="l">Net Deposit / mo (realistic)</div></div>';
-      if(pp>0) c+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(pp).toLocaleString()+'</div><div class="l">Realistic Profit / mo</div></div>';
+      if(pp>0) c+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(pp).toLocaleString()+'</div><div class="l">Our Profit / mo ('+sharePct+'% of pie)</div></div>';
       return c;
     })()+
     '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
@@ -3481,24 +3458,25 @@ function renderToAdd(){
      '<button onclick="toaddClearSel()" style="padding:7px 13px;font-size:12px;font-weight:700;background:#fff;color:#5a6472;border:1px solid #c9d4e0;border-radius:6px;cursor:pointer">Clear</button>'+
      '<button onclick="exportToadd()" style="padding:8px 16px;font-size:13px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer;margin-left:auto">⬇ Export to Excel</button>'+
      '</div>';
-  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Order Qty</b> = units to buy to cover the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = what Amazon would actually deposit each month at your realistic capture rate: (price − referral fee − FBA fee) × capture-adjusted units. This is revenue after Amazon fees, before your product cost. "est" means Keepa did not supply fees for that ASIN, so the defaults above were used. <b>Max</b> assumes you capture the entire market (a ceiling, not a forecast). <b>Realistic</b> = 75% of what the other sellers average on the listing (Smart Scout seller files), shrunk for one more seller splitting Amazon\'s leftovers when we join. With no seller files: Amazon\'s leftovers (the pie) split evenly with us in, × 75%. With no Smart Scout data at all: an even split, reduced when Amazon holds the Buy Box. Set <b>Capture %</b> to override with your own real-world number. Filters and sorting use the Realistic figure.</div>';
+  h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Our units / mo</b> = the pie (what Amazon leaves for the other sellers) × <b>'+sharePct+'%</b>, our share. <b>Order Qty</b> = our units × the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = (price − referral fee − FBA fee) × our units, before your product cost; "est" means Keepa had no fees for that ASIN, so the defaults above were used. <b>Our Profit/mo</b> = price × margin % × our units. Filters and sorting use our units.</div>';
   h+='<table><thead><tr>'+
     '<th style="width:36px;text-align:center"><input type="checkbox" id="toaddSelectAll" onclick="toaddToggleAll(this.checked)" style="width:17px;height:17px;cursor:pointer" title="Select all shown"></th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
-    '<th style="cursor:pointer" onclick="toaddSort(\'ssUnits\')">Units/mo (SS)'+arrow('ssUnits')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'_units\')" title="What Amazon leaves for the other sellers each month (SmartScout: listing sales minus Amazon\'s share)">Pie / mo'+arrow('_units')+'</th>'+
+    '<th style="cursor:pointer" onclick="toaddSort(\'sellerAvg\')" title="What each competitor sells on it now: average of the Smart Scout seller files that actually sell it">Avg seller / mo'+arrow('sellerAvg')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'buyBoxPrice\')">Buy Box'+arrow('buyBoxPrice')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'sellers\')">Sellers'+arrow('sellers')+'</th>'+
     '<th style="cursor:pointer;background:#c0392b" onclick="toaddSort(\'_orderQty\')">Order Qty'+arrow('_orderQty')+'</th>'+
     '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDepositMoReal\')">Net Deposit/mo'+arrow('_netDepositMoReal')+'</th>'+
-    '<th style="cursor:pointer" onclick="toaddSort(\'_profitMoMax\')">Max Profit/mo'+arrow('_profitMoMax')+'</th>'+
-    '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Realistic Profit/mo'+arrow('_profitMo')+'</th>'+
+    '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Our Profit/mo'+arrow('_profitMo')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'hazmat\')">Hazmat</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th></tr></thead><tbody>';
   h+=list.slice(0,300).map(x=>{
     const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none;font-weight:600">${esc(x.title||x.asin)}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
-    const units=x.ssUnits!=null?x.ssUnits.toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
+    const units=x.pie!=null?Math.round(x.pie).toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
+    const avgCell=x.sellerAvg!=null?'<b>'+Math.round(x.sellerAvg).toLocaleString()+'</b><div style="font-size:10px;color:#9db0c9">'+esc((x.sellerAbbrs||[]).join(' · '))+'</div>':'<span style="color:#9db0c9">—</span>';
     const bb=x.buyBoxPrice!=null?'$'+x.buyBoxPrice.toFixed(2):'—';
     const sellers=x.sellers!=null?x.sellers:'—';
     // Hazmat. Click to override — your call outranks Amazon's declaration.
@@ -3529,14 +3507,11 @@ function renderToAdd(){
     const netCell = x._netDepositMoReal>0
       ? `<span style="font-weight:800;color:#2563a8;font-size:16px">$${Math.round(x._netDepositMoReal).toLocaleString()}</span><div style="font-size:10px;color:#9db0c9">$${x._netDeposit.toFixed(2)}/unit × ~${Math.round(x._unitsReal)} u${x._feesEstimated?' <span style="color:#b7791f">est</span>':''}</div>`
       : '<span style="color:#9db0c9">—</span>';
-    const maxCell = x._profitMoMax>0
-      ? `<span style="color:#5a6472;font-weight:600">$${Math.round(x._profitMoMax).toLocaleString()}</span><div style="font-size:10px;color:#c9d4e0">$${x._profitUnit.toFixed(2)}/unit</div>`
-      : '<span style="color:#9db0c9">—</span>';
     const realCell = x._profitMo>0
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">~${Math.round(x._unitsReal)} u/mo · ${esc(x._capSrc||(Math.round(x._capture*100)+'% capture'))}</div>`
       : '<span style="color:#9db0c9">—</span>';
     const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
-    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td>${units}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${maxCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td></tr>`;
+    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td style="text-align:center">${units}</td><td style="text-align:center">${avgCell}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(!list.length){
@@ -3547,7 +3522,8 @@ function renderToAdd(){
       +((filter==='notcarried'&&(nHaz+nOk)>0&&(hz==='nonhaz'||hz==='haz'))?' <b style="color:#c0392b">Every flagged product is one you already carry</b>, so combining <i>Not carried</i> with a hazmat-only filter can never match. Switch to <b>✅ Non-hazmat + ❓ unknown</b>, or tag some not-carried ASINs first.':'')
       +' Other filters may also be excluding rows: min price, min units, min profit, search box, and the carried filter.</div></div>';
   }
-  if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow. (SS = SmartScout units where available; * = Keepa monthly.)</div>';
+  if(list.length>300) h+='<div class="hint">Showing top 300 of '+list.length+'. Use search/filter to narrow.</div>';
+  h+='<div class="hint" style="margin-top:6px"><b>Pie / mo</b> = what Amazon leaves for the other sellers each month (Smart Scout). <b>Avg seller / mo</b> = what each competitor sells on it now (Smart Scout seller files; only sellers that sell it). <b>Our units</b> = pie × <b>'+sharePct+'%</b> (Our share of the pie, above). * = no Smart Scout data for that listing: Keepa\'s listing total, which includes Amazon.</div>';
   b.innerHTML=h;
   toaddUpdateCount();
 }
