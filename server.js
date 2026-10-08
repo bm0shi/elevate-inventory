@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-fresh-counts-1029';
+const BUILD_ID = 'fba-days-covered-1030';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7519,7 +7519,12 @@ app.get('/api/ss-avg', auth, async (req, res) => {
   const asins = new Set(others.flatMap(sl => Object.keys(sl.by)));
   for (const a of asins) {
     const v = others.filter(sl => sl.by[a]).map(sl => smartscout.sellerUnitsOn(ssBrand[a] ? ssBrand[a].units : null, sl.by[a])).filter(x => x != null);
-    if (v.length) avg[a] = { avg: v.reduce((t, x) => t + x, 0) / v.length, n: v.length };
+    if (!v.length) continue;
+    // sold/nSold: the average of the sellers that actually sell it, no
+    // discount (FBA Inventory's days covered; owner: "don't underestimate,
+    // go off the real average"). avg keeps a 0-seller in, for older screens.
+    const sa = sellerAverage(v);
+    avg[a] = { avg: v.reduce((t, x) => t + x, 0) / v.length, n: v.length, sold: sa.avg, nSold: sa.n };
   }
   res.json({ ok: true, avg, sellers: others.map(sl => sl.abbr) });
 });
