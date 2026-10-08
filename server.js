@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-days-covered-1030';
+const BUILD_ID = 'fba-duos-ss-names-1031';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1294,6 +1294,9 @@ app.get('/api/products', auth, async (req, res) => {
       COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=p.asin AND is_duo=false),0)::int AS pending_single,
       COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=p.asin),0)::int AS pending_duo,
       COALESCE((SELECT qty FROM inv_prepped WHERE asin=p.asin),0)::int AS prepped_single,
+      -- On a duo's own row: duos waiting for prep, counted as duos (FBA
+      -- Inventory lists each duo once instead of as two loose bottles).
+      COALESCE((SELECT SUM(pp.qty) FROM inv_pending_prep pp WHERE pp.asin=p.asin AND EXISTS(SELECT 1 FROM inv_bundles b WHERE b.bundle_asin=p.asin)),0)::int AS pending_as_duo,
       COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=p.asin),0)::int AS prepped_duo,
       EXISTS(SELECT 1 FROM inv_bundles WHERE component_asin=p.asin) AS is_component,
       EXISTS(SELECT 1 FROM inv_bundles WHERE bundle_asin=p.asin) AS is_bundle,
@@ -1418,15 +1421,25 @@ async function transitSplit() {
   const comps = {}; for (const b of bundles) (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push(b);
   const out = {};
   const add = (asin, kind, n) => { const x = out[asin] = out[asin] || { single: 0, duo: 0, other: 0 }; x[kind] += n; };
+  // asDuo, on the duo's own key: how many DUOS are on the way (FBA Inventory
+  // shows each duo as one unit on its own row).
+  const asDuo = (duo, n) => { const x = out[duo] = out[duo] || { single: 0, duo: 0, other: 0 }; x.asDuo = (x.asDuo || 0) + n; };
+  const duoBottles = {};
   const fromBoxes = new Set(boxes.map(b => b.shipment_id));
   for (const b of boxes) for (const i of b.items) {
     const q = Number(i.qty) || 0;
-    if (comps[i.asin]) for (const c of comps[i.asin]) add(c.component_asin, 'duo', q * c.qty);
+    if (comps[i.asin]) { for (const c of comps[i.asin]) add(c.component_asin, 'duo', q * c.qty); asDuo(i.asin, q); }
     else add(i.asin, 'single', q);
   }
   for (const r of rows) {
     if (fromBoxes.has(r.shipment_id)) continue;
     add(r.asin, !r.shipped_as ? 'other' : r.shipped_as === r.asin ? 'single' : 'duo', r.qty);
+    if (r.shipped_as && r.shipped_as !== r.asin && comps[r.shipped_as]) duoBottles[r.shipped_as] = (duoBottles[r.shipped_as] || 0) + r.qty;
+  }
+  // bottle lines → duos: a duo is one of each component (× its qty)
+  for (const d in duoBottles) {
+    const per = comps[d].reduce((t, c) => t + (c.qty || 1), 0);
+    if (per) asDuo(d, Math.floor(duoBottles[d] / per));
   }
   return out;
 }
