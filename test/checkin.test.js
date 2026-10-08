@@ -21,3 +21,17 @@ test('typical check-in is the median of the last 10, so one slow shipment does n
 test('alert titles are made header-safe', () => {
   assert.strictEqual(asciiHeader('📦 Shipment FBA1 checked in — 9 days'), 'Shipment FBA1 checked in  9 days');
 });
+
+test('check-in look-back reaches the oldest open shipment (the fixed 2 days missed quiet ones)', () => {
+  const { reconcileLookbackDays } = require('../lib/checkin');
+  const now = Date.parse('2026-10-08T12:00:00Z');
+  // sent 20 days ago, Amazon still receiving: look back 22 days, not 2
+  assert.strictEqual(reconcileLookbackDays('2026-09-18T12:00:00Z', now), 22);
+  // nothing open: the minimum
+  assert.strictEqual(reconcileLookbackDays(null, now), 2);
+  assert.strictEqual(reconcileLookbackDays(null, now, 5), 5);
+  // sent today: still at least the minimum
+  assert.strictEqual(reconcileLookbackDays('2026-10-08T10:00:00Z', now), 3);
+  // very old stuck shipment: capped
+  assert.strictEqual(reconcileLookbackDays('2025-01-01T00:00:00Z', now), 180);
+});

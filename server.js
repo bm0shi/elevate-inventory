@@ -25,7 +25,7 @@ const velocity = require('./lib/velocity');
 const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
 const capacity = require('./lib/capacity');
-const { checkinDays, checkinStats } = require('./lib/checkin');
+const { checkinDays, checkinStats, reconcileLookbackDays } = require('./lib/checkin');
 const { sendAlert, sendEmail, channels: alertChannels } = require('./lib/notify');
 const pack = require('./lib/pack');
 const pallet = require('./lib/pallet');
@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pend-split-1015';
+const BUILD_ID = 'ship-refresh-1016';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -702,6 +702,10 @@ async function initDb() {
     );
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
     ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS has_discrepancy BOOLEAN DEFAULT false;
+    -- Amazon's own status for the shipment (SHIPPED, DELIVERED, CHECKED_IN,
+    -- RECEIVING, CLOSED…), shown on Admin → Shipments next to ours.
+    ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS amz_status TEXT;
+    ALTER TABLE inv_shipments ADD COLUMN IF NOT EXISTS amz_status_at TIMESTAMPTZ;
     -- Per-shipment line items (what we sent, tagged to a shipment)
     CREATE TABLE IF NOT EXISTS inv_shipment_items (
       id SERIAL PRIMARY KEY,
@@ -2003,7 +2007,7 @@ app.post('/api/invoices/:orderNumber/delete', auth, ownerIfReceived, async (req,
 // All shipments with their line items (for the Shipments page)
 app.get('/api/all-shipments', auth, async (req, res) => {
   const ships = await pool.query(
-    `SELECT shipment_id, shipment_name, status, created_at, received_at, has_discrepancy
+    `SELECT shipment_id, shipment_name, status, created_at, received_at, has_discrepancy, amz_status, amz_status_at
      FROM inv_shipments ORDER BY created_at DESC LIMIT 200`);
   const items = await pool.query(
     `SELECT si.shipment_id, si.asin, si.qty, si.qty_received, p.name, p.sku, p.fnsku, p.image
@@ -2798,15 +2802,19 @@ async function reconcileInTransit() {
   console.log('[SP-API] Starting in-transit reconcile...');
   let shipments;
   try {
-    // Only look back a short window so we ignore shipments that predate this app.
-    // Set RECONCILE_LOOKBACK_DAYS in Railway to control (default 2).
-    const lookback = parseInt(process.env.RECONCILE_LOOKBACK_DAYS, 10) || 2;
+    // Only shipments the app itself recorded are processed (matched by ID
+    // below), so the window just has to reach the oldest one Amazon hasn't
+    // closed yet. RECONCILE_LOOKBACK_DAYS (default 2) is the minimum.
+    const oldest = (await pool.query(`SELECT MIN(s.created_at) AS t FROM inv_shipments s
+      WHERE s.status IN ('in_transit','received')
+        AND NOT EXISTS (SELECT 1 FROM inv_processed_shipments p WHERE p.shipment_id = s.shipment_id)`)).rows[0].t;
+    const lookback = reconcileLookbackDays(oldest, Date.now(), parseInt(process.env.RECONCILE_LOOKBACK_DAYS, 10) || 2);
     shipments = await getReceivedShipments(lookback);
   } catch (err) {
     console.error('[SP-API] reconcile aborted:', err.message);
     return { ok: false, error: err.message };
   }
-  console.log(`[SP-API] Found ${shipments.length} received/closed shipments in last 45 days.`);
+  console.log(`[SP-API] Found ${shipments.length} checked-in/receiving/closed shipments updated recently.`);
 
   let clearedTotal = 0;
   let shipmentsDone = 0;
@@ -2883,6 +2891,10 @@ async function reconcileInTransit() {
     // closes the shipment (with any shortfall — that's a reimbursement claim).
     try {
       const meta = (await pool.query('SELECT shipment_name, created_at, received_at FROM inv_shipments WHERE shipment_id=$1', [sid])).rows[0] || {};
+      // The longer look-back can catch up on old shipments in one go; don't
+      // send a burst of phone alerts for ones sent more than 45 days ago
+      // (the activity log still records them).
+      if (meta.created_at && Date.now() - new Date(meta.created_at).getTime() > 45 * 86400000) throw new Error('old shipment, no alert');
       const label = meta.shipment_name ? `${meta.shipment_name} (${sid})` : sid;
       const units = ourItems.rows.reduce((n, it) => n + (it.qty || 0), 0);
       const days = checkinDays(meta.created_at, meta.received_at);
@@ -2912,12 +2924,61 @@ app.post('/api/sync-fba', auth, async (req, res) => {
   res.json(result);
 });
 
+// Amazon's own status for every app shipment it hasn't finished with, so
+// Admin → Shipments can show "Delivered" / "Receiving" like Seller Central
+// instead of just our "In transit" / "Received".
+async function refreshShipmentStatuses() {
+  const ids = (await pool.query(`SELECT shipment_id FROM inv_shipments
+    WHERE COALESCE(amz_status,'') NOT IN ('CLOSED','CANCELLED','DELETED')
+      AND created_at > now() - interval '180 days'`)).rows.map(r => r.shipment_id);
+  if (!ids.length) return 0;
+  const st = await getShipmentStatuses(ids);
+  let n = 0;
+  for (const id of ids) {
+    const v = st[String(id).toUpperCase()];
+    if (v) { await pool.query('UPDATE inv_shipments SET amz_status=$2, amz_status_at=now() WHERE shipment_id=$1', [id, v]); n++; }
+  }
+  return n;
+}
+// Statuses, then check-ins / received counts. Used by the Shipments page's
+// "Update from Amazon" button (and on opening the page), the 2-hourly check
+// and the morning sync. One at a time: a second request joins the running one.
+let shipRefresh = { running: false, startedAt: null, finishedAt: null, step: '', result: null, error: null };
+let shipRefreshPromise = null;
+function refreshShipmentsFromAmazon(trigger) {
+  if (shipRefreshPromise) return shipRefreshPromise;
+  shipRefresh = { running: true, startedAt: new Date().toISOString(), finishedAt: null, step: 'Reading shipment statuses…', result: null, error: null, trigger };
+  shipRefreshPromise = (async () => {
+    const result = { statuses: 0, checkedIn: 0 }, errors = [];
+    try { result.statuses = await refreshShipmentStatuses(); } catch (e) { errors.push('statuses: ' + e.message); }
+    shipRefresh.step = 'Checking received counts…';
+    try {
+      const r = await reconcileInTransit();
+      if (r && r.ok === false) errors.push(r.error); else result.checkedIn = (r && r.shipments) || 0;
+    } catch (e) { errors.push(e.message); }
+    shipRefresh.result = result; shipRefresh.error = errors.length ? errors.join(' · ') : null;
+    shipRefresh.finishedAt = new Date().toISOString(); shipRefresh.step = shipRefresh.error ? 'Finished with problems' : 'Done';
+    if (!shipRefresh.error || result.statuses) { try { await saveCache('shipments_checked', { at: shipRefresh.finishedAt, trigger, result, error: shipRefresh.error }); } catch (e) {} }
+    return shipRefresh;
+  })().finally(() => { shipRefresh.running = false; shipRefreshPromise = null; });
+  return shipRefreshPromise;
+}
+app.post('/api/shipments/refresh', auth, (req, res) => {
+  const already = !!shipRefreshPromise;
+  refreshShipmentsFromAmazon('manual').catch(e => console.error('[Shipments] refresh failed:', e.message));
+  res.json({ ok: true, already });
+});
+app.get('/api/shipments/refresh/status', auth, async (req, res) => {
+  const last = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='shipments_checked'")).rows[0];
+  res.json({ ok: true, ...shipRefresh, last: last ? last.data : null });
+});
+
 // Auto-run every 3 hours
 const RECONCILE_INTERVAL_MS = 3 * 60 * 60 * 1000;
 setInterval(() => {
-  reconcileInTransit().catch(e => console.error('[SP-API] scheduled reconcile error:', e.message));
+  refreshShipmentsFromAmazon('3-hourly').catch(e => console.error('[SP-API] scheduled reconcile error:', e.message));
   packRefreshStatuses(true).catch(e => console.error('[2D] status refresh failed:', e.message));
-}, RECONCILE_INTERVAL_MS);
+}, RECONCILE_INTERVAL_MS).unref();
 
 // Given a product ASIN + quantity, expand into actual stock deductions.
 // If it's a bundle, return component singles; else return itself.
@@ -6825,8 +6886,8 @@ function startAmazonSync(trigger) {
     const result = { products: 0, checkedIn: 0, errors: [] };
     try {
       amazonSync.step = 'Checking which shipments Amazon has received…';
-      const r = await reconcileInTransit();
-      if (r && r.ok === false) result.errors.push('check-ins: ' + r.error); else result.checkedIn = (r && r.shipments) || 0;
+      const r = await refreshShipmentsFromAmazon(trigger);
+      if (r && r.error) result.errors.push('check-ins: ' + r.error); else result.checkedIn = (r && r.result && r.result.checkedIn) || 0;
       const out = await pullFbaInventory(t => { amazonSync.step = t; });
       result.products = out.length;
       if (out._meta) { result.amazonSkus = out._meta.skus; result.pages = out._meta.pages; result.recovered = out._meta.recovered; }
@@ -7463,8 +7524,8 @@ setInterval(async () => {
     const phxHour = new Date(Date.now() - 7 * 3600 * 1000).getUTCHours();
     if (phxHour < 8 || phxHour >= 20 || amazonSync.running || Date.now() - lastCheckinRun < 2 * 3600 * 1000) return;
     lastCheckinRun = Date.now();
-    const r = await reconcileInTransit();
-    if (r && r.ok === false) console.error('[Checkin] 2-hourly check:', r.error);
+    const r = await refreshShipmentsFromAmazon('2-hourly');
+    if (r && r.error) console.error('[Checkin] 2-hourly check:', r.error);
   } catch (e) { console.error('[Checkin] 2-hourly check failed:', e.message); }
 }, 10 * 60 * 1000).unref();
 setInterval(async () => {
