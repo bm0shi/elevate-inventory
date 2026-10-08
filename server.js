@@ -18,7 +18,7 @@ const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead,
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
 const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec, weekStart, crewShares } = require('./lib/homebase');
 const { SALE_THRESHOLD, blendCosts } = require('./lib/costs');
-const { estimateShare, measuredShare, joinRate } = require('./lib/demand');
+const { estimateShare, measuredShare, joinRate, sellerAverage } = require('./lib/demand');
 const { splitPlan, SPLIT_OVER } = require('./lib/prep-split');
 const smartscout = require('./lib/smartscout');
 const velocity = require('./lib/velocity');
@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-429-1020';
+const BUILD_ID = 'toadd-pie-share-1021';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6233,7 +6233,7 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
   } catch(e) { /* optional */ }
 
   // Uploaded SmartScout (Admin → Smart Scout): listing units, the pie and the
-  // other sellers' average, for the realistic figure (joinRate, owner's rule).
+  // sellers' average, for the realistic figure (sellerAvgRate, owner's rule).
   let ssBrand = {}, peers = [], sellerFiles = [];
   try { ssBrand = await ssBrandRows(); sellerFiles = await ssSellerFiles(); peers = sellerFiles.filter(sl => !sl.isUs); }
   catch (e) { console.error('[ToAdd] SmartScout uploads unavailable:', e.message); }
@@ -6243,9 +6243,11 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
     const st = stockByAsin[m.asin] || {};
     const up = ssBrand[m.asin], isCarried = carried.has(m.asin);
     const pie = up ? ssListing(up, m, sellerFiles, isCarried) : null;
-    const pv = peers.filter(sl => sl.by[m.asin]).map(sl => ({ abbr: sl.abbr, u: smartscout.sellerUnitsOn(up ? up.units : null, sl.by[m.asin]) })).filter(x => x.u != null && isFinite(x.u));
-    const j = joinRate({ peerAvg: pv.length ? pv.reduce((t, x) => t + x.u, 0) / pv.length : null, peerN: pv.length,
-      pie: pie ? pie.pie : null, sellers3P: pie ? pie.sellers3P : null, carried: isCarried });
+    // What competitors sell on it now: every seller file (ours included), only
+    // sellers that actually sell it (sellerAverage, owner's rule). The screen
+    // works out our units as the pie × our share % (owner's rule, 25% default).
+    const pv = sellerFiles.filter(sl => sl.by[m.asin]).map(sl => ({ abbr: sl.abbr, u: smartscout.sellerUnitsOn(up ? up.units : null, sl.by[m.asin]) })).filter(x => x.u != null && isFinite(x.u) && x.u > 0);
+    const sa = sellerAverage(pv.map(x => x.u));
     return {
       asin: m.asin,
       title: m.name || ss.title || m.asin,
@@ -6253,8 +6255,9 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
       salesRank: m.salesRank,               // Keepa — available for all
       keepaMonthly: m.monthlySold || null,  // Keepa units where available
       ssUnits: (up && up.units) || ss.units || null,   // SmartScout units (uploaded first)
-      join: j.src ? { units: j.units, src: j.src, split: j.split, peers: pv.map(x => x.abbr), peerAvg: pv.length ? pv.reduce((t, x) => t + x.u, 0) / pv.length : null,
-        pie: pie ? pie.pie : null, amazonPct: pie ? pie.amazonPct : null } : null,
+      // The pie: the listing's monthly units minus Amazon's share (SmartScout).
+      pie: pie ? pie.pie : null,
+      sellerAvg: sa.avg, sellerN: sa.n, sellerAbbrs: pv.map(x => x.abbr),
       ssRevenue: ss.revenue || null,
       sellers: m.offerCount,
       pickPackFee: m.pickPackFee,

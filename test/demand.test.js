@@ -56,3 +56,12 @@ test('Products to Add: 75% of the other sellers\' average, shrunk for us joining
   // Nothing to go on
   assert.strictEqual(joinRate({}).src, null);
 });
+
+test('Products to Add: the competitors\' average counts only sellers that actually sell it (ours included)', () => {
+  const { sellerAverage } = require('../lib/demand');
+  // four files: 200, 100, 300, and ours at 0 (an offer that never sold) — ours isn't counted
+  assert.deepStrictEqual(sellerAverage([200, 100, 300, 0]), { avg: 200, n: 3 });
+  // ours selling counts like any seller
+  assert.deepStrictEqual(sellerAverage([200, 100, 300, 200]), { avg: 200, n: 4 });
+  assert.deepStrictEqual(sellerAverage([0, null, undefined]), { avg: null, n: 0 });
+});
