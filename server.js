@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ship-refresh-1016';
+const BUILD_ID = 'transit-view-1017';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1990,6 +1990,45 @@ app.get('/api/shipments', auth, async (req, res) => {
   res.json(rows);
 });
 
+// Admin → In Transit: the app's in-transit shipments merged with every
+// shipment Amazon has open (from the last update), with Amazon's status and
+// shipped / received per product. Units only. Shipments the app never
+// recorded are listed (marked) but move no stock: they were never deducted.
+app.get('/api/transit-view', auth, async (req, res) => {
+  const app_ = (await pool.query(
+    `SELECT s.shipment_id, s.shipment_name, s.status, s.created_at, s.amz_status, s.amz_status_at,
+            COALESCE(SUM(i.qty),0)::int AS units
+     FROM inv_shipments s LEFT JOIN inv_shipment_items i ON i.shipment_id = s.shipment_id
+     GROUP BY s.shipment_id`)).rows;
+  const byId = {}; for (const r of app_) byId[String(r.shipment_id).toUpperCase()] = r;
+  const cache = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='inbound_open'")).rows[0];
+  const open = (cache && cache.data && cache.data.shipments) || [];
+  // SKU -> product, the same lookups the stock pull uses
+  const skuMap = {};
+  for (const r of (await pool.query(`SELECT p.sku, p.asin, p.name FROM inv_products p WHERE p.sku IS NOT NULL
+      UNION ALL SELECT m.sku, m.asin, p.name FROM inv_sku_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.asin IS NOT NULL`)).rows)
+    if (!skuMap[r.sku]) skuMap[r.sku] = { asin: r.asin, name: r.name };
+  const rows = [], seen = new Set();
+  for (const sh of open) {
+    const key = String(sh.id).toUpperCase(); seen.add(key);
+    const a = byId[key];
+    const items = (sh.items || []).map(it => ({ sku: it.sku, asin: (skuMap[it.sku] || {}).asin || null, name: (skuMap[it.sku] || {}).name || it.sku,
+                                                shipped: it.shipped || 0, received: it.received || 0 }));
+    rows.push({ id: sh.id, name: sh.name || (a && a.shipment_name) || '', amzStatus: sh.status || (a && a.amz_status) || null, fc: sh.fc || '',
+                inApp: !!a, appStatus: a ? a.status : null, sentAt: a ? a.created_at : null,
+                shipped: items.reduce((n, x) => n + x.shipped, 0), received: items.reduce((n, x) => n + x.received, 0), appUnits: a ? a.units : null, items });
+  }
+  // App shipments still in transit that Amazon's open list doesn't have
+  // (closed, cancelled, or not read yet): shown so nothing silently drops.
+  for (const a of app_) {
+    if (a.status !== 'in_transit' || seen.has(String(a.shipment_id).toUpperCase())) continue;
+    rows.push({ id: a.shipment_id, name: a.shipment_name || '', amzStatus: a.amz_status || null, fc: '', inApp: true, appStatus: a.status,
+                sentAt: a.created_at, shipped: a.units, received: null, appUnits: a.units, items: null, notOnAmazonList: true });
+  }
+  rows.sort((x, y) => (y.sentAt ? Date.parse(y.sentAt) : 0) - (x.sentAt ? Date.parse(x.sentAt) : 0) || String(y.id).localeCompare(String(x.id)));
+  res.json({ ok: true, at: cache && cache.data ? cache.data.at : null, rows });
+});
+
 // Delete an invoice (and its line items)
 // Deleting a checked-in invoice erases the record of stock already added, so
 // it needs the owner. Staff can still delete a pending (bad) import.
@@ -2956,6 +2995,18 @@ function refreshShipmentsFromAmazon(trigger) {
       const r = await reconcileInTransit();
       if (r && r.ok === false) errors.push(r.error); else result.checkedIn = (r && r.shipments) || 0;
     } catch (e) { errors.push(e.message); }
+    // Every shipment Amazon has open, with shipped / received per SKU, for
+    // Admin → In Transit (it used to list only what the app recorded, so a
+    // shipment made in Send to Amazon and never posted here was missing).
+    shipRefresh.step = 'Reading every open shipment at Amazon…';
+    try {
+      const pipe = await Promise.race([
+        getInboundPipeline(180, t => { shipRefresh.step = t; }),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('open shipments took over 4 minutes — skipped this time')), 4 * 60000)),
+      ]);
+      await saveCache('inbound_open', { at: new Date().toISOString(), shipments: pipe.shipments || [] });
+      result.open = (pipe.shipments || []).length;
+    } catch (e) { errors.push('open shipments: ' + e.message); }
     shipRefresh.result = result; shipRefresh.error = errors.length ? errors.join(' · ') : null;
     shipRefresh.finishedAt = new Date().toISOString(); shipRefresh.step = shipRefresh.error ? 'Finished with problems' : 'Done';
     if (!shipRefresh.error || result.statuses) { try { await saveCache('shipments_checked', { at: shipRefresh.finishedAt, trigger, result, error: shipRefresh.error }); } catch (e) {} }
@@ -6763,6 +6814,7 @@ async function pullFbaInventory(onProgress) {
       a.inboundShipments = pipeByAsin[asin].shipments;
     }
     pipelineNote = `${pipe.shipmentCount} open shipment(s), ${Object.keys(pipeByAsin).length} product(s) on the way` + (unmapped ? `, ${unmapped} SKU(s) not matched` : '');
+    try { await saveCache('inbound_open', { at: new Date().toISOString(), shipments: pipe.shipments || [] }); } catch (e) {}
     console.log('[FBA] On the way from open shipments: ' + pipelineNote);
   } catch (e) {
     pipelineNote = 'open shipments not read: ' + e.message;

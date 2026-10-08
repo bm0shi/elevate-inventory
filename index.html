@@ -915,7 +915,8 @@
       <div id="valueBody"><div class="hint" style="padding:20px;text-align:center">Loading…</div></div>
     </div>
 <div id="sub-transit" class="subpanel">
-    <div class="hint" style="margin-bottom:12px">Shipments you've sent that Amazon hasn't checked in yet. When Amazon receives one, it clears automatically — or click "Mark Received" if you see it checked in on Seller Central.</div>
+    <div class="hint" style="margin-bottom:12px">Every shipment Amazon has open, plus the app's shipments not yet checked in. When Amazon receives one, it clears automatically — or click "Mark Received" if you see it checked in on Seller Central.</div>
+    <div id="transitRefreshBar"></div>
     <div id="transitBody"></div>
   </div>
 <div id="sub-shipments" class="subpanel">
@@ -9163,13 +9164,16 @@ function shipAgo(iso){
   return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' h ago':Math.round(m/1440)+' days ago';
 }
 function shipRefreshPaint(d){
-  const el=document.getElementById('shipRefreshBar'); if(!el) return;
+  ['shipRefreshBar','transitRefreshBar'].forEach(id=>shipRefreshPaintOne(document.getElementById(id), d));
+}
+function shipRefreshPaintOne(el, d){
+  if(!el) return;
   const last=d&&d.last, running=d&&d.running;
   const err=!running&&d&&d.finishedAt&&d.error;
   el.innerHTML='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
-    +'<div><b>📡 Amazon</b> <span class="hint">'+(running?'<b style="color:#2563a8">Updating… '+esc(d.step||'')+'</b>':'last checked <b>'+esc(shipAgo(last&&last.at))+'</b>'+(last&&last.result?' · '+last.result.statuses+' shipment'+(last.result.statuses===1?'':'s')+' read':''))+'</span>'
+    +'<div><b>📡 Amazon</b> <span class="hint">'+(running?'<b style="color:#2563a8">Updating… '+esc(d.step||'')+'</b>':'last checked <b>'+esc(shipAgo(last&&last.at))+'</b>'+(last&&last.result&&last.result.open!=null?' · '+last.result.open+' open at Amazon':''))+'</span>'
     +(err?'<div style="color:#c0392b;font-size:12px;font-weight:700;margin-top:3px">⚠ '+esc(d.error)+'</div>':'')+'</div>'
-    +'<button class="action" id="shipRefreshBtn" onclick="shipRefreshStart()" '+(running?'disabled':'')+' style="padding:9px 16px;font-size:13px;background:#0d4450">'+(running?'Updating…':'↻ Update from Amazon')+'</button></div>';
+    +'<button class="action shipRefreshBtn" onclick="shipRefreshStart()" '+(running?'disabled':'')+' style="padding:9px 16px;font-size:13px;background:#0d4450">'+(running?'Updating…':'↻ Update from Amazon')+'</button></div>';
 }
 function shipRefreshLoad(auto){
   return api('/api/shipments/refresh/status').then(d=>{
@@ -9192,7 +9196,8 @@ function shipRefreshPoll(){
     shipRefreshPaint(d);
     if(d&&d.running){ window._shipPollT=setTimeout(shipRefreshPoll,2000); return; }
     if(d&&d.error) toast('Amazon update finished with problems',true); else toast('Shipments updated from Amazon');
-    renderShipments(true);
+    const tr=document.getElementById('sub-transit');
+    if(tr && tr.classList.contains('active')) renderTransit(true); else renderShipments(true);
   }).catch(()=>{ window._shipPollT=setTimeout(shipRefreshPoll,4000); });
 }
 // Amazon's status words, shown beside ours.
@@ -9354,22 +9359,56 @@ function linkShipFee(feeId, shipId){
     .catch(()=>toast('Could not attach',true));
 }
 
-function renderTransit(){
-  api('/api/shipments').then(rows=>{
+// Admin → In Transit: one table of every open shipment (Amazon's list from
+// the last update, merged with the app's own in-transit records), so a
+// shipment made in Send to Amazon and never posted here still shows.
+function renderTransit(noAuto){
+  if(!noAuto) shipRefreshLoad(true);
+  api('/api/transit-view').then(d=>{
     const b=document.getElementById('transitBody');
-    if(!rows.length){b.innerHTML='<div class="hint">Nothing in transit right now.</div>';return;}
-    b.innerHTML=rows.map(s=>`<div class="box" style="margin-bottom:10px">
-      <div style="font-weight:700">${esc(s.shipment_name||s.shipment_id)}</div>
-      <div class="pmeta" style="margin:4px 0">ID: ${s.shipment_id} · <b>${s.units}</b> units · sent ${new Date(s.created_at).toLocaleDateString()}</div>
-      <button class="action" style="padding:8px 14px;font-size:13px" onclick="markReceived('${s.shipment_id}')">Mark Received</button>
-    </div>`).join('');
-  });
+    const rows=(d&&d.rows)||[];
+    if(!rows.length){ b.innerHTML='<div class="hint">Nothing in transit right now'+(d&&d.at?'':' (Amazon not read yet — press Update from Amazon)')+'.</div>'; return; }
+    window._transitRows=rows;
+    const th='padding:8px 6px;font-size:11px;color:#5a6472;text-transform:uppercase;text-align:center';
+    const td='padding:8px 6px;border-top:1px solid #eef2f6;text-align:center;font-variant-numeric:tabular-nums;vertical-align:middle';
+    let tS=0,tR=0;
+    const body=rows.map((r,i)=>{
+      const left=r.received!=null?Math.max(0,r.shipped-r.received):null;
+      tS+=r.shipped||0; tR+=r.received||0;
+      const days=r.sentAt?Math.floor((Date.now()-Date.parse(r.sentAt))/86400000):null;
+      const inApp=r.inApp
+        ? (r.appStatus==='in_transit'?'<span style="color:#2563a8;font-weight:800">✓ in transit</span>':'<span style="color:#1e8449;font-weight:800">✓ checked in</span>')
+        : '<span title="Sent from Send to Amazon and never posted in the app (pack slip or Shipment Production → Finish), so these units were never taken off On Hand here." style="color:#b7791f;font-weight:800">⚠ not in app</span>';
+      const warn=r.notOnAmazonList?'<div style="font-size:11px;color:#c0392b;font-weight:700">not on Amazon\'s open list'+(r.amzStatus?' ('+esc((AMZ_SHIP[r.amzStatus]||[r.amzStatus])[0])+')':'')+'</div>':'';
+      const items=(r.items&&r.items.length)?'<tr id="tri'+i+'" style="display:none"><td colspan="8" style="padding:4px 10px 10px 24px;background:#fafbfc">'
+        +'<table style="width:100%;table-layout:fixed;border-collapse:collapse;font-size:12.5px"><tr><td style="padding:3px 6px;color:#8a97a6;font-size:10.5px">PRODUCT</td><td style="width:90px;text-align:center;color:#8a97a6;font-size:10.5px">SHIPPED</td><td style="width:90px;text-align:center;color:#8a97a6;font-size:10.5px">RECEIVED</td><td style="width:90px;text-align:center;color:#8a97a6;font-size:10.5px">LEFT</td></tr>'
+        +r.items.map(it=>'<tr><td style="padding:3px 6px">'+esc(it.name||it.sku)+' <span class="hint">'+esc(it.sku||'')+'</span></td><td style="text-align:center">'+it.shipped+'</td><td style="text-align:center">'+it.received+'</td><td style="text-align:center;font-weight:800">'+Math.max(0,it.shipped-it.received)+'</td></tr>').join('')
+        +'</table></td></tr>':'';
+      return '<tr><td style="'+td+';text-align:left"><b>'+esc(r.name||r.id)+'</b><div class="hint" style="font-size:11.5px">'+esc(r.id)+(r.fc?' · '+esc(r.fc):'')
+          +(r.items&&r.items.length?' · <a href="#" onclick="event.preventDefault();const e=document.getElementById(\'tri'+i+'\');e.style.display=e.style.display===\'none\'?\'\':\'none\'">'+r.items.length+' product'+(r.items.length===1?'':'s')+' ▾</a>':'')+'</div>'+warn+'</td>'
+        +'<td style="'+td+'">'+(r.amzStatus?amzShipPill({amz_status:r.amzStatus}):'<span class="hint">—</span>')+'</td>'
+        +'<td style="'+td+'">'+(r.sentAt?new Date(r.sentAt).toLocaleDateString('en-US',{month:'numeric',day:'numeric'})+'<div class="hint" style="font-size:11px">'+days+' days</div>':'<span class="hint">—</span>')+'</td>'
+        +'<td style="'+td+';font-weight:800">'+(r.shipped||0).toLocaleString()+'</td>'
+        +'<td style="'+td+';font-weight:800;color:#7a4fb5">'+(r.received==null?'—':r.received.toLocaleString())+'</td>'
+        +'<td style="'+td+';font-weight:900;color:#2563a8">'+(left==null?'—':left.toLocaleString())+'</td>'
+        +'<td style="'+td+'">'+inApp+'</td>'
+        +'<td style="'+td+'">'+(r.inApp&&r.appStatus==='in_transit'?'<button class="action" style="padding:6px 10px;font-size:12px" onclick="markReceived(\''+esc(r.id)+'\')">Mark Received</button>':'')+'</td></tr>'+items;
+    }).join('');
+    const notIn=rows.filter(r=>!r.inApp).length;
+    b.innerHTML='<div class="box" style="overflow-x:auto">'
+      +(notIn?'<div style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:#fdf6e3;color:#b7791f;font-size:12.5px;font-weight:700">⚠ '+notIn+' shipment'+(notIn===1?' is':'s are')+' open at Amazon but not recorded in the app. Their units were never taken off On Hand here; post the pack slip (Ship to FBA) if they came from this warehouse.</div>':'')
+      +'<table style="width:100%;min-width:900px;table-layout:fixed;border-collapse:collapse;font-size:13px"><tr>'
+      +'<td style="'+th+';text-align:left">Shipment</td><td style="'+th+';width:120px">Amazon</td><td style="'+th+';width:80px">Sent</td><td style="'+th+';width:80px">Shipped</td><td style="'+th+';width:80px">Received</td><td style="'+th+';width:80px">Left</td><td style="'+th+';width:110px">In the app</td><td style="'+th+';width:130px"></td></tr>'
+      +body
+      +'<tr style="background:#eef2f6"><td style="'+td+';text-align:left;font-weight:900;border-top:2px solid #1f2733">TOTAL · '+rows.length+' shipment'+(rows.length===1?'':'s')+'</td><td colspan="2" style="'+td+';border-top:2px solid #1f2733"></td><td style="'+td+';font-weight:900;border-top:2px solid #1f2733">'+tS.toLocaleString()+'</td><td style="'+td+';font-weight:900;color:#7a4fb5;border-top:2px solid #1f2733">'+tR.toLocaleString()+'</td><td style="'+td+';font-weight:900;color:#2563a8;border-top:2px solid #1f2733">'+Math.max(0,tS-tR).toLocaleString()+'</td><td colspan="2" style="'+td+';border-top:2px solid #1f2733"></td></tr>'
+      +'</table><div class="hint" style="margin-top:6px">Amazon\'s list as of '+(d.at?esc(shipAgo(d.at)):'never')+'. Shipped / Received are Amazon\'s counts; for a shipment not on Amazon\'s open list, Shipped is what the app recorded.</div></div>';
+  }).catch(()=>{ document.getElementById('transitBody').innerHTML='<div class="hint" style="color:#c0392b">Could not load in-transit shipments.</div>'; });
 }
 function markReceived(sid){
   if(!confirm('Mark shipment '+sid+' as received? This clears its units from In Transit.'))return;
   api('/api/receive-shipment',{method:'POST',body:JSON.stringify({shipmentId:sid})}).then(d=>{
-    if(d.ok===false){ toast(d.error,true); renderTransit(); return; }
-    toast('Cleared '+d.cleared+' units'); renderTransit(); loadProducts();
+    if(d.ok===false){ toast(d.error,true); renderTransit(true); return; }
+    toast('Cleared '+d.cleared+' units'); renderTransit(true); loadProducts();
   });
 }
 

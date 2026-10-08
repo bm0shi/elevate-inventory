@@ -164,12 +164,16 @@ async function listInboundShipments(sinceDays, statuses) {
 const OPEN_SHIPMENT_STATUSES = ['WORKING', 'READY_TO_SHIP', 'SHIPPED', 'IN_TRANSIT', 'DELIVERED', 'CHECKED_IN', 'RECEIVING'];
 async function getInboundPipeline(sinceDays = 180, onProgress) {
   const shipments = await listInboundShipments(sinceDays, OPEN_SHIPMENT_STATUSES);
-  const bySku = {};
+  const bySku = {}, detail = [];
   let n = 0;
   for (const sh of shipments) {
     n++;
     if (onProgress) onProgress(`Checking open shipment ${n} of ${shipments.length} (${sh.ShipmentId})…`);
     const items = await getShipmentReceivedItems(sh.ShipmentId);
+    // Every open shipment as Amazon has it (Admin → In Transit lists these,
+    // including ones sent from Send to Amazon that the app never recorded).
+    detail.push({ id: sh.ShipmentId, name: sh.ShipmentName || '', status: sh.ShipmentStatus || '',
+                  fc: sh.DestinationFulfillmentCenterId || '', items });
     for (const it of items) {
       const left = Math.max(0, (it.shipped || 0) - (it.received || 0));
       if (!it.sku || !left) continue;
@@ -178,7 +182,7 @@ async function getInboundPipeline(sinceDays = 180, onProgress) {
       r.shipments.push({ id: sh.ShipmentId, name: sh.ShipmentName || '', status: sh.ShipmentStatus || '', qty: left });
     }
   }
-  return { bySku, shipmentCount: shipments.length };
+  return { bySku, shipmentCount: shipments.length, shipments: detail };
 }
 
 // For one shipment, get the per-SKU RECEIVED quantities
