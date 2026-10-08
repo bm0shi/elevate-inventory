@@ -2935,6 +2935,12 @@ function loadFbaInv(){
     renderFbaInv(); loadFreshness();
   });
 }
+// Days covered: red under 30, amber under 60, green beyond.
+function fbaDaysCell(d){
+  if(d==null) return '<span style="color:#9db0c9">—</span>';
+  const n=Math.round(d), col=n<30?'#c0392b':n<60?'#b7791f':'#1e8449';
+  return '<b style="color:'+col+'">'+(n>999?'999+':n)+'</b>';
+}
 function fbaSort(col){
   const s=window._fbaSort;
   if(s.col===col) s.dir=-s.dir; else { s.col=col; s.dir=-1; }
@@ -3082,6 +3088,16 @@ function renderFbaInv(){
   let d=window._fbaData||[]; const s=window._fbaSort;
   const b=document.getElementById('fbaInvBody');
   fbaNormalize();
+  // Days covered at the other sellers' full Smart Scout average (sellers that
+  // actually sell it; owner: "don't underestimate").
+  if(!ssAvg) loadSsAvg().then(()=>{ if(window._fbaData) renderFbaInv(); });
+  for(const x of (window._fbaData||[])){
+    const a=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin];
+    x._ssMo = a && a.sold>0 ? a.sold : null; x._ssN = a ? a.nSold : 0;
+    const perDay = x._ssMo ? x._ssMo/30 : 0;
+    x._daysFba = perDay ? ((x.fba_total||0)+(x.transit||0))/perDay : null;
+    x._daysTot = perDay ? (x.grand_total||0)/perDay : null;
+  }
   // filter out the noise
   const ff=(document.getElementById('fbaFilter')||{}).value||'anystock';
   const fq=((document.getElementById('fbaSearch')||{}).value||'').toLowerCase();
@@ -3098,6 +3114,7 @@ function renderFbaInv(){
   const sorted=[...d].sort((a,b2)=>{
     let av,bv;
     if(s.col==='name'){ av=(a.name||'').toLowerCase(); bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
+    if(['_ssMo','_daysFba','_daysTot'].includes(s.col) && (a[s.col]==null || b2[s.col]==null)) return (a[s.col]==null) - (b2[s.col]==null);   // no Smart Scout rate: last
     av=a[s.col]||0; bv=b2[s.col]||0; return (av-bv)*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
@@ -3124,11 +3141,14 @@ function renderFbaInv(){
      '<th style="cursor:pointer" onclick="fbaSort(\'prepped\')">Prepped'+arrow('prepped')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
-     '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
+     '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'_ssMo\')" title="Smart Scout: average units a month of the other sellers that sell it'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+'. Full average, no discount.">Avg sold / mo'+arrow('_ssMo')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'_daysFba\')" title="Days the units at FBA + in transit last at that rate">Days · FBA'+arrow('_daysFba')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'_daysTot\')" title="Days ALL units (warehouse + transit + FBA) last at that rate">Days · Total'+arrow('_daysTot')+'</th></tr></thead><tbody>';
   // One cell per header (rows used to have 5 cells under 7 headers, so
   // Transit read under "Pend Prep" and FBA under "Prepped").
   const c='style="text-align:center"';
-  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name||x.asin)}</a>`:esc(x.name||'');return `<tr><td>${link}</td><td ${c}>${x.warehouse||0}</td><td ${c}>${x.pending_prep||''}</td><td ${c}>${x.prepped||''}</td><td ${c}>${x.transit||''}</td><td ${c}>${x.fba_total||0}</td><td class="onhand-num" ${c}>${x.grand_total||0}</td></tr>`;}).join('');
+  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name||x.asin)}</a>`:esc(x.name||'');return `<tr><td>${link}</td><td ${c}>${x.warehouse||0}</td><td ${c}>${x.pending_prep||''}</td><td ${c}>${x.prepped||''}</td><td ${c}>${x.transit||''}</td><td ${c}>${x.fba_total||0}</td><td class="onhand-num" ${c}>${x.grand_total||0}</td><td ${c}>${x._ssMo!=null?Math.round(x._ssMo).toLocaleString()+'<div style="font-size:10px;color:#9db0c9">'+x._ssN+' seller'+(x._ssN===1?'':'s')+'</div>':'<span style="color:#9db0c9">—</span>'}</td><td ${c}>${fbaDaysCell(x._daysFba)}</td><td ${c}>${fbaDaysCell(x._daysTot)}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
 }
