@@ -928,6 +928,7 @@
       </select>
       <div class="hint" style="margin:0">Pick a shipment to see sent vs. received per item. Discrepancies (Amazon received fewer than you sent) are flagged red.</div>
     </div>
+    <div id="shipRefreshBar"></div>
     <div id="checkinBox"></div>
     <div id="shipmentsBody"></div>
   </div>
@@ -9151,7 +9152,60 @@ function deleteBundle(asin){
   if(!confirm('Remove this bundle definition?'))return;
   api('/api/bundles/delete',{method:'POST',body:JSON.stringify({bundle_asin:asin})}).then(()=>{ toast('Removed'); renderBundles(); });
 }
-function renderShipments(){
+// ---- Update shipments from Amazon (on demand, and on opening the page) ----
+// The page shows the saved copy; this asks Amazon for each open shipment's
+// status and received counts. It runs by itself when the page opens if the
+// last check is over 10 minutes old (once per 10 minutes, so a failing
+// Amazon call can't loop).
+function shipAgo(iso){
+  if(!iso) return 'never';
+  const m=Math.round((Date.now()-new Date(iso).getTime())/60000);
+  return m<1?'just now':m<60?m+' min ago':m<1440?Math.round(m/60)+' h ago':Math.round(m/1440)+' days ago';
+}
+function shipRefreshPaint(d){
+  const el=document.getElementById('shipRefreshBar'); if(!el) return;
+  const last=d&&d.last, running=d&&d.running;
+  const err=!running&&d&&d.finishedAt&&d.error;
+  el.innerHTML='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">'
+    +'<div><b>📡 Amazon</b> <span class="hint">'+(running?'<b style="color:#2563a8">Updating… '+esc(d.step||'')+'</b>':'last checked <b>'+esc(shipAgo(last&&last.at))+'</b>'+(last&&last.result?' · '+last.result.statuses+' shipment'+(last.result.statuses===1?'':'s')+' read':''))+'</span>'
+    +(err?'<div style="color:#c0392b;font-size:12px;font-weight:700;margin-top:3px">⚠ '+esc(d.error)+'</div>':'')+'</div>'
+    +'<button class="action" id="shipRefreshBtn" onclick="shipRefreshStart()" '+(running?'disabled':'')+' style="padding:9px 16px;font-size:13px;background:#0d4450">'+(running?'Updating…':'↻ Update from Amazon')+'</button></div>';
+}
+function shipRefreshLoad(auto){
+  return api('/api/shipments/refresh/status').then(d=>{
+    if(!d||d.ok===false) return;
+    shipRefreshPaint(d);
+    if(d.running){ shipRefreshPoll(); return; }
+    const stale=!d.last || (Date.now()-new Date(d.last.at).getTime())>10*60000;
+    if(auto && stale && Date.now()-(window._shipAutoAt||0)>10*60000){ window._shipAutoAt=Date.now(); shipRefreshStart(); }
+  }).catch(()=>{});
+}
+function shipRefreshStart(){
+  api('/api/shipments/refresh',{method:'POST',body:'{}'}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not start the update',true); return; }
+    shipRefreshPoll();
+  }).catch(()=>toast('Could not start the update — connection problem',true));
+}
+function shipRefreshPoll(){
+  clearTimeout(window._shipPollT);
+  api('/api/shipments/refresh/status').then(d=>{
+    shipRefreshPaint(d);
+    if(d&&d.running){ window._shipPollT=setTimeout(shipRefreshPoll,2000); return; }
+    if(d&&d.error) toast('Amazon update finished with problems',true); else toast('Shipments updated from Amazon');
+    renderShipments(true);
+  }).catch(()=>{ window._shipPollT=setTimeout(shipRefreshPoll,4000); });
+}
+// Amazon's status words, shown beside ours.
+const AMZ_SHIP={WORKING:['Not shipped yet','#5a6472','#eef2f6'],READY_TO_SHIP:['Ready to ship','#5a6472','#eef2f6'],SHIPPED:['Shipped','#2563a8','#eaf2fc'],
+  IN_TRANSIT:['In transit','#2563a8','#eaf2fc'],DELIVERED:['Delivered','#b7791f','#fdf6e3'],CHECKED_IN:['Checked in','#7a4fb5','#f4effb'],
+  RECEIVING:['Receiving','#7a4fb5','#f4effb'],CLOSED:['Closed','#1e8449','#eafaf1'],CANCELLED:['Cancelled','#c0392b','#fdecea'],DELETED:['Deleted','#c0392b','#fdecea'],ERROR:['Error','#c0392b','#fdecea']};
+function amzShipPill(s){
+  if(!s.amz_status) return '';
+  const m=AMZ_SHIP[s.amz_status]||[s.amz_status,'#5a6472','#eef2f6'];
+  return '<span title="Amazon\'s status · read '+esc(shipAgo(s.amz_status_at))+'" style="display:inline-block;padding:3px 9px;border-radius:10px;font-size:11px;font-weight:800;white-space:nowrap;color:'+m[1]+';background:'+m[2]+';margin-right:6px">Amazon: '+esc(m[0])+'</span>';
+}
+function renderShipments(noAuto){
+  if(!noAuto) shipRefreshLoad(true);
   const filter=document.getElementById('shipFilter').value;
   api('/api/all-shipments').then(ships=>{
     let list=ships;
@@ -9276,8 +9330,9 @@ function drawShipments(list,b){
       return `<div class="ship-card">
         <div class="ship-head" onclick="document.getElementById('si${i}').classList.toggle('open')">
           <div><div class="ship-title">${esc(title)}</div><div class="ship-sub">${s.shipment_id} · ${totalSent} units sent · ${new Date(s.created_at).toLocaleDateString()}${(()=>{ if(!s.received_at) return s.status==='in_transit'?' · <b style="color:#2563a8">'+Math.floor((Date.now()-Date.parse(s.created_at))/86400000)+' days so far</b>':''; const d=(Date.parse(s.received_at)-Date.parse(s.created_at))/86400000; return d>=0?' · <b style="color:#1e8449">checked in after '+Math.round(d)+' day'+(Math.round(d)===1?'':'s')+'</b>':''; })()}</div></div>
-          ${badge}
+          <div style="display:flex;align-items:center;flex-wrap:wrap;justify-content:flex-end">${amzShipPill(s)}${badge}</div>
         </div>
+        ${(s.amz_status==='CANCELLED'||s.amz_status==='DELETED')&&s.status==='in_transit'?'<div style="padding:8px 14px;background:#fdecea;color:#c0392b;font-size:12.5px;font-weight:700">Amazon shows this shipment as cancelled. If it was re-created under a new ID, use the blue button below; if not, the red one puts the units back.</div>':''}
         <div class="ship-items" id="si${i}">${rows||'<div class="ship-item-row">No items</div>'}</div>
         ${shipCostBlock(s.shipment_id, totalSent)}
         ${s.status==='in_transit'?`<div style="display:flex;gap:8px;flex-wrap:wrap;padding:10px 14px;border-top:1px solid #eef2f6;background:#fafbfc">

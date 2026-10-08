@@ -501,6 +501,24 @@ test('2D production: N identical boxes, pallet limit refused unless overridden, 
   assert.strictEqual(over.status, 200);
 });
 
+test('Update from Amazon: with Amazon unreachable it reports the problem and changes nothing', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_shipments(shipment_id, shipment_name, status) VALUES ('FBAUPD1','Upd','in_transit') ON CONFLICT DO NOTHING`);
+  await pool.query(`INSERT INTO inv_shipment_items(shipment_id, asin, qty) VALUES ('FBAUPD1','TSTB',10)`);
+  const t0 = (await stock('TSTB')).transit;
+  const r = await post('/api/shipments/refresh', {});
+  assert.strictEqual(r.status, 200);
+  let st;
+  for (let i = 0; i < 40; i++) {
+    st = await (await fetch(`http://localhost:${PORT}/api/shipments/refresh/status`, { headers: H() })).json();
+    if (!st.running) break;
+    await new Promise(res => setTimeout(res, 250));
+  }
+  assert.strictEqual(st.running, false);
+  assert.ok(st.error, 'the failure is reported, not read as "nothing there"');
+  assert.strictEqual((await stock('TSTB')).transit, t0);
+  assert.strictEqual((await one(`SELECT status FROM inv_shipments WHERE shipment_id='FBAUPD1'`)).status, 'in_transit');
+});
+
 test('staff cannot reach owner routes', { skip }, async () => {
   // Capacity room left is cubic feet only; the owner dropped the password there (#132)
   assert.notStrictEqual((await post('/api/capacity/limit', { standard: 1 })).status, 403);

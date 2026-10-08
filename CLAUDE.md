@@ -51,7 +51,7 @@ and shown in the UI so you can confirm the deploy is live.
 - `AUTH_DISABLED`: turns off the warehouse gate only.
 - `AMAZON_CLIENT_ID`, `AMAZON_CLIENT_SECRET`, `AMAZON_REFRESH_TOKEN`, `AMAZON_MARKETPLACE_ID`: SP-API. The `*_FM` variants take precedence when set.
 - `KEEPA_API_KEY`
-- `RECONCILE_LOOKBACK_DAYS`
+- `RECONCILE_LOOKBACK_DAYS`: the minimum look-back for shipment check-ins; the check reaches back to the oldest open app shipment anyway (`reconcileLookbackDays`, max 180).
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `REPORT_EMAIL_TO`: the Sunday summary email (`lib/weekly-email.js`).
 - `BACKUP_EMAIL_TO`: where the Sunday 3 AM backup goes (defaults to `REPORT_EMAIL_TO`, then `SMTP_USER`). Backups are every `inv_*`/`fin_*` table as gzipped JSON; download from Admin → Data Sources; restore with `scripts/restore-backup.js` (read its header first).
 - `SPAPI_BASE_URL`, `LWA_TOKEN_URL`: local testing only (point the SP-API client at a fake Amazon). Never set in Railway. The two must differ, or the login call loops.
