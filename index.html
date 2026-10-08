@@ -228,6 +228,8 @@
   .subtab.betatoggle { background:#f4effb; color:#5b2d9e; border:1px dashed #b9a2dc; }
   .fresh-tag { display:inline-block; margin-left:6px; padding:0 6px; border-radius:999px; font-size:10.5px; font-weight:800; background:rgba(19,25,33,0.14); color:#131921; }
   .fresh-tag.stale { background:#c0392b; color:#fff; }
+  .subtop { grid-column:1 / -1; display:flex; align-items:center; justify-content:space-between; padding-bottom:6px; margin-bottom:2px; border-bottom:1px solid #eef2f6; font-size:10.5px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; color:#8a97a6; font-family:var(--head); }
+  .subtop .sublock { margin-left:auto; }
   .subkey { grid-column:1 / -1; font-size:11px; color:#8a97a6; padding-top:4px; border-top:1px solid #eef2f6; }
   @media (max-width:900px){ .subtabs { grid-template-columns:1fr; } }
   @media (max-width:520px){ .subrow { grid-template-columns:1fr; gap:3px; } }
@@ -277,7 +279,6 @@
     <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
     <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
     <button class="tab" onclick="showTab('receive',event)">Receiving (Manual)</button>
-    <button class="tab" onclick="showTab('count',event)">Cycle Count</button>
     <button class="tab" onclick="showTab('log',event)">Activity</button>
     <button class="tab" onclick="showTab('admin',event)" style="background:#7a4fb5;color:#fff;margin-left:auto">🔒 ADMIN</button>
   </div>
@@ -326,20 +327,6 @@
       </div>
       <div class="hint">Scan a product → if it's a new barcode, pick which product it is (once) and it's remembered forever → enter quantity → Add.</div>
     </div>
-  </div>
-
-  <div id="count" class="panel">
-    <div class="box">
-      <div style="font-weight:700">📋 Cycle Count — count one rack location</div>
-      <div class="hint">Pick a location, then scan every bottle on it (each scan adds 1), or type the total next to a product. Save sets On Hand to what you counted. Prepped units in staging are kept on top — only loose bottles on the rack are counted here.</div>
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
-        <select id="countLoc" onchange="countLoad()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;background:#fff"></select>
-      </div>
-      <div id="countScanWrap" style="display:none;margin-top:10px">
-        <input type="text" id="scanCount" placeholder="Scan a bottle on this rack…" autocomplete="off" style="width:100%">
-      </div>
-    </div>
-    <div id="countBody"></div>
   </div>
 
   <div id="onhand" class="panel">
@@ -625,11 +612,13 @@
     </div>
     <div id="adminContent" style="display:none">
       <div class="subtabs">
+        <!-- Lock sits top right (owner: it was "in a weird random spot" at the end of the Dashboard row). -->
+        <div class="subtop"><span>Owner admin</span><button class="subtab sublock" onclick="adminLock()">🔒 Lock</button></div>
         <div class="subcol">
-          <div class="subrow"><div class="subgroup-label">Dashboard</div><div class="subgroup-btns"><button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button><button class="subtab sublock" onclick="adminLock()">🔒 Lock</button></div></div>
+          <div class="subrow"><div class="subgroup-label">Dashboard</div><div class="subgroup-btns"><button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button></div></div>
           <div class="subrow"><div class="subgroup-label">Money</div><div class="subgroup-btns"><button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button><button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button><button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button><button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button></div></div>
           <div class="subrow"><div class="subgroup-label">Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button></div></div>
-          <div class="subrow"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button></span></div></div>
+          <div class="subrow"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button><button class="subtab" data-sub="count" onclick="showSubTab('count',event)">Cycle Count</button></span></div></div>
         </div>
         <div class="subcol">
           <div class="subrow"><div class="subgroup-label">Data</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="market" onclick="showSubTab('market',event)">Market Data</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button></div></div>
@@ -806,6 +795,20 @@
 <div id="sub-orders" class="subpanel"><div id="ordersBody"></div></div>
 <div id="sub-ssorders" class="subpanel"><div id="ssOrdersBody"></div></div>
 <div id="sub-itemlocs" class="subpanel"><div id="itemLocsBody"></div></div>
+  <!-- Cycle Count: moved off the warehouse bar into Admin → Beta testing (owner: not in use right now). -->
+<div id="sub-count" class="subpanel">
+    <div class="box">
+      <div style="font-weight:700">📋 Cycle Count — count one rack location</div>
+      <div class="hint">Pick a location, then scan every bottle on it (each scan adds 1), or type the total next to a product. Save sets On Hand to what you counted. Prepped units in staging are kept on top — only loose bottles on the rack are counted here.</div>
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <select id="countLoc" onchange="countLoad()" style="flex:1;min-width:160px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;background:#fff"></select>
+      </div>
+      <div id="countScanWrap" style="display:none;margin-top:10px">
+        <input type="text" id="scanCount" placeholder="Scan a bottle on this rack…" autocomplete="off" style="width:100%">
+      </div>
+    </div>
+    <div id="countBody"></div>
+  </div>
 <div id="sub-smartscout" class="subpanel">
   <div class="box">
     <b style="font-size:16px">🥧 Smart Scout</b>
@@ -2473,7 +2476,6 @@ function loadProducts(){ loadSsPicks(); return api('/api/products').then(d=>{
   products=d; renderOnhand(); }); }
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='prod'){ prodOpen(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
-  if(t==='count'){ countInit(); }
   if(t==='pendingprep'){loadPendingPrep();} if(t==='prep'){loadPrepList();} if(t==='reconcile'){loadInvoiceList(); refreshShortBadge();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
@@ -2750,22 +2752,15 @@ function loadDashboard(){
   api('/api/dashboard').then(d=>{
     const b=document.getElementById('dashBody');
     const card=(n,l,color)=>`<div class="card" style="border-top:3px solid ${color||'#008296'}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
-    let h='<div class="cards" style="flex-wrap:wrap">';
-    h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+(d.totalAvailable!=null?d.totalAvailable:d.onhand).toLocaleString()+'</div><div class="l">Available</div><div style="font-size:11px;color:#9db0c9;margin-top:3px">of '+(d.totalOnhand||d.onhand).toLocaleString()+' on hand</div></div>';
-    if(d.totalPendingPrep) h+='<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalPendingPrep.toLocaleString()+'</div><div class="l">Pending Prep</div></div>';
-    if(d.totalPrepped) h+='<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+d.totalPrepped.toLocaleString()+'</div><div class="l">Prepped</div></div>';
-    h+=card(d.transit.toLocaleString(),'In Transit','#b7791f');
-    h+=card(d.skus,'SKUs','#008296');
-    if(d.retailValue){
-      const priced = d.retailPricedCount!=null ? d.retailPricedCount+'/'+d.retailTotalCount+' priced' : '';
-      const asof = d.retailAsOf ? 'prices from '+new Date(d.retailAsOf).toLocaleDateString() : '';
-      h+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(d.retailValue).toLocaleString()+'</div><div class="l">Retail Value On Hand</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">'+priced+(asof?' · '+asof:'')+'</div></div>';
-    }
-    h+='</div><div class="cards" style="flex-wrap:wrap">';
+    // Top row = the FBA Inventory tab's totals and retail values (owner:
+    // the Dashboard should show the same numbers). Filled in by renderDashFba.
+    let h='<div id="dashFba"><div class="hint" style="padding:10px;text-align:center">Loading totals…</div></div>';
+    h+='<div class="cards" style="flex-wrap:wrap">';
     h+=card(d.pendingInvoices+(d.pendingUnits?' · '+d.pendingUnits.toLocaleString()+' units':''),'Pending Check-Ins','#2563a8');
     h+=card(d.openShipments,'Open FBA Shipments','#2563a8');
     h+=card(d.lowStock,'Low Stock','#c0392b');
     h+=card(d.outStock,'Out of Stock','#c0392b');
+    h+=card(d.skus,'SKUs','#008296');
     h+='</div>';
     // ---- MERCHANT FULFILLED OPPORTUNITIES ----
     if(d.mfnOpportunities && d.mfnOpportunities.items && d.mfnOpportunities.items.length){
@@ -2816,7 +2811,30 @@ function loadDashboard(){
       h+='</div>';
     }
     b.innerHTML=h;
+    renderDashFba();
   });
+}
+// The FBA Inventory cards on the Dashboard: same data (Amazon's saved FBA
+// pull + live warehouse counts + saved prices), same math (fbaTotals).
+async function renderDashFba(){
+  const el=document.getElementById('dashFba'); if(!el) return;
+  try{
+    if(!products.length){ const d=await api('/api/products'); if(Array.isArray(d)) products=d; }
+    if(!window._fbaData){
+      const c=await api('/api/cache/fba_inventory');
+      if(c && c.cached && c.data){
+        window._fbaData = Array.isArray(c.data) ? c.data : (c.data.items||[]);
+        window._fbaVal = Array.isArray(c.data) ? null : (c.data.valuation||null);
+        window._fbaSort = window._fbaSort || {col:'grand_total',dir:-1};
+        window._fbaLoadedAt = new Date(c.updated_at);
+      }
+    }
+  }catch(e){}
+  if(!document.getElementById('dashFba')) return;
+  if(!window._fbaData){ el.innerHTML='<div class="hint" style="padding:10px;text-align:center">No FBA Inventory pull yet — open <a href="#" onclick="showSubTab(\'fbainv\');return false">FBA Inventory</a> and load it.</div>'; return; }
+  fbaNormalize();
+  const {cards}=fbaTotals();
+  el.innerHTML=cards+'<div class="hint" style="text-align:center;margin:-4px 0 10px">Same totals as <a href="#" onclick="showSubTab(\'fbainv\');return false">FBA Inventory</a>'+(window._fbaLoadedAt?' · Amazon counts from '+window._fbaLoadedAt.toLocaleString():'')+'</div>';
 }
 
 // ---- Merchant Fulfilled scan ----
@@ -2878,7 +2896,7 @@ function loadFbaPrices(){
   ownerApi('/api/cache/inventory_value').then(c=>{
     const m={}; for(const v of ((c&&c.cached&&Array.isArray(c.data))?c.data:[])) if(v.amazon_price) m[v.asin]=parseFloat(v.amazon_price);
     window._fbaPrices=m;
-  }).catch(()=>{ window._fbaPrices={}; }).finally(()=>{ window._fbaPricesLoading=false; if(window._fbaData) renderFbaInv(); });
+  }).catch(()=>{ window._fbaPrices={}; }).finally(()=>{ window._fbaPricesLoading=false; if(window._fbaData){ renderFbaInv(); renderDashFba(); } });
 }
 // ---- FBA Inventory ----
 function loadFbaCache(){
@@ -3015,9 +3033,11 @@ function computeFbaValuation(rows){
            fbaPriced, fbaUnpriced, duosInTransit, duosPrepped, havePrices };
 }
 
-function renderFbaInv(){
-  let d=window._fbaData||[]; const s=window._fbaSort;
-  const b=document.getElementById('fbaInvBody');
+// FBA Inventory totals + retail values, shared by the FBA Inventory tab and
+// the Dashboard (owner: the Dashboard should show the same numbers).
+// Warehouse figures come from LIVE product data (the server may still be
+// returning raw on-hand as "warehouse").
+function fbaNormalize(){
   // ---- normalise warehouse figures from LIVE product data ----
   // (the server may still be returning raw on-hand as "warehouse")
   const liveP={};
@@ -3026,7 +3046,7 @@ function renderFbaInv(){
       onhand:p.onhand||0, pend:p.pending_prep||0, prep:p.prepped||0, transit:p.transit||0
     };
   }
-  d.forEach(x=>{
+  (window._fbaData||[]).forEach(x=>{
     const L=liveP[x.asin];
     if(L){
       x.pending_prep = L.pend;
@@ -3041,6 +3061,28 @@ function renderFbaInv(){
       x.onhand_total = x.onhand_total||x.warehouse||0;
     }
   });
+}
+function fbaTotals(){
+  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=x.warehouse;tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
+  if(!window._fbaPrices && !window._fbaPricesLoading) loadFbaPrices();
+  // Retail value under each total (owner's ask): units × Amazon price, duo
+  // pairs at the duo price (computeFbaValuation).
+  const V = computeFbaValuation(window._fbaData||[]);
+  const hasV = V && V.havePrices!==0;
+  const $v = n => hasV ? '<div style="font-size:16px;font-weight:900;color:#1e8449;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">RETAIL VALUE</div>' : '';
+  const cards='<div class="cards" style="flex-wrap:wrap">'+
+    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div>'+$v(V&&V.availValue)+'</div>'+
+    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div>'+$v(V&&V.pendingValue)+'</div>':'')+
+    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div>'+$v(V&&V.preppedValue)+'</div>':'')+
+    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div>'+$v(V&&V.transitValue)+'</div>'+
+    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div>'+$v(V&&V.fbaValue)+'</div>'+
+    '<div class="card" style="border-top:3px solid #002f36;background:#f9fafb"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL UNITS</div>'+$v(V&&V.grandTotal)+'</div></div>';
+  return { cards, V, hasV };
+}
+function renderFbaInv(){
+  let d=window._fbaData||[]; const s=window._fbaSort;
+  const b=document.getElementById('fbaInvBody');
+  fbaNormalize();
   // filter out the noise
   const ff=(document.getElementById('fbaFilter')||{}).value||'anystock';
   const fq=((document.getElementById('fbaSearch')||{}).value||'').toLowerCase();
@@ -3054,26 +3096,14 @@ function renderFbaInv(){
     if(ff==='transit' && (x.transit||0)<=0) return false;
     return true;
   });
-  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=x.warehouse;tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
   const sorted=[...d].sort((a,b2)=>{
     let av,bv;
     if(s.col==='name'){ av=(a.name||'').toLowerCase(); bv=(b2.name||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
     av=a[s.col]||0; bv=b2[s.col]||0; return (av-bv)*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
-  if(!window._fbaPrices && !window._fbaPricesLoading) loadFbaPrices();
-  // Retail value under each total (owner's ask): units × Amazon price, duo
-  // pairs at the duo price (computeFbaValuation).
-  const V = computeFbaValuation(window._fbaData||[]);
-  const hasV = V && V.havePrices!==0;
-  const $v = n => hasV ? '<div style="font-size:16px;font-weight:900;color:#1e8449;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">RETAIL VALUE</div>' : '';
-  let h='<div class="cards" style="flex-wrap:wrap">'+
-    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div>'+$v(V&&V.availValue)+'</div>'+
-    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div>'+$v(V&&V.pendingValue)+'</div>':'')+
-    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div>'+$v(V&&V.preppedValue)+'</div>':'')+
-    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div>'+$v(V&&V.transitValue)+'</div>'+
-    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div>'+$v(V&&V.fbaValue)+'</div>'+
-    '<div class="card" style="border-top:3px solid #002f36;background:#f9fafb"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL UNITS</div>'+$v(V&&V.grandTotal)+'</div></div>';
+  const {cards:h0, V, hasV} = fbaTotals();
+  let h=h0;
   if(hasV){
     const allDuos=[...(V.duosInTransit||[]).map(x=>({...x,where:'transit'})), ...(V.duosPrepped||[]).map(x=>({...x,where:'prepped'}))];
     if(allDuos.length){
@@ -3914,7 +3944,8 @@ function setBeta(open){
 function toggleBeta(){ const b=document.getElementById('betaBtns'); setBeta(!(b && b.style.display!=='none')); }
 (function(){ try{ if(localStorage.getItem('betaOpen')==='1') setTimeout(()=>setBeta(true),0); }catch(e){} })();
 function showSubTab(name, ev){
-  if(['restock','sendnext','orders'].includes(name)) setBeta(true);
+  if(['restock','sendnext','orders','count'].includes(name)) setBeta(true);
+  if(name==='count') countInit();
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
