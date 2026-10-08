@@ -226,6 +226,8 @@
   .subtabs .subtab { padding:6px 12px; font-size:12.5px; }
   .subtabs .sublock { margin-left:auto; align-self:center; }
   .subtab.betatoggle { background:#f4effb; color:#5b2d9e; border:1px dashed #b9a2dc; }
+  .fresh-tag { display:inline-block; margin-left:6px; padding:0 6px; border-radius:999px; font-size:10.5px; font-weight:800; background:rgba(19,25,33,0.14); color:#131921; }
+  .fresh-tag.stale { background:#c0392b; color:#fff; }
   .subkey { grid-column:1 / -1; font-size:11px; color:#8a97a6; padding-top:4px; border-top:1px solid #eef2f6; }
   @media (max-width:900px){ .subtabs { grid-template-columns:1fr; } }
   @media (max-width:520px){ .subrow { grid-template-columns:1fr; gap:3px; } }
@@ -635,7 +637,7 @@
           <div class="subrow"><div class="subgroup-label">Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button></div></div>
           <div class="subrow"><div class="subgroup-label">Item locations</div><div class="subgroup-btns"><button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button></div></div>
         </div>
-        <div class="subkey"><span class="amz-key"></span>Orange = pulls from Amazon (Market Data: Keepa) — refresh now and then.</div>
+        <div class="subkey"><span class="amz-key"></span>Orange = pulls from Amazon (Market Data: Keepa). The tag says how long ago it was refreshed; <b style="color:#c0392b">red</b> = time to refresh.</div>
       </div>
       <div id="freshnessBar" style="margin:8px 0 2px"></div>
 <div id="sub-audit" class="subpanel">
@@ -3285,6 +3287,7 @@ function loadToAdd(){
     if(btn){btn.textContent='Load';btn.disabled=false;}
     if(d.error){ document.getElementById('toaddBody').innerHTML='<div class="hint" style="color:#c0392b">Error: '+esc(d.error)+'</div>'; return; }
     window._toaddData=d; window._toaddSort={col:'_profitMo',dir:-1};
+    ownerApi('/api/products-to-add/hidden').then(h=>{ window._toaddHidden=new Set((h&&h.asins)||[]); renderToAdd(); }).catch(()=>{});
     renderToAdd();
   }).catch(()=>{ if(btn){btn.textContent='Load';btn.disabled=false;} });
 }
@@ -3341,6 +3344,15 @@ function exportToadd(){
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
   toast('Exported '+n+' products');
+}
+// Hide / bring back one ASIN (saved on the server, same on every device).
+function toaddHide(asin, hidden){
+  const H=window._toaddHidden=window._toaddHidden||new Set();
+  if(hidden) H.add(asin); else H.delete(asin);
+  renderToAdd();
+  ownerApi('/api/products-to-add/hidden',{method:'POST',body:JSON.stringify({asin,hidden})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); if(hidden) H.delete(asin); else H.add(asin); renderToAdd(); }
+  }).catch(()=>{ toast('Not saved — connection problem',true); if(hidden) H.delete(asin); else H.add(asin); renderToAdd(); });
 }
 function toaddSort(col){
   const s=window._toaddSort;
@@ -3423,7 +3435,9 @@ function renderToAdd(){
     if(minProfit>0 && (x._profitMo||0)<minProfit) return false;
     return true;
   });
+  const HID=window._toaddHidden||new Set();
   list.sort((a,b2)=>{
+    const ha=HID.has(a.asin)?1:0, hb=HID.has(b2.asin)?1:0; if(ha!==hb) return ha-hb;   // hidden ones sink to the bottom
     if(s.col==='title'){ const av=(a.title||'').toLowerCase(),bv=(b2.title||'').toLowerCase(); return av<bv?s.dir:av>bv?-s.dir:0; }
     let av=a[s.col], bv=b2[s.col];
     av=(av==null)?(s.dir>0?1e12:-1):av; bv=(bv==null)?(s.dir>0?1e12:-1):bv;
@@ -3435,14 +3449,16 @@ function renderToAdd(){
   // not-carried rows, which made them unclear). Read left to right:
   // the pie (100%, all sellers) → our share of it → after Amazon's fees → profit.
   const scope=filter==='notcarried'?'not carried':filter==='carried'?'carried':'all shown';
-  const sum=f=>list.reduce((t,x)=>t+(f(x)||0),0);
+  // Hidden ASINs (crossed out below) are left out of every total.
+  const counted=list.filter(x=>!HID.has(x.asin)), nHid=list.length-counted.length;
+  const sum=f=>counted.reduce((t,x)=>t+(f(x)||0),0);
   const pieRev=sum(x=>(x._units||0)*(x.buyBoxPrice||0));
   const ourSales=sum(x=>(x._unitsReal||0)*(x.buyBoxPrice||0));
   const nd=sum(x=>x._netDepositMoReal), pp=sum(x=>x._profitMo);
   const card=(n,l,sub,top)=>'<div class="card"'+(top?' style="border-top:3px solid '+top+'"':'')+'><div class="n">'+n+'</div><div class="l">'+l+'</div>'+(sub?'<div style="font-size:10.5px;color:#8a97a6;margin-top:3px">'+sub+'</div>':'')+'</div>';
   const $=v=>'$'+Math.round(v).toLocaleString();
   let h='<div class="cards" style="flex-wrap:wrap">'
-    +card(list.length.toLocaleString(),'Products · '+scope,d.length+' tracked · '+d.filter(x=>x.carried).length+' carried','#c0392b')
+    +card(counted.length.toLocaleString(),'Products · '+scope,d.length+' tracked · '+d.filter(x=>x.carried).length+' carried'+(nHid?' · <b>'+nHid+' hidden</b>':''),'#c0392b')
     +card($(pieRev),'Pie / mo · 100%','what all the other sellers sell, after Amazon')
     +card($(ourSales),'Our sales / mo · '+sharePct+'% of pie','our share, before Amazon\'s fees','#b7791f')
     +card($(nd),'Net deposit / mo','our sales − referral & FBA fees','#2563a8')
@@ -3467,7 +3483,8 @@ function renderToAdd(){
     '<th style="cursor:pointer;background:#2563a8" onclick="toaddSort(\'_netDepositMoReal\')">Net Deposit/mo'+arrow('_netDepositMoReal')+'</th>'+
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Our Profit/mo'+arrow('_profitMo')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'hazmat\')">Hazmat</th>'+
-    '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th></tr></thead><tbody>';
+    '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th>'+
+    '<th style="width:70px;text-align:center" title="Hide an ASIN: crossed out and left out of the totals. Click again to bring it back.">Hide</th></tr></thead><tbody>';
   h+=list.slice(0,300).map(x=>{
     const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none;font-weight:600">${esc(x.title||x.asin)}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
@@ -3507,7 +3524,9 @@ function renderToAdd(){
       ? `<span style="font-weight:800;color:#1e8449;font-size:16px">$${Math.round(x._profitMo).toLocaleString()}</span><div style="font-size:10px;color:#b7791f;font-weight:700">~${Math.round(x._unitsReal)} u/mo · ${esc(x._capSrc||(Math.round(x._capture*100)+'% capture'))}</div>`
       : '<span style="color:#9db0c9">—</span>';
     const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
-    return `<tr><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td style="text-align:center">${units}</td><td style="text-align:center">${avgCell}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td></tr>`;
+    const isHid=HID.has(x.asin);
+    const hideCell=`<td style="text-align:center"><button onclick="toaddHide('${x.asin}',${!isHid})" title="${isHid?'Bring it back into the totals':'Hide: cross it out and leave it out of the totals'}" style="padding:4px 9px;font-size:12px;font-weight:800;border-radius:6px;cursor:pointer;border:1px solid ${isHid?'#1e8449':'#c9d4e0'};background:${isHid?'#eafaf1':'#fff'};color:${isHid?'#1e8449':'#8a97a6'}">${isHid?'↺ Show':'✕'}</button></td>`;
+    return `<tr${isHid?' style="text-decoration:line-through;opacity:.45;background:#f4f6f9"':''}><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td style="text-align:center">${units}</td><td style="text-align:center">${avgCell}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td>${hideCell}</tr>`;
   }).join('');
   h+='</tbody></table>';
   if(!list.length){
@@ -8493,11 +8512,14 @@ function pollHazmat(){
 // ---- DATA FRESHNESS BAR ----
 // Every planning page runs off cached pulls. Stale input is the single easiest
 // way to reorder wrong, so the age is shown at the top of Admin at all times.
+// sub = the orange Admin tab that shows how old its data is (owner: the
+// separate "LAST UPDATED" bar repeated what the orange tabs are for).
 const FRESH_SETS = [
-  { key:'fba_inventory',  label:'FBA Inventory', warnHrs:24 },
-  { key:'velocity',       label:'Velocity',      warnHrs:72 },
-  { key:'market_data',    label:'Market (Keepa)',warnHrs:168 },
-  { key:'inventory_value',label:'Value',         warnHrs:168 }
+  { key:'fba_inventory',  label:'FBA Inventory', warnHrs:24,  subs:['fbainv'] },
+  { key:'velocity',       label:'Velocity',      warnHrs:72,  subs:['velocity'] },
+  { key:'market_data',    label:'Market (Keepa)',warnHrs:168, subs:['market'] },
+  { key:'inventory_value',label:'Value',         warnHrs:168, subs:['value'] },
+  { key:'shipments_checked',label:'Shipments',   warnHrs:12,  subs:['transit','shipments'] }
 ];
 
 function ageText(ts){
@@ -8510,29 +8532,23 @@ function ageText(ts){
 }
 
 function loadFreshness(){
-  const bar=document.getElementById('freshnessBar'); if(!bar)return;
+  const bar=document.getElementById('freshnessBar'); if(bar) bar.innerHTML='';
   api('/api/cache-status').then(d=>{
-    let anyStale=false;
-    const chips=FRESH_SETS.map(f=>{
-      const c=d[f.key];
-      const ts=c&&c.updated_at;
-      const age=ageText(ts);
+    for(const f of FRESH_SETS){
+      const c=d[f.key], ts=c&&c.updated_at;
       const hrs=ts?((Date.now()-new Date(ts).getTime())/3600000):null;
-      const stale = !ts || hrs>f.warnHrs;
-      if(stale) anyStale=true;
-      const bg = !ts ? '#fdeceb' : (stale?'#fdf6e3':'#eafaf1');
-      const fg = !ts ? '#c0392b' : (stale?'#b7791f':'#1e8449');
-      return '<span style="display:inline-flex;align-items:center;gap:5px;background:'+bg+';color:'+fg
-        +';padding:4px 10px;border-radius:6px;font-size:11.5px;font-weight:700;white-space:nowrap">'
-        +(!ts?'⚠':(stale?'⌛':'✓'))+' '+esc(f.label)+': '+(age||'NEVER LOADED')
-        +(c&&c.count?'<span style="font-weight:400;opacity:.75"> ('+c.count+')</span>':'')+'</span>';
-    }).join(' ');
-    bar.innerHTML='<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 10px;border:1px solid '
-      +(anyStale?'#e8dcc0':'#dfeae3')+';border-radius:8px;background:'+(anyStale?'#fffdf7':'#fafcfb')+'">'
-      +'<b style="font-size:11.5px;color:#5a6472;margin-right:2px">LAST UPDATED</b>'+chips
-      +(anyStale?'<span style="font-size:11px;color:#b7791f;font-weight:700;margin-left:4px">— refresh before reordering</span>':'')
-      +'</div>';
-  }).catch(()=>{ bar.innerHTML=''; });
+      const stale=!ts || hrs>f.warnHrs;
+      const short=!ts?'never':hrs<1?Math.max(1,Math.round(hrs*60))+'m':hrs<48?Math.round(hrs)+'h':Math.round(hrs/24)+'d';
+      for(const sub of f.subs){
+        const btn=document.querySelector('.subtab[data-sub="'+sub+'"]'); if(!btn) continue;
+        let tag=btn.querySelector('.fresh-tag');
+        if(!tag){ tag=document.createElement('span'); tag.className='fresh-tag'; btn.appendChild(tag); }
+        tag.textContent=short;
+        tag.classList.toggle('stale', stale);
+        tag.title=(ts?'Updated '+(ageText(ts)||''):'Never loaded')+(stale?' — time to refresh':'');
+      }
+    }
+  }).catch(()=>{});
 }
 
 function loadMappingHealth(){
@@ -9212,6 +9228,7 @@ function shipRefreshPoll(){
     shipRefreshPaint(d);
     if(d&&d.running){ window._shipPollT=setTimeout(shipRefreshPoll,2000); return; }
     if(d&&d.error) toast('Amazon update finished with problems',true); else toast('Shipments updated from Amazon');
+    try{ loadFreshness(); }catch(e){}
     const tr=document.getElementById('sub-transit');
     if(tr && tr.classList.contains('active')) renderTransit(true); else renderShipments(true);
   }).catch(()=>{ window._shipPollT=setTimeout(shipRefreshPoll,4000); });

@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'admin-nav-1023';
+const BUILD_ID = 'toadd-hide-fresh-1024';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6283,6 +6283,22 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
     return ar-br;
   });
   res.json(out);
+});
+
+// Products to Add: ASINs the owner hid (crossed out, left out of the totals;
+// unhiding brings them back). Owner-only, like the screen.
+app.get('/api/products-to-add/hidden', ownerAuth, async (req, res) => {
+  const r = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='toadd_hidden'")).rows[0];
+  res.json({ ok: true, asins: (r && r.data && r.data.asins) || [] });
+});
+app.post('/api/products-to-add/hidden', ownerAuth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim().toUpperCase();
+  if (!/^[A-Z0-9]{10}$/.test(asin)) return res.status(400).json({ ok: false, error: 'bad ASIN' });
+  const r = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='toadd_hidden'")).rows[0];
+  const set = new Set((r && r.data && r.data.asins) || []);
+  if (req.body.hidden) set.add(asin); else set.delete(asin);
+  await saveCache('toadd_hidden', { asins: [...set].slice(0, 5000) });
+  res.json({ ok: true, asins: [...set] });
 });
 
 // RESTOCK PRIORITY — combines Keepa market data + velocity + FBA + on-hand
