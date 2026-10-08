@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'toadd-hide-left-1025';
+const BUILD_ID = 'admin-tidy-hazmat-1027';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1168,6 +1168,18 @@ async function initDb() {
       SELECT asin, hazmat, COALESCE(hazmat_source,'manual'), hazmat_detail
       FROM inv_products WHERE hazmat IS NOT NULL
       ON CONFLICT (asin) DO NOTHING`);
+    // When each ASIN was last asked, whatever the answer (unknown included),
+    // so a re-run skips what was checked lately and a run cut off by a
+    // restart picks up where it stopped.
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_hazmat_checks (
+        asin TEXT PRIMARY KEY,
+        hazmat BOOLEAN,
+        detail TEXT,
+        error TEXT,
+        checked_at TIMESTAMPTZ DEFAULT now()
+      );
+    `);
     console.log('[Inventory] Hazmat table ready.');
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
 
@@ -5214,10 +5226,14 @@ app.post('/api/hazmat/set', ownerAuth, async (req, res) => {
 });
 
 // Background scan of Amazon's hazmat data. Never overwrites a manual call.
+// Saves each ASIN as it's answered and skips ones asked in the last 30 days:
+// it used to hold every answer until the end of a 15-minute run, so a deploy
+// mid-run lost the lot (owner: "it has never worked properly").
+const HAZ_RECHECK_DAYS = 30;
 let hazJob = { running:false, done:false, error:null, progress:'', found:0, checked:0 };
 app.post('/api/hazmat/scan', ownerAuth, async (req, res) => {
   if (hazJob.running) return res.json({ ok:true, already:true });
-  hazJob = { running:true, done:false, error:null, progress:'starting…', found:0, checked:0 };
+  hazJob = { running:true, done:false, error:null, progress:'starting…', found:0, safe:0, unknown:0, failed:0, skipped:0, checked:0, firstError:null };
   res.json({ ok:true });
   (async () => {
     try {
@@ -5226,13 +5242,31 @@ app.post('/api/hazmat/scan', ownerAuth, async (req, res) => {
       try { tracked = JSON.parse(fs.readFileSync(path.join(__dirname, 'keepa_asins.json'), 'utf8')); } catch(e) {}
       const owned = await pool.query('SELECT asin FROM inv_products');
       const manual = await pool.query("SELECT asin FROM inv_hazmat WHERE source='manual'");
+      // A failed check isn't "checked": it's asked again next run.
+      const recent = await pool.query(
+        `SELECT asin FROM inv_hazmat_checks WHERE error IS NULL AND checked_at > now() - ($1 || ' days')::interval`, [String(HAZ_RECHECK_DAYS)]);
       const skip = new Set(manual.rows.map(x=>x.asin));
-      const all = [...new Set([...tracked, ...owned.rows.map(x=>x.asin)])].filter(a => a && !skip.has(a));
+      const fresh = new Set(recent.rows.map(x=>x.asin));
+      const candidates = [...new Set([...tracked, ...owned.rows.map(x=>x.asin)])].filter(a => a && !skip.has(a));
+      const all = candidates.filter(a => !fresh.has(a));
+      hazJob.skipped = candidates.length - all.length;
       hazJob.progress = `checking ${all.length} ASINs…`;
-      const r = await getHazmatStatus(all, p => { hazJob.progress = p; });
-      for (const asin of Object.keys(r)) {
-        const h = r[asin];
-        if (h.hazmat === null) continue;
+      await getHazmatStatus(all, p => { hazJob.progress = p; }, async (asin, h) => {
+        hazJob.checked++;
+        await pool.query(
+          `INSERT INTO inv_hazmat_checks(asin, hazmat, detail, error, checked_at) VALUES($1,$2,$3,$4,now())
+           ON CONFLICT (asin) DO UPDATE SET hazmat=$2, detail=$3, error=$4, checked_at=now()`,
+          [asin, h.hazmat, h.detail || null, h.error || null]);
+        if (h.hazmat === null) {
+          if (h.error) { hazJob.failed++; if (!hazJob.firstError) hazJob.firstError = h.error; return; }
+          hazJob.unknown++;
+          // Amazon answered and said nothing. Clear an earlier Amazon flag:
+          // the old scan read a declared "unknown" as HAZMAT.
+          await pool.query("DELETE FROM inv_hazmat WHERE asin=$1 AND source IS DISTINCT FROM 'manual'", [asin]);
+          await pool.query(
+            "UPDATE inv_products SET hazmat=NULL, hazmat_source=NULL, hazmat_detail=NULL WHERE asin=$1 AND hazmat_source IS DISTINCT FROM 'manual'", [asin]);
+          return;
+        }
         await pool.query(
           `INSERT INTO inv_hazmat(asin, hazmat, source, detail, updated_at)
            VALUES($1,$2,$3,$4,now())
@@ -5242,12 +5276,16 @@ app.post('/api/hazmat/scan', ownerAuth, async (req, res) => {
         await pool.query(
           "UPDATE inv_products SET hazmat=$1, hazmat_source=$2, hazmat_detail=$3 WHERE asin=$4 AND hazmat_source IS DISTINCT FROM 'manual'",
           [h.hazmat, h.source, h.detail, asin]);
-        hazJob.checked++;
-        if (h.hazmat) hazJob.found++;
-      }
-      hazJob.progress = `${hazJob.checked} resolved, ${hazJob.found} flagged hazmat.`;
+        if (h.hazmat) hazJob.found++; else hazJob.safe++;
+      });
+      const parts = [`${hazJob.safe} safe`, `${hazJob.found} hazmat`, `${hazJob.unknown} Amazon had no answer`];
+      if (hazJob.failed) parts.push(`${hazJob.failed} failed (asked again next run)`);
+      if (hazJob.skipped) parts.push(`${hazJob.skipped} skipped (checked in the last ${HAZ_RECHECK_DAYS} days)`);
+      hazJob.progress = parts.join(' · ');
+      // Every call refused = a permission or login problem, not "no answer".
+      if (hazJob.checked && hazJob.failed === hazJob.checked) hazJob.error = 'Amazon refused every hazmat check: ' + hazJob.firstError;
       hazJob.running = false; hazJob.done = true;
-      console.log(`[Hazmat] ${hazJob.checked} resolved, ${hazJob.found} hazmat.`);
+      console.log(`[Hazmat] ${hazJob.progress}${hazJob.firstError ? ' — first error: ' + hazJob.firstError : ''}`);
     } catch (e) { hazJob.running=false; hazJob.error=e.message; console.error('[Hazmat] scan failed:', e.message); }
   })();
 });

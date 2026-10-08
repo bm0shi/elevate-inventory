@@ -7,6 +7,7 @@
 const axios = require('axios');
 const qs = require('querystring');
 const { parseOrdersReport, reportWindows } = require('./lib/velocity');
+const hazmatLib = require('./lib/hazmat');
 
 // Overridable only for local testing against a fake Amazon; never set in Railway.
 const SP_API_BASE = process.env.SPAPI_BASE_URL || 'https://sellingpartnerapi-na.amazon.com';
@@ -556,62 +557,52 @@ async function getItemDimensions(asins, onProgress) {
   return out;
 }
 
-// Hazmat / dangerous-goods status per ASIN.
-// Two independent sources, because neither is populated for every listing:
-//   1. Catalog Items attributes -> supplier_declared_dg_hz_regulation
-//      (the seller-declared dangerous-goods regulation; "not_applicable" = clean)
-//   2. FBA Inbound Eligibility -> ineligibility reasons mentioning hazmat
-// Returns { asin: { hazmat: true|false|null, detail, source } }. null = unknown,
-// which is deliberately NOT treated as safe.
-async function getHazmatStatus(asins, onProgress) {
-  const token = await getAccessToken();
+// Hazmat / dangerous-goods status per ASIN (reading the answers: lib/hazmat.js).
+// Both sources are asked for every ASIN: Amazon's classification (eligibility
+// codes) outranks the seller's declaration.
+// onResult(asin, { hazmat, detail, source, error }) fires per ASIN so the
+// caller saves as it goes: the scan takes 15+ minutes and used to keep every
+// answer in memory until the end, so a deploy or restart mid-run lost it all.
+// error = Amazon refused a call (status + message), so a refusal is visible
+// instead of quietly reading as "don't know".
+async function getHazmatStatus(asins, onProgress, onResult) {
   const out = {};
   const unique = [...new Set(asins.filter(Boolean))];
+  const errText = (e) => (e.response ? e.response.status + ' ' + JSON.stringify(e.response.data || '').slice(0, 200) : e.message);
   let i = 0;
 
   for (const asin of unique) {
     i++;
-    if (onProgress && i % 5 === 0) onProgress(`${i} of ${unique.length} checked…`);
-    let hazmat = null, detail = '', source = '';
+    if (onProgress && i % 5 === 0) onProgress(`${Math.min(i, unique.length)} of ${unique.length} checked…`);
+    let decl = null, elig = null, error = null;
 
     // --- 1. seller-declared dangerous goods on the listing ---
     try {
       const url = `${SP_API_BASE}/catalog/2022-04-01/items/${asin}?marketplaceIds=${MARKETPLACE_ID}&includedData=attributes`;
-      const r = await http.get(url, { headers: { 'x-amz-access-token': token } });
-      const attrs = r.data.attributes || {};
-      const dg = attrs.supplier_declared_dg_hz_regulation;
-      if (Array.isArray(dg) && dg.length) {
-        const vals = dg.map(x => String(x.value || '').toLowerCase()).filter(Boolean);
-        if (vals.length) {
-          const clean = vals.every(v => v === 'not_applicable' || v === 'none');
-          hazmat = !clean;
-          detail = vals.join(', ');
-          source = 'amazon-dg';
-        }
-      }
+      const r = await http.get(url);
+      decl = hazmatLib.fromDeclared(r.data.attributes || {});
     } catch (e) {
       if (e.response?.status === 429 && requeue(unique, asin)) { await sleep(3000); continue; }
+      // 404 = no such ASIN in the catalog: an answer, not a failure.
+      if (e.response?.status !== 404) error = 'catalog ' + errText(e);
     }
     await sleep(600);
 
-    // --- 2. inbound eligibility, when the listing declared nothing ---
-    if (hazmat === null) {
-      try {
-        const url = `${SP_API_BASE}/fba/inbound/v1/eligibility/itemPreview?marketplaceIds=${MARKETPLACE_ID}&program=INBOUND&asinList=${asin}`;
-        const r = await http.get(url, { headers: { 'x-amz-access-token': token } });
-        const items = r.data.payload || [];
-        const it = Array.isArray(items) ? items[0] : items;
-        if (it) {
-          const reasons = (it.ineligibilityReasonList || []).map(x => String(x).toUpperCase());
-          const haz = reasons.filter(x => /HAZMAT|DANGEROUS|FLAMMABLE|AEROSOL/.test(x));
-          if (haz.length) { hazmat = true; detail = haz.join(', '); source = 'amazon-inbound'; }
-          else if (it.isEligibleForProgram === true) { hazmat = false; detail = 'inbound eligible'; source = 'amazon-inbound'; }
-        }
-      } catch (e) { /* endpoint not available on every account — leave unknown */ }
-      await sleep(600);
+    // --- 2. Amazon's own classification, from inbound eligibility ---
+    try {
+      const url = `${SP_API_BASE}/fba/inbound/v1/eligibility/itemPreview?marketplaceIds=${MARKETPLACE_ID}&program=INBOUND&asin=${asin}`;
+      const r = await http.get(url);
+      const p = r.data.payload;
+      elig = hazmatLib.fromEligibility(Array.isArray(p) ? p[0] : p);
+    } catch (e) {
+      if (e.response?.status === 429 && requeue(unique, asin)) { await sleep(3000); continue; }
+      error = (error ? error + '; ' : '') + 'eligibility ' + errText(e);
     }
+    await sleep(1100);   // eligibility allows 1 request a second
 
-    out[asin] = { asin, hazmat, detail, source };
+    const res = Object.assign(hazmatLib.combine(decl, elig), { asin, error });
+    out[asin] = res;
+    if (onResult) await onResult(asin, res);
   }
   return out;
 }
