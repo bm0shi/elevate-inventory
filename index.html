@@ -3437,21 +3437,24 @@ function renderToAdd(){
     return (av-bv)*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' \u25bc':' \u25b2'):'';
-  const notCarried=d.filter(x=>!x.carried);
-  // revenue potential of what's currently shown and not carried
-  const shownNotCarried = list.filter(x=>!x.carried);
-  const revPot = shownNotCarried.reduce((s,x)=>s + ((x._units||0) * (x.buyBoxPrice||0)),0);
-  let h='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">'+d.length+'</div><div class="l">Tracked SKUs</div></div><div class="card" style="border-top:3px solid #c0392b"><div class="n">'+shownNotCarried.length+'</div><div class="l">Not Carried (shown)</div></div>'+
-    (revPot>0?'<div class="card"><div class="n">$'+Math.round(revPot).toLocaleString()+'</div><div class="l">Pie Revenue / mo (shown)</div></div>':'')+
-    (function(){
-      const pp=shownNotCarried.reduce((s,x)=>s+(x._profitMo||0),0);
-      let c='';
-      const nd=shownNotCarried.reduce((s,x)=>s+(x._netDepositMoReal||0),0);
-      if(nd>0) c+='<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+Math.round(nd).toLocaleString()+'</div><div class="l">Net Deposit / mo (realistic)</div></div>';
-      if(pp>0) c+='<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+Math.round(pp).toLocaleString()+'</div><div class="l">Our Profit / mo ('+sharePct+'% of pie)</div></div>';
-      return c;
-    })()+
-    '<div class="card"><div class="n">'+d.filter(x=>x.carried).length+'</div><div class="l">Carried</div></div></div>';
+  // Top cards = the rows shown, so they follow the filter (owner: switching
+  // Not carried / All products didn't change them — they always counted the
+  // not-carried rows, which made them unclear). Read left to right:
+  // the pie (100%, all sellers) → our share of it → after Amazon's fees → profit.
+  const scope=filter==='notcarried'?'not carried':filter==='carried'?'carried':'all shown';
+  const sum=f=>list.reduce((t,x)=>t+(f(x)||0),0);
+  const pieRev=sum(x=>(x._units||0)*(x.buyBoxPrice||0));
+  const ourSales=sum(x=>(x._unitsReal||0)*(x.buyBoxPrice||0));
+  const nd=sum(x=>x._netDepositMoReal), pp=sum(x=>x._profitMo);
+  const card=(n,l,sub,top)=>'<div class="card"'+(top?' style="border-top:3px solid '+top+'"':'')+'><div class="n">'+n+'</div><div class="l">'+l+'</div>'+(sub?'<div style="font-size:10.5px;color:#8a97a6;margin-top:3px">'+sub+'</div>':'')+'</div>';
+  const $=v=>'$'+Math.round(v).toLocaleString();
+  let h='<div class="cards" style="flex-wrap:wrap">'
+    +card(list.length.toLocaleString(),'Products · '+scope,d.length+' tracked · '+d.filter(x=>x.carried).length+' carried','#c0392b')
+    +card($(pieRev),'Pie / mo · 100%','what all the other sellers sell, after Amazon')
+    +card($(ourSales),'Our sales / mo · '+sharePct+'% of pie','our share, before Amazon\'s fees','#b7791f')
+    +card($(nd),'Net deposit / mo','our sales − referral & FBA fees','#2563a8')
+    +card($(pp),'Our profit / mo','our sales × '+(margin*100).toFixed(0)+'% margin','#1e8449')
+    +'</div>';
   h+='<div style="display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;padding:10px 12px;background:#eef4fb;border-radius:8px">'+
      '<span style="font-weight:700;font-size:13px;color:#2563a8" id="toaddSelCount">0 selected</span>'+
      '<button onclick="toaddSelectAllShown()" style="padding:7px 13px;font-size:12px;font-weight:700;background:#fff;color:#2563a8;border:1px solid #c9d4e0;border-radius:6px;cursor:pointer">Select all shown ('+list.length+')</button>'+
