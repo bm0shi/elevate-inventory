@@ -252,14 +252,32 @@ async function getFbaInventory(onProgress, sellerSkus) {
     // Look up specific SKUs only (the "Check with Amazon" button); max 50.
     if (sellerSkus && sellerSkus.length) params.sellerSkus = sellerSkus.slice(0, 50).join(',');
     if (nextToken) params.nextToken = nextToken;
+    // Amazon allows about 2 calls a second here and answers 429
+    // (QuotaExceeded) when two pulls overlap (a sync plus the FBA Inventory
+    // button). That used to end the whole pull with an error; wait and retry
+    // instead (Retry-After when Amazon sends one), up to ~1 minute.
     let resp;
-    try {
-      resp = await http.get(`${SP_API_BASE}/fba/inventory/v1/summaries`, {
-        headers: { 'x-amz-access-token': token }, params,
-      });
-    } catch (err) {
-      const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
-      throw new Error(`FBA inventory ${err.response?.status}: ${body}`);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        resp = await http.get(`${SP_API_BASE}/fba/inventory/v1/summaries`, {
+          headers: { 'x-amz-access-token': token }, params,
+        });
+        break;
+      } catch (err) {
+        const st = err.response?.status;
+        const waits = [2000, 4000, 8000, 15000, 30000];
+        if (st === 429 && attempt < waits.length) {
+          const ra = parseFloat((err.response.headers || {})['retry-after'] || '');
+          const wait = Math.max(waits[attempt], ra > 0 ? Math.ceil(ra * 1000) : 0);
+          console.log(`[FBA] Amazon rate limit (429) — waiting ${Math.round(wait / 1000)}s, try ${attempt + 2}.`);
+          if (onProgress) onProgress(`Amazon asked us to slow down — waiting ${Math.round(wait / 1000)}s and trying again…`);
+          await sleep(wait);
+          continue;
+        }
+        const body = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+        if (st === 429) throw new Error(`Amazon is limiting stock requests right now (too many at once). Wait a minute and try again. (FBA inventory 429: ${body})`);
+        throw new Error(`FBA inventory ${st}: ${body}`);
+      }
     }
     const sums = resp.data.payload?.inventorySummaries || [];
     pages++;

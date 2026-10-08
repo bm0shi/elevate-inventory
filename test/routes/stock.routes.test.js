@@ -524,4 +524,9 @@ test('staff cannot reach owner routes', { skip }, async () => {
   assert.notStrictEqual((await post('/api/capacity/limit', { standard: 1 })).status, 403);
   assert.strictEqual((await fetch(`http://localhost:${PORT}/api/backup/download`, { headers: H() })).status, 403);
   assert.strictEqual((await fetch(`http://localhost:${PORT}/api/plan/data`, { headers: H() })).status, 403);
+  // Saved data: our sales and inventory value are owner-only; staff keep the FBA units
+  assert.strictEqual((await fetch(`http://localhost:${PORT}/api/cache/velocity`, { headers: H() })).status, 403);
+  assert.strictEqual((await fetch(`http://localhost:${PORT}/api/cache/inventory_value`, { headers: H() })).status, 403);
+  assert.strictEqual((await fetch(`http://localhost:${PORT}/api/cache/fba_inventory`, { headers: H() })).status, 200);
+  assert.strictEqual((await fetch(`http://localhost:${PORT}/api/cache/velocity`, { headers: H({ 'x-owner-password': OWNER }) })).status, 200);
 });

@@ -2875,6 +2875,15 @@ function renderHistory(){
   b.innerHTML=h;
 }
 
+// Saved Amazon prices (Inventory Value tab) for the retail values on this
+// page. Owner-only data, read with the owner password Admin already holds.
+function loadFbaPrices(){
+  window._fbaPricesLoading=true;
+  ownerApi('/api/cache/inventory_value').then(c=>{
+    const m={}; for(const v of ((c&&c.cached&&Array.isArray(c.data))?c.data:[])) if(v.amazon_price) m[v.asin]=parseFloat(v.amazon_price);
+    window._fbaPrices=m;
+  }).catch(()=>{ window._fbaPrices={}; }).finally(()=>{ window._fbaPricesLoading=false; if(window._fbaData) renderFbaInv(); });
+}
 // ---- FBA Inventory ----
 function loadFbaCache(){
   document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
@@ -2923,7 +2932,12 @@ function computeFbaValuation(rows){
   // 1) price lookup: Value-tab prices first, then Keepa buy box
   const price = {};
   for(const v of (window._valData||[])) if(v.amazon_price) price[v.asin]=parseFloat(v.amazon_price);
+  // The page used to have prices only if the Value or Market Data tab had
+  // been opened first; it now loads the saved prices itself (_fbaPrices) and
+  // falls back to the Keepa Buy Box each product already carries.
+  for(const a in (window._fbaPrices||{})) if(price[a]==null) price[a]=window._fbaPrices[a];
   for(const m of (window._mktData||[])) if(price[m.asin]==null && m.buyBoxPrice!=null) price[m.asin]=m.buyBoxPrice;
+  for(const p of (products||[])) if(price[p.asin]==null && p.buyBoxPrice!=null) price[p.asin]=Number(p.buyBoxPrice);
 
   // 2) rebuild bundle definitions from products[].partners  (component -> {bundle, partner})
   const bundleComps = {};   // bundleAsin -> Set(componentAsins)
@@ -3051,24 +3065,20 @@ function renderFbaInv(){
     av=a[s.col]||0; bv=b2[s.col]||0; return (av-bv)*s.dir;
   });
   const arrow=c=>s.col===c?(s.dir<0?' ▼':' ▲'):'';
-  let h='<div class="cards" style="flex-wrap:wrap">'+
-    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div></div>'+
-    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div></div>':'')+
-    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div></div>':'')+
-    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div></div>'+
-    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div></div>'+
-    '<div class="card" style="border-top:3px solid #002f36"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l">TOTAL UNITS</div></div></div>';
-  // ---- retail value of what's at Amazon / heading there ----
+  if(!window._fbaPrices && !window._fbaPricesLoading) loadFbaPrices();
+  // Retail value under each total (owner's ask): units × Amazon price, duo
+  // pairs at the duo price (computeFbaValuation).
   const V = computeFbaValuation(window._fbaData||[]);
-  if(V && V.havePrices!==0){
-    h+='<div style="font-weight:800;font-size:15px;margin:4px 0 8px;color:#5a6472">💵 RETAIL VALUE — FULL PIPELINE</div>';
-    h+='<div class="cards" style="flex-wrap:wrap">'+
-      '<div class="card" style="border-top:3px solid #b7791f"><div class="n">$'+V.warehouseValue.toLocaleString()+'</div><div class="l">In Warehouse</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">avail $'+V.availValue.toLocaleString()+' · pend $'+V.pendingValue.toLocaleString()+' · prepped $'+V.preppedValue.toLocaleString()+'</div></div>'+
-      '<div class="card" style="border-top:3px solid #2563a8"><div class="n">$'+V.transitValue.toLocaleString()+'</div><div class="l">In Transit</div></div>'+
-      '<div class="card" style="border-top:3px solid #1e8449"><div class="n">$'+V.fbaValue.toLocaleString()+'</div><div class="l">At Amazon</div></div>'+
-      '<div class="card" style="border-top:4px solid #002f36;background:#f9fafb"><div class="n">$'+V.grandTotal.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL INVENTORY</div></div>'+
-      '</div>';
-    h+='<div class="cards" style="flex-wrap:wrap"><div class="card"><div class="n">$'+V.totalValue.toLocaleString()+'</div><div class="l">Amazon + In Transit</div><div style="font-size:10px;color:#9db0c9;margin-top:3px">already out of the building</div></div></div>';
+  const hasV = V && V.havePrices!==0;
+  const $v = n => hasV ? '<div style="font-size:16px;font-weight:900;color:#1e8449;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">RETAIL VALUE</div>' : '';
+  let h='<div class="cards" style="flex-wrap:wrap">'+
+    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div>'+$v(V&&V.availValue)+'</div>'+
+    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div>'+$v(V&&V.pendingValue)+'</div>':'')+
+    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div>'+$v(V&&V.preppedValue)+'</div>':'')+
+    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div>'+$v(V&&V.transitValue)+'</div>'+
+    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div>'+$v(V&&V.fbaValue)+'</div>'+
+    '<div class="card" style="border-top:3px solid #002f36;background:#f9fafb"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL UNITS</div>'+$v(V&&V.grandTotal)+'</div></div>';
+  if(hasV){
     const allDuos=[...(V.duosInTransit||[]).map(x=>({...x,where:'transit'})), ...(V.duosPrepped||[]).map(x=>({...x,where:'prepped'}))];
     if(allDuos.length){
       h+='<div class="box" style="padding:10px 14px;background:#fdf6f5;border:1px solid #f3d9d6"><div style="font-size:12.5px;color:#5a6472"><b style="color:#c0392b">Duo pairing applied:</b> '+
@@ -3076,10 +3086,11 @@ function renderFbaInv(){
         ' — matched component pairs were valued at the duo price instead of two single prices.</div></div>';
     }
     if(V.fbaUnpriced>0){
-      h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are excluded. Load the Value or Market Data tab to pull more prices.</div>';
+      h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are left out of the values. Press <b>Refresh Amazon Prices</b> on the Inventory Value tab to price them.</div>';
     }
+    h+='<div class="hint" style="margin-bottom:6px">Retail value = units × Amazon price (your price from Inventory Value, else the Buy Box from Market Data); duo pairs at the duo price.</div>';
   } else {
-    h+='<div class="hint" style="color:#b7791f;padding:10px">No prices available yet — open the <b>Value</b> tab (or <b>Market Data</b>) once to pull Amazon prices, then come back here for the retail valuation.</div>';
+    h+='<div class="hint" style="color:#b7791f;padding:10px">'+(window._fbaPricesLoading?'Loading prices…':'No prices yet — press <b>Refresh Amazon Prices</b> on the Inventory Value tab once, and the retail values show here.')+'</div>';
   }
   h+='<table><thead><tr>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'name\')">Product'+arrow('name')+'</th>'+
@@ -3089,7 +3100,10 @@ function renderFbaInv(){
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th></tr></thead><tbody>';
-  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name||x.asin)}</a>`:(x.name||'');return `<tr><td>${link}</td><td>${x.warehouse}</td><td>${x.transit||''}</td><td>${x.fba_total}</td><td class="onhand-num">${x.grand_total}</td></tr>`;}).join('');
+  // One cell per header (rows used to have 5 cells under 7 headers, so
+  // Transit read under "Pend Prep" and FBA under "Prepped").
+  const c='style="text-align:center"';
+  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name||x.asin)}</a>`:esc(x.name||'');return `<tr><td>${link}</td><td ${c}>${x.warehouse||0}</td><td ${c}>${x.pending_prep||''}</td><td ${c}>${x.prepped||''}</td><td ${c}>${x.transit||''}</td><td ${c}>${x.fba_total||0}</td><td class="onhand-num" ${c}>${x.grand_total||0}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
 }
