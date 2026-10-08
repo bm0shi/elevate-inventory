@@ -3473,6 +3473,8 @@ function renderToAdd(){
   h+='<div class="hint" style="margin-bottom:8px">Showing '+list.length+' products. <b>Our units / mo</b> = the pie (what Amazon leaves for the other sellers) × <b>'+sharePct+'%</b>, our share. <b>Order Qty</b> = our units × the months you set, minus everything you already have (warehouse + pending prep + prepped + in transit + at FBA). <b>Net Deposit/mo</b> = (price − referral fee − FBA fee) × our units, before your product cost; "est" means Keepa had no fees for that ASIN, so the defaults above were used. <b>Our Profit/mo</b> = price × margin % × our units. Filters and sorting use our units.</div>';
   h+='<table><thead><tr>'+
     '<th style="width:36px;text-align:center"><input type="checkbox" id="toaddSelectAll" onclick="toaddToggleAll(this.checked)" style="width:17px;height:17px;cursor:pointer" title="Select all shown"></th>'+
+    // Hide sits up front: at the far right it fell off the screen on an iPad / phone (owner couldn't find it).
+    '<th style="width:70px;text-align:center" title="Hide an ASIN: crossed out and left out of the totals. Click again to bring it back.">Hide</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'title\')">Product'+arrow('title')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'salesRank\')">Sales Rank'+arrow('salesRank')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_units\')" title="What Amazon leaves for the other sellers each month (SmartScout: listing sales minus Amazon\'s share)">Pie / mo'+arrow('_units')+'</th>'+
@@ -3484,8 +3486,11 @@ function renderToAdd(){
     '<th style="cursor:pointer;background:#1e8449" onclick="toaddSort(\'_profitMo\')">Our Profit/mo'+arrow('_profitMo')+'</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'hazmat\')">Hazmat</th>'+
     '<th style="cursor:pointer" onclick="toaddSort(\'_have\')">On Hand<div style="font-weight:400;font-size:10px;opacity:.75">avail·pend·prep·transit·FBA</div></th>'+
-    '<th style="width:70px;text-align:center" title="Hide an ASIN: crossed out and left out of the totals. Click again to bring it back.">Hide</th></tr></thead><tbody>';
-  h+=list.slice(0,300).map(x=>{
+    '</tr></thead><tbody>';
+  // Only 300 rows are drawn, but hidden ones sort last and would fall past the
+  // cap, so they'd vanish with no way to bring them back; always draw them.
+  const shownRows=counted.slice(0,300).concat(list.filter(x=>HID.has(x.asin)));
+  h+=shownRows.map(x=>{
     const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none;font-weight:600">${esc(x.title||x.asin)}</a><div style="font-family:monospace;font-size:12px;color:#2563a8;font-weight:700">${x.asin}</div>`;
     const rank=x.salesRank!=null?x.salesRank.toLocaleString():'—';
     const units=x.pie!=null?Math.round(x.pie).toLocaleString():(x.keepaMonthly!=null?x.keepaMonthly.toLocaleString()+'*':'—');
@@ -3526,7 +3531,7 @@ function renderToAdd(){
     const checked = (window._toaddSelected && window._toaddSelected[x.asin]) ? 'checked' : '';
     const isHid=HID.has(x.asin);
     const hideCell=`<td style="text-align:center"><button onclick="toaddHide('${x.asin}',${!isHid})" title="${isHid?'Bring it back into the totals':'Hide: cross it out and leave it out of the totals'}" style="padding:4px 9px;font-size:12px;font-weight:800;border-radius:6px;cursor:pointer;border:1px solid ${isHid?'#1e8449':'#c9d4e0'};background:${isHid?'#eafaf1':'#fff'};color:${isHid?'#1e8449':'#8a97a6'}">${isHid?'↺ Show':'✕'}</button></td>`;
-    return `<tr${isHid?' style="text-decoration:line-through;opacity:.45;background:#f4f6f9"':''}><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td><td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td style="text-align:center">${units}</td><td style="text-align:center">${avgCell}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td>${hideCell}</tr>`;
+    return `<tr${isHid?' style="text-decoration:line-through;opacity:.45;background:#f4f6f9"':''}><td style="text-align:center"><input type="checkbox" class="toaddChk" data-asin="${x.asin}" ${checked} onclick="toaddToggleOne('${x.asin}',this.checked)" style="width:17px;height:17px;cursor:pointer"></td>${hideCell}<td style="max-width:300px">${link}</td><td class="onhand-num">${rank}</td><td style="text-align:center">${units}</td><td style="text-align:center">${avgCell}</td><td>${bb}</td><td>${sellers}</td><td>${orderCell}</td><td>${netCell}</td><td>${realCell}</td><td>${hazCell}</td><td>${haveCell}</td></tr>`;
   }).join('');
   h+='</tbody></table>';
   if(!list.length){
