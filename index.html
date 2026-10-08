@@ -2817,7 +2817,8 @@ function loadDashboard(){
 async function renderDashFba(){
   const el=document.getElementById('dashFba'); if(!el) return;
   try{
-    if(!products.length){ const d=await api('/api/products'); if(Array.isArray(d)) products=d; }
+    // always fresh warehouse counts (see the fbainv note in showSubTab)
+    const d=await api('/api/products'); if(Array.isArray(d)) products=d;
     if(!window._fbaData){
       const c=await api('/api/cache/fba_inventory');
       if(c && c.cached && c.data){
@@ -3973,7 +3974,10 @@ function showSubTab(name, ev){
   if(name==='maphealth') loadMappingHealth();
   if(name==='transit') renderTransit();
   if(name==='shipments') renderShipments();
-  if(name==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); }
+  // Warehouse counts come from the browser's product list, which only On Hand
+  // refreshed: 1,300 Tea Tree checked in today still read 0 Available here
+  // until a reload. Fetch fresh counts every time the page opens.
+  if(name==='fbainv'){ if(window._fbaData) renderFbaInv(); else loadFbaCache(); loadProducts().then(()=>{ if(window._fbaData) renderFbaInv(); }).catch(()=>{}); }
   if(name==='history'){ if(window._histData) renderHistory(); else loadHistory(); }
   if(name==='bundles') renderBundles();
 }
