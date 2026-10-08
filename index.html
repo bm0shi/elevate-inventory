@@ -3043,36 +3043,69 @@ function computeFbaValuation(rows){
 // Warehouse figures come from LIVE product data (the server may still be
 // returning raw on-hand as "warehouse").
 function fbaNormalize(){
-  // ---- normalise warehouse figures from LIVE product data ----
-  // (the server may still be returning raw on-hand as "warehouse")
-  const liveP={};
+  // Each listing counted once, as it sells (owner: "is it taking duos into
+  // account instead of listing all as singles?"). A single's row holds only
+  // what's going out as that single; a duo's row holds its duos (one unit
+  // each) in Pending Prep, Prepped, Transit and FBA. Available = loose
+  // bottles on the shelf, not yet promised to either. Prepped duos used to
+  // count twice: on the duo's row AND as bottles on each component's row.
+  const rows = window._fbaData = window._fbaData || [];
+  const byAsin = {}; for(const r of rows) byAsin[r.asin]=r;
+  const P = {}; for(const p of (products||[])) P[p.asin]=p;
+  // a duo with duos in prep/prepped/transit but no Amazon row yet still gets a row
   for(const p of (products||[])){
-    liveP[p.asin]={
-      onhand:p.onhand||0, pend:p.pending_prep||0, prep:p.prepped||0, transit:p.transit||0
-    };
-  }
-  (window._fbaData||[]).forEach(x=>{
-    const L=liveP[x.asin];
-    if(L){
-      x.pending_prep = L.pend;
-      x.prepped      = L.prep;
-      x.warehouse    = Math.max(0, L.onhand - L.pend - L.prep);   // AVAILABLE
-      x.onhand_total = L.onhand;
-      if(!x.transit) x.transit = L.transit;
-      x.grand_total  = L.onhand + (x.transit||0) + (x.fba_total||0);
-    } else {
-      x.pending_prep = x.pending_prep||0;
-      x.prepped      = x.prepped||0;
-      x.onhand_total = x.onhand_total||x.warehouse||0;
+    if(byAsin[p.asin] || !p.is_bundle) continue;
+    if((p.pending_as_duo||0)+(p.prepped_single||0)+((p.transit_split&&p.transit_split.asDuo)||0) > 0){
+      const r={asin:p.asin, name:p.name, fba_total:0}; rows.push(r); byAsin[p.asin]=r;
     }
-  });
+  }
+  for(const x of rows){
+    const p=P[x.asin];
+    if(!p){ x.pending_prep=x.pending_prep||0; x.prepped=x.prepped||0; x.onhand_total=x.onhand_total||x.warehouse||0; continue; }
+    if(p.is_bundle){
+      x.is_duo      = true;
+      x.warehouse   = 0;
+      x.pending_prep= p.pending_as_duo||0;
+      x.prepped     = p.prepped_single||0;          // inv_prepped under the duo ASIN = duos
+      x.transit     = (p.transit_split&&p.transit_split.asDuo)||0;
+    } else {
+      const ts=p.transit_split;
+      x.is_duo      = false;
+      x.warehouse   = Math.max(0, (p.onhand||0) - (p.pending_prep||0) - (p.prepped||0));   // loose bottles
+      x.pending_prep= p.pending_single||0;
+      x.prepped     = p.prepped_single||0;
+      x.transit     = Math.max(0, (p.transit||0) - ((ts&&ts.duo)||0));   // bottles known to be inside duos are on the duo's row
+    }
+    x.onhand_total = p.onhand||0;
+    x.grand_total  = x.warehouse + x.pending_prep + x.prepped + x.transit + (x.fba_total||0);
+  }
+}
+// Retail value per listing: each row's units × its own price, so a duo is
+// valued at the duo price wherever it sits. Prices: Inventory Value first,
+// then the saved Amazon prices, then the Keepa Buy Box.
+function fbaRowValues(rows){
+  const price = {};
+  for(const v of (window._valData||[])) if(v.amazon_price) price[v.asin]=parseFloat(v.amazon_price);
+  for(const a in (window._fbaPrices||{})) if(price[a]==null) price[a]=window._fbaPrices[a];
+  for(const m of (window._mktData||[])) if(price[m.asin]==null && m.buyBoxPrice!=null) price[m.asin]=m.buyBoxPrice;
+  for(const p of (products||[])) if(price[p.asin]==null && p.buyBoxPrice!=null) price[p.asin]=Number(p.buyBoxPrice);
+  const V={availValue:0,pendingValue:0,preppedValue:0,transitValue:0,fbaValue:0,fbaUnpriced:0,havePrices:Object.keys(price).length,duosInTransit:[],duosPrepped:[]};
+  for(const r of rows){
+    const pr=price[r.asin];
+    if(pr==null){ if((r.fba_total||0)>0) V.fbaUnpriced++; continue; }
+    V.availValue+=(r.warehouse||0)*pr; V.pendingValue+=(r.pending_prep||0)*pr; V.preppedValue+=(r.prepped||0)*pr;
+    V.transitValue+=(r.transit||0)*pr; V.fbaValue+=(r.fba_total||0)*pr;
+  }
+  V.grandTotal=V.availValue+V.pendingValue+V.preppedValue+V.transitValue+V.fbaValue;
+  return V;
 }
 function fbaTotals(){
-  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=x.warehouse;tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=x.transit;tot.f+=x.fba_total;tot.g+=x.grand_total;});
+  // units: a duo is one unit (owner's rule, as on Next batch)
+  let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=(x.warehouse||0);tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=(x.transit||0);tot.f+=(x.fba_total||0);tot.g+=(x.grand_total||0);});
   if(!window._fbaPrices && !window._fbaPricesLoading) loadFbaPrices();
   // Retail value under each total (owner's ask): units × Amazon price, duo
   // pairs at the duo price (computeFbaValuation).
-  const V = computeFbaValuation(window._fbaData||[]);
+  const V = fbaRowValues(window._fbaData||[]);
   const hasV = V && V.havePrices!==0;
   const $v = n => hasV ? '<div style="font-size:16px;font-weight:900;color:#1e8449;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">RETAIL VALUE</div>' : '';
   const cards='<div class="cards" style="flex-wrap:wrap">'+
@@ -3130,7 +3163,7 @@ function renderFbaInv(){
     if(V.fbaUnpriced>0){
       h+='<div class="hint" style="color:#b7791f">⚠ '+V.fbaUnpriced+' item(s) at FBA have no known price and are left out of the values. Press <b>Refresh Amazon Prices</b> on the Inventory Value tab to price them.</div>';
     }
-    h+='<div class="hint" style="margin-bottom:6px">Retail value = units × Amazon price (your price from Inventory Value, else the Buy Box from Market Data); duo pairs at the duo price.</div>';
+    h+='<div class="hint" style="margin-bottom:6px">Each listing once, as it sells: a duo is <b>one unit</b> on its own row (Pending Prep, Prepped, Transit, FBA); a single\'s row holds only what goes out as that single. <b>Available</b> = loose bottles not promised yet. Retail value = units × that listing\'s Amazon price (Inventory Value, else the Buy Box).</div>';
   } else {
     h+='<div class="hint" style="color:#b7791f;padding:10px">'+(window._fbaPricesLoading?'Loading prices…':'No prices yet — press <b>Refresh Amazon Prices</b> on the Inventory Value tab once, and the retail values show here.')+'</div>';
   }
@@ -4600,6 +4633,31 @@ function ssDemand(l, st){
 function amzLink(asin, name){
   return '<a href="https://www.amazon.com/dp/'+encodeURIComponent(asin)+'" target="_blank" rel="noopener" title="Open on Amazon" style="color:#0d4450;text-decoration:none;border-bottom:1px dotted #9aa5b1">'+esc(String(name||asin))+'</a>';
 }
+// Short name + a bold size tag, so the listing reads at a glance (owner:
+// "a more complete item name that includes size"). The size sits at the end
+// of Amazon's long titles, where it wrapped out of view or was cut off in
+// Smart Scout's export. Uses the fullest title we have for the ASIN (our
+// catalog, Keepa), else the one passed in. Full title on hover.
+function listingSize(t){
+  t=String(t||'');
+  const m=[...t.matchAll(/(\d+(?:\.\d+)?)\s*(fl\.?\s*oz|oz|ounces?|ml|liters?|litres?|l|gal(?:lons?)?)\b\.?/gi)];
+  let sz='';
+  if(m.length){ const x=m[m.length-1]; let u=x[2].toLowerCase().replace(/\s+/g,' ').replace('fl.','fl').replace(/ounces?/,'oz').replace(/litres?|liters?/,'L').replace(/^l$/,'L').replace(/gallons?|gal/,'gal'); sz=x[1]+' '+u; }
+  else if(/\bliter\b|\blitre\b/i.test(t)) sz='Liter';
+  else if(/\bgallon\b/i.test(t)) sz='Gallon';
+  const duo=/\bduo\b|\b2[- ]?pack\b|\bset\b|\bkit\b/i.test(t);
+  return (duo?'Duo'+(sz?' · ':''):'')+sz;
+}
+function amzLinkSized(asin, name){
+  let full=String(name||'');
+  const p=(products||[]).find(x=>x.asin===asin); if(p&&p.name&&p.name.length>full.length) full=p.name;
+  const m=(window._mktData||[]).find(x=>x.asin===asin); if(m&&m.title&&m.title.length>full.length) full=m.title;
+  if(!full) full=asin;
+  const size=listingSize(full)||listingSize(name);
+  let short=full.split(',')[0].trim(); if(short.length<12) short=full;
+  return '<a href="https://www.amazon.com/dp/'+encodeURIComponent(asin)+'" target="_blank" rel="noopener" title="'+esc(full)+'" style="color:#0d4450;text-decoration:none;border-bottom:1px dotted #9aa5b1">'+esc(short)+'</a>'
+    +(size?' <span style="display:inline-block;margin-left:4px;padding:1px 7px;border-radius:999px;background:#0d4450;color:#fff;font-size:11px;font-weight:800;white-space:nowrap;vertical-align:1px">'+esc(size)+'</span>':'');
+}
 function asinChip(asin){
   return '<span onclick="copyAsin(this)" data-asin="'+esc(asin)+'" title="Click to copy the ASIN" style="cursor:pointer;font-family:monospace;color:#2563a8;font-weight:700;border:1px dashed #b8c7da;border-radius:4px;padding:0 4px;white-space:nowrap">'+esc(asin)+' ⧉</span>';
 }
@@ -4882,7 +4940,7 @@ function renderOrders(boxId, mode){
     +shown.filter(r=>r.perDay>0).map(r=>{
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const showLines=st.showLines!==false && r.lines.length;
-      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b>'+amzLink(r.asin, r.name)+'</b><div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+asinChip(r.asin)+(!showLines&&r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
+      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b>'+amzLinkSized(r.asin, r.name)+'</b><div class="hint">'+(r.cosmo.length?'Cosmo # '+r.cosmo.map(esc).join(', '):'<span style="color:#c0392b">no Cosmo # linked</span>')+' · '+asinChip(r.asin)+(!showLines&&r.via.length?' · '+esc(r.via.join(', ')):'')+'</div></td>'
         +'<td style="'+td+'">'+(r.perDay?Math.round(r.perDay*30).toLocaleString():'—')+'</td>'
         +(()=>{ const top=Math.max(0,...selCols.map(c=>r.sel[c.abbr]||0));
             return selCols.map(c=>{ const v=r.sel[c.abbr];
@@ -4929,7 +4987,7 @@ function ordersLineRows(r, isSS, st, selCols){
   const nAfter=9+(isSS?1:0); // Warehouse … Cost columns after the sellers (+ Rec. Order)
   return r.lines.slice().sort((a,b)=>b.perDay-a.perDay).map(x=>{
     const l=x.l, have=l.atAmazon+l.onTheWay+(l.queued||0), cover=x.perDay>0?have/x.perDay:null;
-    return '<tr style="background:#fafbfc;font-size:12px"><td style="padding:3px 8px 3px 24px"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div>↳ <b style="color:'+(l.isDuo?'#c0392b':'#0d4450')+'">'+(l.isDuo?'DUO':'SINGLE')+'</b> '+amzLink(l.asin, l.name)+' '+asinChip(l.asin)
+    return '<tr style="background:#fafbfc;font-size:12px"><td style="padding:3px 8px 3px 24px"><div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start"><div>↳ <b style="color:'+(l.isDuo?'#c0392b':'#0d4450')+'">'+(l.isDuo?'DUO':'SINGLE')+'</b> '+amzLinkSized(l.asin, l.name)+' '+asinChip(l.asin)
       +'<div class="hint" style="font-size:11px">'+esc(planSrcNote(l,x.dm))+'</div></div>'+netBadge(l)+'</div></td>'
       +'<td style="'+td+'">'+(x.perDay>0?Math.round(x.perDay*30).toLocaleString():'—')+'</td>'
       +selCols.map(c=>{ const v=(l.ssSellers||{})[c.abbr]; return '<td style="'+td+(c.isUs?';color:#008296;background:#eef6f6':'')+'">'+(v==null?'—':Math.round(v).toLocaleString())+'</td>'; }).join('')
@@ -4968,7 +5026,7 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
       const l=r.l, cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const top=Math.max(0,...selCols.map(c=>r.sel[c.abbr]||0));
       // Duos: the whole row tinted light orange-red (replaces the Type column).
-      return '<tr style="'+(l.isDuo?'background:#fdebe6':'')+'" title="'+(l.isDuo?'Duo':'Single')+'"><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b>'+amzLink(l.asin, l.name)+'</b><div class="hint">'+asinChip(l.asin)+(l.sku?' · '+esc(l.sku):'')+' · '+esc(planSrcNote(l,r.dm))+'</div></td>'
+      return '<tr style="'+(l.isDuo?'background:#fdebe6':'')+'" title="'+(l.isDuo?'Duo':'Single')+'"><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px"><b>'+amzLinkSized(l.asin, l.name)+'</b><div class="hint">'+asinChip(l.asin)+(l.sku?' · '+esc(l.sku):'')+' · '+esc(planSrcNote(l,r.dm))+'</div></td>'
         +'<td style="'+td+';background:'+(l.isDuo?'#f3efe6':'#f4fbf6')+'">'+netBadge(l)+'</td>'
         +'<td style="'+td+'">'+(r.perDay>0?Math.round(r.perDay*30).toLocaleString():'—')+'</td>'
         +selCols.map(c=>{ const v=r.sel[c.abbr]; return '<td style="'+td+';'+(c.isUs?'color:#008296;background:#f0f8f8;':'')+(v&&v===top?'font-weight:800':'')+'" title="'+esc(c.name)+'">'+(v==null?'<span class="hint">—</span>':Math.round(v).toLocaleString())+'</td>'; }).join('')
@@ -5139,7 +5197,7 @@ function ssAttackHtml(d, sellers, us){
     +ssTh('atk','title','PRODUCT','left')+ssTh('atk','listRev','LISTING REVENUE / MO')+ssTh('atk','rev','THEIR REVENUE / MO')+ssTh('atk','units','THEIR UNITS / MO')+ssTh('atk','bb','THEIR BUY BOX')+ssTh('atk','price','THEIR PRICE')
     +ssTh('atk','ourUnits','YOUR UNITS / MO')+ssTh('atk','ourRev','YOUR REVENUE / MO')+ssTh('atk','ourBB','YOUR BUY BOX')+ssTh('atk','gap','GAP / MO')+ssTh('atk','carried','YOU SELL IT?','center')+'<th style="padding:9px 8px;background:#eef2f6;position:static;border-bottom:2px solid #1f2733;color:#1f2733;font-size:11px">HIDE</th></tr>'
     +rows.map((r,i)=>'<tr style="'+(r.carried?'':'background:#fbf7ff')+'"><td style="'+td+';text-align:center;color:#8a97a6;font-weight:800">'+(i+1)+'</td>'
-      +'<td style="padding:8px;border-top:1px solid #eef2f6;min-width:280px">'+amzLink(r.asin,r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
+      +'<td style="padding:8px;border-top:1px solid #eef2f6;min-width:280px">'+amzLinkSized(r.asin,r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
       +'<td style="'+td+';color:#5a6472">'+ssMoney(r.listRev)+'</td><td style="'+td+';font-weight:900;font-size:14px;color:'+sel.color+'">'+ssMoney(r.rev)+'</td><td style="'+td+'">'+(r.units==null?'—':Math.round(r.units).toLocaleString())+'</td>'
       +'<td style="'+td+'">'+(r.bb==null?'—':r.bb.toFixed(1)+'%')+'</td><td style="'+td+'">'+(r.price==null?'—':'$'+Number(r.price).toFixed(2))+'</td>'
       +'<td style="'+td+';color:#008296;font-weight:800">'+(r.ourUnits==null?(r.carried?'0':'—'):Math.round(r.ourUnits).toLocaleString())+'</td>'
@@ -5244,7 +5302,7 @@ function renderSmartScout(){
     +ssTh('slice','title','LISTING','left')+ssTh('slice','units','LISTING SELLS / MO')+ssTh('slice','amz','AMAZON')+ssTh('slice','pie','PIE / MO')+ssTh('slice','s3p','3P SELLERS')+ssTh('slice','fair','FAIR / MO')+ssTh('slice','you','YOU / MO')+ssTh('slice','share','YOUR SHARE')+ssTh('slice','missing','MISSING / MO')+ssTh('slice','price','PRICE')+(sellers.length?'<th style="padding:9px 8px;background:#eef2f6;position:static;border-bottom:2px solid #1f2733;color:#1f2733;font-size:11px;text-align:left">BUY BOX SPLIT</th>':'')+'</tr>'
     +rows.map(r=>{
       const fairPct=1/r.pie.sellers3P, sc=r.share==null?'#8a97a6':r.share>=fairPct?'#1e8449':r.share>=fairPct/2?'#b7791f':'#c0392b';
-      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+amzLink(r.asin, r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
+      return '<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+amzLinkSized(r.asin, r.title)+'<div class="hint">'+asinChip(r.asin)+(r.brand?' · '+esc(r.brand):'')+'</div></td>'
         +'<td style="'+td+'">'+n(r.pie.units)+'</td>'
         +'<td style="'+td+'" title="'+(r.pie.amazonSrc==='keepa'?'Keepa 90-day Buy Box %':r.pie.amazonSrc==='sellers'?'What the sellers\' Buy Box % leave (seller files)':'Estimated: SmartScout Amazon in-stock rate × 95%')+'">'+Math.round(r.pie.amazonPct)+'%<div class="hint">'+(r.pie.amazonSrc==='keepa'?'Keepa 90d':r.pie.amazonSrc==='sellers'?'from sellers':'est.')+'</div></td>'
         +'<td style="'+td+';font-weight:700">'+n(r.pie.pie)+'</td><td style="'+td+'">'+r.pie.sellers3P+'</td><td style="'+td+'">'+n(r.pie.fair)+'</td>'
@@ -5260,7 +5318,7 @@ function renderSmartScout(){
   const opp=d.listings.filter(l=>!l.carried && l.pie && l.pie.fair>=20).sort((a,b)=>b.pie.fair-a.pie.fair).slice(0,30);
   if(opp.length) h+='<div class="box" style="overflow-x:auto"><b>Listings you don\'t carry with the biggest fair share</b><div class="hint">Top '+opp.length+' by what a fair share would be (20+/mo).</div>'
     +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:760px;margin-top:6px"><tr class="hint" style="text-transform:uppercase;font-size:11px"><td style="padding:6px 8px">Listing</td><td style="padding:6px 8px;text-align:right">Listing sells / mo</td><td style="padding:6px 8px;text-align:right">Amazon</td><td style="padding:6px 8px;text-align:right">Pie / mo</td><td style="padding:6px 8px;text-align:right">3P sellers</td><td style="padding:6px 8px;text-align:right">Fair / mo</td><td style="padding:6px 8px;text-align:right">Price</td></tr>'
-    +opp.map(l=>'<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+amzLink(l.asin, l.title)+'<div class="hint">'+asinChip(l.asin)+(l.brand?' · '+esc(l.brand):'')+'</div></td><td style="'+td+'">'+n(l.pie.units)+'</td><td style="'+td+'">'+Math.round(l.pie.amazonPct)+'%</td><td style="'+td+'">'+n(l.pie.pie)+'</td><td style="'+td+'">'+l.pie.sellers3P+'</td><td style="'+td+';font-weight:700">'+n(l.pie.fair)+'</td><td style="'+td+'">'+(l.pie.price!=null?'$'+Number(l.pie.price).toFixed(2):'—')+'</td></tr>').join('')
+    +opp.map(l=>'<tr><td style="padding:6px 8px;border-top:1px solid #eef2f6;min-width:260px">'+amzLinkSized(l.asin, l.title)+'<div class="hint">'+asinChip(l.asin)+(l.brand?' · '+esc(l.brand):'')+'</div></td><td style="'+td+'">'+n(l.pie.units)+'</td><td style="'+td+'">'+Math.round(l.pie.amazonPct)+'%</td><td style="'+td+'">'+n(l.pie.pie)+'</td><td style="'+td+'">'+l.pie.sellers3P+'</td><td style="'+td+';font-weight:700">'+n(l.pie.fair)+'</td><td style="'+td+'">'+(l.pie.price!=null?'$'+Number(l.pie.price).toFixed(2):'—')+'</td></tr>').join('')
     +'</table></div>';
   box.innerHTML=h;
 }
