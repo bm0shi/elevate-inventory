@@ -355,6 +355,7 @@
         <option value="all">Show all</option>
         <option value="instock">In stock only</option>
         <option value="outstock">Out of stock only</option>
+        <option value="lowstock">Low stock only (1–20)</option>
         <option value="duoonly">Duo items only</option>
         <option value="duobuildable">🧴 Duos I can build now (one-tap prep)</option>
         <option value="sspicks">⭐ Smart Scout selections</option>
@@ -2787,7 +2788,7 @@ function loadDashboard(){
       h+='<div class="hint" style="margin-bottom:10px">Items you have in the warehouse where <b>Amazon itself has no live offer</b>. Source: Keepa, which tracks the Amazon retail offer directly — typically refreshed within the hour, so <b>verify on the listing before you act</b>.'+(m.updatedAt?' Last scan: '+new Date(m.updatedAt).toLocaleString()+'.':'')+(m.total?' Showing top '+m.items.length+' of '+m.total+'.':'')+'</div>';
       h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>Available</th><th>Amazon</th><th>Buy Box</th><th>Offers</th><th>Rank</th><th>Why</th></tr></thead><tbody>';
       h+=m.items.map(x=>{
-        const link=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none;font-weight:600">${esc((x.name||x.asin).slice(0,52))}</a><div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${x.asin}</div>`;
+        const link=amzLinkSized(x.asin,x.name)+`<div style="font-family:monospace;font-size:11px;color:#2563a8;font-weight:700">${x.asin}</div>`;
         const amz = x.amazonSelling
           ? '<span style="color:#5a6472;font-weight:700">selling</span>'
           : '<span style="background:#c0392b;color:#fff;padding:2px 9px;border-radius:10px;font-size:11px;font-weight:800">NOT SELLING</span>';
@@ -2802,20 +2803,20 @@ function loadDashboard(){
     // low stock list
     if(d.lowList && d.lowList.length){
       h+='<div class="box"><div style="font-weight:700;color:#c0392b;margin-bottom:6px">⚠ Low Stock (≤20 units)</div>';
-      h+=d.lowList.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name)}</a>`:x.name;return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
+      h+=d.lowList.map(x=>{const link=x.asin?amzLinkSized(x.asin,x.name):esc(x.name||'');return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
       h+='</div>';
     }
     // top stock
     if(d.topStock && d.topStock.length){
       h+='<div class="box"><div style="font-weight:700;margin-bottom:6px">📦 Most Stocked</div>';
-      h+=d.topStock.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name)}</a>`:x.name;return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
+      h+=d.topStock.map(x=>{const link=x.asin?amzLinkSized(x.asin,x.name):esc(x.name||'');return `<div style="display:flex;justify-content:space-between;padding:6px 0;font-size:13px;border-bottom:1px solid #f0f0f0;gap:10px"><span style="flex:1">${link}</span><b style="white-space:nowrap">${x.onhand}</b></div>`;}).join('');
       h+='</div>';
     }
     // under-stocked by revenue (top sellers we're low/out on)
     if(d.underStocked && d.underStocked.length){
       h+='<div class="box"><div style="font-weight:700;color:#b7791f;margin-bottom:2px">🔥 Under-Stocked Top Sellers (≤100 units)</div><div class="hint" style="margin-bottom:8px">Highest-revenue items you\'re low or out on — restock priority. Based on last velocity + price pull.</div>';
       h+='<table style="box-shadow:none"><thead><tr><th>Product</th><th>On Hand</th><th>Sold</th><th>Revenue</th></tr></thead><tbody>';
-      h+=d.underStocked.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name)}</a>`:x.name;const rev=x.revenue?'$'+Math.round(x.revenue).toLocaleString():'—';const oh=x.onhand<=20?`<b style="color:#c0392b">${x.onhand}</b>`:x.onhand;return `<tr><td>${link}</td><td>${oh}</td><td>${x.sold}</td><td class="onhand-num">${rev}</td></tr>`;}).join('');
+      h+=d.underStocked.map(x=>{const link=x.asin?amzLinkSized(x.asin,x.name):esc(x.name||'');const rev=x.revenue?'$'+Math.round(x.revenue).toLocaleString():'—';const oh=x.onhand<=20?`<b style="color:#c0392b">${x.onhand}</b>`:x.onhand;return `<tr><td>${link}</td><td>${oh}</td><td>${x.sold}</td><td class="onhand-num">${rev}</td></tr>`;}).join('');
       h+='</tbody></table></div>';
     }
     // recent activity
@@ -9985,6 +9986,8 @@ function renderOnhand(){
     if(q && !String(p.name||'').toLowerCase().includes(q) && !(p.asin||'').toLowerCase().includes(q)) return false;
     if(stockFilter==='instock' && (p.onhand||0)<=0) return false;
     if(stockFilter==='outstock' && (p.onhand||0)>0) return false;
+    // same rule as the dashboard's Low stock count: 1 to 20 on the shelf
+    if(stockFilter==='lowstock' && !((p.onhand||0)>0 && (p.onhand||0)<=20)) return false;
     if(stockFilter==='duoonly' && !(p.is_component||p.is_bundle)) return false;
     if(stockFilter==='duobuildable' && duosBuildable(p)<=0) return false;
     if(stockFilter==='sspicks' && !ssPicks.has(p.asin)) return false;
