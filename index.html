@@ -5818,7 +5818,7 @@ function renderPendingPrep(){
              <button onclick="releasePrepJob(${x.id})" style="padding:5px 12px;font-size:11px;font-weight:700;background:rgba(255,255,255,0.25);color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">Release all</button>
            </div>
            <div style="display:flex;gap:7px;flex-wrap:wrap;margin-top:9px">${crewChips}
-             ${x.is_duo?'':'<!--'}<button onclick="addPrepper(${x.id})" style="padding:7px 13px;font-size:12.5px;font-weight:800;background:rgba(255,255,255,0.22);color:#fff;border:1.5px dashed rgba(255,255,255,0.6);border-radius:16px;cursor:pointer;white-space:nowrap">+ Add prepper</button>${x.is_duo?'':'-->'}
+             ${crew.length>=3?'<!--':''}<button onclick="addPrepper(${x.id})" style="padding:7px 13px;font-size:12.5px;font-weight:800;background:rgba(255,255,255,0.22);color:#fff;border:1.5px dashed rgba(255,255,255,0.6);border-radius:16px;cursor:pointer;white-space:nowrap">+ Add prepper</button>${crew.length>=3?'-->':''}
              ${ppBuildLinks(x.asin)}
            </div>
            <div style="color:#d4f5e2;font-size:12.5px;margin-top:9px;display:flex;gap:16px;flex-wrap:wrap">
@@ -5848,7 +5848,7 @@ function renderPendingPrep(){
     const divAfter=(lastActiveIdx>=i && lastActiveIdx<=last) && last<items.length-1 ? ppDivider() : '';
     if(ppIsPair(x,y)){
       h+='<div class="ppSplit"><div class="ppSplitHead"><div class="ppSplitBanner">🔗 LARGE JOB – SPLIT IN HALF 🔗</div>'
-        +'<div class="ppSplitSub">'+(x.qty+y.qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</div></div>'
+        +'<div class="ppSplitSub">'+(x.qty+y.qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · take a half each</div></div>'
         +'<div class="ppSplitRow"><div><div class="ppPart">🔗 PART 1 · <b>'+x.qty.toLocaleString()+'</b> 🔗</div>'+cardHtml(x,i)+'</div>'
         +'<div class="ppSplitLink" title="Same product, split so two people can each take half">🔗</div>'
         +'<div><div class="ppPart">🔗 PART 2 · <b>'+y.qty.toLocaleString()+'</b> 🔗</div>'+cardHtml(y,i+1)+'</div></div></div>';
@@ -5926,7 +5926,7 @@ function ppListRows(items){
           +'<button onclick="releasePrepJob('+x.id+')" style="padding:6px 10px;font-size:12px;font-weight:700;background:#eef2f6;color:#5a6472;border:none;border-radius:6px;cursor:pointer">Release</button></div>'
         : '<button onclick="claimPrepJob('+x.id+')" style="padding:7px 12px;font-size:12px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">▶ Start prep</button>';
       // Duo rows tinted like Smart Scout Orders → By listing, so they stand out.
-      return (pairFirst?'<tr><td colspan="20" style="padding:12px 10px 8px;background:#fff8ec;border-top:2px solid #ff9900;border-left:4px solid #ff9900;text-align:center"><span class="ppSplitBanner" style="font-size:20px;padding:6px 22px">🔗 LARGE JOB – SPLIT IN HALF 🔗</span><div class="ppSplitSub" style="font-size:13px">'+(x.qty+items[ri+1].qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · one person per half</div></td></tr>':'')
+      return (pairFirst?'<tr><td colspan="20" style="padding:12px 10px 8px;background:#fff8ec;border-top:2px solid #ff9900;border-left:4px solid #ff9900;text-align:center"><span class="ppSplitBanner" style="font-size:20px;padding:6px 22px">🔗 LARGE JOB – SPLIT IN HALF 🔗</span><div class="ppSplitSub" style="font-size:13px">'+(x.qty+items[ri+1].qty).toLocaleString()+' '+(x.is_duo?'duos':'units')+' total · take a half each</div></td></tr>':'')
         +'<tr style="'+(claimed?'background:#f0faf4':inPair?'background:#fff8ec':x.is_duo?'background:#fdebe6':'')+(inPair?';border-left:4px solid #ff9900':'')+(pairSecond?';border-bottom:2px solid #ff9900':'')+'"><td style="'+td+';width:98px">'+(inPair?'<div class="ppPart" style="font-size:13px;margin-bottom:4px;white-space:nowrap">'+(pairFirst?'🔗 PART 1 🔗':'🔗 PART 2 🔗')+'</div>':'')+img+'</td>'
         +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
