@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -22,6 +22,7 @@ const { estimateShare, measuredShare, joinRate, sellerAverage } = require('./lib
 const { splitPlan, SPLIT_OVER } = require('./lib/prep-split');
 const smartscout = require('./lib/smartscout');
 const velocity = require('./lib/velocity');
+const finEvents = require('./lib/finevents');
 const forecast = require('./lib/forecast');
 const { parseRestockReport } = require('./lib/restock');
 const capacity = require('./lib/capacity');
@@ -415,7 +416,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sales-metrics-1037';
+const BUILD_ID = 'refunds-on-time-1038';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1195,6 +1196,11 @@ async function initDb() {
       key TEXT PRIMARY KEY, day DATE NOT NULL, ts TIMESTAMPTZ, order_id TEXT, sku TEXT, asin TEXT,
       qty INTEGER NOT NULL DEFAULT 0, reason TEXT, disposition TEXT, status TEXT)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_returns_day ON inv_returns(day)`);
+    // Refunds and Amazon fees per Pacific day from financial events (post
+    // within hours; settlements lag two weeks). Every day in a pull is written.
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_fin_daily (
+      day DATE PRIMARY KEY, refunds NUMERIC NOT NULL DEFAULT 0, refund_units INTEGER NOT NULL DEFAULT 0,
+      fees NUMERIC NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT now())`);
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
@@ -6104,6 +6110,9 @@ app.get('/api/dash2', ownerAuth, async (req, res) => {
   try { out.settledThrough = (await pool.query(`SELECT to_char(MAX(posted_date),'YYYY-MM-DD') AS d FROM inv_settlement_lines`)).rows[0].d; } catch (e) { out.settledThrough = null; }
   await q('returnsDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, SUM(qty)::int AS units FROM inv_returns
     WHERE day >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int - 1, 1, 1) GROUP BY day ORDER BY day`);
+  await q('finDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, refunds::float AS refunds, refund_units, fees::float AS fees FROM inv_fin_daily
+    WHERE day >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int - 1, 1, 1) ORDER BY day`);
+  try { const fe = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fin_events'"); out.finEvents = fe.rows.length ? fe.rows[0].data : null; } catch (e) { out.finEvents = null; }
   try { const rf = await pool.query("SELECT data FROM inv_cache WHERE cache_key='returns_from'"); out.returnsFrom = rf.rows.length ? rf.rows[0].data.from : null; } catch (e) { out.returnsFrom = null; }
   try { const t = await pool.query("SELECT data FROM inv_cache WHERE cache_key='sales_today'"); out.salesToday = t.rows.length ? t.rows[0].data : null; } catch (e) { out.salesToday = null; }
   out.salesJob = salesJob;
@@ -7198,6 +7207,9 @@ function startAmazonSync(trigger) {
     // Customer returns, last 60 days, for the dashboard's Returns metric.
     try { amazonSync.step = 'Reading customer returns…'; await pullReturns(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('returns report: ' + e.message); }
+    // Refunds and Amazon fees, on time (financial events), last 60 days.
+    try { amazonSync.step = 'Reading refunds and fees…'; await pullFinEvents(salesDay(Date.now() - 60 * 86400000)); }
+    catch (e) { result.errors.push('refunds/fees: ' + e.message); }
     // Package sizes for listings that don't have one yet (new products), for
     // the FBA capacity bar. Only the missing ones: sizes rarely change.
     try {
@@ -7874,6 +7886,28 @@ async function saveReturns(recs, fromDay) {
   if (!was || fromDay < was) await saveCache('returns_from', { from: fromDay, at: new Date().toISOString() });
   return recs.length;
 }
+// Refunds and fees from financial events, `fromDay` to today. A window that
+// failed moves the start past it (only days we can vouch for are saved); if
+// every window failed (no Finances permission, say) it throws, so the caller
+// shows why and the dashboard keeps using settlements.
+async function pullFinEvents(fromDay, onProgress) {
+  const fromMs = Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
+  const r = await getFinancialEvents(fromMs, onProgress);
+  if (!r.pages.length && r.failed.length) throw new Error('Amazon refused the money events: ' + r.failed[0][2]);
+  let from = fromDay;
+  for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
+  const today = salesDay(Date.now());
+  const days = finEvents.aggregateFinancialEvents(r.pages, from, today);
+  const ks = Object.keys(days);
+  if (ks.length) await pool.query(`INSERT INTO inv_fin_daily(day, refunds, refund_units, fees, updated_at)
+      SELECT *, now() FROM unnest($1::date[], $2::numeric[], $3::int[], $4::numeric[])
+      ON CONFLICT (day) DO UPDATE SET refunds=EXCLUDED.refunds, refund_units=EXCLUDED.refund_units, fees=EXCLUDED.fees, updated_at=now()`,
+    [ks, ks.map(k => days[k].refunds), ks.map(k => days[k].refundUnits), ks.map(k => days[k].fees)]);
+  const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fin_events'")).rows[0];
+  const was = prev && prev.data && prev.data.from;
+  await saveCache('fin_events', { from: (!was || from < was) ? from : was, asOf: new Date().toISOString() });
+  return { days: ks.length, from, failed: r.failed.length };
+}
 async function pullReturns(fromDay, onProgress) {
   const fromMs = Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
   const r = await getReturnRecords(fromMs, onProgress);
@@ -7884,7 +7918,7 @@ async function pullReturns(fromDay, onProgress) {
 }
 // Background pull. 'today' (the dashboard's Update button, and the automatic
 // refresh when the numbers are over an hour old) reads only today and
-// yesterday — today's total plus yesterday by the hour for "Today vs.
+// yesterday, refunds and fees included — today's total plus yesterday by the hour for "Today vs.
 // yesterday" — and leaves history alone (owner: Update is for today, not the
 // whole chart). History refreshes itself every morning: the daily sync's
 // sales pull re-saves the last 60 days. 'full' = from 1 January last year,
@@ -7907,12 +7941,15 @@ app.post('/api/sales/history', ownerAuth, async (req, res) => {
       for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
       const n = await saveSalesDays(r.records, from);
       // the full pull also reads returns over the same stretch
-      let retNote = null;
+      let retNote = null, finNote = null;
       if (full) {
         try { salesJob.progress = 'reading returns…'; const rr = await pullReturns(fromDay, p => { salesJob.progress = p; }); if (rr.failed) retNote = rr.failed + ' month(s) of returns Amazon couldn’t build'; }
         catch (e) { retNote = 'returns not read: ' + e.message; }
       }
-      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from, returnsNote: retNote,
+      // refunds and fees, on time (financial events): the same stretch
+      try { salesJob.progress = 'reading refunds and fees…'; const fr = await pullFinEvents(fromDay, p => { salesJob.progress = p; }); if (fr.failed) finNote = fr.failed + ' month(s) of refunds Amazon couldn’t return; saved from ' + fr.from; }
+      catch (e) { finNote = 'refunds not read: ' + e.message; }
+      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from, returnsNote: retNote, refundsNote: finNote,
         note: r.failed.length ? r.failed.length + ' month(s) Amazon couldn’t build (' + r.failed[0][2] + '); saved from ' + from : null, at: new Date().toISOString() };
       console.log(`[Sales] ${salesJob.mode} pull: ${n} days saved from ${from}.`);
     } catch (e) { salesJob = { running: false, error: e.message, at: new Date().toISOString() }; console.error('[Sales] pull failed:', e.message); }

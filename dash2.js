@@ -530,12 +530,13 @@
     { k: 'returns', l: 'Returns', f: v => n0(v) + ' units', chart: n0, rate: 'of units', bad: true }
   ];
   function dataMaps(x) {
-    const M = {}, S = {}, R = {};
+    const M = {}, S = {}, R = {}, F = {};
+    ((x && x.finDaily) || []).forEach(r => F[r.day] = r);
     ((x && x.salesDaily) || []).forEach(r => M[r.day] = r);
     ((x && x.settleDaily) || []).forEach(r => S[r.day] = r);
     ((x && x.returnsDaily) || []).forEach(r => R[r.day] = r);
     const sd = Object.keys(S).sort();
-    return { M, S, R, settleFrom: sd[0] || null, settledThrough: (x && x.settledThrough) || null, returnsFrom: (x && x.returnsFrom) || null, T: ptDay(Date.now()) };
+    return { M, S, R, F, finFrom: (x && x.finEvents && x.finEvents.from) || null, finAsOf: (x && x.finEvents && x.finEvents.asOf) || null, settleFrom: sd[0] || null, settledThrough: (x && x.settledThrough) || null, returnsFrom: (x && x.returnsFrom) || null, T: ptDay(Date.now()) };
   }
   // value of every metric over a set of days (null = not covered)
   function measure(D, days) {
@@ -549,13 +550,18 @@
     return out;
   }
   const settled = (D, d) => D.settleFrom && d >= D.settleFrom && D.settledThrough && d <= D.settledThrough;
+  // Refunds and fees: the on-time financial events where they cover the day,
+  // settlements anywhere else.
+  const finCov = (D, d) => D.finFrom && d >= D.finFrom && d <= D.T && !!D.F[d];
+  const moneyCov = (D, d) => finCov(D, d) || settled(D, d);
+  const moneyAmt = (D, d, kind) => finCov(D, d) ? (D.F[d][kind] || 0) : (D.S[d] ? D.S[d][kind] : 0);
   const returnsCovered = (D, d) => D.returnsFrom && d >= D.returnsFrom && d <= D.T;
   function lagged(D, cur, prev, kind) {
     // only the days covered in the current period, matched day-for-day in the previous one
-    const ok = kind === 'returns' ? d => returnsCovered(D, d) : d => settled(D, d);
+    const ok = kind === 'returns' ? d => returnsCovered(D, d) : d => moneyCov(D, d);
     const c = cur.filter(ok), p = prev.slice(0, c.length).filter(ok);
     if (!c.length) return { cur: null, prev: null, curRate: null, prevRate: null, through: kind === 'returns' ? null : D.settledThrough };
-    const amt = days => kind === 'returns' ? days.reduce((t, d) => t + (D.R[d] ? D.R[d].units : 0), 0) : Math.abs(days.reduce((t, d) => t + (D.S[d] ? D.S[d][kind] : 0), 0));
+    const amt = days => kind === 'returns' ? days.reduce((t, d) => t + (D.R[d] ? D.R[d].units : 0), 0) : Math.abs(days.reduce((t, d) => t + moneyAmt(D, d, kind), 0));
     const base = days => { const m = measure(D, days); return kind === 'returns' ? m.units : m.sales; };
     const cA = amt(c), pA = p.length === c.length ? amt(p) : null, cB = base(c), pB = p.length === c.length ? base(p) : null;
     return { cur: cA, prev: pA, curRate: cB ? cA / cB : null, prevRate: pB ? pA / pB : null, partial: c.length < cur.length, through: c[c.length - 1], days: c.length };
@@ -577,7 +583,8 @@
                  units: { cur: tS ? upto(tS.units) : null, prev: yS ? upto(yS.units) : null } };
     tm.aov = { cur: tm.orders.cur ? tm.sales.cur / tm.orders.cur : null, prev: tm.orders.prev ? tm.sales.prev / tm.orders.prev : null };
     tm.aup = { cur: tm.units.cur ? tm.sales.cur / tm.units.cur : null, prev: tm.units.prev ? tm.sales.prev / tm.units.prev : null };
-    ['refunds', 'fees', 'returns'].forEach(f => tm[f] = { cur: null, prev: null, sameDay: true });
+    tm.returns = { cur: null, prev: null, sameDay: true };
+    ['refunds', 'fees'].forEach(f => { tm[f] = finCov(D, T) ? { cur: Math.abs(D.F[T][f] || 0), prev: null, todaySoFar: true, curRate: tm.sales.cur ? Math.abs(D.F[T][f] || 0) / tm.sales.cur : null } : { cur: null, prev: null, sameDay: true }; });
     out.push({ k: 'today', label: 'Today', cur: tm.sales.cur, prev: tm.sales.prev, m: tm, hourly: ok ? st : null, D,
                curLbl: 'so far', prevLbl: ok ? 'yesterday by ' + hourLbl((h + 1) % 24) : 'yesterday', est: ok && D.M[T] ? D.M[T].est : 0 });
     out.push(mk('7', '7 days', span(addD(T, -7), Y), span(addD(T, -14), addD(T, -8)), 'through yesterday', 'the 7 days before'));
@@ -642,9 +649,10 @@
     if (strip) strip.innerHTML = METRICS.map(mt => {
       const v = p.m[mt.k] || {}; let val, chip, sub;
       if (mt.rate) {
-        if (v.sameDay) { val = '—'; chip = '<span class="d2-delta flat">not same-day</span>'; sub = mt.k === 'returns' ? 'Amazon reports returns daily' : 'arrives with settlements'; }
-        else if (v.cur == null) { val = '—'; chip = '<span class="d2-delta flat">' + (mt.k === 'returns' ? 'not pulled yet' : 'not settled yet') + '</span>'; sub = mt.k === 'returns' ? 'pulled each morning' : (P.D.settledThrough ? 'settled through ' + dShort(P.D.settledThrough) : 'no settlements yet'); }
-        else { val = mt.f(v.cur); chip = deltaChip(v.curRate, v.prevRate, true, true); sub = (v.curRate != null ? pct(v.curRate) + ' ' + mt.rate : '') + (v.partial ? ' · through ' + dShort(v.through) : ''); }
+        if (v.todaySoFar) { val = mt.f(v.cur); chip = '<span class="d2-delta flat">so far today</span>'; sub = v.curRate != null ? pct(v.curRate) + ' ' + mt.rate : ''; }
+        else if (v.sameDay) { val = '—'; chip = '<span class="d2-delta flat">not same-day</span>'; sub = mt.k === 'returns' ? 'Amazon reports returns daily' : 'Update today to read them'; }
+        else if (v.cur == null) { val = '—'; chip = '<span class="d2-delta flat">not pulled yet</span>'; sub = mt.k === 'returns' ? 'pulled each morning' : 'pulled each morning, or Update today'; }
+        else { val = mt.f(v.cur); chip = deltaChip(v.curRate, v.prevRate, true, true); sub = (v.curRate != null ? pct(v.curRate) + ' ' + mt.rate : '') + (v.partial ? ' · through ' + dShort(v.through) : (mt.k !== 'returns' && finCov(P.D, v.through) ? ' · up to date' : '')); }
       } else { val = v.cur == null ? '—' : mt.f(v.cur); chip = deltaChip(v.cur, v.prev); sub = v.prev == null ? 'no comparison' : 'vs ' + mt.f(v.prev); }
       return '<button class="d2-met' + (mt.k === mSel ? ' on' : '') + '" data-met="' + mt.k + '"><div class="l">' + mt.l + '</div><div class="v">' + val + '</div>' + chip + '<div class="p">' + E(sub) + '</div></button>';
     }).join('');
@@ -665,7 +673,7 @@
     if (p.k === 'today') {
       const H = p.hourly;
       if (!H) { title.textContent = ''; box.innerHTML = empty('clock', 'Today’s numbers are on the way', 'Press Update today to read today’s orders from Amazon (about a minute).', null); return; }
-      if (!['sales', 'orders', 'units', 'aov', 'aup'].includes(mt.k)) { title.textContent = ''; box.innerHTML = empty('clock', mt.l + ' don’t come same-day', mt.k === 'returns' ? 'Amazon reports returns once a day; pick 7 days or longer to see them.' : 'They arrive with Amazon’s settlements; pick 7 days or longer to see them.', null); return; }
+      if (!['sales', 'orders', 'units', 'aov', 'aup'].includes(mt.k)) { title.textContent = ''; box.innerHTML = empty('clock', mt.l + ' don’t come same-day', mt.k === 'returns' ? 'Amazon reports returns once a day; pick 7 days or longer to see them.' : 'They post by the day, not the hour; today’s total is in the row above. Pick 7 days or longer for the chart.', null); return; }
       const T = H.todayStats || { sales: H.todayHourly }, Yd = H.ydayStats || { sales: H.ydayHourly };
       const ser = (s) => mt.k === 'aov' ? s.sales.map((v, i) => s.orders[i] ? v / s.orders[i] : null) : mt.k === 'aup' ? s.sales.map((v, i) => s.units[i] ? v / s.units[i] : null) : s[mt.k];
       title.textContent = mt.l + ' by hour · today vs. yesterday';
@@ -680,12 +688,12 @@
       let i0 = 0; const pb = cb.map(b => { const ds = p.prevDays.slice(i0, i0 + b.days.length); i0 += b.days.length; return ds; });
       const val = days => {
         if (!days.length) return null;
-        if (mt.k === 'refunds' || mt.k === 'fees') { if (!days.every(d => settled(D, d))) return null; return Math.abs(days.reduce((t, d) => t + (D.S[d] ? D.S[d][mt.k] : 0), 0)); }
+        if (mt.k === 'refunds' || mt.k === 'fees') { if (!days.every(d => moneyCov(D, d))) return null; return Math.abs(days.reduce((t, d) => t + moneyAmt(D, d, mt.k), 0)); }
         if (mt.k === 'returns') { if (!days.every(d => returnsCovered(D, d))) return null; return days.reduce((t, d) => t + (D.R[d] ? D.R[d].units : 0), 0); }
         const m = measure(D, days); return m[mt.k];
       };
       title.textContent = mt.l + (monthly ? ' by month · ' : ' by day · ') + dShort(p.curDays[0]) + ' – ' + dShort(p.curDays[p.curDays.length - 1]) + ' vs. ' + dShort(p.prevDays[0]) + ' – ' + dShort(p.prevDays[p.prevDays.length - 1]) +
-        ((mt.k === 'refunds' || mt.k === 'fees') && D.settledThrough ? ' · settled through ' + dShort(D.settledThrough) : '');
+        ((mt.k === 'refunds' || mt.k === 'fees') ? (D.finFrom ? ' · up to date (Amazon money events)' : (D.settledThrough ? ' · settled through ' + dShort(D.settledThrough) : '')) : '');
       o = { labels: cb.map(b => b.key), fmtLabel: monthly ? mShort : dShort, aria: mt.l + ', this period vs previous', fmt: mt.chart,
         series: [{ name: KN[0], color: CUR, values: cb.map(b => val(b.days)) }, { name: KN[1], color: GRAY, values: pb.map(val) }],
         tipExtra: i => { const pd = pb[i]; const a = !monthly && D.M[cb[i].days[0]]; return '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">' + (pd && pd.length ? 'previous: ' + (monthly ? mShort(pd[0].slice(0, 7)) + ' ' + pd[0].slice(0, 4) : dShort(pd[0])) : '') + (a && a.est && mt.k === 'sales' ? '<br>incl. ' + money(a.est) + ' pending, at list price' : '') + '</div>'; } };

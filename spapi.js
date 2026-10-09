@@ -401,6 +401,45 @@ async function getOrderRecords(fromMs, onProgress) {
   const r = await pullReportWindows('GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL', fromMs, onProgress, 'orders');
   return { records: orderRecords(r.bodies, fromMs), failed: r.failed };
 }
+// Financial events (Finances API v0) posted from `fromMs` to now, for the
+// dashboard's Refunds and Amazon fees: they post within hours, settlements
+// only every two weeks. 30-day windows (the API allows up to 180), 100 events
+// a page; the API allows ~1 call every 2 seconds, so a 429 waits and retries.
+// A window that fails is listed in `failed`; the caller saves only the days
+// after it. Returns the raw payloads (lib/finevents.js adds them up).
+async function getFinancialEvents(fromMs, onProgress) {
+  const end = Date.now() - 3 * 60000;   // PostedBefore must be at least 2 minutes ago
+  const wins = reportWindows(Math.ceil((end - fromMs) / 86400000), end);
+  const pages = [], failed = [];
+  for (let w = 0; w < wins.length; w++) {
+    const [start, stop] = wins[w];
+    let token = null, n = 0;
+    try {
+      do {
+        let r = null;
+        for (let tries = 0; !r; tries++) {
+          try {
+            const q = token ? `NextToken=${encodeURIComponent(token)}` : `PostedAfter=${encodeURIComponent(start)}&PostedBefore=${encodeURIComponent(stop)}&MaxResultsPerPage=100`;
+            r = await http.get(`${SP_API_BASE}/finances/v0/financialEvents?${q}`);
+          } catch (e) {
+            if (e.response?.status === 429 && tries < 8) { await sleep(2500 * (tries + 1)); continue; }
+            throw e;
+          }
+        }
+        const payload = r.data.payload || {};
+        pages.push(payload);
+        token = payload.NextToken || null;
+        n++;
+        if (onProgress) onProgress(`money events: month ${w + 1} of ${wins.length}, page ${n}…`);
+        await sleep(2100);
+      } while (token);
+    } catch (e) {
+      failed.push([start, stop, e.response ? e.response.status + ' ' + JSON.stringify(e.response.data || '').slice(0, 160) : e.message]);
+    }
+  }
+  return { pages, failed };
+}
+
 // Customer returns from `fromMs` to now (lib/returns.js), for the dashboard.
 async function getReturnRecords(fromMs, onProgress) {
   const r = await pullReportWindows('GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA', fromMs, onProgress, 'returns');
@@ -1148,4 +1187,4 @@ async function getShipmentStatuses(ids) {
   return out;
 }
 
-module.exports = { getOrderRecords, getReturnRecords, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+module.exports = { getOrderRecords, getReturnRecords, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
