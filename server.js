@@ -416,7 +416,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'onhand-new-look-1039';
+const BUILD_ID = 'prep-crew-any-job-1040';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8237,23 +8237,27 @@ async function openJobElsewhere(employee, exceptJobId) {
   return r.rows.length ? { id: r.rows[0].job_id, name: r.rows[0].name || 'another item', since: r.rows[0].joined_at } : null;
 }
 
+const PREP_CREW_MAX = 3;
+
 // Add a prepper to a job that is already running.
 app.post('/api/pending-prep/crew/join', auth, async (req, res) => {
   const { id, name } = req.body || {};
   if (!id) return res.status(400).json({ error: 'id required' });
   const who = await resolveEmployee(name);
   if (!who) return res.status(400).json({ error: 'Pick your name from the list.' });
-  // Owner's rule: only duo jobs take a second or third person. A single-SKU
-  // job is one person's (big ones are split in half, one person per half),
-  // so each person's speed is their own.
-  const job = await pool.query('SELECT is_duo, staged FROM inv_pending_prep WHERE id=$1', [id]);
+  // Any job (single or duo) takes up to PREP_CREW_MAX people working it
+  // together. It was duo-only for a while (#147); the owner asked for it back
+  // on singles. Completing splits the units across the crew by time on the
+  // job (inv_prep_log.crew), so each person's speed still comes out right.
+  const job = await pool.query('SELECT staged FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ ok: false, error: 'Job not found' });
   if (job.rows[0].staged) return res.status(409).json({ ok: false, error: NEXT_BATCH_MSG });
-  if (!job.rows[0].is_duo) return res.status(409).json({ ok: false, error: 'Only duo jobs can have more than one person. Take your own job (or the other half of a split job).' });
 
   const dup = await pool.query(
     'SELECT 1 FROM inv_prep_crew WHERE job_id=$1 AND lower(employee)=lower($2) AND left_at IS NULL', [id, who]);
   if (dup.rows.length) return res.json({ ok: false, already: true, employee: who });
+  const onIt = await pool.query('SELECT count(*)::int AS n FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL', [id]);
+  if (onIt.rows[0].n >= PREP_CREW_MAX) return res.status(409).json({ ok: false, error: `This job already has ${PREP_CREW_MAX} people on it.` });
 
   const busy = await openJobElsewhere(who, id);
   if (busy) return res.json({ ok: false, alreadyOnJob: true, other: busy });
@@ -8302,9 +8306,13 @@ app.post('/api/pending-prep/claim', auth, async (req, res) => {
     if (p1.rows.length && !p1.rows[0].claimed_by)
       return res.status(409).json({ ok: false, partFirst: true, error: 'Work on PART 1 first. Part 2 opens once someone has started part 1 (or it is done).' });
   }
-  // A single-SKU job already started by someone else is theirs alone (only duos take a crew)
-  if (cur.rows[0].claimed_by && !cur.rows[0].is_duo && cur.rows[0].claimed_by.toLowerCase() !== canonical.toLowerCase())
-    return res.status(409).json({ ok: false, error: `${cur.rows[0].claimed_by} is already on this job. Only duo jobs take more than one person.` });
+  // A job someone already started: tapping Start joins their crew, up to
+  // PREP_CREW_MAX people (singles too, not just duos).
+  if (cur.rows[0].claimed_by && cur.rows[0].claimed_by.toLowerCase() !== canonical.toLowerCase()) {
+    const onIt = await pool.query('SELECT count(*)::int AS n FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL AND lower(employee)<>lower($2)', [id, canonical]);
+    if (onIt.rows[0].n >= PREP_CREW_MAX)
+      return res.status(409).json({ ok: false, error: `This job already has ${PREP_CREW_MAX} people on it.` });
+  }
 
   // ONE JOB AT A TIME per person.
   const busy = await openJobElsewhere(canonical, id);

@@ -220,6 +220,30 @@ test('a job over 200 is split in half; both halves finish into one Prepped card;
   assert.deepStrictEqual(h.map(x => [x.qty, x.split_part, x.split_group]), [[150, 1, g], [150, 2, g]]);
 });
 
+test('a single (not just a duo) takes a crew of up to 3; finishing credits everyone once', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_employees(display_name) VALUES ('Ann'),('Ben'),('Cal'),('Dee') ON CONFLICT DO NOTHING`);
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTCREW','Test Crew Mask','SKU-CREW','X00TESTCRW') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/pending-prep/add', { asin: 'TSTCREW', qty: 60 });
+  const id = (await one(`SELECT id FROM inv_pending_prep WHERE asin='TSTCREW'`)).id;
+  const onIt = async () => (await pool.query('SELECT employee FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL ORDER BY employee', [id])).rows.map(r => r.employee);
+  assert.strictEqual((await post('/api/pending-prep/claim', { id, name: 'Ann' })).body.ok, true);
+  assert.strictEqual((await post('/api/pending-prep/crew/join', { id, name: 'Ben' })).body.ok, true);
+  // Start on a job someone already has joins it too
+  assert.strictEqual((await post('/api/pending-prep/claim', { id, name: 'Cal' })).body.ok, true);
+  assert.strictEqual((await post('/api/pending-prep/crew/join', { id, name: 'Ben' })).body.already, true);
+  assert.deepStrictEqual(await onIt(), ['Ann', 'Ben', 'Cal']);
+  // A fourth is refused either way
+  assert.strictEqual((await post('/api/pending-prep/crew/join', { id, name: 'Dee' })).status, 409);
+  assert.strictEqual((await post('/api/pending-prep/claim', { id, name: 'Dee' })).status, 409);
+  const p0 = await prepped('TSTCREW');
+  assert.strictEqual((await post('/api/pending-prep/complete', { id, qty: 60, completedBy: 'Ann' })).status, 200);
+  assert.strictEqual(await prepped('TSTCREW'), p0 + 60);
+  const log = await one(`SELECT units, crew FROM inv_prep_log WHERE asin='TSTCREW' ORDER BY id DESC LIMIT 1`);
+  assert.strictEqual(log.units, 60);
+  assert.deepStrictEqual(log.crew.map(c => c.employee).sort(), ['Ann', 'Ben', 'Cal']);
+  assert.strictEqual((await one('SELECT count(*)::int AS n FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL', [id])).n, 0);
+});
+
 test('next batch: held from the floor (no merge, claim, scan or finish), released once onto the list', { skip }, async () => {
   await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTNXT','Test Next','SKU-NXT','X00TESTNXT') ON CONFLICT (asin) DO NOTHING`);
   await pool.query(`INSERT INTO inv_employees(display_name, active) VALUES ('Tester', true) ON CONFLICT DO NOTHING`);
