@@ -340,8 +340,8 @@
       '<div style="display:flex;gap:8px;align-items:center"><span class="d2-live"><span class="d2-dot"></span><span id="d2upd">Live</span></span><button class="d2-btn" data-act="refresh">' + svg('refresh', ' style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"') + 'Refresh</button></div></div>' +
       // gross sales first (owner), then what the inventory is worth
       // gross sales
-      '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included</div></div>' +
-      '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update</button></div></div>' +
+      '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included · history refreshes itself every morning</div></div>' +
+      '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update today</button></div></div>' +
       '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
       '<div id="d2snote"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
       // overview: hero
@@ -556,7 +556,7 @@
     drawSales(p);
     // keep it current: a quick pull when the last one is over an hour old
     const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
-    if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('quick'); }
+    if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('today'); }
   }
   // Bars (owner): each day beside the matching day of the previous period;
   // Today by hour vs. yesterday; Year to date by month (daily bars would be
@@ -599,14 +599,14 @@
   }
   function salesPull(mode) {
     const btn = document.getElementById('d2squick'); if (btn) btn.disabled = true;
-    const asof = document.getElementById('d2sasof'); if (asof) asof.textContent = mode === 'full' ? 'reading your order history…' : 'updating…';
+    const asof = document.getElementById('d2sasof'); if (asof) asof.textContent = mode === 'full' ? 'reading your order history…' : 'reading today’s orders…';
     ownerApi('/api/sales/history', { method: 'POST', body: JSON.stringify({ mode }) }).then(() => {
       const poll = () => ownerApi('/api/sales/history/status').then(j => {
         if (!document.getElementById('d2sasof')) return;
         if (j && j.running) { document.getElementById('d2sasof').textContent = j.progress || 'updating…'; if (mode === 'full' && state.sales && !(state.sales.salesDaily || []).length) paintSales(Object.assign({}, state.sales, { salesJob: j })); setTimeout(poll, 4000); return; }
         if (btn) btn.disabled = false;
         if (j && j.error) { document.getElementById('d2sasof').textContent = 'Update failed: ' + j.error; return; }
-        ownerApi('/api/dash2').then(x => paintSales(x));
+        ownerApi('/api/dash2').then(x => { paintSales(x); if (mode !== 'full') settle(document.getElementById('d2sales')); });
       }).catch(() => setTimeout(poll, 6000));
       setTimeout(poll, 3000);
     }).catch(() => { if (btn) btn.disabled = false; if (asof) asof.textContent = 'Update failed — try again'; });
@@ -617,7 +617,7 @@
       const t = e.target.closest('[data-goto]'); if (t && !e.target.closest('a')) { goTo(t.dataset.goto); return; }
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.per) { store.set('d2Per', b.dataset.per); if (state && state.sales) paintSales(state.sales, true); return; }
-      if (b.dataset.act === 'sales-quick' || b.dataset.act === 'sales-full') { salesPull(b.dataset.act === 'sales-full' ? 'full' : 'quick'); return; }
+      if (b.dataset.act === 'sales-quick' || b.dataset.act === 'sales-full') { salesPull(b.dataset.act === 'sales-full' ? 'full' : 'today'); return; }
       if (b.dataset.sec) {
         root.querySelectorAll('.d2-nav button').forEach(x => x.classList.toggle('on', x === b));
         const t = document.getElementById('d2-' + b.dataset.sec); if (t) t.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'start' });
@@ -637,6 +637,8 @@
     if (ro) ro.disconnect();
     if ('ResizeObserver' in window) { let tm; ro = new ResizeObserver(() => { clearTimeout(tm); tm = setTimeout(redraw, 160); }); ro.observe(root.querySelector('.d2-main')); }
   }
+  // Show a chart in its final state (no entrance replay).
+  function settle(box) { if (box) box.querySelectorAll('.d2-draw,.d2-area,.d2-bar').forEach(z => { z.style.animation = 'none'; z.style.opacity = 1; z.style.strokeDashoffset = 0; z.style.transform = 'none'; }); }
   // Redraw charts at the new width without replaying the entrance.
   function redraw() {
     const root = document.getElementById('d2root'); if (!root) return;

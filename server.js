@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sales-bars-1035';
+const BUILD_ID = 'sales-update-today-1036';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7833,17 +7833,22 @@ async function saveSalesDays(recs, fromDay) {
     todayHourly: velocity.salesByHour(recs, today), ydayHourly: velocity.salesByHour(recs, yday) });
   return ks.length;
 }
-// Background pull: 'quick' = the last 3 days (a minute or two), 'full' = from
-// 1 January last year, so YTD can be compared with the same stretch of last
-// year (several minutes: Amazon paces report requests).
+// Background pull. 'today' (the dashboard's Update button, and the automatic
+// refresh when the numbers are over an hour old) reads only today and
+// yesterday — today's total plus yesterday by the hour for "Today vs.
+// yesterday" — and leaves history alone (owner: Update is for today, not the
+// whole chart). History refreshes itself every morning: the daily sync's
+// sales pull re-saves the last 60 days. 'full' = from 1 January last year,
+// once, so YTD can be compared with last year (several minutes: Amazon paces
+// report requests).
 let salesJob = { running: false };
 app.post('/api/sales/history', ownerAuth, async (req, res) => {
   if (salesJob.running) return res.json({ ok: true, already: true, job: salesJob });
   const full = req.body && req.body.mode === 'full';
   const y = new Date().getUTCFullYear();
-  const fromDay = full ? (y - 1) + '-01-01' : salesDay(Date.now() - 2 * 86400000);
+  const fromDay = full ? (y - 1) + '-01-01' : salesDay(Date.now() - 86400000);
   const fromMs = full ? Date.parse(fromDay + 'T00:00:00-08:00') : Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
-  salesJob = { running: true, mode: full ? 'full' : 'quick', progress: 'asking Amazon…', startedAt: new Date().toISOString() };
+  salesJob = { running: true, mode: full ? 'full' : 'today', progress: full ? 'asking Amazon…' : 'reading today’s orders…', startedAt: new Date().toISOString() };
   res.json({ ok: true });
   (async () => {
     try {
