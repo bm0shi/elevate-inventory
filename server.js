@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-duos-ss-names-1031';
+const BUILD_ID = 'dash-v2-1032';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6051,6 +6051,41 @@ app.get('/api/stock-audit', ownerAuth, async (req, res) => {
   });
 });
 
+// Premium dashboard (Admin → Dashboard → "New look", dash2.js): the history
+// series its charts draw. Owner only — it carries sales and deposits. Every
+// part is optional; a part that fails or has no data comes back empty and
+// the card shows its empty state instead of breaking the page.
+app.get('/api/dash2', ownerAuth, async (req, res) => {
+  const out = { ok: true };
+  const q = async (key, sql, map) => { try { out[key] = (await pool.query(sql)).rows.map(map || (r => r)); } catch (e) { out[key] = []; out[key + 'Error'] = e.message; } };
+  await q('fbaDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, COALESCE(SUM(onhand),0)::int AS onhand, COALESCE(SUM(inbound),0)::int AS inbound
+    FROM inv_fba_daily WHERE day >= CURRENT_DATE - 90 GROUP BY day ORDER BY day`);
+  await q('flow', `WITH d AS (SELECT generate_series(CURRENT_DATE - 29, CURRENT_DATE, interval '1 day')::date AS day)
+    SELECT to_char(d.day,'YYYY-MM-DD') AS day,
+      COALESCE((SELECT SUM(qty) FROM inv_activity a WHERE a.direction='in' AND a.ts::date=d.day),0)::int AS received,
+      COALESCE((SELECT SUM(units) FROM inv_prep_log p WHERE p.finished_at::date=d.day),0)::int AS prepped,
+      COALESCE((SELECT SUM(qty) FROM inv_activity a WHERE a.direction='out' AND a.ts::date=d.day),0)::int AS shipped
+    FROM d ORDER BY d.day`);
+  await q('salesWeekly', `SELECT to_char(date_trunc('week', posted_date),'YYYY-MM-DD') AS week,
+      COALESCE(SUM(quantity) FILTER (WHERE transaction_type='Order'),0)::int AS units,
+      COALESCE(SUM(amount) FILTER (WHERE transaction_type='Order'),0)::float AS sales
+    FROM inv_settlement_lines WHERE amount_type='ItemPrice' AND amount_description ILIKE '%principal%'
+      AND posted_date >= date_trunc('week', CURRENT_DATE) - interval '11 weeks'
+    GROUP BY 1 ORDER BY 1`);
+  await q('deposits', `SELECT to_char(COALESCE(deposit_date, end_date),'YYYY-MM-DD') AS date, total_amount::float AS amount
+    FROM inv_settlements WHERE total_amount IS NOT NULL ORDER BY COALESCE(deposit_date, end_date) DESC NULLS LAST LIMIT 12`,
+    r => r);
+  out.deposits = (out.deposits || []).reverse();
+  // Top sellers: the last velocity pull (units over its window)
+  try {
+    const v = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='velocity'");
+    const d = v.rows.length ? v.rows[0].data : null;
+    out.topSellers = d && Array.isArray(d.items) ? d.items.filter(x => x.sold > 0).slice(0, 8).map(x => ({ asin: x.asin, name: x.name, sold: x.sold })) : [];
+    out.topSellersDays = d ? d.days : null; out.topSellersAt = v.rows.length ? v.rows[0].updated_at : null;
+  } catch (e) { out.topSellers = []; }
+  res.json(out);
+});
+
 app.get('/api/dashboard', auth, async (req, res) => {
   const stock = await pool.query('SELECT COALESCE(SUM(onhand),0)::int AS onhand, COALESCE(SUM(transit),0)::int AS transit FROM inv_stock');
   // committed totals so the dashboard matches the On Hand page's "Available"
@@ -8638,6 +8673,10 @@ app.post('/api/prep/clear', ownerAuth, async (req, res) => {
 
 // serve the UI
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// The premium dashboard (Admin → Dashboard → "New look"). Its own file so the
+// classic dashboard stays untouched and the trial can be dropped cleanly.
+// No-cache: it changes with deploys and is small.
+app.get('/dash2.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'dash2.js')); });
 // Barcode drawing for the 2D box labels (PDF417), served from the app itself
 // so printing a label never depends on an outside CDN being reachable.
 app.get('/vendor/bwip-js.min.js', (req, res) => {
