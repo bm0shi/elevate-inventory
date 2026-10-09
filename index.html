@@ -309,6 +309,11 @@
   </div>
 
   <div id="onhand" class="panel">
+    <!-- On Hand, new look (onhand2.js) draws its header, tiles and toolbar here;
+         the classic controls below stay in the page (hidden) and still drive
+         the filtering, so both looks share one renderOnhand. -->
+    <div id="ohTop"></div>
+    <div id="ohClassic">
     <div class="cards">
       <div class="card"><div class="n" id="totSkus">0</div><div class="l">SKUs</div></div>
       <div class="card" style="border-top:3px solid #1e8449"><div class="n" id="totAvailable">0</div><div class="l">Available</div><div id="totOnhandSub" style="font-size:11px;color:#9db0c9;margin-top:2px"></div></div>
@@ -318,7 +323,7 @@
     </div>
     <div style="margin-bottom:12px">
       <button class="action" onclick="toggleAddProduct()" id="addProdBtn" style="width:100%;padding:12px;font-size:14px;background:#0d4450">+ Add a Product to Catalog</button>
-      <div id="addProductBox" style="display:none;background:#fff;border-radius:10px;padding:16px;margin-top:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
+      <div id="addProdHome"><div id="addProductBox" style="display:none;background:#fff;border-radius:10px;padding:16px;margin-top:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08)">
         <label>ASIN (required)</label>
         <input type="text" id="npAsin" placeholder="B07DXL29H6" autocomplete="off">
         <div style="height:8px"></div>
@@ -332,7 +337,7 @@
         <input type="text" id="npUpc" placeholder="009531128542" autocomplete="off">
         <div style="height:12px"></div>
         <button class="action full" onclick="addProduct()">Add Product</button>
-      </div>
+      </div></div>
     </div>
     <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
       <input type="text" id="searchOnhand" placeholder="Search..." onkeyup="renderOnhand()" style="flex:1;min-width:180px;padding:12px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px">
@@ -363,9 +368,11 @@
       <span class="viewtoggle" id="vt_onhand"><button onclick="setView('onhand',false)">Compact</button><button onclick="setView('onhand',true)">Big</button></span>
       <button class="action" onclick="syncFba()" id="syncBtn" style="padding:12px 16px;font-size:14px">↻ Sync with Amazon</button>
       <button class="action" onclick="pullImages()" id="imgBtn" style="padding:12px 16px;font-size:14px;background:#b7791f">🖼️ Pull Images</button>
+      <button class="action" onclick="oh2Try()" style="padding:12px 16px;font-size:14px;background:linear-gradient(135deg,#0d4450,#1d6f80)">✨ New look</button>
     </div>
     <div id="syncStatus" style="margin-top:8px"></div>
     <div style="height:12px"></div>
+    </div>
     <div id="onhandBody"></div>
   </div>
 
@@ -9973,7 +9980,19 @@ function amazonCheck(asin){
     m.innerHTML=h;
   }).catch(e=>{ m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px">Could not reach the server: '+esc(e.message)+'</div>'; });
 }
+// On Hand new look (onhand2.js): the default; Classic is the backup, per
+// device (the new look's "Classic view" link / the classic "✨ New look").
+let _oh2Failed=false;
+function oh2On(){ if(_oh2Failed) return false; try{ return localStorage.getItem('ohView')!=='classic'; }catch(e){ return true; } }
+function oh2Load(){
+  if(window.OH2) return Promise.resolve();
+  if(oh2Load._p) return oh2Load._p;
+  return oh2Load._p=new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='/onhand2.js?v='+Date.now(); sc.onload=res; sc.onerror=()=>{ oh2Load._p=null; rej(); }; document.head.appendChild(sc); });
+}
+function oh2Try(){ _oh2Failed=false; try{ localStorage.setItem('ohView','new'); }catch(e){} renderOnhand(); }
 function renderOnhand(){
+  if(oh2On() && !window.OH2){ oh2Load().then(renderOnhand).catch(()=>{ _oh2Failed=true; toast('New look didn\'t load — showing the classic On Hand',true); renderOnhand(); }); return; }
+  if(!oh2On() && window.OH2) OH2.teardown();
   picZoomOff();   // a live refresh replaces the thumbnail, so its mouseleave would never fire
   const q=(document.getElementById('searchOnhand').value||'').toLowerCase();
   const sortEl=document.getElementById('sortOnhand'); const sort=sortEl?sortEl.value:'onhand_desc';
@@ -9983,7 +10002,7 @@ function renderOnhand(){
   products.forEach(p=>{ tU+=(p.onhand||0); tT+=(p.transit||0); sk++; });
   // stock filter
   const stockFilter=(document.getElementById('filterOnhand')||{}).value||'all';
-  if(stockFilter==='duobuildable'){ renderDuoBuilder(body, q); return; }
+  if(stockFilter==='duobuildable'){ if(oh2On()) OH2.render(body, [], {filter:stockFilter, q, custom:true}); renderDuoBuilder(body, q); return; }
   if(!ssAvg) loadSsAvg();   // FBA cover uses the other sellers' average
   // filter
   let list=products.filter(p=>{
@@ -10037,6 +10056,7 @@ function renderOnhand(){
       +'<button class="action" onclick="ssPickClear()" style="background:#c0392b">✕ Clear all selections</button></div>'
       +(list.length?'':'<div class="box hint">Nothing selected yet. Tick products in the yellow On hand column on Admin → Smart Scout Orders.</div>')
     : '';
+  if(oh2On()){ OH2.render(body, list, {filter:stockFilter, q, pickBar}); return; }
   body.innerHTML = pickBar+'<div class="pcards'+(viewBig('onhand')?' bigcards':'')+'">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
     const img=p.image?`<img src="${esc(p.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
     const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(p.name)}</a>`:p.name;
