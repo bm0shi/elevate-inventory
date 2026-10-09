@@ -254,7 +254,7 @@
     const ticks = niceTicks(Math.max(maxV, -minV) || 1, 4), top = maxV > 0 ? ticks[ticks.length - 1] : 0;
     const bot = minV < 0 ? -niceTicks(-minV, 2).slice(-1)[0] : 0, span = (top - bot) || 1;
     const y = v => T + (H - T - B) * (top - v) / span;
-    const band = (W - L - R) / Math.max(1, n), bw = Math.min(24, Math.max(6, (band * 0.62 - (k - 1) * 2) / k)), groupW = k * bw + (k - 1) * 2;
+    const band = (W - L - R) / Math.max(1, n), bw = Math.min(24, Math.max(2, (band * 0.62 - (k - 1) * 2) / k)), groupW = k * bw + (k - 1) * 2;
     let g = '';
     const tickVals = [...new Set([...ticks.filter(t => t <= top), ...(bot < 0 ? [bot, bot / 2] : [])])].sort((a, b) => a - b);
     tickVals.forEach(t => { g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(t) + '" y2="' + y(t) + '" stroke="' + (t === 0 ? C.base : C.grid) + '"/><text x="' + (L - 8) + '" y="' + (y(t) + 4) + '" text-anchor="end" font-size="11" fill="' + C.muted + '" style="font-variant-numeric:tabular-nums">' + E((o.fmtAxis || compact)(t)) + '</text>'; });
@@ -280,7 +280,7 @@
       rc.addEventListener('mousemove', () => {
         const i = +rc.dataset.i, r = sv.getBoundingClientRect(), cr = card.getBoundingClientRect();
         sv.querySelectorAll('.hb').forEach(z => z.setAttribute('fill', 'transparent')); rc.setAttribute('fill', 'rgba(13,68,80,.04)');
-        tipAt(card, '<div style="color:#9fb3bd;font-size:11px;margin-bottom:3px">' + E(o.fmtLabel ? o.fmtLabel(o.labels[i]) : o.labels[i]) + '</div>' + o.series.map(s => tipRow(s.color, s.name, (o.fmt || n0)(s.values[i]))).join(''),
+        tipAt(card, '<div style="color:#9fb3bd;font-size:11px;margin-bottom:3px">' + E(o.fmtLabel ? o.fmtLabel(o.labels[i]) : o.labels[i]) + '</div>' + o.series.map(s => tipRow(s.color, s.name, s.values[i] == null ? '—' : (o.fmt || n0)(s.values[i]))).join('') + (o.tipExtra ? o.tipExtra(i) : ''),
           r.left - cr.left + L + i * band + band / 2, r.top - cr.top + Math.min(...o.series.map(s => y(Math.max(0, s.values[i] || 0)))));
       });
       rc.addEventListener('mouseleave', () => { rc.setAttribute('fill', 'transparent'); tipOff(card); });
@@ -553,32 +553,48 @@
     const missingPrev = P.list.some(p => p.k !== 'today' && p.prev == null);
     note.innerHTML = missingPrev && !(job && job.running) ? '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>' : '';
     const p = P.list.find(z => z.k === sel) || P.list[2];
-    drawSales(p, keepAnim);
+    drawSales(p);
     // keep it current: a quick pull when the last one is over an hour old
     const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
     if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('quick'); }
   }
-  function drawSales(p, keepAnim) {
+  // Bars (owner): each day beside the matching day of the previous period;
+  // Today by hour vs. yesterday; Year to date by month (daily bars would be
+  // a blur), the current month matched to the same days last year.
+  function drawSales(p) {
     const box = document.getElementById('d2sales'), title = document.getElementById('d2stitle'), keys = document.getElementById('d2skeys');
-    const GRAY = '#a3aeb8';
-    keys.innerHTML = '<span><i style="background:' + C.blue + '"></i>' + (p.k === 'today' ? 'Today' : 'This period') + '</span><span><i style="background:' + GRAY + '"></i>' + (p.k === 'today' ? 'Yesterday' : 'Previous period') + '</span>';
+    const GRAY = '#b4bec7';
+    const KN = { today: ['Today', 'Yesterday'], ytd: ['This year', 'Last year'] }[p.k] || ['This period', 'Previous period'];
+    keys.innerHTML = '<span><i class="sq" style="background:' + C.blue + '"></i>' + KN[0] + '</span><span><i class="sq" style="background:' + GRAY + '"></i>' + KN[1] + '</span>';
+    let o;
     if (p.k === 'today') {
       if (!p.hourly) { title.textContent = ''; box.innerHTML = empty('clock', 'Today’s numbers are on the way', 'Press Update to read today’s orders from Amazon (about a minute).', null); return; }
-      const cum = a => { let t = 0; return a.map(v => (t += v)); };
-      const tc = cum(p.hourly.todayHourly).map((v, i) => i <= p.hourly.nowHour ? v : null), yc = cum(p.hourly.ydayHourly);
-      title.textContent = 'Running total by hour · today vs. yesterday';
-      const draw = () => lineChart(box, { labels: [...Array(24).keys()], fmtLabel: hourLbl, fmt: money, fmtAxis: money, aria: 'Sales by hour, today vs yesterday',
-        series: [{ name: 'Today', color: C.blue, values: tc }, { name: 'Yesterday', color: GRAY, values: yc }],
-        tipExtra: i => '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">That hour: ' + (i <= p.hourly.nowHour ? money(p.hourly.todayHourly[i]) : '—') + ' vs ' + money(p.hourly.ydayHourly[i]) + '</div>' });
-      draw(); box._draw = draw; return;
+      const H = p.hourly;
+      title.textContent = 'Sales by hour · today vs. yesterday';
+      o = { labels: [...Array(24).keys()], fmtLabel: hourLbl, aria: 'Sales by hour, today vs yesterday',
+        series: [{ name: 'Today', color: C.blue, values: H.todayHourly.map((v, i) => i <= H.nowHour ? v : null) }, { name: 'Yesterday', color: GRAY, values: H.ydayHourly }] };
+    } else if (p.k === 'ytd') {
+      const M = p.M, months = [], cur = [], prev = [], curU = [], last = p.curDays[p.curDays.length - 1];
+      const ms = {}; p.curDays.forEach(d => { const m = d.slice(0, 7); (ms[m] = ms[m] || []).push(d); });
+      Object.keys(ms).sort().forEach(m => {
+        months.push(m);
+        cur.push(ms[m].reduce((t, d) => t + (M[d] ? M[d].sales : 0), 0)); curU.push(ms[m].reduce((t, d) => t + (M[d] ? M[d].units : 0), 0));
+        const py = (+m.slice(0, 4) - 1) + m.slice(4), pd = p.prevDays.filter(d => d.slice(0, 7) === py);
+        prev.push(pd.length && pd.every(d => M[d]) ? pd.reduce((t, d) => t + M[d].sales, 0) : null);
+      });
+      title.textContent = 'Sales by month · ' + months[0].slice(0, 4) + ' vs. ' + (months[0].slice(0, 4) - 1) + ' (' + mShort(last.slice(0, 7)) + ' through the ' + (+last.slice(8)) + 'th)';
+      o = { labels: months, fmtLabel: mShort, aria: 'Sales by month, this year vs last year',
+        series: [{ name: 'This year', color: C.blue, values: cur }, { name: 'Last year', color: GRAY, values: prev }],
+        tipExtra: i => '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">' + n0(curU[i]) + ' units this year</div>' };
+    } else {
+      const M = p.M;
+      title.textContent = 'Sales by day · ' + dShort(p.curDays[0]) + ' – ' + dShort(p.curDays[p.curDays.length - 1]) + ' vs. ' + dShort(p.prevDays[0]) + ' – ' + dShort(p.prevDays[p.prevDays.length - 1]);
+      o = { labels: p.curDays, fmtLabel: dShort, aria: 'Sales by day, this period vs previous',
+        series: [{ name: 'This period', color: C.blue, values: p.curDays.map(d => M[d] ? M[d].sales : null) }, { name: 'Previous', color: GRAY, values: p.curDays.map((d, i) => p.prevDays[i] && M[p.prevDays[i]] ? M[p.prevDays[i]].sales : null) }],
+        tipExtra: i => { const a = M[p.curDays[i]], b = p.prevDays[i]; return '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">' + (a ? n0(a.units) + ' units' : '') + (b ? ' · previous: ' + dShort(b) : '') + (a && a.est ? '<br>incl. ' + money(a.est) + ' pending, at list price' : '') + '</div>'; } };
     }
-    const M = p.M, cum = ds => { let t = 0; return ds.map(d => M[d] ? (t += M[d].sales) : null); };
-    const c = cum(p.curDays), pv = cum(p.prevDays), n = Math.max(c.length, pv.length);
-    while (pv.length < n) pv.push(pv.length ? pv[pv.length - 1] : null);
-    title.textContent = 'Running total · ' + dShort(p.curDays[0]) + ' – ' + dShort(p.curDays[p.curDays.length - 1]) + ' vs. ' + dShort(p.prevDays[0]) + ' – ' + dShort(p.prevDays[p.prevDays.length - 1]);
-    const draw = () => lineChart(box, { labels: p.curDays, fmtLabel: dShort, fmt: money, fmtAxis: money, aria: 'Running total of gross sales, this period vs previous',
-      series: [{ name: 'This period', color: C.blue, values: c }, { name: 'Previous', color: GRAY, values: pv.slice(0, n) }],
-      tipExtra: i => { const a = M[p.curDays[i]], b = M[p.prevDays[i]]; return '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">That day: ' + (a ? money(a.sales) + ' · ' + n0(a.units) + ' units' : '—') + (b ? '<br>' + dShort(p.prevDays[i]) + ': ' + money(b.sales) : '') + (a && a.est ? '<br>incl. ' + money(a.est) + ' pending, at list price' : '') + '</div>'; } });
+    o.fmt = money; o.fmtAxis = money;
+    const draw = () => columnChart(box, o);
     draw(); box._draw = draw;
   }
   function salesPull(mode) {
