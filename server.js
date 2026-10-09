@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'dash-v2-1032';
+const BUILD_ID = 'dash-v2-sales-1033';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1181,6 +1181,12 @@ async function initDb() {
       );
     `);
     console.log('[Inventory] Hazmat table ready.');
+    // Gross sales per day (Pacific, like Amazon's app): ordered product sales
+    // from the orders report, pending orders included at their price (est =
+    // the part priced from the ASIN's average because Amazon hadn't yet).
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_sales_daily (
+      day DATE PRIMARY KEY, units INTEGER NOT NULL DEFAULT 0, sales NUMERIC NOT NULL DEFAULT 0,
+      est NUMERIC NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT now())`);
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
@@ -6076,6 +6082,10 @@ app.get('/api/dash2', ownerAuth, async (req, res) => {
     FROM inv_settlements WHERE total_amount IS NOT NULL ORDER BY COALESCE(deposit_date, end_date) DESC NULLS LAST LIMIT 12`,
     r => r);
   out.deposits = (out.deposits || []).reverse();
+  await q('salesDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, units, sales::float AS sales, est::float AS est
+    FROM inv_sales_daily WHERE day >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int - 1, 1, 1) ORDER BY day`);
+  try { const t = await pool.query("SELECT data FROM inv_cache WHERE cache_key='sales_today'"); out.salesToday = t.rows.length ? t.rows[0].data : null; } catch (e) { out.salesToday = null; }
+  out.salesJob = salesJob;
   // Top sellers: the last velocity pull (units over its window)
   try {
     const v = await pool.query("SELECT data, updated_at FROM inv_cache WHERE cache_key='velocity'");
@@ -7804,11 +7814,59 @@ setInterval(async () => {
   } catch (e) { console.error('[Sync] daily check failed:', e.message); }
 }, 60 * 1000).unref();
 
+// ---------- Daily gross sales (Dashboard → New look) ----------
+// Pacific days, like Amazon's app. Every day in the range is written (zeros
+// too), so a gap in the table always means "not pulled", never "no sales".
+const salesDay = ms => velocity.zoneParts(ms, 'America/Los_Angeles').day;
+async function saveSalesDays(recs, fromDay) {
+  const today = salesDay(Date.now());
+  const days = velocity.salesByDay(recs, fromDay, today);
+  const ks = Object.keys(days);
+  if (ks.length) await pool.query(`INSERT INTO inv_sales_daily(day, units, sales, est, updated_at)
+      SELECT * , now() FROM unnest($1::date[], $2::int[], $3::numeric[], $4::numeric[])
+      ON CONFLICT (day) DO UPDATE SET units=EXCLUDED.units, sales=EXCLUDED.sales, est=EXCLUDED.est, updated_at=now()`,
+    [ks, ks.map(k => days[k].units), ks.map(k => days[k].sales), ks.map(k => days[k].est)]);
+  // today vs yesterday, hour by hour (for "Today so far vs. yesterday by now")
+  const yday = salesDay(Date.now() - 86400000);
+  await saveCache('sales_today', { asOf: new Date().toISOString(), today, yday,
+    nowHour: velocity.zoneParts(Date.now(), 'America/Los_Angeles').hour,
+    todayHourly: velocity.salesByHour(recs, today), ydayHourly: velocity.salesByHour(recs, yday) });
+  return ks.length;
+}
+// Background pull: 'quick' = the last 3 days (a minute or two), 'full' = from
+// 1 January last year, so YTD can be compared with the same stretch of last
+// year (several minutes: Amazon paces report requests).
+let salesJob = { running: false };
+app.post('/api/sales/history', ownerAuth, async (req, res) => {
+  if (salesJob.running) return res.json({ ok: true, already: true, job: salesJob });
+  const full = req.body && req.body.mode === 'full';
+  const y = new Date().getUTCFullYear();
+  const fromDay = full ? (y - 1) + '-01-01' : salesDay(Date.now() - 2 * 86400000);
+  const fromMs = full ? Date.parse(fromDay + 'T00:00:00-08:00') : Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
+  salesJob = { running: true, mode: full ? 'full' : 'quick', progress: 'asking Amazon…', startedAt: new Date().toISOString() };
+  res.json({ ok: true });
+  (async () => {
+    try {
+      const r = await getOrderRecords(fromMs, p => { salesJob.progress = p; });
+      // Save only the days after the last window Amazon couldn't build.
+      let from = fromDay;
+      for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
+      const n = await saveSalesDays(r.records, from);
+      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from,
+        note: r.failed.length ? r.failed.length + ' month(s) Amazon couldn’t build (' + r.failed[0][2] + '); saved from ' + from : null, at: new Date().toISOString() };
+      console.log(`[Sales] ${salesJob.mode} pull: ${n} days saved from ${from}.`);
+    } catch (e) { salesJob = { running: false, error: e.message, at: new Date().toISOString() }; console.error('[Sales] pull failed:', e.message); }
+  })();
+});
+app.get('/api/sales/history/status', ownerAuth, (req, res) => res.json(salesJob));
+
 // Sales velocity (OWNER only) — units sold per SKU + days of stock left.
 // Also refreshed by the morning sync, so the Smart Scout attack list and the
 // forecast never sit on an old (or failed) pull.
 async function refreshVelocity(days) {
   const sales = await getSalesVelocity(days);
+  // The same pull keeps daily gross sales current (Dashboard → New look).
+  try { if (sales.records) await saveSalesDays(sales.records, salesDay(sales.fromMs + 86400000)); } catch (e) { console.error('[Sales] daily save failed:', e.message); }
   // Every catalog product, stock row or not (a listing with nothing on our
   // shelf still sells), counted by ASIN across all our SKUs.
   const ours = await pool.query('SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0)::int AS onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');

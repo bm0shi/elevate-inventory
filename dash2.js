@@ -104,7 +104,7 @@
   .d2-rows{display:flex;flex-direction:column}
   .d2-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 2px;border-top:1px solid #f0f3f6;font-size:13px}
   .d2-row:first-child{border-top:0}
-  .d2-row a{color:${C.ink};text-decoration:none;font-weight:650}.d2-row a:hover{color:${C.brand};text-decoration:underline}
+  .d2-row a,.d2-ev a,.d2-top a{color:${C.ink}!important;text-decoration:none!important;border-bottom:0!important;font-weight:650}.d2-row a:hover{color:${C.brand};text-decoration:underline}
   .d2-row .n{font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
   .d2-tl{position:relative;padding-left:18px}
   .d2-tl::before{content:"";position:absolute;left:5px;top:6px;bottom:6px;width:2px;background:#eef2f5;border-radius:2px}
@@ -116,6 +116,20 @@
   .d2-empty .ill svg{width:30px;height:30px;color:#7d97a3}
   .d2-empty b{font-size:14px}.d2-empty span{font-size:12.5px;color:${C.ink2};max-width:340px}
   .d2-empty button{margin-top:6px}
+  .d2-periods{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:4px 0 16px}
+  .d2-per{all:unset;box-sizing:border-box;cursor:pointer;display:block;border:1px solid #e6ecf0;border-radius:14px;padding:12px 14px;background:#fff;transition:border-color .2s,box-shadow .2s,transform .2s;min-width:0}
+  .d2-per:hover{border-color:#c6d4dc;transform:translateY(-1px)}
+  .d2-per.on{border-color:${C.brand};background:linear-gradient(180deg,#f2f9fa,#fff);box-shadow:0 8px 20px -14px rgba(13,68,80,.6)}
+  .d2-per .l{font-size:12px;font-weight:750;color:${C.ink2};white-space:nowrap}
+  .d2-per .v{font-size:24px;font-weight:850;letter-spacing:-.5px;margin-top:4px;white-space:nowrap}
+  .d2-per .p{font-size:11px;color:${C.muted};margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .d2-delta{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;font-weight:800;border-radius:999px;padding:2px 8px;margin-top:6px;white-space:nowrap}
+  .d2-delta.up{background:#e9f7ec;color:#006300}.d2-delta.down{background:#fdecec;color:#b42d2d}.d2-delta.flat{background:#f0f3f6;color:${C.ink2}}
+  .d2-note{font-size:12px;color:${C.ink2};background:#f6f9fb;border:1px dashed #d5e0e6;border-radius:12px;padding:9px 12px;margin:-4px 0 14px;display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .d2-tile[data-goto]{cursor:pointer;transition:transform .2s,box-shadow .2s,border-color .2s}
+  .d2-tile[data-goto]:hover{transform:translateY(-2px);border-color:#c6d4dc;box-shadow:0 1px 2px rgba(16,24,40,.04),0 18px 36px -18px rgba(16,24,40,.28)}
+  .d2-tile .go{font-size:11.5px;font-weight:750;color:${C.brand};margin-top:8px;opacity:.0;transform:translateX(-4px);transition:opacity .2s,transform .2s}
+  .d2-tile[data-goto]:hover .go{opacity:1;transform:none}
   .d2-sk{background:linear-gradient(90deg,#eef2f5 25%,#f8fafb 37%,#eef2f5 63%);background-size:400% 100%;animation:d2sh 1.4s ease infinite;border-radius:10px}
   @keyframes d2sh{0%{background-position:100% 50%}100%{background-position:0 50%}}
   @keyframes d2in{to{opacity:1;transform:none}}
@@ -135,7 +149,8 @@
     .d2.collapsed .d2-lbl{opacity:1;transform:none}
     .d2-foot{border:0;padding:0;flex-direction:row}
   }
-  @media (max-width:760px){.s6,.s3{grid-column:span 12}.d2-legend{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-hval{font-size:42px}.d2-tiles{grid-template-columns:1fr 1fr;gap:12px}}
+  @media (max-width:1180px){.d2-periods{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  @media (max-width:760px){.d2-periods{grid-template-columns:repeat(2,minmax(0,1fr))}.s6,.s3{grid-column:span 12}.d2-legend{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-hval{font-size:42px}.d2-tiles{grid-template-columns:1fr 1fr;gap:12px}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
   `;
   function injectCss() { if (document.getElementById('d2css')) return; const s = document.createElement('style'); s.id = 'd2css'; s.textContent = CSS; document.head.appendChild(s); }
@@ -196,7 +211,7 @@
   // on the first series only, crosshair + tooltip.
   function lineChart(box, o) {
     const W = Math.max(260, box.clientWidth), H = o.h || 230, L = 44, R = 16, T = 10, B = 26;
-    const n = o.labels.length, all = o.series.flatMap(s => s.values), max = Math.max(1, ...all);
+    const n = o.labels.length, all = o.series.flatMap(s => s.values).filter(v => v != null), max = Math.max(1, ...all);
     const ticks = niceTicks(max, 4), top = ticks[ticks.length - 1];
     const x = i => L + (n <= 1 ? (W - L - R) / 2 : i * (W - L - R) / (n - 1)), y = v => T + (H - T - B) * (1 - v / top);
     let g = '';
@@ -205,10 +220,10 @@
     o.labels.forEach((lb, i) => { if ((i % every === 0 && n - 1 - i >= every * 0.75) || i === n - 1) g += '<text x="' + x(i) + '" y="' + (H - 6) + '" text-anchor="' + (i === 0 ? 'start' : i === n - 1 ? 'end' : 'middle') + '" font-size="11" fill="' + C.muted + '">' + E(o.fmtLabel ? o.fmtLabel(lb) : lb) + '</text>'; });
     let paths = '';
     o.series.forEach((s, si) => {
-      const pts = s.values.map((v, i) => [x(i), y(v)]);
+      const pts = s.values.map((v, i) => v == null ? null : [x(i), y(v)]).filter(Boolean);
       const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
       if (si === 0 && o.area !== false && pts.length > 1) paths += '<path class="d2-area" d="' + d + ' L' + pts[pts.length - 1][0] + ' ' + y(0) + ' L' + pts[0][0] + ' ' + y(0) + 'Z" fill="' + s.color + '" fill-opacity=".10"/>';
-      paths += '<path class="d2-line ' + (REDUCED ? '' : 'd2-draw') + '" data-s="' + si + '" d="' + d + '" stroke="' + s.color + '" style="--d:' + (150 + si * 180) + 'ms"/>';
+      paths += '<path class="d2-line ' + (REDUCED ? '' : 'd2-draw') + '" data-s="' + si + '" d="' + d + '" stroke="' + s.color + '" style="--d:' + (150 + si * 180) + 'ms' + (s.width ? ';stroke-width:' + s.width : '') + '"/>';
       const last = pts[pts.length - 1];
       if (last) paths += '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="4.5" fill="' + s.color + '" stroke="#fff" stroke-width="2" class="d2-area"/>';
     });
@@ -222,9 +237,9 @@
       const r = sv.getBoundingClientRect(), mx = (ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left;
       const i = Math.max(0, Math.min(n - 1, Math.round((mx - L) / ((W - L - R) / Math.max(1, n - 1)))));
       xh.setAttribute('x1', x(i)); xh.setAttribute('x2', x(i)); xh.setAttribute('opacity', 1);
-      o.series.forEach((s, si) => { const c = sv.querySelector('.hd' + si); c.setAttribute('cx', x(i)); c.setAttribute('cy', y(s.values[i])); c.setAttribute('opacity', 1); });
-      const cr = card.getBoundingClientRect();
-      tipAt(card, '<div style="color:#9fb3bd;font-size:11px;margin-bottom:3px">' + E(o.fmtLabel ? o.fmtLabel(o.labels[i]) : o.labels[i]) + '</div>' + o.series.map(s => tipRow(s.color, s.name, (o.fmt || n0)(s.values[i]))).join(''), r.left - cr.left + x(i), r.top - cr.top + Math.min(...o.series.map(s => y(s.values[i]))));
+      o.series.forEach((s, si) => { const c = sv.querySelector('.hd' + si), v = s.values[i]; if (v == null) { c.setAttribute('opacity', 0); return; } c.setAttribute('cx', x(i)); c.setAttribute('cy', y(v)); c.setAttribute('opacity', 1); });
+      const cr = card.getBoundingClientRect(), ys = o.series.map(s => s.values[i]).filter(v => v != null).map(y);
+      tipAt(card, '<div style="color:#9fb3bd;font-size:11px;margin-bottom:3px">' + E(o.fmtLabel ? o.fmtLabel(o.labels[i]) : o.labels[i]) + '</div>' + o.series.map(s => tipRow(s.color, s.name, s.values[i] == null ? '—' : (o.fmt || n0)(s.values[i]))).join('') + (o.tipExtra ? o.tipExtra(i) : ''), r.left - cr.left + x(i), r.top - cr.top + (ys.length ? Math.min(...ys) : H / 2));
     };
     const out = () => { xh.setAttribute('opacity', 0); o.series.forEach((s, si) => sv.querySelector('.hd' + si).setAttribute('opacity', 0)); tipOff(card); };
     hit.addEventListener('mousemove', move); hit.addEventListener('touchstart', move, { passive: true }); hit.addEventListener('mouseleave', out);
@@ -275,7 +290,7 @@
   function hBars(box, items, o) {
     const max = Math.max(1, ...items.map(i => i.value));
     box.innerHTML = '<div style="display:flex;flex-direction:column;gap:11px">' + items.map((it, i) =>
-      '<div><div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;margin-bottom:5px"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650" title="' + E(it.title || it.label) + '">' + E(it.label) + '</span><b style="font-variant-numeric:tabular-nums">' + E((o.fmt || n0)(it.value)) + '</b></div>' +
+      '<div><div style="display:flex;justify-content:space-between;gap:10px;font-size:12.5px;margin-bottom:5px"><span style="min-width:0;font-weight:650;line-height:1.5' + (it.html ? '' : ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap') + '" title="' + E(it.title || it.label) + '">' + (it.html || E(it.label)) + '</span><b style="font-variant-numeric:tabular-nums">' + E((o.fmt || n0)(it.value)) + '</b></div>' +
       '<svg width="100%" height="8" preserveAspectRatio="none" viewBox="0 0 100 8"><rect x="0" y="0" width="100" height="8" rx="4" fill="#eef3f6"/><rect class="d2-hb" x="0" y="0" width="' + (100 * it.value / max).toFixed(2) + '" height="8" rx="4" fill="' + C.blue + '" style="--d:' + (i * 70) + 'ms"/></svg></div>').join('') + '</div>';
   }
   function sparkline(box, values, color) {
@@ -326,11 +341,16 @@
       // overview: hero
       '<section id="d2-overview" class="d2-card d2-hero s12" style="--d:40ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
       '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
+      // gross sales
+      '<section id="d2-salescard" class="d2-card s12" style="--d:90ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included</div></div>' +
+      '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update</button></div></div>' +
+      '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
+      '<div id="d2snote"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
       // tiles
       '<div class="d2-tiles" id="d2tiles">' + [0, 1, 2, 3].map(i => '<div class="d2-card d2-tile" style="--d:' + (120 + i * 60) + 'ms">' + sk(14, '55%') + sk(30, '40%', 12) + sk(11, '70%', 8) + '</div>').join('') + '</div>' +
       // inventory
       '<section id="d2-inventory" class="d2-card s8" style="--d:220ms"><div class="d2-ch"><div><h3>Units at Amazon</h3><div class="d2-sub">Daily snapshot from each FBA Inventory pull · last 90 days</div></div><div class="d2-keys" id="d2fbakeys"></div></div><div class="d2-chart" id="d2fba">' + skChart(230) + '</div></section>' +
-      '<section class="d2-card s4" style="--d:280ms"><div class="d2-ch"><div><h3>Top sellers</h3><div class="d2-sub" id="d2topsub">Units sold</div></div></div><div id="d2top">' + [0, 1, 2, 3, 4, 5].map(() => sk(12, '70%', 6) + sk(8, '100%', 7)).join('') + '</div></section>' +
+      '<section class="d2-card s4" style="--d:280ms"><div class="d2-ch"><div><h3>Top sellers</h3><div class="d2-sub" id="d2topsub">Units sold</div></div></div><div id="d2top" class="d2-top">' + [0, 1, 2, 3, 4, 5].map(() => sk(12, '70%', 6) + sk(8, '100%', 7)).join('') + '</div></section>' +
       // sales
       '<section id="d2-sales" class="d2-card s6" style="--d:320ms"><div class="d2-ch"><div><h3>Units sold per week</h3><div class="d2-sub">From Amazon settlements · last 12 weeks</div></div><div class="d2-meta" id="d2wkmeta"></div></div><div class="d2-chart" id="d2wk">' + skChart(220) + '</div></section>' +
       '<section class="d2-card s6" style="--d:360ms"><div class="d2-ch"><div><h3>Monthly P&amp;L</h3><div class="d2-sub">Net sales vs. net profit · last 6 months</div></div><div class="d2-keys" id="d2pnlkeys"></div></div><div class="d2-chart" id="d2pnl">' + skChart(220) + '</div></section>' +
@@ -363,7 +383,8 @@
   }
   function paintTiles(d) {
     const box = document.getElementById('d2tiles'); if (!box) return;
-    const tile = (i, label, icon, tone, value, foot) => '<div class="d2-card d2-tile" style="--d:' + (120 + i * 60) + 'ms"><div class="t">' + label + '<span class="d2-ico" style="background:' + tone[0] + ';color:' + tone[1] + '">' + svg(icon) + '</span></div><div class="v" data-c="' + value + '">0</div><div class="f">' + foot + '</div></div>';
+    const GO = ['checkin', 'transit', 'onhand-low', 'onhand-out'], GOTXT = ['Open Order Check-In →', 'Open In Transit →', 'Show low stock in On Hand →', 'Show out of stock in On Hand →'];
+    const tile = (i, label, icon, tone, value, foot) => '<div class="d2-card d2-tile" role="button" tabindex="0" data-goto="' + GO[i] + '" style="--d:' + (120 + i * 60) + 'ms"><div class="t">' + label + '<span class="d2-ico" style="background:' + tone[0] + ';color:' + tone[1] + '">' + svg(icon) + '</span></div><div class="v" data-c="' + value + '">0</div><div class="f">' + foot + '</div><div class="go">' + GOTXT[i] + '</div></div>';
     if (!d) { box.innerHTML = '<div class="d2-card s12" style="grid-column:1/-1">' + empty('alert', 'Counts didn’t load', 'The warehouse summary couldn’t be reached. Refresh to try again.', null) + '</div>'; return; }
     const okT = ['#e9f7ec', '#0b7a0b'], warnT = ['#fff5e0', '#a86b00'], badT = ['#fdecec', '#b42d2d'], infoT = ['#e8f1fc', '#1f5fae'];
     box.innerHTML =
@@ -393,7 +414,7 @@
     const items = (x && x.topSellers) || [];
     if (!items.length) { box.innerHTML = empty('chart', 'No sales pulled yet', 'Load Velocity once and your best sellers line up here, by units sold.', { go: 'velocity', label: 'Open Velocity' }); return; }
     document.getElementById('d2topsub').textContent = 'Units sold' + (x.topSellersDays ? ' · last ' + x.topSellersDays + ' days' : '');
-    hBars(box, items.map(i => ({ label: shortName(i.name || i.asin), title: i.name, value: i.sold })), {});
+    hBars(box, items.map(i => ({ label: shortName(i.name || i.asin), html: sized(i.asin, i.name), title: i.name, value: i.sold })), {});
   }
   function paintWeekly(x) {
     const box = document.getElementById('d2wk'); if (!box) return;
@@ -430,12 +451,15 @@
     const draw = () => columnChart(box, { labels: rows.map(r => r.date), fmtLabel: dShort, fmt: money, fmtAxis: money, aria: 'Amazon deposits', series: [{ name: 'Deposit', color: C.blue, values: rows.map(r => r.amount) }] });
     draw(); box._draw = draw;
   }
+  // Short name + size tag (the page's amzLinkSized): most products come in
+  // 4-5 sizes, so the size must show wherever a product is named (owner).
+  const sized = (asin, name) => (asin && typeof amzLinkSized === 'function') ? amzLinkSized(asin, name) : E(shortName(name || asin));
   function shortName(s) { s = String(s || '').trim(); if (!s) return 'Unnamed product'; const c = s.split(',')[0].trim(); return c.length >= 12 ? c : s; }
   function paintAlerts(d) {
     const box = document.getElementById('d2alerts'); if (!box) return;
     const low = (d && d.lowList) || [], under = (d && d.underStocked) || [];
     if (!low.length && !under.length) { box.innerHTML = empty('bell', 'All clear', 'No product is running low and no top seller is under-stocked. Nice.', null); return; }
-    const link = (a, n) => { n = n || a; return a ? '<a href="https://www.amazon.com/dp/' + encodeURIComponent(a) + '" target="_blank" rel="noopener" title="' + E(n) + '">' + E(shortName(n)) + '</a>' : E(shortName(n)); };
+    const link = (a, n) => sized(a, n || a);
     const badge = (bg, fg, t) => '<span class="d2-badge" style="background:' + bg + ';color:' + fg + '">' + t + '</span>';
     box.innerHTML = '<div class="d2-rows">' +
       under.slice(0, 5).map(x => '<div class="d2-row"><div style="min-width:0">' + link(x.asin, x.name) + '<div class="d2-sub">Top seller · ' + n0(x.sold) + ' sold' + (x.revenue ? ' · ' + money(x.revenue) : '') + '</div></div>' + badge(x.onhand <= 20 ? '#fdecec' : '#fff5e0', x.onhand <= 20 ? '#b42d2d' : '#a86b00', svg('alert', ' style="width:12px;height:12px"') + ' ' + n0(x.onhand) + ' left') + '</div>').join('') +
@@ -449,12 +473,134 @@
     const KIND = { in: ['Received', C.blue], checkin: ['Checked in at FBA', C.aqua], out: ['Shipped', C.orange], prep: ['Prepped', C.magenta], adjust: ['Count adjusted', C.muted], undo: ['Undone', C.muted] };
     const kind = a => KIND[a.direction] || ['Moved', C.muted];
     const ago = ts => { const s = (Date.now() - new Date(ts)) / 1000; return s < 3600 ? Math.max(1, Math.round(s / 60)) + 'm ago' : s < 86400 ? Math.round(s / 3600) + 'h ago' : new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }); };
-    box.innerHTML = '<div class="d2-tl">' + ev.slice(0, 8).map(a => { const k = kind(a); return '<div class="d2-ev" style="--c:' + k[1] + '"><span><b>' + E(k[0]) + '</b> · ' + n0(a.qty) + ' × ' + E(shortName(a.name || a.asin || '')) + '</span><span class="w">' + E(ago(a.ts)) + '</span></div>'; }).join('') + '</div>';
+    box.innerHTML = '<div class="d2-tl">' + ev.slice(0, 8).map(a => { const k = kind(a); return '<div class="d2-ev" style="--c:' + k[1] + '"><span><b>' + E(k[0]) + '</b> · ' + n0(a.qty) + ' × ' + sized(a.asin, a.name) + '</span><span class="w">' + E(ago(a.ts)) + '</span></div>'; }).join('') + '</div>';
+  }
+
+  // ---------- tiles → the screens behind them ----------
+  function goTo(where) {
+    const tabBtn = id => [...document.querySelectorAll('.tab')].find(t => (t.getAttribute('onclick') || '').indexOf("showTab('" + id + "'") >= 0);
+    const open = id => { const b = tabBtn(id); if (typeof showTab === 'function' && b) showTab(id, { currentTarget: b, target: b }); window.scrollTo({ top: 0, behavior: REDUCED ? 'auto' : 'smooth' }); };
+    if (where === 'checkin') open('reconcile');
+    else if (where === 'transit') { if (typeof showSubTab === 'function') showSubTab('transit'); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    else if (where === 'onhand-low' || where === 'onhand-out') {
+      const f = document.getElementById('filterOnhand'); if (f) f.value = where === 'onhand-out' ? 'outstock' : 'lowstock';
+      const q = document.getElementById('searchOnhand'); if (q) q.value = '';
+      open('onhand');
+    }
+  }
+
+  // ---------- gross sales ----------
+  const PT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const ptDay = ms => PT.format(new Date(ms));
+  const addD = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const span = (a, b) => { const o = []; for (let d = a; d <= b; d = addD(d, 1)) o.push(d); return o; };
+  const hourLbl = h => (h % 12 || 12) + (h < 12 ? 'a' : 'p');
+  function periods(x) {
+    const rows = (x && x.salesDaily) || [], M = {}; rows.forEach(r => M[r.day] = r);
+    const T = ptDay(Date.now()), Y = addD(T, -1), [ty, tm, td] = T.split('-').map(Number);
+    const mk = (k, label, cur, prev, curLbl, prevLbl) => {
+      const has = ds => ds.length && ds.every(d => M[d]);
+      const sum = (ds, f) => ds.reduce((t, d) => t + (M[d] ? M[d][f] : 0), 0);
+      return { k, label, curDays: cur, prevDays: prev, cur: has(cur) ? sum(cur, 'sales') : null, prev: has(prev) ? sum(prev, 'sales') : null,
+               units: has(cur) ? sum(cur, 'units') : null, est: has(cur) ? sum(cur, 'est') : 0, curLbl, prevLbl, M };
+    };
+    const out = [];
+    // Today so far vs. yesterday by the same hour (the hourly split from the last pull)
+    const st = x && x.salesToday, todayOk = st && st.today === T;
+    const h = todayOk ? st.nowHour : null;
+    const tCur = todayOk ? st.todayHourly.slice(0, h + 1).reduce((a, b) => a + b, 0) : null;
+    const tPrev = todayOk ? st.ydayHourly.slice(0, h + 1).reduce((a, b) => a + b, 0) : null;
+    out.push({ k: 'today', label: 'Today', cur: tCur, prev: tPrev, units: todayOk && M[T] ? M[T].units : null, est: todayOk && M[T] ? M[T].est : 0, hourly: todayOk ? st : null,
+               curLbl: 'so far', prevLbl: todayOk ? 'yesterday by ' + hourLbl((h + 1) % 24) : 'yesterday' });
+    out.push(mk('7', '7 days', span(addD(T, -7), Y), span(addD(T, -14), addD(T, -8)), 'through yesterday', 'the 7 days before'));
+    out.push(mk('30', '30 days', span(addD(T, -30), Y), span(addD(T, -60), addD(T, -31)), 'through yesterday', 'the 30 days before'));
+    const m1 = T.slice(0, 8) + '01', pm1 = addD(m1, -1).slice(0, 8) + '01', pmEnd = addD(m1, -1);
+    const pmSame = (pm1.slice(0, 8) + String(Math.min(td, +pmEnd.slice(8))).padStart(2, '0'));
+    out.push(mk('mtd', 'Month to date', span(m1, T), span(pm1, pmSame), 'through today', 'same days last month'));
+    const y1 = ty + '-01-01', py1 = (ty - 1) + '-01-01', pySame = (ty - 1) + '-' + T.slice(5, 7) + '-' + (T.slice(5) === '02-29' ? '28' : T.slice(8));
+    out.push(mk('ytd', 'Year to date', span(y1, T), span(py1, pySame), 'through today', 'same stretch last year'));
+    return { list: out, rows, M, T };
+  }
+  function deltaChip(cur, prev) {
+    if (cur == null || prev == null) return '<span class="d2-delta flat">no comparison yet</span>';
+    const d = cur - prev, pct = prev > 0 ? d / prev * 100 : null, up = d >= 0;
+    if (Math.abs(d) < 0.5) return '<span class="d2-delta flat">— even</span>';
+    return '<span class="d2-delta ' + (up ? 'up' : 'down') + '">' + (up ? '▲' : '▼') + ' ' + (pct != null ? Math.abs(pct).toFixed(1) + '% · ' : '') + (up ? '+' : '−') + money(Math.abs(d)).replace('−', '') + '</span>';
+  }
+  function paintSales(x, keepAnim) {
+    const per = document.getElementById('d2periods'); if (!per) return;
+    state.sales = x;
+    const P = periods(x), job = x && x.salesJob;
+    const asof = document.getElementById('d2sasof'), note = document.getElementById('d2snote');
+    if (job && job.running) { asof.textContent = job.progress || 'updating…'; document.getElementById('d2squick').disabled = true; }
+    else { const st = x && x.salesToday; asof.textContent = st && st.asOf ? 'as of ' + new Date(st.asOf).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
+    if (!P.rows.length) {
+      per.style.display = 'block';
+      per.innerHTML = empty('dollar', job && job.running ? 'Reading your orders from Amazon…' : 'Your sales history starts here',
+        job && job.running ? (job.progress || 'This takes a few minutes. It keeps going if you leave the page.') : 'One pull reads your orders back to January last year, so every period can be compared. It takes a few minutes and runs in the background.',
+        job && job.running ? null : { go: '', label: 'Pull sales history' });
+      const btn = per.querySelector('[data-go]'); if (btn) { btn.removeAttribute('data-go'); btn.dataset.act = 'sales-full'; }
+      document.getElementById('d2sales').innerHTML = ''; document.getElementById('d2stitle').textContent = ''; document.getElementById('d2skeys').innerHTML = '';
+      return;
+    }
+    per.style.display = '';
+    const sel = store.get('d2Per') || '30';
+    per.innerHTML = P.list.map(p => '<button class="d2-per' + (p.k === sel ? ' on' : '') + '" data-per="' + p.k + '"><div class="l">' + p.label + ' <span style="font-weight:600;color:' + C.muted + '">· ' + E(p.curLbl) + '</span></div>' +
+      '<div class="v">' + (p.cur == null ? '—' : '$' + n0(p.cur)) + '</div>' + deltaChip(p.cur, p.prev) +
+      '<div class="p" title="' + (p.units != null ? n0(p.units) + ' units' : '') + '">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div></button>').join('');
+    // last year's stretch missing → offer the full pull
+    const missingPrev = P.list.some(p => p.k !== 'today' && p.prev == null);
+    note.innerHTML = missingPrev && !(job && job.running) ? '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>' : '';
+    const p = P.list.find(z => z.k === sel) || P.list[2];
+    drawSales(p, keepAnim);
+    // keep it current: a quick pull when the last one is over an hour old
+    const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
+    if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('quick'); }
+  }
+  function drawSales(p, keepAnim) {
+    const box = document.getElementById('d2sales'), title = document.getElementById('d2stitle'), keys = document.getElementById('d2skeys');
+    const GRAY = '#a3aeb8';
+    keys.innerHTML = '<span><i style="background:' + C.blue + '"></i>' + (p.k === 'today' ? 'Today' : 'This period') + '</span><span><i style="background:' + GRAY + '"></i>' + (p.k === 'today' ? 'Yesterday' : 'Previous period') + '</span>';
+    if (p.k === 'today') {
+      if (!p.hourly) { title.textContent = ''; box.innerHTML = empty('clock', 'Today’s numbers are on the way', 'Press Update to read today’s orders from Amazon (about a minute).', null); return; }
+      const cum = a => { let t = 0; return a.map(v => (t += v)); };
+      const tc = cum(p.hourly.todayHourly).map((v, i) => i <= p.hourly.nowHour ? v : null), yc = cum(p.hourly.ydayHourly);
+      title.textContent = 'Running total by hour · today vs. yesterday';
+      const draw = () => lineChart(box, { labels: [...Array(24).keys()], fmtLabel: hourLbl, fmt: money, fmtAxis: money, aria: 'Sales by hour, today vs yesterday',
+        series: [{ name: 'Today', color: C.blue, values: tc }, { name: 'Yesterday', color: GRAY, values: yc }],
+        tipExtra: i => '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">That hour: ' + (i <= p.hourly.nowHour ? money(p.hourly.todayHourly[i]) : '—') + ' vs ' + money(p.hourly.ydayHourly[i]) + '</div>' });
+      draw(); box._draw = draw; return;
+    }
+    const M = p.M, cum = ds => { let t = 0; return ds.map(d => M[d] ? (t += M[d].sales) : null); };
+    const c = cum(p.curDays), pv = cum(p.prevDays), n = Math.max(c.length, pv.length);
+    while (pv.length < n) pv.push(pv.length ? pv[pv.length - 1] : null);
+    title.textContent = 'Running total · ' + dShort(p.curDays[0]) + ' – ' + dShort(p.curDays[p.curDays.length - 1]) + ' vs. ' + dShort(p.prevDays[0]) + ' – ' + dShort(p.prevDays[p.prevDays.length - 1]);
+    const draw = () => lineChart(box, { labels: p.curDays, fmtLabel: dShort, fmt: money, fmtAxis: money, aria: 'Running total of gross sales, this period vs previous',
+      series: [{ name: 'This period', color: C.blue, values: c }, { name: 'Previous', color: GRAY, values: pv.slice(0, n) }],
+      tipExtra: i => { const a = M[p.curDays[i]], b = M[p.prevDays[i]]; return '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">That day: ' + (a ? money(a.sales) + ' · ' + n0(a.units) + ' units' : '—') + (b ? '<br>' + dShort(p.prevDays[i]) + ': ' + money(b.sales) : '') + (a && a.est ? '<br>incl. ' + money(a.est) + ' pending, at list price' : '') + '</div>'; } });
+    draw(); box._draw = draw;
+  }
+  function salesPull(mode) {
+    const btn = document.getElementById('d2squick'); if (btn) btn.disabled = true;
+    const asof = document.getElementById('d2sasof'); if (asof) asof.textContent = mode === 'full' ? 'reading your order history…' : 'updating…';
+    ownerApi('/api/sales/history', { method: 'POST', body: JSON.stringify({ mode }) }).then(() => {
+      const poll = () => ownerApi('/api/sales/history/status').then(j => {
+        if (!document.getElementById('d2sasof')) return;
+        if (j && j.running) { document.getElementById('d2sasof').textContent = j.progress || 'updating…'; if (mode === 'full' && state.sales && !(state.sales.salesDaily || []).length) paintSales(Object.assign({}, state.sales, { salesJob: j })); setTimeout(poll, 4000); return; }
+        if (btn) btn.disabled = false;
+        if (j && j.error) { document.getElementById('d2sasof').textContent = 'Update failed: ' + j.error; return; }
+        ownerApi('/api/dash2').then(x => paintSales(x));
+      }).catch(() => setTimeout(poll, 6000));
+      setTimeout(poll, 3000);
+    }).catch(() => { if (btn) btn.disabled = false; if (asof) asof.textContent = 'Update failed — try again'; });
   }
 
   function wire(root) {
     root.addEventListener('click', e => {
+      const t = e.target.closest('[data-goto]'); if (t && !e.target.closest('a')) { goTo(t.dataset.goto); return; }
       const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.per) { store.set('d2Per', b.dataset.per); if (state && state.sales) paintSales(state.sales, true); return; }
+      if (b.dataset.act === 'sales-quick' || b.dataset.act === 'sales-full') { salesPull(b.dataset.act === 'sales-full' ? 'full' : 'quick'); return; }
       if (b.dataset.sec) {
         root.querySelectorAll('.d2-nav button').forEach(x => x.classList.toggle('on', x === b));
         const t = document.getElementById('d2-' + b.dataset.sec); if (t) t.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'start' });
@@ -465,6 +611,7 @@
       else if (b.dataset.act === 'refresh') { window._fbaData = null; render(state.el); }
       else if (b.dataset.go && typeof showSubTab === 'function') showSubTab(b.dataset.go);
     });
+    root.addEventListener('keydown', e => { const t = e.target.closest && e.target.closest('[data-goto]'); if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goTo(t.dataset.goto); } });
     // scroll-spy: highlight the section in view
     if ('IntersectionObserver' in window) {
       const io = new IntersectionObserver(es => es.forEach(en => { if (en.isIntersecting) { const id = en.target.id.replace('d2-', ''); root.querySelectorAll('.d2-nav button').forEach(x => x.classList.toggle('on', x.dataset.sec === id)); } }), { rootMargin: '-30% 0px -60% 0px' });
@@ -490,8 +637,8 @@
     const stamp = () => { const u = document.getElementById('d2upd'); if (u) u.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
     inventory().then(paintInventory).catch(() => paintInventory(null));
     api('/api/dashboard').then(d => { paintTiles(d); paintAlerts(d); paintActivity(d); stamp(); }).catch(() => { paintTiles(null); paintAlerts(null); paintActivity(null); });
-    ownerApi('/api/dash2').then(x => { if (x && x.fbaDaily && x.fbaDaily.length > 1) state.spark = x.fbaDaily.map(r => r.onhand + r.inbound); paintFbaTrend(x); paintTop(x); paintWeekly(x); paintFlow(x); paintDeposits(x); })
-      .catch(() => { paintFbaTrend(null); paintTop(null); paintWeekly(null); paintFlow(null); paintDeposits(null); });
+    ownerApi('/api/dash2').then(x => { if (x && x.fbaDaily && x.fbaDaily.length > 1) state.spark = x.fbaDaily.map(r => r.onhand + r.inbound); paintSales(x); paintFbaTrend(x); paintTop(x); paintWeekly(x); paintFlow(x); paintDeposits(x); })
+      .catch(() => { paintSales(null); paintFbaTrend(null); paintTop(null); paintWeekly(null); paintFlow(null); paintDeposits(null); });
     ownerApi('/api/finance/pnl?months=6').then(paintPnl).catch(() => paintPnl(null));
   }
 

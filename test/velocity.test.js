@@ -47,3 +47,22 @@ test('pieces add up; a line in both pieces counts once; an empty (cancelled) pie
   assert.strictEqual(s.units, 7);
   assert.strictEqual(s.lines, 3);
 });
+
+const { orderRecords, salesByDay, salesByHour } = require('../lib/velocity');
+test('gross sales: cancelled out, pending priced at the ASIN average, Pacific days, zero days kept', () => {
+  const H = 'amazon-order-id\tpurchase-date\torder-status\tsku\tasin\titem-status\tquantity\titem-price';
+  const body = [H,
+    'A1\t2026-10-08T15:00:00+00:00\tShipped\tS1\tB1\tShipped\t2\t60.00',      // Oct 8 PT
+    'A2\t2026-10-09T06:30:00+00:00\tShipped\tS1\tB1\tShipped\t1\t30.00',      // Oct 8 23:30 PT
+    'A3\t2026-10-09T18:00:00+00:00\tPending\tS1\tB1\tUnshipped\t1\t',         // Oct 9, pending, no price -> 30 est
+    'A4\t2026-10-09T18:00:00+00:00\tCancelled\tS1\tB1\tCancelled\t5\t150.00', // cancelled: out
+    'A1\t2026-10-08T15:00:00+00:00\tShipped\tS1\tB1\tShipped\t2\t60.00'       // repeat in a 2nd window: once
+  ].join('\n');
+  const recs = orderRecords(body, null);
+  assert.strictEqual(recs.length, 3);
+  const d = salesByDay(recs, '2026-10-07', '2026-10-09');
+  assert.deepStrictEqual(d['2026-10-07'], { units: 0, sales: 0, est: 0 });
+  assert.deepStrictEqual(d['2026-10-08'], { units: 3, sales: 90, est: 0 });
+  assert.deepStrictEqual(d['2026-10-09'], { units: 1, sales: 30, est: 30 });
+  assert.strictEqual(salesByHour(recs, '2026-10-08')[23], 30);
+});
