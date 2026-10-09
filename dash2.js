@@ -338,14 +338,15 @@
       '<main class="d2-main">' +
       '<div class="d2-head"><div><h2>' + hello + '</h2><p>' + E(now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })) + ' · everything from the warehouse floor to Amazon, in one place</p></div>' +
       '<div style="display:flex;gap:8px;align-items:center"><span class="d2-live"><span class="d2-dot"></span><span id="d2upd">Live</span></span><button class="d2-btn" data-act="refresh">' + svg('refresh', ' style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"') + 'Refresh</button></div></div>' +
-      // overview: hero
-      '<section id="d2-overview" class="d2-card d2-hero s12" style="--d:40ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
-      '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
+      // gross sales first (owner), then what the inventory is worth
       // gross sales
-      '<section id="d2-salescard" class="d2-card s12" style="--d:90ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included</div></div>' +
+      '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included</div></div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update</button></div></div>' +
       '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
       '<div id="d2snote"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
+      // overview: hero
+      '<section id="d2-value" class="d2-card d2-hero s12" style="--d:90ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
+      '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
       // tiles
       '<div class="d2-tiles" id="d2tiles">' + [0, 1, 2, 3].map(i => '<div class="d2-card d2-tile" style="--d:' + (120 + i * 60) + 'ms">' + sk(14, '55%') + sk(30, '40%', 12) + sk(11, '70%', 8) + '</div>').join('') + '</div>' +
       // inventory
@@ -635,16 +636,18 @@
     const hd = document.querySelector('header'); el.querySelector('#d2root').style.setProperty('--d2top', ((hd && getComputedStyle(hd).position === 'sticky') ? hd.offsetHeight + 12 : 12) + 'px');
     const root = el.querySelector('#d2root'); wire(root);
     const stamp = () => { const u = document.getElementById('d2upd'); if (u) u.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
+    // An error reply ({ok:false,error}) must read as "didn't load", not as zeros.
+    const ok = d => { if (!d || d.ok === false || d.error) throw new Error((d && d.error) || 'no data'); return d; };
     inventory().then(paintInventory).catch(() => paintInventory(null));
-    api('/api/dashboard').then(d => { paintTiles(d); paintAlerts(d); paintActivity(d); stamp(); }).catch(() => { paintTiles(null); paintAlerts(null); paintActivity(null); });
-    ownerApi('/api/dash2').then(x => { if (x && x.fbaDaily && x.fbaDaily.length > 1) state.spark = x.fbaDaily.map(r => r.onhand + r.inbound); paintSales(x); paintFbaTrend(x); paintTop(x); paintWeekly(x); paintFlow(x); paintDeposits(x); })
+    api('/api/dashboard').then(ok).then(d => { paintTiles(d); paintAlerts(d); paintActivity(d); stamp(); }).catch(() => { paintTiles(null); paintAlerts(null); paintActivity(null); });
+    ownerApi('/api/dash2').then(ok).then(x => { if (x && x.fbaDaily && x.fbaDaily.length > 1) state.spark = x.fbaDaily.map(r => r.onhand + r.inbound); paintSales(x); paintFbaTrend(x); paintTop(x); paintWeekly(x); paintFlow(x); paintDeposits(x); })
       .catch(() => { paintSales(null); paintFbaTrend(null); paintTop(null); paintWeekly(null); paintFlow(null); paintDeposits(null); });
-    ownerApi('/api/finance/pnl?months=6').then(paintPnl).catch(() => paintPnl(null));
+    ownerApi('/api/finance/pnl?months=6').then(ok).then(paintPnl).catch(() => paintPnl(null));
   }
 
   window.Dash2 = {
     render,
-    isOn() { return store.get('dashV2') === '1'; },
-    setOn(on) { store.set('dashV2', on ? '1' : '0'); if (typeof loadDashboard === 'function') loadDashboard(); }
+    isOn() { return store.get('dashView') !== 'classic'; },
+    setOn(on) { store.set('dashView', on ? 'new' : 'classic'); if (typeof loadDashboard === 'function') loadDashboard(); }
   };
 })();

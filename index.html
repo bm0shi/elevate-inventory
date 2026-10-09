@@ -2750,16 +2750,20 @@ function ownerApi(path, opts){
 // Dashboard trial (owner): the premium "New look" lives in /dash2.js and is
 // switched on per device. Classic stays exactly as it was underneath, so
 // going back is one click (the sidebar's "Classic view").
-function dash2On(){ try{ return localStorage.getItem('dashV2')==='1'; }catch(e){ return false; } }
+// The new look is the default (owner made it permanent); Classic is the
+// backup, chosen per device with the sidebar's "Classic view". A new key, so
+// devices that had tried Classic during the trial start on the new look.
+let _dash2Failed=false;
+function dash2On(){ if(_dash2Failed) return false; try{ return localStorage.getItem('dashView')!=='classic'; }catch(e){ return true; } }
 function dash2Load(){
   if(window.Dash2) return Promise.resolve();
   return new Promise((res,rej)=>{ const sc=document.createElement('script'); sc.src='/dash2.js?v='+Date.now(); sc.onload=res; sc.onerror=rej; document.head.appendChild(sc); });
 }
-function dash2Try(){ try{ localStorage.setItem('dashV2','1'); }catch(e){} loadDashboard(); }
+function dash2Try(){ _dash2Failed=false; try{ localStorage.setItem('dashView','new'); }catch(e){} loadDashboard(); }
 function loadDashboard(){
   if(dash2On()){
     const b=document.getElementById('dashBody');
-    dash2Load().then(()=>window.Dash2.render(b)).catch(()=>{ toast('New look didn\'t load — showing the classic dashboard',true); try{ localStorage.setItem('dashV2','0'); }catch(e){} loadDashboard(); });
+    dash2Load().then(()=>window.Dash2.render(b)).catch(()=>{ toast('New look didn\'t load — showing the classic dashboard for now',true); _dash2Failed=true; loadDashboard(); });
     return;
   }
   api('/api/dashboard').then(d=>{
@@ -2768,7 +2772,7 @@ function loadDashboard(){
     const card=(n,l,color)=>`<div class="card" style="border-top:3px solid ${color||'#008296'}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
     // Top row = the FBA Inventory tab's totals and retail values (owner:
     // the Dashboard should show the same numbers). Filled in by renderDashFba.
-    let h='<div style="display:flex;justify-content:flex-end;margin:-4px 0 8px"><button onclick="dash2Try()" style="padding:7px 14px;font-size:12px;font-weight:800;border:none;border-radius:999px;cursor:pointer;color:#fff;background:linear-gradient(135deg,#0d4450,#1d6f80);box-shadow:0 4px 12px -4px rgba(13,68,80,.6)">✨ Try the new look</button></div>';
+    let h='<div style="display:flex;justify-content:flex-end;margin:-4px 0 8px"><button onclick="dash2Try()" style="padding:7px 14px;font-size:12px;font-weight:800;border:none;border-radius:999px;cursor:pointer;color:#fff;background:linear-gradient(135deg,#0d4450,#1d6f80);box-shadow:0 4px 12px -4px rgba(13,68,80,.6)">✨ Back to the new look</button></div>';
     h+='<div id="dashFba"><div class="hint" style="padding:10px;text-align:center">Loading totals…</div></div>';
     h+='<div class="cards" style="flex-wrap:wrap">';
     h+=card(d.pendingInvoices+(d.pendingUnits?' · '+d.pendingUnits.toLocaleString()+' units':''),'Pending Check-Ins','#2563a8');
