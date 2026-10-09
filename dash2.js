@@ -116,7 +116,22 @@
   .d2-empty .ill svg{width:30px;height:30px;color:#7d97a3}
   .d2-empty b{font-size:14px}.d2-empty span{font-size:12.5px;color:${C.ink2};max-width:340px}
   .d2-empty button{margin-top:6px}
-  .d2-periods{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:4px 0 16px}
+  .d2-periods{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin:4px 0 14px}
+  .d2-per .l{overflow:hidden;text-overflow:ellipsis}.d2-per .l span{font-weight:600;color:${C.muted}}
+  .d2-per .dl{display:flex;align-items:center;gap:7px;margin-top:6px}.d2-per .dl .d2-delta{margin-top:0}
+  .d2-per .dl b{font-size:11.5px;font-weight:800}.d2-per .dl b.pos{color:#006300}.d2-per .dl b.neg{color:#b42d2d}
+  .d2-per.custom{background:repeating-linear-gradient(135deg,#fff,#fff 10px,#fafcfd 10px,#fafcfd 20px)}
+  .d2-per.custom.on{background:linear-gradient(180deg,#f2f9fa,#fff)}
+  .d2-metrics{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:0;margin:0 0 16px;border:1px solid #e6ecf0;border-radius:14px;overflow:hidden;background:#fbfcfd}
+  .d2-met{all:unset;box-sizing:border-box;cursor:pointer;padding:11px 12px 12px;border-left:1px solid #e9eef2;min-width:0;transition:background .2s;position:relative}
+  .d2-met:first-child{border-left:0}
+  .d2-met:hover{background:#f3f7f9}
+  .d2-met.on{background:#fff;box-shadow:inset 0 -3px 0 ${C.brand}}
+  .d2-met .l{font-size:11px;font-weight:750;color:${C.ink2};white-space:nowrap;text-transform:none}
+  .d2-met .v{font-size:17px;font-weight:850;letter-spacing:-.3px;margin:4px 0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .d2-met .d2-delta{margin-top:0}
+  .d2-met .p{font-size:10.5px;color:${C.muted};margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .d2-note input[type=date]{font:inherit;font-size:12.5px;padding:6px 8px;border:1px solid #d5e0e6;border-radius:8px;background:#fff;color:${C.ink}}
   .d2-per{all:unset;box-sizing:border-box;cursor:pointer;display:block;border:1px solid #e6ecf0;border-radius:14px;padding:12px 14px;background:#fff;transition:border-color .2s,box-shadow .2s,transform .2s;min-width:0}
   .d2-per:hover{border-color:#c6d4dc;transform:translateY(-1px)}
   .d2-per.on{border-color:${C.brand};background:linear-gradient(180deg,#f2f9fa,#fff);box-shadow:0 8px 20px -14px rgba(13,68,80,.6)}
@@ -149,8 +164,8 @@
     .d2.collapsed .d2-lbl{opacity:1;transform:none}
     .d2-foot{border:0;padding:0;flex-direction:row}
   }
-  @media (max-width:1180px){.d2-periods{grid-template-columns:repeat(3,minmax(0,1fr))}}
-  @media (max-width:760px){.d2-periods{grid-template-columns:repeat(2,minmax(0,1fr))}.s6,.s3{grid-column:span 12}.d2-legend{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-hval{font-size:42px}.d2-tiles{grid-template-columns:1fr 1fr;gap:12px}}
+  @media (max-width:1180px){.d2-periods{grid-template-columns:repeat(3,minmax(0,1fr))}.d2-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.d2-met:nth-child(5){border-left:0}.d2-met:nth-child(n+5){border-top:1px solid #e9eef2}}
+  @media (max-width:760px){.d2-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-met:nth-child(odd){border-left:0}.d2-met:nth-child(n+3){border-top:1px solid #e9eef2}.d2-periods{grid-template-columns:repeat(2,minmax(0,1fr))}.s6,.s3{grid-column:span 12}.d2-legend{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-hval{font-size:42px}.d2-tiles{grid-template-columns:1fr 1fr;gap:12px}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
   `;
   function injectCss() { if (document.getElementById('d2css')) return; const s = document.createElement('style'); s.id = 'd2css'; s.textContent = CSS; document.head.appendChild(s); }
@@ -342,8 +357,8 @@
       // gross sales
       '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included · history refreshes itself every morning</div></div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update today</button></div></div>' +
-      '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
-      '<div id="d2snote"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
+      '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4, 5].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
+      '<div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
       // overview: hero
       '<section id="d2-value" class="d2-card d2-hero s12" style="--d:90ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
       '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
@@ -491,109 +506,191 @@
   }
 
   // ---------- gross sales ----------
+  // Pick a period (Today / 7 days / 30 days / MTD / YTD / Custom); every
+  // metric for it lines up underneath, each against the period before; click
+  // a metric to chart it. Refunds, fees and returns are judged as a rate
+  // (of sales or units), so a busy week isn't "worse" for being busy, and
+  // settlement lag is compared like for like (only days settled in both).
   const PT = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' });
   const ptDay = ms => PT.format(new Date(ms));
   const addD = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
   const span = (a, b) => { const o = []; for (let d = a; d <= b; d = addD(d, 1)) o.push(d); return o; };
+  const nDays = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / 86400000) + 1;
   const hourLbl = h => (h % 12 || 12) + (h < 12 ? 'a' : 'p');
+  const money2 = v => '$' + (v || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const pct = v => (v * 100).toFixed(1) + '%';
+  const METRICS = [
+    { k: 'sales', l: 'Gross sales', f: v => '$' + n0(v), chart: money },
+    { k: 'orders', l: 'Orders', f: n0, chart: n0 },
+    { k: 'units', l: 'Units sold', f: n0, chart: n0 },
+    { k: 'aov', l: 'Avg order', f: money2, chart: money2 },
+    { k: 'aup', l: 'Avg unit price', f: money2, chart: money2 },
+    { k: 'refunds', l: 'Refunds', f: v => '$' + n0(v), chart: money, rate: 'of sales', bad: true },
+    { k: 'fees', l: 'Amazon fees', f: v => '$' + n0(v), chart: money, rate: 'of sales', bad: true },
+    { k: 'returns', l: 'Returns', f: v => n0(v) + ' units', chart: n0, rate: 'of units', bad: true }
+  ];
+  function dataMaps(x) {
+    const M = {}, S = {}, R = {};
+    ((x && x.salesDaily) || []).forEach(r => M[r.day] = r);
+    ((x && x.settleDaily) || []).forEach(r => S[r.day] = r);
+    ((x && x.returnsDaily) || []).forEach(r => R[r.day] = r);
+    const sd = Object.keys(S).sort();
+    return { M, S, R, settleFrom: sd[0] || null, settledThrough: (x && x.settledThrough) || null, returnsFrom: (x && x.returnsFrom) || null, T: ptDay(Date.now()) };
+  }
+  // value of every metric over a set of days (null = not covered)
+  function measure(D, days) {
+    const all = days.length && days.every(d => D.M[d]);
+    const sum = f => days.reduce((t, d) => t + (D.M[d] ? (+D.M[d][f] || 0) : 0), 0);
+    const out = {};
+    out.sales = all ? sum('sales') : null; out.units = all ? sum('units') : null;
+    out.orders = all && days.every(d => D.M[d].orders != null) ? sum('orders') : null;
+    out.aov = out.orders ? out.sales / out.orders : null; out.aup = out.units ? out.sales / out.units : null;
+    out.est = all ? sum('est') : 0;
+    return out;
+  }
+  const settled = (D, d) => D.settleFrom && d >= D.settleFrom && D.settledThrough && d <= D.settledThrough;
+  const returnsCovered = (D, d) => D.returnsFrom && d >= D.returnsFrom && d <= D.T;
+  function lagged(D, cur, prev, kind) {
+    // only the days covered in the current period, matched day-for-day in the previous one
+    const ok = kind === 'returns' ? d => returnsCovered(D, d) : d => settled(D, d);
+    const c = cur.filter(ok), p = prev.slice(0, c.length).filter(ok);
+    if (!c.length) return { cur: null, prev: null, curRate: null, prevRate: null, through: kind === 'returns' ? null : D.settledThrough };
+    const amt = days => kind === 'returns' ? days.reduce((t, d) => t + (D.R[d] ? D.R[d].units : 0), 0) : Math.abs(days.reduce((t, d) => t + (D.S[d] ? D.S[d][kind] : 0), 0));
+    const base = days => { const m = measure(D, days); return kind === 'returns' ? m.units : m.sales; };
+    const cA = amt(c), pA = p.length === c.length ? amt(p) : null, cB = base(c), pB = p.length === c.length ? base(p) : null;
+    return { cur: cA, prev: pA, curRate: cB ? cA / cB : null, prevRate: pB ? pA / pB : null, partial: c.length < cur.length, through: c[c.length - 1], days: c.length };
+  }
   function periods(x) {
-    const rows = (x && x.salesDaily) || [], M = {}; rows.forEach(r => M[r.day] = r);
-    const T = ptDay(Date.now()), Y = addD(T, -1), [ty, tm, td] = T.split('-').map(Number);
+    const D = dataMaps(x), T = D.T, Y = addD(T, -1), td = +T.slice(8), ty = +T.slice(0, 4);
     const mk = (k, label, cur, prev, curLbl, prevLbl) => {
-      const has = ds => ds.length && ds.every(d => M[d]);
-      const sum = (ds, f) => ds.reduce((t, d) => t + (M[d] ? M[d][f] : 0), 0);
-      return { k, label, curDays: cur, prevDays: prev, cur: has(cur) ? sum(cur, 'sales') : null, prev: has(prev) ? sum(prev, 'sales') : null,
-               units: has(cur) ? sum(cur, 'units') : null, est: has(cur) ? sum(cur, 'est') : 0, curLbl, prevLbl, M };
+      const c = measure(D, cur), pv = measure(D, prev), m = {};
+      ['sales', 'orders', 'units', 'aov', 'aup'].forEach(f => m[f] = { cur: c[f], prev: pv[f] });
+      ['refunds', 'fees', 'returns'].forEach(f => m[f] = lagged(D, cur, prev, f));
+      return { k, label, curDays: cur, prevDays: prev, cur: c.sales, prev: pv.sales, est: c.est, m, curLbl, prevLbl, D };
     };
     const out = [];
-    // Today so far vs. yesterday by the same hour (the hourly split from the last pull)
-    const st = x && x.salesToday, todayOk = st && st.today === T;
-    const h = todayOk ? st.nowHour : null;
-    const tCur = todayOk ? st.todayHourly.slice(0, h + 1).reduce((a, b) => a + b, 0) : null;
-    const tPrev = todayOk ? st.ydayHourly.slice(0, h + 1).reduce((a, b) => a + b, 0) : null;
-    out.push({ k: 'today', label: 'Today', cur: tCur, prev: tPrev, units: todayOk && M[T] ? M[T].units : null, est: todayOk && M[T] ? M[T].est : 0, hourly: todayOk ? st : null,
-               curLbl: 'so far', prevLbl: todayOk ? 'yesterday by ' + hourLbl((h + 1) % 24) : 'yesterday' });
+    const st = x && x.salesToday, ok = st && st.today === T, h = ok ? st.nowHour : null;
+    const upto = a => a ? a.slice(0, h + 1).reduce((s, v) => s + v, 0) : null;
+    const tS = ok && st.todayStats, yS = ok && st.ydayStats;
+    const tm = { sales: { cur: ok ? upto(st.todayHourly) : null, prev: ok ? upto(st.ydayHourly) : null },
+                 orders: { cur: tS ? upto(tS.orders) : null, prev: yS ? upto(yS.orders) : null },
+                 units: { cur: tS ? upto(tS.units) : null, prev: yS ? upto(yS.units) : null } };
+    tm.aov = { cur: tm.orders.cur ? tm.sales.cur / tm.orders.cur : null, prev: tm.orders.prev ? tm.sales.prev / tm.orders.prev : null };
+    tm.aup = { cur: tm.units.cur ? tm.sales.cur / tm.units.cur : null, prev: tm.units.prev ? tm.sales.prev / tm.units.prev : null };
+    ['refunds', 'fees', 'returns'].forEach(f => tm[f] = { cur: null, prev: null, sameDay: true });
+    out.push({ k: 'today', label: 'Today', cur: tm.sales.cur, prev: tm.sales.prev, m: tm, hourly: ok ? st : null, D,
+               curLbl: 'so far', prevLbl: ok ? 'yesterday by ' + hourLbl((h + 1) % 24) : 'yesterday', est: ok && D.M[T] ? D.M[T].est : 0 });
     out.push(mk('7', '7 days', span(addD(T, -7), Y), span(addD(T, -14), addD(T, -8)), 'through yesterday', 'the 7 days before'));
     out.push(mk('30', '30 days', span(addD(T, -30), Y), span(addD(T, -60), addD(T, -31)), 'through yesterday', 'the 30 days before'));
     const m1 = T.slice(0, 8) + '01', pm1 = addD(m1, -1).slice(0, 8) + '01', pmEnd = addD(m1, -1);
-    const pmSame = (pm1.slice(0, 8) + String(Math.min(td, +pmEnd.slice(8))).padStart(2, '0'));
-    out.push(mk('mtd', 'Month to date', span(m1, T), span(pm1, pmSame), 'through today', 'same days last month'));
-    const y1 = ty + '-01-01', py1 = (ty - 1) + '-01-01', pySame = (ty - 1) + '-' + T.slice(5, 7) + '-' + (T.slice(5) === '02-29' ? '28' : T.slice(8));
-    out.push(mk('ytd', 'Year to date', span(y1, T), span(py1, pySame), 'through today', 'same stretch last year'));
-    return { list: out, rows, M, T };
+    out.push(mk('mtd', 'Month to date', span(m1, T), span(pm1, pm1.slice(0, 8) + String(Math.min(td, +pmEnd.slice(8))).padStart(2, '0')), 'through today', 'same days last month'));
+    out.push(mk('ytd', 'Year to date', span(ty + '-01-01', T), span((ty - 1) + '-01-01', (ty - 1) + '-' + T.slice(5, 7) + '-' + (T.slice(5) === '02-29' ? '28' : T.slice(8))), 'through today', 'same stretch last year'));
+    // Custom: any from/to; compared with the same number of days just before
+    let cf = store.get('d2From'), ct = store.get('d2To');
+    if (!(cf && ct && cf <= ct)) { ct = Y; cf = addD(T, -14); }
+    if (ct > T) ct = T;
+    const len = nDays(cf, ct);
+    out.push(mk('custom', 'Custom', span(cf, ct), span(addD(cf, -len), addD(cf, -1)), dShort(cf) + ' – ' + dShort(ct), 'the ' + len + ' days before'));
+    return { list: out, D, rows: (x && x.salesDaily) || [] };
   }
-  function deltaChip(cur, prev) {
+  function deltaChip(cur, prev, bad, rate) {
     if (cur == null || prev == null) return '<span class="d2-delta flat">no comparison yet</span>';
-    const d = cur - prev, pct = prev > 0 ? d / prev * 100 : null, up = d >= 0;
-    if (Math.abs(d) < 0.5) return '<span class="d2-delta flat">— even</span>';
-    return '<span class="d2-delta ' + (up ? 'up' : 'down') + '">' + (up ? '▲' : '▼') + ' ' + (pct != null ? Math.abs(pct).toFixed(1) + '% · ' : '') + (up ? '+' : '−') + money(Math.abs(d)).replace('−', '') + '</span>';
+    if (rate) {   // change in the rate, in points; up is bad
+      const d = (cur - prev) * 100; if (Math.abs(d) < 0.05) return '<span class="d2-delta flat">— even</span>';
+      const worse = d > 0; return '<span class="d2-delta ' + (worse ? 'down' : 'up') + '">' + (d > 0 ? '▲ ' : '▼ ') + Math.abs(d).toFixed(1) + ' pts</span>';
+    }
+    const d = cur - prev, p = prev > 0 ? d / prev * 100 : null, up = d >= 0, good = bad ? !up : up;
+    if (Math.abs(d) < 0.005 || (p != null && Math.abs(p) < 0.05)) return '<span class="d2-delta flat">— even</span>';
+    return '<span class="d2-delta ' + (good ? 'up' : 'down') + '">' + (up ? '▲' : '▼') + ' ' + (p != null ? Math.abs(p).toFixed(1) + '%' : '') + '</span>';
   }
-  function paintSales(x, keepAnim) {
+  function moneyDelta(cur, prev) {
+    if (cur == null || prev == null) return '';
+    const d = cur - prev; return (d >= 0 ? '+' : '−') + '$' + n0(Math.abs(d));
+  }
+  function paintSales(x) {
     const per = document.getElementById('d2periods'); if (!per) return;
     state.sales = x;
     const P = periods(x), job = x && x.salesJob;
     const asof = document.getElementById('d2sasof'), note = document.getElementById('d2snote');
     if (job && job.running) { asof.textContent = job.progress || 'updating…'; document.getElementById('d2squick').disabled = true; }
     else { const st = x && x.salesToday; asof.textContent = st && st.asOf ? 'as of ' + new Date(st.asOf).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
+    const strip = document.getElementById('d2metrics');
     if (!P.rows.length) {
-      per.style.display = 'block';
+      per.style.display = 'block'; if (strip) strip.innerHTML = '';
       per.innerHTML = empty('dollar', job && job.running ? 'Reading your orders from Amazon…' : 'Your sales history starts here',
-        job && job.running ? (job.progress || 'This takes a few minutes. It keeps going if you leave the page.') : 'One pull reads your orders back to January last year, so every period can be compared. It takes a few minutes and runs in the background.',
+        job && job.running ? (job.progress || 'This takes a few minutes. It keeps going if you leave the page.') : 'One pull reads your orders and returns back to January last year, so every period can be compared. It takes a few minutes and runs in the background.',
         job && job.running ? null : { go: '', label: 'Pull sales history' });
       const btn = per.querySelector('[data-go]'); if (btn) { btn.removeAttribute('data-go'); btn.dataset.act = 'sales-full'; }
-      document.getElementById('d2sales').innerHTML = ''; document.getElementById('d2stitle').textContent = ''; document.getElementById('d2skeys').innerHTML = '';
+      ['d2sales', 'd2stitle', 'd2skeys'].forEach(id => document.getElementById(id).innerHTML = '');
       return;
     }
     per.style.display = '';
     const sel = store.get('d2Per') || '30';
-    per.innerHTML = P.list.map(p => '<button class="d2-per' + (p.k === sel ? ' on' : '') + '" data-per="' + p.k + '"><div class="l">' + p.label + ' <span style="font-weight:600;color:' + C.muted + '">· ' + E(p.curLbl) + '</span></div>' +
-      '<div class="v">' + (p.cur == null ? '—' : '$' + n0(p.cur)) + '</div>' + deltaChip(p.cur, p.prev) +
-      '<div class="p" title="' + (p.units != null ? n0(p.units) + ' units' : '') + '">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div></button>').join('');
-    // last year's stretch missing → offer the full pull
-    const missingPrev = P.list.some(p => p.k !== 'today' && p.prev == null);
-    note.innerHTML = missingPrev && !(job && job.running) ? '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>' : '';
+    per.innerHTML = P.list.map(p => '<button class="d2-per' + (p.k === sel ? ' on' : '') + (p.k === 'custom' ? ' custom' : '') + '" data-per="' + p.k + '"><div class="l">' + p.label + ' <span>· ' + E(p.curLbl) + '</span></div>' +
+      '<div class="v">' + (p.cur == null ? '—' : '$' + n0(p.cur)) + '</div>' +
+      '<div class="dl">' + deltaChip(p.cur, p.prev) + '<b class="' + (p.cur != null && p.prev != null ? (p.cur >= p.prev ? 'pos' : 'neg') : '') + '">' + moneyDelta(p.cur, p.prev) + '</b></div>' +
+      '<div class="p">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div></button>').join('');
     const p = P.list.find(z => z.k === sel) || P.list[2];
-    drawSales(p);
-    // keep it current: a quick pull when the last one is over an hour old
+    // custom range picker
+    let nt = '';
+    if (p.k === 'custom') nt += '<div class="d2-note"><span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>Custom range</b> <input type="date" id="d2cf" value="' + p.curDays[0] + '" max="' + P.D.T + '"> to <input type="date" id="d2ct" value="' + p.curDays[p.curDays.length - 1] + '" max="' + P.D.T + '"></span><span style="font-size:11.5px;color:' + C.muted + '">compared with the ' + p.curDays.length + ' days just before</span><button class="d2-btn" data-act="custom-apply">Apply</button></div>';
+    const missingPrev = P.list.some(z => z.k !== 'today' && z.k !== 'custom' && z.prev == null);
+    if (missingPrev && !(job && job.running)) nt += '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
+    note.innerHTML = nt;
+    // metrics for the chosen period
+    const mSel = store.get('d2Metric') || 'sales';
+    if (strip) strip.innerHTML = METRICS.map(mt => {
+      const v = p.m[mt.k] || {}; let val, chip, sub;
+      if (mt.rate) {
+        if (v.sameDay) { val = '—'; chip = '<span class="d2-delta flat">not same-day</span>'; sub = mt.k === 'returns' ? 'Amazon reports returns daily' : 'arrives with settlements'; }
+        else if (v.cur == null) { val = '—'; chip = '<span class="d2-delta flat">' + (mt.k === 'returns' ? 'not pulled yet' : 'not settled yet') + '</span>'; sub = mt.k === 'returns' ? 'pulled each morning' : (P.D.settledThrough ? 'settled through ' + dShort(P.D.settledThrough) : 'no settlements yet'); }
+        else { val = mt.f(v.cur); chip = deltaChip(v.curRate, v.prevRate, true, true); sub = (v.curRate != null ? pct(v.curRate) + ' ' + mt.rate : '') + (v.partial ? ' · through ' + dShort(v.through) : ''); }
+      } else { val = v.cur == null ? '—' : mt.f(v.cur); chip = deltaChip(v.cur, v.prev); sub = v.prev == null ? 'no comparison' : 'vs ' + mt.f(v.prev); }
+      return '<button class="d2-met' + (mt.k === mSel ? ' on' : '') + '" data-met="' + mt.k + '"><div class="l">' + mt.l + '</div><div class="v">' + val + '</div>' + chip + '<div class="p">' + E(sub) + '</div></button>';
+    }).join('');
+    drawSales(p, METRICS.find(z => z.k === mSel) || METRICS[0]);
     const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
     if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('today'); }
   }
-  // Bars (owner): each day beside the matching day of the previous period;
-  // Today by hour vs. yesterday; Year to date by month (daily bars would be
-  // a blur), the current month matched to the same days last year.
-  function drawSales(p) {
+  // Bars: this period beside the previous one. Today by hour; long ranges
+  // (Year to date, a custom range over 3 months) by month.
+  function drawSales(p, mt) {
     const box = document.getElementById('d2sales'), title = document.getElementById('d2stitle'), keys = document.getElementById('d2skeys');
-    const GRAY = '#b4bec7';
+    // this period in Amazon orange (owner), the previous one gray
+    const GRAY = '#b4bec7', CUR = '#ff9900', D = p.D;
+    box._draw = null;
     const KN = { today: ['Today', 'Yesterday'], ytd: ['This year', 'Last year'] }[p.k] || ['This period', 'Previous period'];
-    keys.innerHTML = '<span><i class="sq" style="background:' + C.blue + '"></i>' + KN[0] + '</span><span><i class="sq" style="background:' + GRAY + '"></i>' + KN[1] + '</span>';
+    keys.innerHTML = '<span><i class="sq" style="background:' + CUR + '"></i>' + KN[0] + '</span><span><i class="sq" style="background:' + GRAY + '"></i>' + KN[1] + '</span>';
     let o;
     if (p.k === 'today') {
-      if (!p.hourly) { title.textContent = ''; box.innerHTML = empty('clock', 'Today’s numbers are on the way', 'Press Update to read today’s orders from Amazon (about a minute).', null); return; }
       const H = p.hourly;
-      title.textContent = 'Sales by hour · today vs. yesterday';
-      o = { labels: [...Array(24).keys()], fmtLabel: hourLbl, aria: 'Sales by hour, today vs yesterday',
-        series: [{ name: 'Today', color: C.blue, values: H.todayHourly.map((v, i) => i <= H.nowHour ? v : null) }, { name: 'Yesterday', color: GRAY, values: H.ydayHourly }] };
-    } else if (p.k === 'ytd') {
-      const M = p.M, months = [], cur = [], prev = [], curU = [], last = p.curDays[p.curDays.length - 1];
-      const ms = {}; p.curDays.forEach(d => { const m = d.slice(0, 7); (ms[m] = ms[m] || []).push(d); });
-      Object.keys(ms).sort().forEach(m => {
-        months.push(m);
-        cur.push(ms[m].reduce((t, d) => t + (M[d] ? M[d].sales : 0), 0)); curU.push(ms[m].reduce((t, d) => t + (M[d] ? M[d].units : 0), 0));
-        const py = (+m.slice(0, 4) - 1) + m.slice(4), pd = p.prevDays.filter(d => d.slice(0, 7) === py);
-        prev.push(pd.length && pd.every(d => M[d]) ? pd.reduce((t, d) => t + M[d].sales, 0) : null);
-      });
-      title.textContent = 'Sales by month · ' + months[0].slice(0, 4) + ' vs. ' + (months[0].slice(0, 4) - 1) + ' (' + mShort(last.slice(0, 7)) + ' through the ' + (+last.slice(8)) + 'th)';
-      o = { labels: months, fmtLabel: mShort, aria: 'Sales by month, this year vs last year',
-        series: [{ name: 'This year', color: C.blue, values: cur }, { name: 'Last year', color: GRAY, values: prev }],
-        tipExtra: i => '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">' + n0(curU[i]) + ' units this year</div>' };
+      if (!H) { title.textContent = ''; box.innerHTML = empty('clock', 'Today’s numbers are on the way', 'Press Update today to read today’s orders from Amazon (about a minute).', null); return; }
+      if (!['sales', 'orders', 'units', 'aov', 'aup'].includes(mt.k)) { title.textContent = ''; box.innerHTML = empty('clock', mt.l + ' don’t come same-day', mt.k === 'returns' ? 'Amazon reports returns once a day; pick 7 days or longer to see them.' : 'They arrive with Amazon’s settlements; pick 7 days or longer to see them.', null); return; }
+      const T = H.todayStats || { sales: H.todayHourly }, Yd = H.ydayStats || { sales: H.ydayHourly };
+      const ser = (s) => mt.k === 'aov' ? s.sales.map((v, i) => s.orders[i] ? v / s.orders[i] : null) : mt.k === 'aup' ? s.sales.map((v, i) => s.units[i] ? v / s.units[i] : null) : s[mt.k];
+      title.textContent = mt.l + ' by hour · today vs. yesterday';
+      o = { labels: [...Array(24).keys()], fmtLabel: hourLbl, aria: mt.l + ' by hour', fmt: mt.chart,
+        series: [{ name: 'Today', color: CUR, values: (ser(T) || []).map((v, i) => i <= H.nowHour ? v : null) }, { name: 'Yesterday', color: GRAY, values: ser(Yd) || [] }] };
     } else {
-      const M = p.M;
-      title.textContent = 'Sales by day · ' + dShort(p.curDays[0]) + ' – ' + dShort(p.curDays[p.curDays.length - 1]) + ' vs. ' + dShort(p.prevDays[0]) + ' – ' + dShort(p.prevDays[p.prevDays.length - 1]);
-      o = { labels: p.curDays, fmtLabel: dShort, aria: 'Sales by day, this period vs previous',
-        series: [{ name: 'This period', color: C.blue, values: p.curDays.map(d => M[d] ? M[d].sales : null) }, { name: 'Previous', color: GRAY, values: p.curDays.map((d, i) => p.prevDays[i] && M[p.prevDays[i]] ? M[p.prevDays[i]].sales : null) }],
-        tipExtra: i => { const a = M[p.curDays[i]], b = p.prevDays[i]; return '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">' + (a ? n0(a.units) + ' units' : '') + (b ? ' · previous: ' + dShort(b) : '') + (a && a.est ? '<br>incl. ' + money(a.est) + ' pending, at list price' : '') + '</div>'; } };
+      const monthly = p.k === 'ytd' || p.curDays.length > 92;
+      // buckets of the current period; the previous period is cut into the same sizes, in order
+      const cb = [];
+      if (monthly) { let cur = null; p.curDays.forEach(d => { const m = d.slice(0, 7); if (!cur || cur.key !== m) cb.push(cur = { key: m, days: [] }); cur.days.push(d); }); }
+      else p.curDays.forEach(d => cb.push({ key: d, days: [d] }));
+      let i0 = 0; const pb = cb.map(b => { const ds = p.prevDays.slice(i0, i0 + b.days.length); i0 += b.days.length; return ds; });
+      const val = days => {
+        if (!days.length) return null;
+        if (mt.k === 'refunds' || mt.k === 'fees') { if (!days.every(d => settled(D, d))) return null; return Math.abs(days.reduce((t, d) => t + (D.S[d] ? D.S[d][mt.k] : 0), 0)); }
+        if (mt.k === 'returns') { if (!days.every(d => returnsCovered(D, d))) return null; return days.reduce((t, d) => t + (D.R[d] ? D.R[d].units : 0), 0); }
+        const m = measure(D, days); return m[mt.k];
+      };
+      title.textContent = mt.l + (monthly ? ' by month · ' : ' by day · ') + dShort(p.curDays[0]) + ' – ' + dShort(p.curDays[p.curDays.length - 1]) + ' vs. ' + dShort(p.prevDays[0]) + ' – ' + dShort(p.prevDays[p.prevDays.length - 1]) +
+        ((mt.k === 'refunds' || mt.k === 'fees') && D.settledThrough ? ' · settled through ' + dShort(D.settledThrough) : '');
+      o = { labels: cb.map(b => b.key), fmtLabel: monthly ? mShort : dShort, aria: mt.l + ', this period vs previous', fmt: mt.chart,
+        series: [{ name: KN[0], color: CUR, values: cb.map(b => val(b.days)) }, { name: KN[1], color: GRAY, values: pb.map(val) }],
+        tipExtra: i => { const pd = pb[i]; const a = !monthly && D.M[cb[i].days[0]]; return '<div style="color:#9fb3bd;font-size:11px;margin-top:3px">' + (pd && pd.length ? 'previous: ' + (monthly ? mShort(pd[0].slice(0, 7)) + ' ' + pd[0].slice(0, 4) : dShort(pd[0])) : '') + (a && a.est && mt.k === 'sales' ? '<br>incl. ' + money(a.est) + ' pending, at list price' : '') + '</div>'; } };
     }
-    o.fmt = money; o.fmtAxis = money;
+    o.fmtAxis = mt.chart === money2 ? money : mt.chart;
     const draw = () => columnChart(box, o);
     draw(); box._draw = draw;
   }
@@ -616,7 +713,13 @@
     root.addEventListener('click', e => {
       const t = e.target.closest('[data-goto]'); if (t && !e.target.closest('a')) { goTo(t.dataset.goto); return; }
       const b = e.target.closest('button'); if (!b) return;
-      if (b.dataset.per) { store.set('d2Per', b.dataset.per); if (state && state.sales) paintSales(state.sales, true); return; }
+      if (b.dataset.per) { store.set('d2Per', b.dataset.per); if (state && state.sales) paintSales(state.sales); return; }
+      if (b.dataset.met) { store.set('d2Metric', b.dataset.met); if (state && state.sales) paintSales(state.sales); return; }
+      if (b.dataset.act === 'custom-apply') {
+        const f = (document.getElementById('d2cf') || {}).value, t = (document.getElementById('d2ct') || {}).value;
+        if (f && t && f <= t) { store.set('d2From', f); store.set('d2To', t); if (state && state.sales) paintSales(state.sales); }
+        return;
+      }
       if (b.dataset.act === 'sales-quick' || b.dataset.act === 'sales-full') { salesPull(b.dataset.act === 'sales-full' ? 'full' : 'today'); return; }
       if (b.dataset.sec) {
         root.querySelectorAll('.d2-nav button').forEach(x => x.classList.toggle('on', x === b));
@@ -642,7 +745,8 @@
   // Redraw charts at the new width without replaying the entrance.
   function redraw() {
     const root = document.getElementById('d2root'); if (!root) return;
-    root.querySelectorAll('.d2-chart').forEach(b => { if (b._draw) { b._draw(); b.querySelectorAll('.d2-draw,.d2-area,.d2-bar').forEach(z => { z.style.animation = 'none'; z.style.opacity = 1; z.style.strokeDashoffset = 0; z.style.transform = 'none'; }); } });
+    // only charts still showing a chart (an empty state replaced the svg)
+    root.querySelectorAll('.d2-chart').forEach(b => { if (b._draw && b.querySelector('svg')) { b._draw(); b.querySelectorAll('.d2-draw,.d2-area,.d2-bar').forEach(z => { z.style.animation = 'none'; z.style.opacity = 1; z.style.strokeDashoffset = 0; z.style.transform = 'none'; }); } });
     const sp = document.getElementById('d2spark'); if (sp && sp.querySelector('svg') && state && state.spark) sparkline(sp, state.spark, C.blue);
   }
 

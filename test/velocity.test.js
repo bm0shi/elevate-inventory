@@ -61,8 +61,22 @@ test('gross sales: cancelled out, pending priced at the ASIN average, Pacific da
   const recs = orderRecords(body, null);
   assert.strictEqual(recs.length, 3);
   const d = salesByDay(recs, '2026-10-07', '2026-10-09');
-  assert.deepStrictEqual(d['2026-10-07'], { units: 0, sales: 0, est: 0 });
-  assert.deepStrictEqual(d['2026-10-08'], { units: 3, sales: 90, est: 0 });
-  assert.deepStrictEqual(d['2026-10-09'], { units: 1, sales: 30, est: 30 });
+  assert.deepStrictEqual(d['2026-10-07'], { units: 0, sales: 0, est: 0, orders: 0 });
+  assert.deepStrictEqual(d['2026-10-08'], { units: 3, sales: 90, est: 0, orders: 2 });
+  assert.deepStrictEqual(d['2026-10-09'], { units: 1, sales: 30, est: 30, orders: 1 });
   assert.strictEqual(salesByHour(recs, '2026-10-08')[23], 30);
+});
+
+const { hourlyStats } = require('../lib/velocity');
+test('orders count each order once, even with two products in it', () => {
+  const H = 'amazon-order-id\tpurchase-date\torder-status\tsku\tasin\titem-status\tquantity\titem-price';
+  const body = [H,
+    'O1\t2026-10-08T17:00:00+00:00\tShipped\tS1\tB1\tShipped\t1\t30.00',
+    'O1\t2026-10-08T17:00:00+00:00\tShipped\tS2\tB2\tShipped\t2\t40.00',
+    'O2\t2026-10-08T18:10:00+00:00\tShipped\tS1\tB1\tShipped\t1\t30.00'].join('\n');
+  const recs = orderRecords(body, null);
+  const d = salesByDay(recs, '2026-10-08', '2026-10-08')['2026-10-08'];
+  assert.deepStrictEqual([d.orders, d.units, d.sales], [2, 4, 100]);
+  const h = hourlyStats(recs, '2026-10-08');
+  assert.deepStrictEqual([h.orders[10], h.units[10], h.sales[10], h.orders[11]], [1, 3, 70, 1]);
 });

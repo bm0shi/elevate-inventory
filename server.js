@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -415,7 +415,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sales-update-today-1036';
+const BUILD_ID = 'sales-metrics-1037';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1187,6 +1187,14 @@ async function initDb() {
     await pool.query(`CREATE TABLE IF NOT EXISTS inv_sales_daily (
       day DATE PRIMARY KEY, units INTEGER NOT NULL DEFAULT 0, sales NUMERIC NOT NULL DEFAULT 0,
       est NUMERIC NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT now())`);
+    // Orders per day (distinct order ids). NULL on days saved before this
+    // was counted, so averages never divide by a missing count.
+    await pool.query(`ALTER TABLE inv_sales_daily ADD COLUMN IF NOT EXISTS orders INTEGER`);
+    // Customer returns (FBA returns report), one row per returned line.
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_returns (
+      key TEXT PRIMARY KEY, day DATE NOT NULL, ts TIMESTAMPTZ, order_id TEXT, sku TEXT, asin TEXT,
+      qty INTEGER NOT NULL DEFAULT 0, reason TEXT, disposition TEXT, status TEXT)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_returns_day ON inv_returns(day)`);
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
@@ -6082,8 +6090,21 @@ app.get('/api/dash2', ownerAuth, async (req, res) => {
     FROM inv_settlements WHERE total_amount IS NOT NULL ORDER BY COALESCE(deposit_date, end_date) DESC NULLS LAST LIMIT 12`,
     r => r);
   out.deposits = (out.deposits || []).reverse();
-  await q('salesDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, units, sales::float AS sales, est::float AS est
+  await q('salesDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, units, sales::float AS sales, est::float AS est, orders
     FROM inv_sales_daily WHERE day >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int - 1, 1, 1) ORDER BY day`);
+  // Refunds and Amazon fees by posted day, from settlements (they lag: the
+  // dashboard compares only the days settled; settledThrough says how far).
+  // Same split as the P&L: refunds = ItemPrice on refund lines (tax is
+  // pass-through, left out); fees = ItemFees (referral, FBA, refund commission).
+  await q('settleDaily', `SELECT to_char(posted_date,'YYYY-MM-DD') AS day,
+      COALESCE(SUM(amount) FILTER (WHERE amount_type='ItemPrice' AND transaction_type ILIKE '%refund%' AND amount_description NOT ILIKE '%tax%'),0)::float AS refunds,
+      COALESCE(SUM(amount) FILTER (WHERE amount_type='ItemFees'),0)::float AS fees
+    FROM inv_settlement_lines WHERE posted_date >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int - 1, 1, 1)
+    GROUP BY posted_date ORDER BY posted_date`);
+  try { out.settledThrough = (await pool.query(`SELECT to_char(MAX(posted_date),'YYYY-MM-DD') AS d FROM inv_settlement_lines`)).rows[0].d; } catch (e) { out.settledThrough = null; }
+  await q('returnsDaily', `SELECT to_char(day,'YYYY-MM-DD') AS day, SUM(qty)::int AS units FROM inv_returns
+    WHERE day >= make_date(EXTRACT(YEAR FROM CURRENT_DATE)::int - 1, 1, 1) GROUP BY day ORDER BY day`);
+  try { const rf = await pool.query("SELECT data FROM inv_cache WHERE cache_key='returns_from'"); out.returnsFrom = rf.rows.length ? rf.rows[0].data.from : null; } catch (e) { out.returnsFrom = null; }
   try { const t = await pool.query("SELECT data FROM inv_cache WHERE cache_key='sales_today'"); out.salesToday = t.rows.length ? t.rows[0].data : null; } catch (e) { out.salesToday = null; }
   out.salesJob = salesJob;
   // Top sellers: the last velocity pull (units over its window)
@@ -7174,6 +7195,9 @@ function startAmazonSync(trigger) {
       const v = await refreshVelocity((prev && prev.data && prev.data.days) || 60);
       result.salesUnits = v.report.units;
     } catch (e) { result.errors.push('sales report: ' + e.message); }
+    // Customer returns, last 60 days, for the dashboard's Returns metric.
+    try { amazonSync.step = 'Reading customer returns…'; await pullReturns(salesDay(Date.now() - 60 * 86400000)); }
+    catch (e) { result.errors.push('returns report: ' + e.message); }
     // Package sizes for listings that don't have one yet (new products), for
     // the FBA capacity bar. Only the missing ones: sizes rarely change.
     try {
@@ -7822,16 +7846,41 @@ async function saveSalesDays(recs, fromDay) {
   const today = salesDay(Date.now());
   const days = velocity.salesByDay(recs, fromDay, today);
   const ks = Object.keys(days);
-  if (ks.length) await pool.query(`INSERT INTO inv_sales_daily(day, units, sales, est, updated_at)
-      SELECT * , now() FROM unnest($1::date[], $2::int[], $3::numeric[], $4::numeric[])
-      ON CONFLICT (day) DO UPDATE SET units=EXCLUDED.units, sales=EXCLUDED.sales, est=EXCLUDED.est, updated_at=now()`,
-    [ks, ks.map(k => days[k].units), ks.map(k => days[k].sales), ks.map(k => days[k].est)]);
+  if (ks.length) await pool.query(`INSERT INTO inv_sales_daily(day, units, sales, est, orders, updated_at)
+      SELECT * , now() FROM unnest($1::date[], $2::int[], $3::numeric[], $4::numeric[], $5::int[])
+      ON CONFLICT (day) DO UPDATE SET units=EXCLUDED.units, sales=EXCLUDED.sales, est=EXCLUDED.est, orders=EXCLUDED.orders, updated_at=now()`,
+    [ks, ks.map(k => days[k].units), ks.map(k => days[k].sales), ks.map(k => days[k].est), ks.map(k => days[k].orders)]);
   // today vs yesterday, hour by hour (for "Today so far vs. yesterday by now")
   const yday = salesDay(Date.now() - 86400000);
   await saveCache('sales_today', { asOf: new Date().toISOString(), today, yday,
     nowHour: velocity.zoneParts(Date.now(), 'America/Los_Angeles').hour,
-    todayHourly: velocity.salesByHour(recs, today), ydayHourly: velocity.salesByHour(recs, yday) });
+    todayHourly: velocity.salesByHour(recs, today), ydayHourly: velocity.salesByHour(recs, yday),
+    todayStats: velocity.hourlyStats(recs, today), ydayStats: velocity.hourlyStats(recs, yday) });
   return ks.length;
+}
+// Returns from a pull, saved by day (Pacific). Coverage ("returns_from") is
+// widened only by a pull that reached back further without gaps.
+async function saveReturns(recs, fromDay) {
+  for (const r of recs) {
+    const day = salesDay(r.ts);
+    if (day < fromDay) continue;
+    await pool.query(`INSERT INTO inv_returns(key, day, ts, order_id, sku, asin, qty, reason, disposition, status)
+      VALUES($1,$2,to_timestamp($3/1000.0),$4,$5,$6,$7,$8,$9,$10)
+      ON CONFLICT (key) DO UPDATE SET qty=EXCLUDED.qty, reason=EXCLUDED.reason, disposition=EXCLUDED.disposition, status=EXCLUDED.status`,
+      [[r.order, r.sku, r.lpn, r.ts].join('|'), day, r.ts, r.order, r.sku, r.asin, r.qty, r.reason, r.disposition, r.status]);
+  }
+  const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='returns_from'")).rows[0];
+  const was = prev && prev.data && prev.data.from;
+  if (!was || fromDay < was) await saveCache('returns_from', { from: fromDay, at: new Date().toISOString() });
+  return recs.length;
+}
+async function pullReturns(fromDay, onProgress) {
+  const fromMs = Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
+  const r = await getReturnRecords(fromMs, onProgress);
+  let from = fromDay;
+  for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
+  await saveReturns(r.records, from);
+  return { n: r.records.length, from, failed: r.failed.length };
 }
 // Background pull. 'today' (the dashboard's Update button, and the automatic
 // refresh when the numbers are over an hour old) reads only today and
@@ -7857,7 +7906,13 @@ app.post('/api/sales/history', ownerAuth, async (req, res) => {
       let from = fromDay;
       for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
       const n = await saveSalesDays(r.records, from);
-      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from,
+      // the full pull also reads returns over the same stretch
+      let retNote = null;
+      if (full) {
+        try { salesJob.progress = 'reading returns…'; const rr = await pullReturns(fromDay, p => { salesJob.progress = p; }); if (rr.failed) retNote = rr.failed + ' month(s) of returns Amazon couldn’t build'; }
+        catch (e) { retNote = 'returns not read: ' + e.message; }
+      }
+      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from, returnsNote: retNote,
         note: r.failed.length ? r.failed.length + ' month(s) Amazon couldn’t build (' + r.failed[0][2] + '); saved from ' + from : null, at: new Date().toISOString() };
       console.log(`[Sales] ${salesJob.mode} pull: ${n} days saved from ${from}.`);
     } catch (e) { salesJob = { running: false, error: e.message, at: new Date().toISOString() }; console.error('[Sales] pull failed:', e.message); }

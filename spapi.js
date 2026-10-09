@@ -8,6 +8,7 @@ const axios = require('axios');
 const qs = require('querystring');
 const { parseOrdersReport, reportWindows, orderRecords } = require('./lib/velocity');
 const hazmatLib = require('./lib/hazmat');
+const { parseReturns } = require('./lib/returns');
 
 // Overridable only for local testing against a fake Amazon; never set in Railway.
 const SP_API_BASE = process.env.SPAPI_BASE_URL || 'https://sellingpartnerapi-na.amazon.com';
@@ -353,18 +354,20 @@ async function getSalesVelocity(days = 30) {
   return Object.assign(parseOrdersReport(bodies, Date.parse(after)), { records: orderRecords(bodies, Date.parse(after)), fromMs: Date.parse(after) });
 }
 
-// Order lines from `fromMs` to now, for the daily gross sales history
-// (lib/velocity.js orderRecords). Amazon allows 30 days per orders report and
-// creates few reports a minute (burst ~15, then ~1/min), so a long history is
-// pulled two at a time and a refused create waits a minute and tries again.
-async function getOrderRecords(fromMs, onProgress) {
+// A report type pulled in 30-day windows from `fromMs` to now, two at a time.
+// Amazon creates few reports a minute (burst ~15, then ~1/min), so a refused
+// create waits a minute and tries again. A window Amazon can't build (too
+// old, or a hiccup) is skipped and listed in `failed`, so the caller saves
+// only the days it can vouch for.
+async function pullReportWindows(reportType, fromMs, onProgress, label) {
   const zlib = require('zlib');
   const wins = reportWindows(Math.ceil((Date.now() - fromMs) / 86400000), Date.now());
+  const failed = [];
   const one = async ([start, end]) => {
     let reportId = null;
     for (let tries = 0; !reportId; tries++) {
       try {
-        const r = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, { reportType: 'GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL', marketplaceIds: [MARKETPLACE_ID], dataStartTime: start, dataEndTime: end },
+        const r = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, { reportType, marketplaceIds: [MARKETPLACE_ID], dataStartTime: start, dataEndTime: end },
           { headers: { 'Content-Type': 'application/json' } });
         reportId = r.data.reportId;
       } catch (e) {
@@ -381,18 +384,27 @@ async function getOrderRecords(fromMs, onProgress) {
         const dl = await http.get(doc.data.url, { responseType: 'arraybuffer' });
         return doc.data.compressionAlgorithm === 'GZIP' ? zlib.gunzipSync(Buffer.from(dl.data)).toString('utf-8') : Buffer.from(dl.data).toString('utf-8');
       }
-      if (status === 'CANCELLED') return '';   // Amazon cancels a window with no orders
+      if (status === 'CANCELLED') return '';   // Amazon cancels a window with nothing in it
       if (status === 'FATAL') { failed.push([start, end, 'Amazon could not build it (FATAL)']); return ''; }
     }
     failed.push([start, end, 'timed out']); return '';
   };
-  // A window Amazon can't build (too old, or a hiccup) is skipped and reported,
-  // so the caller saves only the days it can vouch for.
-  const failed = [];
   const bodies = new Array(wins.length); let next = 0, done = 0;
-  const worker = async () => { while (next < wins.length) { const i = next++; bodies[i] = await one(wins[i]); done++; if (onProgress) onProgress(`${done} of ${wins.length} months of orders read…`); } };
+  const worker = async () => { while (next < wins.length) { const i = next++; bodies[i] = await one(wins[i]); done++; if (onProgress) onProgress(`${done} of ${wins.length} months of ${label || 'data'} read…`); } };
   await Promise.all([worker(), worker()]);
-  return { records: orderRecords(bodies, fromMs), failed };
+  return { bodies, failed };
+}
+
+// Order lines from `fromMs` to now, for the daily gross sales history
+// (lib/velocity.js orderRecords).
+async function getOrderRecords(fromMs, onProgress) {
+  const r = await pullReportWindows('GET_FLAT_FILE_ALL_ORDERS_DATA_BY_LAST_UPDATE_GENERAL', fromMs, onProgress, 'orders');
+  return { records: orderRecords(r.bodies, fromMs), failed: r.failed };
+}
+// Customer returns from `fromMs` to now (lib/returns.js), for the dashboard.
+async function getReturnRecords(fromMs, onProgress) {
+  const r = await pullReportWindows('GET_FBA_FULFILLMENT_CUSTOMER_RETURNS_DATA', fromMs, onProgress, 'returns');
+  return { records: parseReturns(r.bodies).filter(x => x.ts >= fromMs), failed: r.failed };
 }
 
 // Amazon's restock recommendation (Seller Central → Restock Inventory), raw
@@ -1136,4 +1148,4 @@ async function getShipmentStatuses(ids) {
   return out;
 }
 
-module.exports = { getOrderRecords, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+module.exports = { getOrderRecords, getReturnRecords, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
