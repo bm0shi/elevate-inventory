@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'file-claims-1052';
+const BUILD_ID = 'repricer-1053';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -9229,6 +9229,8 @@ initDb().then(() => {
     sendTestEmail: (run) => sendRunEmail(run, pool) });
   // Ask Elevate: the owner's questions answered by Claude from the app's data (ask.js)
   require('./ask')(app, { pool, ownerAuth, port: PORT });
+  // Repricer: the owner's night price drop in time slots, switched on/off in Admin (repricer.js)
+  require('./repricer')(app, { pool, ownerAuth, spapi: require('./spapi'), sendAlert, ourSellerId });
   app.use(errorHandler);
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {
