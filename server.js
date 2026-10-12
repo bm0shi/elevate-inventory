@@ -30,6 +30,7 @@ const { checkinDays, checkinStats, reconcileLookbackDays } = require('./lib/chec
 const { sendAlert, sendEmail, channels: alertChannels } = require('./lib/notify');
 const pack = require('./lib/pack');
 const pallet = require('./lib/pallet');
+const search = require('./lib/search');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -416,7 +417,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'new-look-everywhere-1041';
+const BUILD_ID = 'search-everything-1042';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1293,6 +1294,51 @@ app.post('/api/products/:asin/case-qty', auth, async (req, res) => {
   const r = await pool.query('UPDATE inv_products SET case_qty=$2 WHERE asin=$1', [req.params.asin, n]);
   if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Product not found' });
   res.json({ ok: true, caseQty: n });
+});
+
+// Search everything (the ⌘K box). Warehouse login: products (name, ASIN,
+// SKU, FNSKU, a scanned barcode), FBA shipments, app-made shipment plans and
+// Cosmoprof invoices (order #, item #, description). Nothing about money:
+// on-hand counts and locations only, like the On Hand screen.
+app.get('/api/search', auth, async (req, res) => {
+  const t = search.terms(req.query.q);
+  if (t.raw.length < 2) return res.json({ ok: true, products: [], shipments: [], plans: [], invoices: [] });
+  const upc = normCode(t.raw);
+  const words = t.words.length ? t.words : [t.any];
+  const [prods, ships, packs, plans, invs] = await Promise.all([
+    pool.query(
+      `SELECT p.asin, p.name, p.sku, p.fnsku, p.upc_norm, p.location, p.image, COALESCE(s.onhand,0)::int AS onhand
+       FROM inv_products p LEFT JOIN inv_stock s ON s.asin = p.asin
+       WHERE upper(p.asin) = $1 OR upper(p.fnsku) = $1 OR upper(p.sku) = $1 OR ($2 <> '' AND p.upc_norm = $2)
+          OR p.asin ILIKE $3 OR p.sku ILIKE $3 OR p.fnsku ILIKE $3 OR p.name ILIKE ALL($4::text[])
+       -- a broad word ("tea tree") matches most of the catalog: keep the ones on the shelf
+       ORDER BY (upper(p.asin) = $1 OR upper(p.fnsku) = $1 OR upper(p.sku) = $1) DESC, COALESCE(s.onhand,0) > 0 DESC, length(p.name)
+       LIMIT 80`, [t.upper, upc || '', t.any, words]),
+    pool.query(
+      `SELECT shipment_id, shipment_name AS name, status, created_at FROM inv_shipments
+       WHERE shipment_id ILIKE $1 OR shipment_name ILIKE $1 ORDER BY created_at DESC LIMIT 6`, [t.any]),
+    pool.query(
+      `SELECT shipment_id, name, status, created_at FROM inv_pack_shipments
+       WHERE shipment_id ILIKE $1 OR name ILIKE $1 ORDER BY created_at DESC LIMIT 6`, [t.any]),
+    pool.query(
+      `SELECT id, name, status, created_at FROM inv_inbound_plans
+       WHERE status <> 'cancelled' AND name ILIKE $1 ORDER BY created_at DESC LIMIT 4`, [t.any]).catch(() => ({ rows: [] })),
+    pool.query(
+      `SELECT i.order_number, i.invoice_date, i.status, i.created_at FROM inv_invoices i
+       WHERE i.order_number ILIKE $1 OR EXISTS (SELECT 1 FROM inv_invoice_items it WHERE it.order_number = i.order_number
+             AND (it.cosmo_num = $2 OR it.description ILIKE ALL($3::text[])))
+       ORDER BY i.created_at DESC LIMIT 5`, [t.any, t.raw, words]),
+  ]);
+  const products = prods.rows
+    .map(p => ({ p, r: search.rankProduct(p, t.raw, upc) }))
+    .filter(x => x.r > 0).sort((a, b) => b.r - a.r).slice(0, 8)
+    .map(({ p }) => ({ asin: p.asin, name: p.name, sku: p.sku, fnsku: p.fnsku, location: p.location, image: p.image, onhand: p.onhand }));
+  // One row per shipment: the packing record (Shipment Production) wins.
+  const seen = new Set(), shipments = [];
+  packs.rows.forEach(r => { seen.add(r.shipment_id); shipments.push({ id: r.shipment_id, name: r.name, status: r.status, pack: true, created_at: r.created_at }); });
+  ships.rows.forEach(r => { if (!seen.has(r.shipment_id)) shipments.push({ id: r.shipment_id, name: r.name, status: r.status, pack: false, created_at: r.created_at }); });
+  shipments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  res.json({ ok: true, products, shipments: shipments.slice(0, 6), plans: plans.rows, invoices: invs.rows });
 });
 
 app.get('/api/products', auth, async (req, res) => {
@@ -8842,6 +8888,7 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/dash2.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'dash2.js')); });
 // On Hand's new look (classic stays in index.html as the backup).
 app.get('/look2.css', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'look2.css')); });
+app.get('/palette.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'palette.js')); });
 app.get('/onhand2.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'onhand2.js')); });
 // Barcode drawing for the 2D box labels (PDF417), served from the app itself
 // so printing a label never depends on an outside CDN being reachable.

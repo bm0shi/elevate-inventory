@@ -60,6 +60,8 @@ html.nl header .sub button {
 }
 html.nl header .sub button:hover { background: rgba(255,255,255,.12) !important; }
 html.nl header .sub #autoRefreshBtn { color: #b8f0c4 !important; }
+html.nl header .sub #palBtn { min-width: 200px; justify-content: space-between; color: #c7d6da !important; font-weight: 600 !important; }
+@media (max-width: 760px) { html.nl header .sub #palBtn { min-width: 0; } html.nl header .sub #palBtn kbd { display: none; } }
 html.nl header .sub .nl-classic { background: transparent !important; border-color: transparent !important; color: #9fb4ba !important; text-decoration: underline; text-underline-offset: 3px; }
 html.nl #refreshStamp { color: #8fd19e !important; margin: 0 !important; }
 
@@ -140,7 +142,7 @@ html.nl .box { padding: 18px 20px; margin-bottom: 14px; }
 html.nl .box > div[style*="font-weight:700"]:first-child,
 html.nl .box > div[style*="font-weight:800"]:first-child { font-size: 16px; font-weight: 800 !important; color: var(--k-ink); letter-spacing: -.1px; }
 html.nl .hint { color: var(--k-ink2); font-size: 13px; line-height: 1.5; }
-html.nl label:not(.oh2 *):not(.d2 *) { font-family: var(--k-font); font-size: 11px; font-weight: 750; letter-spacing: .7px; color: var(--k-muted); }
+html.nl label:not(.oh2 *):not(.d2 *):not(.pal *) { font-family: var(--k-font); font-size: 11px; font-weight: 750; letter-spacing: .7px; color: var(--k-muted); }
 
 /* Stat tiles (.cards > .card): the On Hand tile */
 html.nl .cards { gap: 12px; margin-bottom: 14px; }
@@ -153,17 +155,17 @@ html.nl .card .n { font-family: var(--k-font); font-size: 24px; font-weight: 850
 html.nl .card .l { font-size: 11.5px; font-weight: 750; color: var(--k-ink2); text-transform: none; letter-spacing: 0; margin-top: 2px; }
 
 /* ---------- Controls ---------- */
-html.nl input[type=text]:not(.oh2 *):not(.d2 *), html.nl input[type=number]:not(.oh2 *):not(.d2 *), html.nl input[type=password]:not(.oh2 *):not(.d2 *),
-html.nl input[type=date]:not(.oh2 *):not(.d2 *), html.nl input[type=search]:not(.oh2 *):not(.d2 *), html.nl select:not(.oh2 *):not(.d2 *), html.nl textarea:not(.oh2 *):not(.d2 *) {
+html.nl input[type=text]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=number]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=password]:not(.oh2 *):not(.d2 *):not(.pal *),
+html.nl input[type=date]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=search]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:not(.oh2 *):not(.d2 *):not(.pal *), html.nl textarea:not(.oh2 *):not(.d2 *):not(.pal *) {
   font-family: var(--k-font); color: var(--k-ink); background: #fff;
   border: 1px solid var(--k-line) !important; border-radius: 10px !important;
   transition: border-color .2s, box-shadow .2s;
 }
-html.nl input[type=text]:not(.oh2 *):not(.d2 *), html.nl input[type=number]:not(.oh2 *):not(.d2 *), html.nl input[type=password]:not(.oh2 *):not(.d2 *) { font-size: 16px; padding: 12px 14px; }
-html.nl select:not(.oh2 *):not(.d2 *) { font-size: 13.5px !important; font-weight: 650; padding: 10px 12px !important; }
-html.nl textarea:not(.oh2 *):not(.d2 *) { font-size: 13px; padding: 12px 14px; }
-html.nl input:hover:not(.oh2 *):not(.d2 *), html.nl select:hover:not(.oh2 *):not(.d2 *), html.nl textarea:hover:not(.oh2 *):not(.d2 *) { border-color: #c6d4dc !important; }
-html.nl input:focus:not(.oh2 *):not(.d2 *), html.nl select:focus:not(.oh2 *):not(.d2 *), html.nl textarea:focus:not(.oh2 *):not(.d2 *) {
+html.nl input[type=text]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=number]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=password]:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 16px; padding: 12px 14px; }
+html.nl select:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 13.5px !important; font-weight: 650; padding: 10px 12px !important; }
+html.nl textarea:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 13px; padding: 12px 14px; }
+html.nl input:hover:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:hover:not(.oh2 *):not(.d2 *):not(.pal *), html.nl textarea:hover:not(.oh2 *):not(.d2 *):not(.pal *) { border-color: #c6d4dc !important; }
+html.nl input:focus:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:focus:not(.oh2 *):not(.d2 *):not(.pal *), html.nl textarea:focus:not(.oh2 *):not(.d2 *):not(.pal *) {
   border-color: var(--k-brand) !important; box-shadow: 0 0 0 3px rgba(13,68,80,.12) !important; outline: none;
 }
 /* The scan boxes stay big: they are what the floor looks at */
@@ -225,14 +227,14 @@ html.nl .viewtoggle button { font-family: var(--k-font); font-size: 12.5px; font
 html.nl .viewtoggle button.on { background: #fff; color: var(--k-ink); box-shadow: 0 1px 2px rgba(16,24,40,.12); }
 
 /* ---------- Tables: light header, quiet rows ---------- */
-html.nl table:not(.oh2 *):not(.d2 *) { border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow); border-collapse: separate; border-spacing: 0; }
-html.nl th:not(.oh2 *):not(.d2 *) {
+html.nl table:not(.oh2 *):not(.d2 *):not(.pal *) { border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow); border-collapse: separate; border-spacing: 0; }
+html.nl th:not(.oh2 *):not(.d2 *):not(.pal *) {
   background: var(--k-sunk) !important; color: var(--k-muted) !important; font-family: var(--k-font);
   font-size: 11px; font-weight: 750; letter-spacing: .6px; padding: 10px 12px; border-bottom: 1px solid var(--k-line);
 }
-html.nl td:not(.oh2 *):not(.d2 *) { font-size: 13.5px; padding: 10px 12px; border-bottom: 1px solid var(--k-line2); font-variant-numeric: tabular-nums; }
-html.nl tbody tr:last-child td:not(.oh2 *):not(.d2 *), html.nl table:not(.oh2 *):not(.d2 *) tr:last-child td { border-bottom: 0; }
-html.nl tbody tr:hover td:not(.oh2 *):not(.d2 *) { background-color: #fafcfd; }
+html.nl td:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 13.5px; padding: 10px 12px; border-bottom: 1px solid var(--k-line2); font-variant-numeric: tabular-nums; }
+html.nl tbody tr:last-child td:not(.oh2 *):not(.d2 *):not(.pal *), html.nl table:not(.oh2 *):not(.d2 *):not(.pal *) tr:last-child td { border-bottom: 0; }
+html.nl tbody tr:hover td:not(.oh2 *):not(.d2 *):not(.pal *) { background-color: #fafcfd; }
 /* tables nested in a card don't need a second frame */
 html.nl .box table, html.nl .pcard table { box-shadow: none; }
 
