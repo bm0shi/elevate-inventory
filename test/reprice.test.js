@@ -66,3 +66,16 @@ test('sku keys ignore leading zeros a spreadsheet dropped', () => {
   assert.strictEqual(R.skuKey('000123'), R.skuKey('123'));
   assert.strictEqual(R.skuKey('AB-01'), 'AB-01');
 });
+
+test('per-product drops: their own amount, everything else the main drop; bad ones refused', () => {
+  const r = R.checkSettings({ drop: 1, overrides: [{ asin: 'b00k34nh4o', drop: '2.5' }, { asin: 'B001A3W8QA', drop: 0.5 }, { asin: 'B001A3W8QA', drop: 0.75 }] });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.settings.overrides, [{ asin: 'B00K34NH4O', drop: 2.5 }, { asin: 'B001A3W8QA', drop: 0.75 }]);
+  assert.strictEqual(R.dropFor('B00K34NH4O', r.settings), 2.5);
+  assert.strictEqual(R.dropFor('B001A3W8QA', r.settings), 0.75);
+  assert.strictEqual(R.dropFor('B01DCBH560', r.settings), 1);
+  assert.strictEqual(R.dropFor('B01DCBH560', R.checkSettings({ drop: 1.5, overrides: r.settings.overrides }).settings), 1.5);   // main drop changed, the rest follow
+  assert.match(R.checkSettings({ overrides: [{ asin: 'tea tree', drop: 1 }] }).error, /not an ASIN/);
+  assert.match(R.checkSettings({ overrides: [{ asin: 'B00K34NH4O', drop: 0 }] }).error, /between \$0.01/);
+  assert.deepStrictEqual(R.checkSettings({}).settings.overrides, []);
+});

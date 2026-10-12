@@ -147,7 +147,7 @@ module.exports = (app, { pool, ownerAuth, spapi, sendAlert, ourSellerId }) => {
       if (L.hasSalePrice) { counts.salePrice++; await record(run.cycle, { ...base, asin }, 'sale_price', { price: L.price }); continue; }
       if (L.price == null) { counts.listingErrors++; await record(run.cycle, { ...base, asin }, 'no_price'); continue; }
 
-      const dp = R.dropPrice(L.price, cur.drop, cur.maxPct);
+      const dp = R.dropPrice(L.price, R.dropFor(asin, cur), cur.maxPct);
       if (dp.blocked) { counts.blocked++; blocked.push(`${item.sku} (${money(L.price)}): ${dp.blocked}`); await record(run.cycle, { ...base, asin }, 'guard_blocked', { price: L.price, note: dp.blocked }); continue; }
 
       const owned = await spapi.ownsBuyBox(asin, sid);

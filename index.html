@@ -9043,6 +9043,11 @@ const RP_CSS = `
 #sub-reprice .rp-lab{display:block;font-size:13px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--rp-mute);margin-bottom:8px}
 #sub-reprice .rp-money{display:flex;align-items:center;gap:8px;font-size:26px;font-weight:800;color:var(--rp-ink)}
 #sub-reprice .rp-money input{width:130px;font-size:24px !important;font-weight:800;text-align:center}
+#sub-reprice .rp-money.sm{font-size:17px;justify-content:center;gap:4px;white-space:nowrap}
+#sub-reprice .rp-money.sm input{width:96px;font-size:17px !important;padding:8px 10px !important}
+#sub-reprice .rp-ov{margin-bottom:12px}
+#sub-reprice .rp-ovadd{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+#sub-reprice .rp-ovadd #rpOvProd{flex:1 1 280px;min-width:0}
 #sub-reprice .rp-slot{display:grid;grid-template-columns:auto auto auto auto 1fr auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--rp-line);border-radius:14px;margin-bottom:10px;background:#f8fafb}
 #sub-reprice .rp-slot.off{opacity:.55}
 #sub-reprice .rp-slot input[type=time]{font-size:19px;font-weight:700;padding:10px 12px;border:1px solid #cfd9e0;border-radius:10px;background:#fff;color:var(--rp-ink);font-family:inherit}
@@ -9080,6 +9085,10 @@ const RP_CSS = `
   #sub-reprice .rp-tbl td.n{white-space:nowrap;font-size:13.5px}
   #sub-reprice .rp-tbl col.c1{width:36% !important} #sub-reprice .rp-tbl col.c4{width:32% !important}
   #sub-reprice .rp-tbl .note{display:none}
+  #sub-reprice .rp-ov col.cd{width:104px !important} #sub-reprice .rp-ov col.cx{width:72px !important}
+  #sub-reprice .rp-ov td{padding:10px 6px}
+  #sub-reprice .rp-ov .rp-money.sm input{width:68px;padding:8px 4px !important}
+  #sub-reprice .rp-ov .rp-x{padding:8px 2px}
 }`;
 let _rp=null, _rpEdit=null, _rpPoll=null;
 const rpMoney=v=>v==null?'—':'$'+Number(v).toFixed(2);
@@ -9091,6 +9100,8 @@ function loadReprice(){
   if(!document.getElementById('rpCss')){ const st=document.createElement('style'); st.id='rpCss'; st.textContent=RP_CSS; document.head.appendChild(st); }
   const el=document.getElementById('repriceBody'); if(!el) return;
   if(!_rp) el.innerHTML='<div class="hint" style="padding:16px">Loading…</div>';
+  // Product names for the per-product drops
+  if(!(products||[]).length) loadProducts().then(()=>{ if(_rp) renderReprice(); }).catch(()=>{});
   ownerApi('/api/reprice').then(d=>{
     if(!d||d.ok===false){ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc((d&&d.error)||'no reply')+'</div>'; return; }
     _rp=d; if(!_rpEdit) _rpEdit=JSON.parse(JSON.stringify(d.settings)); renderReprice();
@@ -9118,12 +9129,13 @@ function renderReprice(){
   h+='</div></div>';
   // settings
   h+='<div class="rp-card"><h3>Settings</h3><p class="sub">Only listings with stock at Amazon where someone else has the Buy Box are lowered. Listings on sale, not buyable, or where we already have the Buy Box are left alone.</p><div class="rp-set">'
-    +'<div><span class="rp-lab">Price drop</span><div class="rp-money">− $<input type="number" id="rpDrop" min="0.01" max="50" step="0.01" value="'+Number(E.drop).toFixed(2)+'" oninput="_rpEdit.drop=this.value"></div></div>'
+    +'<div><span class="rp-lab">Price drop</span><div class="rp-money">− $<input type="number" id="rpDrop" min="0.01" max="50" step="0.01" value="'+Number(E.drop).toFixed(2)+'" oninput="_rpEdit.drop=this.value;rpNote()"></div></div>'
     +'<div><span class="rp-lab">Time slots (Arizona time)</span>'
     +E.slots.map((s,i)=>'<div class="rp-slot'+(s.on?'':' off')+'"><input type="time" value="'+esc(s.drop)+'" onchange="_rpEdit.slots['+i+'].drop=this.value;renderReprice()" aria-label="Drop at"><span class="to">back at</span><input type="time" value="'+esc(s.back)+'" onchange="_rpEdit.slots['+i+'].back=this.value;renderReprice()" aria-label="Back at">'
       +'<label><input type="checkbox"'+(s.on?' checked':'')+' onchange="_rpEdit.slots['+i+'].on=this.checked;renderReprice()"> On</label><span class="len">'+rpLen(s)+'</span><button class="rp-x" onclick="_rpEdit.slots.splice('+i+',1);renderReprice()">Remove</button></div>').join('')
     +(E.slots.length<6?'<button class="rp-add" onclick="rpAddSlot()">+ Add time slot</button>':'')+'</div></div>'
-    +'<details><summary>More settings</summary><div class="rp-more">'
+    +rpOverridesHtml(E)
+    +'<details'+(_rpMoreOpen?' open':'')+' ontoggle="_rpMoreOpen=this.open"><summary>More settings</summary><div class="rp-more">'
     +'<div><span class="rp-lab">Min. units at Amazon</span><input type="number" min="1" value="'+E.minStock+'" oninput="_rpEdit.minStock=this.value"></div>'
     +'<div><span class="rp-lab">Never more than (% off)</span><input type="number" min="1" max="50" value="'+E.maxPct+'" oninput="_rpEdit.maxPct=this.value"></div>'
     +'<div style="grid-column:1/-1"><span class="rp-lab">Never drop these SKUs</span><textarea placeholder="SKUs, separated by commas or lines" oninput="_rpEdit.exclude=this.value">'+esc((Array.isArray(E.exclude)?E.exclude.join(', '):E.exclude)||'')+'</textarea></div>'
@@ -9156,8 +9168,42 @@ function rpState(r){
   if(r.restore_status==='left_alone') return ['Left alone: check it','#fdecec','#b42d2d',r.note||''];
   return [r.outcome,'#eef3f6','#33424d',r.note||''];
 }
+// Per-product drops (owner: "some ASINs more or less than $1, the rest stay at the main drop").
+let _rpMoreOpen=false, _rpOvOpen=false;
+function rpOverridesHtml(E){
+  const ov=E.overrides||[];
+  const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:''; };
+  let h='<details'+(_rpOvOpen?' open':'')+' ontoggle="_rpOvOpen=this.open"><summary>Different drop for some products'+(ov.length?' ('+ov.length+')':'')+'</summary>'
+    +'<p class="sub" style="margin:8px 0 10px">Products listed here drop by their own amount. Everything else drops the main price drop above (now <b>'+rpMoney(E.drop)+'</b>). The safety cap still applies to all.</p>';
+  if(ov.length) h+='<table class="rp-tbl rp-ov"><colgroup><col><col class="cd" style="width:150px"><col class="cx" style="width:110px"></colgroup><tr><th>Product</th><th>Drop</th><th></th></tr>'
+    +ov.map((o,i)=>'<tr><td>'+amzLinkSized(o.asin, nm(o.asin)||o.asin)+'<div class="sku">'+esc(o.asin)+'</div></td>'
+      +'<td><div class="rp-money sm">− $<input type="number" min="0.01" max="50" step="0.01" value="'+Number(o.drop).toFixed(2)+'" oninput="_rpEdit.overrides['+i+'].drop=this.value;rpNote()" aria-label="Drop for '+esc(o.asin)+'"></div></td>'
+      +'<td><button class="rp-x" onclick="_rpEdit.overrides.splice('+i+',1);renderReprice()">Remove</button></td></tr>').join('')+'</table>';
+  h+='<div class="rp-ovadd"><input type="text" id="rpOvProd" list="rpProdList" placeholder="Product name or ASIN" autocomplete="off">'
+    +'<div class="rp-money sm">− $<input type="number" id="rpOvAmt" min="0.01" max="50" step="0.01" placeholder="'+Number(E.drop).toFixed(2)+'"></div>'
+    +'<button class="rp-add" onclick="rpAddOverride()">+ Add product</button></div>'
+    +'<datalist id="rpProdList">'+(products||[]).filter(p=>p.asin).map(p=>'<option value="'+esc(p.asin)+'" label="'+esc(p.name||'')+'"></option>').join('')+'</datalist></details>';
+  return h;
+}
+function rpAddOverride(){
+  const t=(document.getElementById('rpOvProd').value||'').trim(), amt=parseFloat(document.getElementById('rpOvAmt').value);
+  if(!t){ toast('Pick a product',true); return; }
+  let asin=null;
+  if(/^[A-Z0-9]{10}$/i.test(t)) asin=t.toUpperCase();
+  else {
+    const words=t.toLowerCase().split(/\s+/).filter(Boolean);
+    const hits=(products||[]).filter(p=>p.asin&&words.every(w=>String(p.name||'').toLowerCase().includes(w)));
+    if(hits.length!==1){ toast(hits.length?hits.length+' products match. Pick one from the list.':'No product matches "'+t+'"', true); return; }
+    asin=hits[0].asin;
+  }
+  if(!(amt>=0.01&&amt<=50)){ toast('Enter how much to take off ($0.01 to $50)',true); return; }
+  const ov=_rpEdit.overrides=(_rpEdit.overrides||[]).filter(o=>o.asin!==asin);
+  ov.push({asin, drop:Math.round(amt*100)/100}); _rpOvOpen=true; renderReprice();
+}
+function rpNote(){ const n=document.getElementById('rpSaveNote'); if(n) n.textContent=rpDirty()?'Not saved yet':''; }
 function rpDirty(){ if(!_rp||!_rpEdit) return false; const a=_rp.settings, b=_rpEdit;
-  return Number(a.drop)!==Number(b.drop)||String(a.minStock)!==String(b.minStock)||String(a.maxPct)!==String(b.maxPct)||JSON.stringify(a.slots)!==JSON.stringify(b.slots)
+  const ovs=x=>JSON.stringify((x||[]).map(o=>[o.asin, Number(o.drop)]));
+  return ovs(a.overrides)!==ovs(b.overrides)||Number(a.drop)!==Number(b.drop)||String(a.minStock)!==String(b.minStock)||String(a.maxPct)!==String(b.maxPct)||JSON.stringify(a.slots)!==JSON.stringify(b.slots)
     ||(Array.isArray(b.exclude)?b.exclude.join(','):String(b.exclude||'').split(/[\s,]+/).filter(Boolean).join(','))!==a.exclude.join(','); }
 function rpAddSlot(){
   // Starts right after the last slot ends, an hour long, so it doesn't overlap.
