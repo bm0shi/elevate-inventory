@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fba-repricer-1057';
+const BUILD_ID = 'fba-atamazon-1058';
 
 // ---- Postgres ----
 const pool = new Pool({
