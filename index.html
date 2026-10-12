@@ -627,7 +627,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
         <div class="subcol">
           <div class="subrow"><div class="subgroup-label">Data</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="market" onclick="showSubTab('market',event)">Market Data</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button></div></div>
           <div class="subrow"><div class="subgroup-label">Shipments</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button></div></div>
-          <div class="subrow"><div class="subgroup-label">Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button></div></div>
+          <div class="subrow"><div class="subgroup-label">Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="status" onclick="showSubTab('status',event)">App status<span id="statusDot" class="fresh-tag" style="display:none"></span></button><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button></div></div>
           <div class="subrow"><div class="subgroup-label">Item locations</div><div class="subgroup-btns"><button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button></div></div>
         </div>
         <div class="subkey"><span class="amz-key"></span>Orange = pulls from Amazon (Market Data: Keepa). The tag says how long ago it was refreshed; <b style="color:#c0392b">red</b> = time to refresh.</div>
@@ -981,6 +981,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
     </div>
     <div id="fbaInvBody"></div>
   </div>
+<div id="sub-status" class="subpanel"><div id="statusBody"></div></div>
 <div id="sub-history" class="subpanel">
     <div class="box">
       <div style="font-weight:700;margin-bottom:8px">Received Log</div>
@@ -4045,6 +4046,7 @@ function showSubTab(name, ev){
   if(['restock','sendnext','orders','count'].includes(name)) setBeta(true);
   if(name==='count') countInit();
   if(name==='shortages') loadShortages();
+  if(name==='status') loadStatus();
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
@@ -8723,6 +8725,65 @@ function pollHazmat(){
 // way to reorder wrong, so the age is shown at the top of Admin at all times.
 // sub = the orange Admin tab that shows how old its data is (owner: the
 // separate "LAST UPDATED" bar repeated what the orange tabs are for).
+// ---- APP STATUS (Admin → Checks): every background job and connection, ----
+// green / amber / red, with what to do (rules in lib/health.js).
+const ST_CSS = `
+#sub-status .st-hero{display:flex;align-items:center;gap:16px;flex-wrap:wrap;background:#fff;border:1px solid #e3e9ee;border-radius:14px;padding:18px 20px;margin-bottom:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+#sub-status .st-hero .dot{width:46px;height:46px;border-radius:14px;display:grid;place-items:center;font-size:22px;flex:0 0 auto}
+#sub-status .st-hero h3{margin:0;font-size:20px;font-weight:800;color:#0b1f24}
+#sub-status .st-hero p{margin:3px 0 0;color:#45545f;font-size:13px}
+#sub-status .st-hero .acts{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap}
+#sub-status .st-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,330px),1fr));gap:12px;margin-bottom:16px;align-items:start}
+#sub-status .st-c{background:#fff;border:1px solid #e3e9ee;border-radius:14px;padding:14px 16px;position:relative;overflow:hidden;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+#sub-status .st-c::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--c)}
+#sub-status .st-c .h{display:flex;align-items:center;gap:8px;font-weight:800;font-size:14px;color:#0b1f24}
+#sub-status .st-c .b{margin-left:auto;font-size:11px;font-weight:800;border-radius:999px;padding:3px 9px;background:var(--bg);color:var(--c);white-space:nowrap}
+#sub-status .st-c .d{font-size:13px;color:#45545f;margin-top:6px;line-height:1.45;overflow-wrap:anywhere}
+#sub-status .st-c .f{font-size:12.5px;color:#0b1f24;margin-top:8px;padding:8px 10px;border-radius:10px;background:#f6f9fb;line-height:1.45}
+#sub-status .st-sec{font-size:15px;font-weight:800;color:#0b1f24;margin:6px 2px 10px}
+#sub-status .st-tbl{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e3e9ee;border-radius:14px;overflow:hidden;font-size:13px;margin-bottom:16px}
+#sub-status .st-tbl th{text-align:left;font-size:11px;letter-spacing:.6px;color:#7d8b97;background:#f8fafb;padding:9px 12px}
+#sub-status .st-tbl td{padding:9px 12px;border-top:1px solid #eef2f5;vertical-align:top;overflow-wrap:anywhere}
+#sub-status .st-tbl td.n{white-space:nowrap;color:#45545f}
+#sub-status .st-sk{height:92px;border-radius:14px;background:linear-gradient(90deg,#eef2f5,#f6f9fb,#eef2f5);background-size:200% 100%;animation:stsk 1.2s infinite}
+@keyframes stsk{to{background-position:-200% 0}}
+@media (prefers-reduced-motion:reduce){#sub-status .st-sk{animation:none}}`;
+const ST_COL = { good:['#0b7a0b','#e8f6ea','OK','✓'], warn:['#a86b00','#fff4dc','Check','!'], bad:['#b42d2d','#fdecec','Broken','✕'] };
+function loadStatus(){
+  if(!document.getElementById('stCss')){ const st=document.createElement('style'); st.id='stCss'; st.textContent=ST_CSS; document.head.appendChild(st); }
+  const el=document.getElementById('statusBody'); if(!el) return;
+  if(!el.innerHTML) el.innerHTML='<div class="st-grid">'+'<div class="st-sk"></div>'.repeat(6)+'</div>';
+  Promise.all([ownerApi('/api/status'), api('/api/cache-status').catch(()=>({}))]).then(([d,cs])=>{
+    if(!d||d.ok===false){ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load the status: '+esc((d&&d.error)||'no reply')+'</div>'; return; }
+    const o=ST_COL[d.overall];
+    const head={good:'Everything is running', warn:'Running, with something to check', bad:'Something needs fixing'}[d.overall];
+    const nBad=d.checks.filter(c=>c.state==='bad').length, nWarn=d.checks.filter(c=>c.state==='warn').length;
+    let h='<div class="st-hero"><div class="dot" style="background:'+o[1]+';color:'+o[0]+'">'+o[3]+'</div><div><h3>'+head+'</h3><p>'
+      +(nBad?nBad+' broken · ':'')+(nWarn?nWarn+' to check · ':'')+'Checked '+new Date(d.at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+'</p></div>'
+      +'<div class="acts"><button class="mini" onclick="statusTestAlert(this)">Send a test alert</button><button class="mini" onclick="loadStatus()">↻ Refresh</button></div></div>';
+    h+='<div class="st-grid">'+d.checks.map(c=>{ const k=ST_COL[c.state];
+      return '<div class="st-c" style="--c:'+k[0]+';--bg:'+k[1]+'"><div class="h">'+esc(c.label)+'<span class="b">'+k[3]+' '+k[2]+'</span></div><div class="d">'+esc(c.detail)+'</div>'+(c.fix?'<div class="f">'+esc(c.fix)+'</div>':'')+'</div>'; }).join('')+'</div>';
+    // data the screens show, and how old it is (same sets as the Admin tags)
+    h+='<div class="st-sec">Data age</div><table class="st-tbl"><tr><th>Data</th><th>Updated</th><th>Refresh after</th></tr>'
+      +FRESH_SETS.map(f=>{ const c=cs&&cs[f.key], ts=c&&c.updated_at, hrs=ts?(Date.now()-new Date(ts))/3600000:null, stale=!ts||hrs>f.warnHrs;
+        return '<tr><td>'+esc(f.label)+'</td><td class="n" style="color:'+(stale?'#b42d2d':'#0b7a0b')+';font-weight:700">'+(ts?ageText(ts):'never')+'</td><td class="n">'+(f.warnHrs>=48?Math.round(f.warnHrs/24)+' days':f.warnHrs+' hours')+'</td></tr>'; }).join('')+'</table>';
+    h+='<div class="st-sec">Recent server errors <span style="font-weight:600;color:#7d8b97;font-size:12.5px">since the last restart</span></div>';
+    h+=d.errors.length
+      ? '<table class="st-tbl"><tr><th style="width:150px">When</th><th style="width:30%">Where</th><th>What went wrong</th></tr>'+d.errors.map(e=>'<tr><td class="n">'+new Date(e.at).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'</td><td><code>'+esc(e.method+' '+e.path)+'</code></td><td>'+esc(e.message)+'</td></tr>').join('')+'</table>'
+      : '<div class="box hint" style="text-align:center">No errors. Every request since the last restart went through.</div>';
+    el.innerHTML=h;
+    const dot=document.getElementById('statusDot'); if(dot){ dot.style.display=d.overall==='good'?'none':''; dot.textContent=d.overall==='bad'?'!':'•'; dot.classList.toggle('stale', d.overall==='bad'); }
+  }).catch(e=>{ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load the status: '+esc(e.message)+'</div>'; });
+}
+function statusTestAlert(btn){
+  btn.disabled=true;
+  ownerApi('/api/status/test-alert',{method:'POST',body:'{}'}).then(d=>{
+    btn.disabled=false;
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not send',true); return; }
+    const r=d.result||{}; const parts=Object.keys(r).map(k=>(k==='ntfy'?'Phone':'Email')+': '+r[k]);
+    toast('Test alert · '+(parts.join(' · ')||'sent'), parts.some(p=>/failed/.test(p)));
+  }).catch(e=>{ btn.disabled=false; toast(e.message,true); });
+}
 const FRESH_SETS = [
   { key:'fba_inventory',  label:'FBA Inventory', warnHrs:24,  subs:['fbainv'] },
   { key:'velocity',       label:'Velocity',      warnHrs:72,  subs:['velocity'] },
