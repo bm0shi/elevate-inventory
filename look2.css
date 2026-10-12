@@ -42,7 +42,7 @@ html.nl header {
 }
 html.nl header h1 {
   display: flex; align-items: center; gap: 10px;
-  font-family: var(--k-font); font-size: 16px; font-weight: 800; letter-spacing: .2px; text-transform: none; color: #fff;
+  font-family: var(--k-font); font-size: 19px; font-weight: 800; letter-spacing: .2px; text-transform: none; color: #fff;
 }
 html.nl header h1 .nl-mark {
   display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
@@ -52,9 +52,9 @@ html.nl header h1 .nl-emoji { display: none; }
 html.nl header h1 small { font-size: 12px; font-weight: 600; color: #9fb4ba; letter-spacing: .1px; }
 /* The tagline is a bare text node; font-size:0 hides it, children get their size back. */
 html.nl header .sub { font-size: 0; margin: 0 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-html.nl header .sub > * { font-size: 12px; }
+html.nl header .sub > * { font-size: 13.5px; }
 html.nl header .sub button {
-  margin: 0 !important; padding: 7px 12px !important; font-size: 12px !important; font-weight: 700 !important;
+  margin: 0 !important; padding: 8px 14px !important; font-size: 13.5px !important; font-weight: 700 !important;
   border-radius: 999px !important; border: 1px solid rgba(255,255,255,.14) !important;
   background: rgba(255,255,255,.06) !important; color: #e6eef0 !important; cursor: pointer;
 }
@@ -75,21 +75,21 @@ html.nl .tabs {
 html.nl .tabs::-webkit-scrollbar { display: none; }
 html.nl .tab {
   flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px;
-  padding: 15px 13px 13px; font-family: var(--k-font); font-size: 13.5px; font-weight: 700; letter-spacing: 0;
+  padding: 17px 11px 15px; font-family: var(--k-font); font-size: 15.5px; font-weight: 700; letter-spacing: 0;
   color: var(--k-ink2); background: transparent !important; border-bottom: 3px solid transparent !important;
   box-shadow: none !important; white-space: nowrap; transition: color .15s, border-color .15s;
 }
 html.nl .tab:hover { color: var(--k-ink); background: transparent !important; }
 html.nl .tab.active { color: var(--k-brand) !important; border-bottom-color: var(--k-amz) !important; font-weight: 800; }
-html.nl .tab .nl-ico { width: 17px; height: 17px; flex: 0 0 auto; opacity: .8; }
+html.nl .tab .nl-ico { width: 20px; height: 20px; flex: 0 0 auto; opacity: .8; }
 html.nl .tab.active .nl-ico { opacity: 1; }
 html.nl .tabs .tab b {
-  width: 19px; height: 19px; margin: 0; font-size: 10.5px; font-weight: 800;
+  width: 23px; height: 23px; margin: 0; font-size: 12.5px; font-weight: 800;
   background: var(--k-line2); color: var(--k-ink2);
 }
 html.nl .tabs .tab.active b { background: var(--k-brand); color: #fff; }
 html.nl .flowlabel {
-  align-self: center; white-space: nowrap; padding: 0 8px 0 4px; font-family: var(--k-font); font-size: 10.5px; font-weight: 800;
+  align-self: center; white-space: nowrap; padding: 0 8px 0 4px; font-family: var(--k-font); font-size: 12px; font-weight: 800;
   letter-spacing: 1px; color: var(--k-muted);
 }
 html.nl .flowdiv { width: 1px; background: var(--k-line); margin: 12px 8px; flex: 0 0 auto; }
@@ -103,11 +103,11 @@ html.nl .tabs .tab.active[onclick*="'admin'"] { background: var(--k-brand) !impo
 /* ---------- Page ---------- */
 html.nl .panel { padding: 22px 24px 40px; max-width: 1480px; margin: 0 auto; }
 html.nl .nl-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 2px 2px 16px; }
-html.nl .nl-head h2 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -.3px; color: var(--k-ink); }
-html.nl .nl-head p { margin: 4px 0 0; color: var(--k-ink2); font-size: 13.5px; line-height: 1.45; max-width: 860px; }
+html.nl .nl-head h2 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.3px; color: var(--k-ink); }
+html.nl .nl-head p { margin: 4px 0 0; color: var(--k-ink2); font-size: 16px; line-height: 1.45; max-width: 860px; }
 html.nl .nl-head .nl-step {
-  display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; margin-right: 10px;
-  background: var(--k-brand); color: #fff; font-size: 13px; font-weight: 800; vertical-align: 3px;
+  display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; margin-right: 12px;
+  background: var(--k-brand); color: #fff; font-size: 16px; font-weight: 800; vertical-align: 3px;
 }
 /* The title boxes the new page heads replace */
 html.nl #pendingprep > .nl-head + .box { display: none; }
@@ -125,11 +125,11 @@ html.nl #prodHome > div:first-child > div:first-child {
   padding: 20px 24px 2px !important; border-bottom: 0 !important;
 }
 html.nl #prodHome > div:first-child > div:first-child > div:first-child {
-  font-size: 24px !important; font-weight: 800 !important; text-transform: none !important; letter-spacing: -.3px !important;
+  font-size: 30px !important; font-weight: 800 !important; text-transform: none !important; letter-spacing: -.3px !important;
 }
 html.nl #prodHome > div:first-child > div:first-child > div:first-child::before {
-  content: "3"; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; margin-right: 10px;
-  background: var(--k-brand); color: #fff; font-size: 13px; font-weight: 800; vertical-align: 3px;
+  content: "3"; display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; margin-right: 12px;
+  background: var(--k-brand); color: #fff; font-size: 16px; font-weight: 800; vertical-align: 3px;
 }
 html.nl #prodHome > div:first-child > div:first-child span { color: inherit !important; }
 html.nl #prodHome > div:first-child > div:first-child > div:nth-child(2) { color: var(--k-ink2) !important; font-size: 13.5px !important; margin-top: 4px !important; }
@@ -139,21 +139,21 @@ html.nl #prodSidIn { font-size: 20px !important; border-width: 1.5px !important;
 html.nl .box, html.nl .card, html.nl .pcard, html.nl .ship-card {
   background: #fff; border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow);
 }
-html.nl .box { padding: 18px 20px; margin-bottom: 14px; }
+html.nl .box { padding: 22px 24px; margin-bottom: 16px; }
 html.nl .box > div[style*="font-weight:700"]:first-child,
-html.nl .box > div[style*="font-weight:800"]:first-child { font-size: 16px; font-weight: 800 !important; color: var(--k-ink); letter-spacing: -.1px; }
-html.nl .hint { color: var(--k-ink2); font-size: 13px; line-height: 1.5; }
-html.nl label:not(.oh2 *):not(.d2 *):not(.pal *) { font-family: var(--k-font); font-size: 11px; font-weight: 750; letter-spacing: .7px; color: var(--k-muted); }
+html.nl .box > div[style*="font-weight:800"]:first-child { font-size: 19px; font-weight: 800 !important; color: var(--k-ink); letter-spacing: -.1px; }
+html.nl .hint { color: var(--k-ink2); font-size: 14.5px; line-height: 1.5; }
+html.nl label:not(.oh2 *):not(.d2 *):not(.pal *) { font-family: var(--k-font); font-size: 13px; font-weight: 750; letter-spacing: .7px; color: var(--k-muted); }
 
 /* Stat tiles (.cards > .card): the On Hand tile */
 html.nl .cards { gap: 12px; margin-bottom: 14px; }
 html.nl .card {
-  position: relative; text-align: left; padding: 13px 16px; overflow: hidden;
+  position: relative; text-align: left; padding: 16px 18px; overflow: hidden;
   transition: transform .2s, box-shadow .2s, border-color .2s;
 }
 html.nl .card:hover { border-color: #d3dde4; box-shadow: var(--k-lift); }
-html.nl .card .n { font-family: var(--k-font); font-size: 24px; font-weight: 850; letter-spacing: -.5px; color: var(--k-ink); }
-html.nl .card .l { font-size: 11.5px; font-weight: 750; color: var(--k-ink2); text-transform: none; letter-spacing: 0; margin-top: 2px; }
+html.nl .card .n { font-family: var(--k-font); font-size: 30px; font-weight: 850; letter-spacing: -.5px; color: var(--k-ink); }
+html.nl .card .l { font-size: 14px; font-weight: 750; color: var(--k-ink2); text-transform: none; letter-spacing: 0; margin-top: 2px; }
 
 /* ---------- Controls ---------- */
 html.nl input[type=text]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=number]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=password]:not(.oh2 *):not(.d2 *):not(.pal *),
@@ -162,21 +162,21 @@ html.nl input[type=date]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=
   border: 1px solid var(--k-line) !important; border-radius: 10px !important;
   transition: border-color .2s, box-shadow .2s;
 }
-html.nl input[type=text]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=number]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=password]:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 16px; padding: 12px 14px; }
-html.nl select:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 13.5px !important; font-weight: 650; padding: 10px 12px !important; }
-html.nl textarea:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 13px; padding: 12px 14px; }
+html.nl input[type=text]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=number]:not(.oh2 *):not(.d2 *):not(.pal *), html.nl input[type=password]:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 18px !important; padding: 14px 16px !important; }
+html.nl select:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 16px !important; font-weight: 650; padding: 12px 14px !important; }
+html.nl textarea:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 15px; padding: 14px 16px; }
 html.nl input:hover:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:hover:not(.oh2 *):not(.d2 *):not(.pal *), html.nl textarea:hover:not(.oh2 *):not(.d2 *):not(.pal *) { border-color: #c6d4dc !important; }
 html.nl input:focus:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:focus:not(.oh2 *):not(.d2 *):not(.pal *), html.nl textarea:focus:not(.oh2 *):not(.d2 *):not(.pal *) {
   border-color: var(--k-brand) !important; box-shadow: 0 0 0 3px rgba(13,68,80,.12) !important; outline: none;
 }
 /* The scan boxes stay big: they are what the floor looks at */
-html.nl #scanIn, html.nl #scanPrep, html.nl #scanOut { font-size: 18px; padding: 15px 16px; border-width: 1.5px !important; }
+html.nl #scanIn, html.nl #scanPrep, html.nl #scanOut { font-size: 22px; padding: 17px 18px; border-width: 1.5px !important; }
 
 /* Buttons. One look for all of them, colour by meaning:
    brand = normal, orange = the next step, white = secondary, red = removes stock. */
 html.nl button.action, html.nl .action {
-  font-family: var(--k-font); font-size: 14px; font-weight: 750; letter-spacing: 0;
-  border-radius: 10px !important; padding: 11px 16px; line-height: 1.15;
+  font-family: var(--k-font); font-size: 16px; font-weight: 750; letter-spacing: 0;
+  border-radius: 10px !important; padding: 13px 20px; line-height: 1.15;
   background: var(--k-brand) !important; color: #fff !important; border: 1px solid transparent !important;
   box-shadow: 0 4px 14px -8px rgba(13,68,80,.8) !important; text-shadow: none !important;
   transition: transform .15s, box-shadow .15s, background .15s;
@@ -184,7 +184,10 @@ html.nl button.action, html.nl .action {
 html.nl button.action:hover, html.nl .action:hover { background: var(--k-brand2) !important; transform: translateY(-1px); filter: none; }
 html.nl button.action:active { transform: none; }
 html.nl button.action:focus-visible { outline: 2px solid var(--k-brand); outline-offset: 2px; }
-html.nl button.action.full { padding: 13px 16px; }
+html.nl button.action.full { padding: 16px 20px; font-size: 17px !important; }
+/* Bigger for the floor (owner: "we're in our 40s"): buttons whose own style
+   set a small size get the new look's size anyway. */
+html.nl button.action:not(.full) { font-size: 15.5px !important; padding-top: 12px !important; padding-bottom: 12px !important; }
 /* secondary: white */
 html.nl button.action[style*="background:#eef2f6"], html.nl button.action[style*="background:#5a6472"],
 html.nl button.action[style*="background:#e2e8f0"], html.nl button.action[style*="background:#fff;"],
@@ -216,7 +219,7 @@ html.nl button.action[style*="background:#7a4fb5"] { background: var(--k-brand) 
 html.nl .action.amzbeige, html.nl button.action.amzbeige { border-radius: 10px !important; }
 html.nl button.action:disabled { opacity: .5; transform: none; }
 html.nl .mini {
-  font-family: var(--k-font); font-weight: 700; font-size: 12px; border-radius: 9px; padding: 6px 11px;
+  font-family: var(--k-font); font-weight: 700; font-size: 14px; border-radius: 9px; padding: 8px 14px;
   background: #fff; border: 1px solid var(--k-line); color: var(--k-brand);
 }
 html.nl .mini:hover { background: #fbfdfe; border-color: #c6d4dc; color: var(--k-ink); }
@@ -224,16 +227,16 @@ html.nl .copybtn { opacity: .45; }
 
 /* segmented view switch */
 html.nl .viewtoggle { background: #e9eff3; border-radius: 10px; padding: 3px; }
-html.nl .viewtoggle button { font-family: var(--k-font); font-size: 12.5px; font-weight: 750; color: var(--k-ink2); border-radius: 8px; padding: 8px 12px; }
+html.nl .viewtoggle button { font-family: var(--k-font); font-size: 15px; font-weight: 750; color: var(--k-ink2); border-radius: 8px; padding: 10px 15px; }
 html.nl .viewtoggle button.on { background: #fff; color: var(--k-ink); box-shadow: 0 1px 2px rgba(16,24,40,.12); }
 
 /* ---------- Tables: light header, quiet rows ---------- */
 html.nl table:not(.oh2 *):not(.d2 *):not(.pal *) { border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow); border-collapse: separate; border-spacing: 0; }
 html.nl th:not(.oh2 *):not(.d2 *):not(.pal *) {
   background: var(--k-sunk) !important; color: var(--k-muted) !important; font-family: var(--k-font);
-  font-size: 11px; font-weight: 750; letter-spacing: .6px; padding: 10px 12px; border-bottom: 1px solid var(--k-line);
+  font-size: 12.5px; font-weight: 750; letter-spacing: .6px; padding: 12px 14px; border-bottom: 1px solid var(--k-line);
 }
-html.nl td:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 13.5px; padding: 10px 12px; border-bottom: 1px solid var(--k-line2); font-variant-numeric: tabular-nums; }
+html.nl td:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 15px; padding: 12px 14px; border-bottom: 1px solid var(--k-line2); font-variant-numeric: tabular-nums; }
 html.nl tbody tr:last-child td:not(.oh2 *):not(.d2 *):not(.pal *), html.nl table:not(.oh2 *):not(.d2 *):not(.pal *) tr:last-child td { border-bottom: 0; }
 html.nl tbody tr:hover td:not(.oh2 *):not(.d2 *):not(.pal *) { background-color: #fafcfd; }
 /* tables nested in a card don't need a second frame */
@@ -247,12 +250,12 @@ html.nl .badge.disc, html.nl .pill.out { background: var(--k-critBg); color: var
 html.nl .pill.checkin { background: var(--k-infoBg); color: var(--k-info); }
 html.nl .log-entry {
   background: #fff; border: 1px solid var(--k-line); border-left: 3px solid var(--k-brand); border-radius: 10px;
-  padding: 10px 14px; margin-bottom: 8px; box-shadow: var(--k-shadow); font-size: 13.5px;
+  padding: 12px 16px; margin-bottom: 8px; box-shadow: var(--k-shadow); font-size: 15px;
 }
 html.nl .log-entry.out { border-left-color: var(--k-crit); }
 html.nl .ship-head:hover { background: var(--k-sunk); }
 html.nl .ship-title { font-weight: 800; color: var(--k-ink); }
-html.nl .ship-item-row { border-bottom-color: var(--k-line2); font-size: 13.5px; }
+html.nl .ship-item-row { border-bottom-color: var(--k-line2); font-size: 15px; }
 html.nl .ship-item-row.short { background: var(--k-critBg); }
 html.nl .matched.ok { background: var(--k-goodBg); border: 1px solid #bfe3c5; border-radius: 12px; }
 html.nl .matched.notfound { background: var(--k-warnBg); border: 1px solid #f1d9a6; border-radius: 12px; }
@@ -264,20 +267,21 @@ html.nl .picker-item:hover { background: #f3f8f9; }
 html.nl .pcard { padding: 16px; gap: 14px; transition: box-shadow .2s, border-color .2s; }
 html.nl .pcard:hover { border-color: #d3dde4; box-shadow: var(--k-lift); }
 html.nl .pcard img, html.nl .noimg { border-radius: 12px; background: #f3f6f8; border: 1px solid var(--k-line2); }
-html.nl .pcard .pc-name { font-weight: 750; color: var(--k-ink); }
+html.nl .pcard .pc-name { font-weight: 750; color: var(--k-ink); font-size: 17px; }
 html.nl .pcard .pc-qty .l { color: var(--k-muted); font-weight: 750; letter-spacing: .8px; }
-html.nl .idlabel { color: var(--k-muted); font-weight: 750; letter-spacing: .5px; }
+html.nl .idlabel { color: var(--k-muted); font-weight: 750; letter-spacing: .5px; font-size: 12.5px; }
+html.nl .idpill { font-size: 15.5px; }
 html.nl .idpill { border-radius: 8px; border: 1px solid var(--k-line2); }
 html.nl .ppSplit { border: 1.5px solid #ffc266; background: #fffaf2; border-radius: 16px; }
-html.nl .ppSplitBanner { font-family: var(--k-font); font-size: 18px; letter-spacing: .4px; padding: 7px 20px; box-shadow: 0 6px 18px -10px rgba(255,153,0,.9); }
-html.nl .ppSplitSub { font-size: 13.5px; color: var(--k-ink2); }
-html.nl .ppPart { font-family: var(--k-font); font-size: 16px; letter-spacing: .3px; }
+html.nl .ppSplitBanner { font-family: var(--k-font); font-size: 22px; letter-spacing: .4px; padding: 7px 20px; box-shadow: 0 6px 18px -10px rgba(255,153,0,.9); }
+html.nl .ppSplitSub { font-size: 15.5px; color: var(--k-ink2); }
+html.nl .ppPart { font-family: var(--k-font); font-size: 19px; letter-spacing: .3px; }
 
 /* ---------- Admin nav ---------- */
 html.nl .subtabs { background: #fff; border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow); }
 html.nl .subgroup-label { font-family: var(--k-font); color: var(--k-muted); font-weight: 800; letter-spacing: .7px; }
 html.nl .subtab {
-  font-family: var(--k-font); font-weight: 700; border-radius: 999px; background: #fff; color: var(--k-ink2);
+  font-family: var(--k-font); font-weight: 700; border-radius: 999px; background: #fff; color: var(--k-ink2); font-size: 14.5px !important; padding: 8px 15px !important;
   border: 1px solid var(--k-line); transition: all .15s;
 }
 html.nl .subtab:hover { border-color: #c6d4dc; color: var(--k-ink); background: #fff; }
@@ -290,7 +294,7 @@ html.nl .subtop { color: var(--k-muted); }
 
 /* ---------- Feedback ---------- */
 html.nl .toast {
-  font-family: var(--k-font); font-weight: 750; border-radius: 12px; padding: 12px 18px;
+  font-family: var(--k-font); font-weight: 750; border-radius: 12px; padding: 14px 22px; font-size: 16px;
   background: var(--k-ink); color: #fff; box-shadow: 0 18px 40px -12px rgba(11,31,36,.55);
   border-left: 4px solid #3ccf62;
 }
@@ -305,9 +309,11 @@ html.nl #login h2 { font-family: var(--k-font); font-weight: 800; letter-spacing
 @media (max-width: 760px) {
   html.nl header { padding: 10px 14px; gap: 8px; }
   html.nl header h1 small.nl-only { display: none; }
+  /* phone: the header stays one row; display size and live refresh live on the computer */
+  html.nl header .sub #uiScaleBtn, html.nl header .sub #autoRefreshBtn, html.nl header .sub #tbBtn { display: none; }
   html.nl header .sub { margin-left: auto; }
   html.nl .tabs { padding: 0 6px; }
-  html.nl .tab { padding: 13px 10px 11px; font-size: 13px; }
+  html.nl .tab { padding: 15px 11px 13px; font-size: 15px; }
   html.nl .flowlabel { display: none; }
   html.nl .panel { padding: 16px 14px 32px; }
   html.nl .nl-head h2 { font-size: 21px; }
@@ -321,6 +327,14 @@ html.nl #login h2 { font-family: var(--k-font); font-weight: 800; letter-spacing
   html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > .viewtoggle button { flex: 1; }
   html.nl .cards .card { flex: 1 1 calc(50% - 6px); }
 }
+/* the bigger nav fits one row on a laptop: the flow label goes first */
+@media (max-width: 1560px) { html.nl .flowlabel { display: none; } }
+@media (max-width: 1400px) and (min-width: 761px) {
+  html.nl .tab .nl-ico { display: none; }
+  html.nl .tab { padding-left: 9px; padding-right: 9px; }
+}
+/* on a desktop nothing hides off the edge: the nav takes a second row instead */
+@media (min-width: 761px) { html.nl .tabs { flex-wrap: wrap; overflow-x: visible; } }
 @media (prefers-reduced-motion: reduce) {
   html.nl * { transition: none !important; animation: none !important; }
 }
