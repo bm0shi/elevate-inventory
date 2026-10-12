@@ -51,6 +51,27 @@
   .pal-foot{display:flex;gap:16px;align-items:center;padding:10px 18px;border-top:1px solid ${K.line};background:#fafcfd;font-size:12px;color:${K.muted};flex-wrap:wrap}
   .pal-foot span{display:inline-flex;align-items:center;gap:5px}
   .pal mark{background:#fff1d6;color:inherit;border-radius:3px;padding:0 1px}
+  .pal.asking{max-width:820px}
+  .pal-ask{padding:6px 22px 18px}
+  .pal-askbar{display:flex;align-items:center;gap:10px;padding:10px 22px 0;font-size:13px;color:${K.muted}}
+  .pal-askbar button{all:unset;cursor:pointer;color:${K.brand};font-weight:700}
+  .pal-q{margin:16px 0 8px;font-size:15px;font-weight:800;color:${K.ink};display:flex;gap:10px;align-items:flex-start}
+  .pal-q i{font-style:normal;flex:0 0 auto;width:26px;height:26px;border-radius:8px;background:${K.line2};display:grid;place-items:center;font-size:13px}
+  .pal-a{overflow-wrap:anywhere;font-size:16px;line-height:1.6;color:${K.ink};background:#f8fafb;border:1px solid ${K.line2};border-radius:14px;padding:14px 16px}
+  .pal-a p{margin:0 0 10px}.pal-a p:last-child{margin-bottom:0}
+  .pal-a ul,.pal-a ol{margin:4px 0 10px 22px;padding:0}.pal-a li{margin:3px 0}
+  .pal-a table{border-collapse:collapse;margin:8px 0 10px;font-size:14.5px;width:100%}
+  .pal-a th,.pal-a td{border-bottom:1px solid ${K.line};padding:6px 8px;text-align:left}
+  .pal-a th{font-size:12.5px;color:${K.muted}!important;background:none!important;letter-spacing:.4px;text-transform:uppercase;font-weight:750}
+  .pal-a table{box-shadow:none!important;border:0!important;border-radius:0!important;background:transparent!important}
+  .pal.asking .pal-foot{display:none}
+  .pal-a td.n{text-align:right;font-variant-numeric:tabular-nums}
+  .pal-a code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.5px;background:#fff;border:1px solid ${K.line2};border-radius:5px;padding:0 4px}
+  .pal-a.err{background:#fdecec;border-color:#f5cccc;color:#b42d2d}
+  .pal-steps{font-size:13.5px;color:${K.ink2};display:flex;align-items:center;gap:10px;padding:10px 2px}
+  .pal-steps .spin{visibility:visible;width:16px;height:16px;border:2px solid ${K.line};border-top-color:${K.brand};border-radius:50%;animation:palsp .7s linear infinite}
+  .pal-cost{font-size:12px;color:${K.muted};margin-top:6px;text-align:right}
+  .pal-it.ask .pal-ic{background:#fff4e0;border-color:#ffd699;color:#a35a00}
   @media (max-width:640px){.pal-back{padding:0}.pal{max-width:none;border-radius:0;max-height:100vh;height:100%}.pal-foot{display:none}.pal-go{display:none}}
   @media (prefers-reduced-motion:reduce){.pal-back,.pal{animation:none}}
   .pal-btn{display:inline-flex;align-items:center;gap:8px}
@@ -63,6 +84,7 @@
     plan: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6M8 4H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2"/><path d="M8 12h8M8 16h5"/></svg>',
     doc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/></svg>',
     screen: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+    spark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
     clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
   };
 
@@ -94,14 +116,19 @@
     const st = document.createElement('style'); st.textContent = CSS; document.head.appendChild(st);
     root = document.createElement('div'); root.className = 'pal-back'; root.style.display = 'none';
     root.innerHTML = '<div class="pal" role="dialog" aria-modal="true" aria-label="Search everything">'
-      + '<div class="pal-in">' + ICO.search + '<input id="palQ" type="text" autocomplete="off" spellcheck="false" placeholder="Search products, ASIN, FNSKU, shipments, invoices, screens…" aria-label="Search"><span class="spin"></span><kbd>esc</kbd></div>'
+      + '<div class="pal-in">' + ICO.search + '<input id="palQ" type="text" autocomplete="off" spellcheck="false" placeholder="Search anything, or ask a question…" aria-label="Search"><span class="spin"></span><kbd>esc</kbd></div>'
       + '<div class="pal-list" id="palList" role="listbox"></div>'
       + '<div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>enter</kbd> open</span><span><kbd>esc</kbd> close</span><span style="margin-left:auto">Scan a barcode here too</span></div></div>';
     document.body.appendChild(root);
     input = root.querySelector('#palQ'); list = root.querySelector('#palList'); spin = root.querySelector('.spin');
     root.addEventListener('mousedown', e => { if (e.target === root) close(); });
-    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(query, 140); });
+    input.addEventListener('input', () => { if (asking) return; clearTimeout(timer); timer = setTimeout(query, 140); });
     input.addEventListener('keydown', e => {
+      if (asking) {
+        if (e.key === 'Enter') { e.preventDefault(); const q = input.value.trim(); if (q && !askBusy) ask(q); }
+        else if (e.key === 'Escape') { e.preventDefault(); if (input.value) input.value = ''; else leaveAsk(); }
+        return;
+      }
       if (e.key === 'ArrowDown') { e.preventDefault(); move(1); }
       else if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); }
       else if (e.key === 'Enter') { e.preventDefault(); clearTimeout(timer); if (input.value.trim() !== lastQ) query().then(() => pick(cur)); else pick(cur); }
@@ -113,6 +140,7 @@
 
   function open(prefill) {
     ensure();
+    if (asking) leaveAsk(true);
     root.style.display = 'flex';
     input.value = prefill || ''; lastQ = null;
     // focus now, not on the next tick: keys typed right after ⌘K were lost
@@ -158,16 +186,27 @@
     if (q !== input.value.trim()) return; // a newer search is on its way
     if (!d || d.ok === false) { render([{ sec: 'Search' }, { type: 'err', title: 'Search failed', sub: (d && d.error) || 'No reply' }]); return; }
     const out = [];
-    if (d.products.length) out.push({ sec: 'Products' }, ...d.products.map(p => ({ type: 'product', p })));
+    // A question goes to Ask Elevate (owner only: answers include money)
+    const askIt = q.split(/\s+/).length >= 2 ? (adminOpen() ? { type: 'ask', q } : { type: 'asklocked', q }) : null;
+    if (askIt && looksLikeQuestion(q)) out.push({ sec: 'Ask Elevate' }, askIt);
     if (d.shipments.length) out.push({ sec: 'Shipments' }, ...d.shipments.map(s => ({ type: 'shipment', s })));
     if (d.plans.length) out.push({ sec: 'Shipment plans' }, ...d.plans.map(p => ({ type: 'plan', p })));
     if (d.invoices.length) out.push({ sec: 'Cosmoprof invoices' }, ...d.invoices.map(v => ({ type: 'invoice', v })));
     if (scr.length) out.push({ sec: 'Screens' }, ...scr);
+    if (askIt && !looksLikeQuestion(q)) out.push({ sec: 'Ask Elevate' }, askIt);
     render(out, q);
   }
+  const looksLikeQuestion = q => /\?\s*$/.test(q) || q.split(/\s+/).length >= 5
+    || /^(how|what|what's|whats|which|why|when|who|where|show|list|compare|did|do|does|is|are|was|were|can|should|tell|give|total|best|worst|top|most|least)\b/i.test(q);
 
   function row(it, i, q) {
     const go = '<span class="pal-go">Open ↵</span>';
+    if (it.type === 'ask' || it.type === 'asklocked') {
+      return '<div class="pal-it ask" role="option" data-i="' + i + '"><div class="pal-ic">' + ICO.spark + '</div><div class="pal-tx">'
+        + '<div class="pal-t"><span class="nm">' + (it.type === 'ask' ? 'Ask: “' + E(it.q) + '”' : 'Ask Elevate is for the owner') + '</span></div>'
+        + '<div class="pal-s">' + (it.type === 'ask' ? 'Claude answers from your own numbers' : 'Unlock Admin first: answers include money') + '</div></div>'
+        + '<span class="pal-go">' + (it.type === 'ask' ? 'Ask ↵' : 'Unlock ↵') + '</span></div>';
+    }
     if (it.type === 'product') {
       const p = it.p, sz = typeof listingSize === 'function' ? listingSize(p.name) : '';
       const img = p.image ? '<img src="' + E(p.image) + '" alt="" loading="lazy" onerror="this.replaceWith(document.createRange().createContextualFragment(window.Palette.box))">' : ICO.box;
@@ -237,6 +276,8 @@
   }
   function pick(i) {
     const it = items[i]; if (!it) return;
+    if (it.type === 'ask') { startAsk(it.q); return; }
+    if (it.type === 'asklocked') { close(); tab('admin'); setTimeout(() => { const el = document.getElementById('adminPw'); if (el) el.focus(); }, 200); return; }
     close(); remember(it);
     if (it.type === 'screen') {
       if (it.id.startsWith('admin:')) {
@@ -274,6 +315,93 @@
       };
       if (typeof loadInvoiceList === 'function') Promise.resolve(loadInvoiceList()).then(done, done); else done();
     }
+  }
+
+  // ---- Ask Elevate (ask.js on the server): a thread of questions and answers ----
+  let asking = false, askBusy = false, thread = [];
+  function startAsk(q) {
+    asking = true; thread = [];
+    root.querySelector('.pal').classList.add('asking');
+    input.placeholder = 'Ask a follow-up… (Esc to go back to search)';
+    ask(q);
+  }
+  function leaveAsk(silent) {
+    asking = false; askBusy = false; thread = [];
+    root.querySelector('.pal').classList.remove('asking');
+    input.placeholder = 'Search anything, or ask a question…';
+    if (!silent) { input.value = ''; render(home()); input.focus(); }
+  }
+  function md(text) {
+    // a little markdown: tables, lists, bold, code, paragraphs (escaped first)
+    const lines = E(text).split('\n'), out = [];
+    let i = 0;
+    const inline = s => s.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/`([^`]+)`/g, '<code>$1</code>');
+    while (i < lines.length) {
+      const l = lines[i];
+      if (/^\s*\|.*\|\s*$/.test(l)) {
+        const rows = []; while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(lines[i++]);
+        const cells = r => r.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+        const body = rows.filter(r => !/^\s*\|[\s:|-]+\|\s*$/.test(r));
+        const num = c => /^[-$\d.,%()]+$/.test(c.replace(/\s/g, '')) && /\d/.test(c);
+        out.push('<table><tr>' + cells(body[0] || '').map(c => '<th>' + inline(c) + '</th>').join('') + '</tr>'
+          + body.slice(1).map(r => '<tr>' + cells(r).map(c => '<td' + (num(c) ? ' class="n"' : '') + '>' + inline(c) + '</td>').join('') + '</tr>').join('') + '</table>');
+        continue;
+      }
+      if (/^\s*([-*•]|\d+\.)\s+/.test(l)) {
+        const ordered = /^\s*\d+\./.test(l), items = [];
+        while (i < lines.length && /^\s*([-*•]|\d+\.)\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*([-*•]|\d+\.)\s+/, ''));
+        out.push((ordered ? '<ol>' : '<ul>') + items.map(x => '<li>' + inline(x) + '</li>').join('') + (ordered ? '</ol>' : '</ul>'));
+        continue;
+      }
+      if (!l.trim()) { i++; continue; }
+      const para = []; while (i < lines.length && lines[i].trim() && !/^\s*(\||[-*•]\s|\d+\.\s)/.test(lines[i])) para.push(lines[i++]);
+      out.push('<p>' + inline(para.join('<br>').replace(/^#+\s*/, '')) + '</p>');
+    }
+    return out.join('');
+  }
+  function paintThread() {
+    let h = '<div class="pal-askbar">' + ICO.spark.replace('<svg', '<svg style="width:16px;height:16px;color:#a35a00"') + '<span>Ask Elevate · answers from your own numbers</span><span style="margin-left:auto"><button id="palBack">← Back to search</button></span></div><div class="pal-ask">';
+    for (const t of thread) {
+      h += '<div class="pal-q"><i>Q</i><div>' + E(t.q) + '</div></div>';
+      if (t.a != null) h += '<div class="pal-a">' + md(t.a) + '</div>' + (t.cost != null ? '<div class="pal-cost">about ' + (t.cost < 0.01 ? 'under 1¢' : Math.round(t.cost * 100) + '¢') + ' to answer</div>' : '');
+      else if (t.err) h += '<div class="pal-a err">' + E(t.err) + '</div>';
+      else h += '<div class="pal-steps"><span class="spin"></span>' + E(t.step || 'Thinking…') + '</div>';
+    }
+    list.innerHTML = h + '</div>';
+    items = [];
+    const b = list.querySelector('#palBack'); if (b) b.addEventListener('click', () => leaveAsk());
+    list.scrollTop = list.scrollHeight;
+  }
+  async function ask(q) {
+    askBusy = true; input.value = '';
+    const t = { q, a: null, step: 'Thinking…' };
+    const history = thread.filter(x => x.a).map(x => ({ q: x.q, a: x.a }));
+    thread.push(t); paintThread();
+    try {
+      const r = await fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json',
+        'x-app-password': typeof PW !== 'undefined' ? PW : '', 'x-owner-password': typeof OWNER_PW !== 'undefined' ? OWNER_PW : '' },
+        body: JSON.stringify({ question: q, history }) });
+      const handle = o => {
+        if (!o) return;
+        if (o.step) { t.step = o.step; }
+        if (o.answer != null) { t.a = o.answer; t.cost = o.cost; }
+        if (o.error || o.ok === false) t.err = o.error || 'Something went wrong.';
+        if (asking) paintThread();
+      };
+      if (!/ndjson/.test(r.headers.get('content-type') || '') || !r.body || !r.body.getReader) {
+        handle(await r.json().catch(() => ({ error: 'Server error ' + r.status })));
+      } else {
+        const rd = r.body.getReader(), dec = new TextDecoder(); let buf = '';
+        for (;;) {
+          const { value, done } = await rd.read(); if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let k; while ((k = buf.indexOf('\n')) >= 0) { const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1); if (line) { try { handle(JSON.parse(line)); } catch (e) {} } }
+        }
+        if (buf.trim()) { try { handle(JSON.parse(buf)); } catch (e) {} }
+      }
+      if (t.a == null && !t.err) t.err = 'No answer came back. Try again.';
+    } catch (e) { t.err = 'Could not reach the server: ' + e.message; }
+    askBusy = false; if (asking) { paintThread(); input.focus(); }
   }
 
   // ---- keys + header button ----
