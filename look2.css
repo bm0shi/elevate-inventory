@@ -1,0 +1,323 @@
+/* ============================================================
+   The new look for the whole app (owner: "every screen in the new look").
+   On Hand (onhand2.js) and the Admin dashboard (dash2.js) set the design;
+   this file lays the same system over every other screen.
+
+   Only applies under html.nl. index.html adds that class (and loads this
+   file) unless this device chose Classic (localStorage appLook='classic').
+   It is styling only: no element is moved or removed, every button calls
+   the same function, so nothing about stock or money changes. If this file
+   fails to load, the page simply looks Classic.
+
+   Many screens set inline styles, so some rules match on the inline
+   background (button[style*="background:#1e8449"]) and need !important.
+   Match on the BACKGROUND only: matching a text color turned a red-text
+   button into red-on-red once (see the Classic theme notes in index.html).
+
+   Tokens (same as onhand2.js):
+     ink #0b1f24 / ink-2 #45545f / muted #7d8b97, surface #fff, page #f4f7f9,
+     hairlines #e3e9ee / #eef2f5, brand #0d4450, Amazon orange #ff9900 with
+     dark text for the one primary action, status: good #0b7a0b, warn
+     #a86b00, crit #b42d2d, info #1f5fae, each on its own tint.
+   ============================================================ */
+html.nl {
+  --k-ink:#0b1f24; --k-ink2:#45545f; --k-muted:#7d8b97; --k-line:#e3e9ee; --k-line2:#eef2f5;
+  --k-page:#f4f7f9; --k-sunk:#f8fafb; --k-brand:#0d4450; --k-brand2:#145c6c; --k-amz:#ff9900;
+  --k-good:#0b7a0b; --k-goodBg:#e8f6ea; --k-warn:#a86b00; --k-warnBg:#fff4dc;
+  --k-crit:#b42d2d; --k-critBg:#fdecec; --k-info:#1f5fae; --k-infoBg:#e8f1fc;
+  --k-shadow:0 1px 2px rgba(16,24,40,.04); --k-lift:0 16px 32px -22px rgba(16,24,40,.35);
+  --k-font:'Plus Jakarta Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+}
+html.nl .nl-only { display: revert; }
+html.nl .nl-hide { display: none !important; }
+html.nl body { background: var(--k-page); color: var(--k-ink); font-family: var(--k-font); }
+html.nl .app { background: var(--k-page); }
+html.nl h1, html.nl h2, html.nl h3 { font-family: var(--k-font); letter-spacing: -.2px; }
+
+/* ---------- Shell: slim top bar + one clean nav row ---------- */
+html.nl header {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  position: static; background: var(--k-ink); padding: 10px 22px; min-height: 56px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+html.nl header h1 {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--k-font); font-size: 16px; font-weight: 800; letter-spacing: .2px; text-transform: none; color: #fff;
+}
+html.nl header h1 .nl-mark {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
+  background: var(--k-amz); color: #131921; font-size: 15px; font-weight: 900; letter-spacing: 0;
+}
+html.nl header h1 .nl-emoji { display: none; }
+html.nl header h1 small { font-size: 12px; font-weight: 600; color: #9fb4ba; letter-spacing: .1px; }
+/* The tagline is a bare text node; font-size:0 hides it, children get their size back. */
+html.nl header .sub { font-size: 0; margin: 0 0 0 auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+html.nl header .sub > * { font-size: 12px; }
+html.nl header .sub button {
+  margin: 0 !important; padding: 7px 12px !important; font-size: 12px !important; font-weight: 700 !important;
+  border-radius: 999px !important; border: 1px solid rgba(255,255,255,.14) !important;
+  background: rgba(255,255,255,.06) !important; color: #e6eef0 !important; cursor: pointer;
+}
+html.nl header .sub button:hover { background: rgba(255,255,255,.12) !important; }
+html.nl header .sub #autoRefreshBtn { color: #b8f0c4 !important; }
+html.nl header .sub .nl-classic { background: transparent !important; border-color: transparent !important; color: #9fb4ba !important; text-decoration: underline; text-underline-offset: 3px; }
+html.nl #refreshStamp { color: #8fd19e !important; margin: 0 !important; }
+
+html.nl .tabs {
+  position: sticky; top: 0; z-index: 9;
+  display: flex; flex-wrap: nowrap; align-items: stretch; gap: 2px; overflow-x: auto; scrollbar-width: none;
+  background: #fff; border-bottom: 1px solid var(--k-line); border-top: 0; padding: 0 14px;
+  box-shadow: 0 1px 0 rgba(16,24,40,.02);
+}
+html.nl .tabs::-webkit-scrollbar { display: none; }
+html.nl .tab {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px;
+  padding: 15px 13px 13px; font-family: var(--k-font); font-size: 13.5px; font-weight: 700; letter-spacing: 0;
+  color: var(--k-ink2); background: transparent !important; border-bottom: 3px solid transparent !important;
+  box-shadow: none !important; white-space: nowrap; transition: color .15s, border-color .15s;
+}
+html.nl .tab:hover { color: var(--k-ink); background: transparent !important; }
+html.nl .tab.active { color: var(--k-brand) !important; border-bottom-color: var(--k-amz) !important; font-weight: 800; }
+html.nl .tab .nl-ico { width: 17px; height: 17px; flex: 0 0 auto; opacity: .8; }
+html.nl .tab.active .nl-ico { opacity: 1; }
+html.nl .tabs .tab b {
+  width: 19px; height: 19px; margin: 0; font-size: 10.5px; font-weight: 800;
+  background: var(--k-line2); color: var(--k-ink2);
+}
+html.nl .tabs .tab.active b { background: var(--k-brand); color: #fff; }
+html.nl .flowlabel {
+  align-self: center; white-space: nowrap; padding: 0 8px 0 4px; font-family: var(--k-font); font-size: 10.5px; font-weight: 800;
+  letter-spacing: 1px; color: var(--k-muted);
+}
+html.nl .flowdiv { width: 1px; background: var(--k-line); margin: 12px 8px; flex: 0 0 auto; }
+html.nl .tabs .tab[onclick*="'admin'"] {
+  margin-left: auto !important; align-self: center; padding: 8px 14px !important;
+  border: 1px solid var(--k-line) !important; border-radius: 10px; color: var(--k-brand) !important;
+  background: #fff !important;
+}
+html.nl .tabs .tab.active[onclick*="'admin'"] { background: var(--k-brand) !important; color: #fff !important; border-color: var(--k-brand) !important; }
+
+/* ---------- Page ---------- */
+html.nl .panel { padding: 22px 24px 40px; max-width: 1480px; margin: 0 auto; }
+html.nl .nl-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 2px 2px 16px; }
+html.nl .nl-head h2 { margin: 0; font-size: 24px; font-weight: 800; letter-spacing: -.3px; color: var(--k-ink); }
+html.nl .nl-head p { margin: 4px 0 0; color: var(--k-ink2); font-size: 13.5px; line-height: 1.45; max-width: 860px; }
+html.nl .nl-head .nl-step {
+  display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; margin-right: 10px;
+  background: var(--k-brand); color: #fff; font-size: 13px; font-weight: 800; vertical-align: 3px;
+}
+/* The title boxes the new page heads replace */
+html.nl #pendingprep > .nl-head + .box { display: none; }
+html.nl #prep > .nl-head + .box > div:first-child,
+html.nl #prep > .nl-head + .box > .hint:nth-child(2) { display: none; }
+
+/* Screens drawn in JS used Montserrat caps headings; one typeface now. */
+html.nl [style*="font-family:Montserrat"] { font-family: var(--k-font) !important; letter-spacing: -.1px !important; }
+
+/* Shipment Production: its dark banner becomes the same page head as the
+   other screens, the Shipment ID row stays its own card. */
+html.nl #prodHome > div:first-child { border-radius: 14px !important; box-shadow: var(--k-shadow) !important; border: 1px solid var(--k-line) !important; }
+html.nl #prodHome > div:first-child > div:first-child {
+  background: #fff !important; color: var(--k-ink) !important; text-align: left !important;
+  padding: 20px 24px 2px !important; border-bottom: 0 !important;
+}
+html.nl #prodHome > div:first-child > div:first-child > div:first-child {
+  font-size: 24px !important; font-weight: 800 !important; text-transform: none !important; letter-spacing: -.3px !important;
+}
+html.nl #prodHome > div:first-child > div:first-child > div:first-child::before {
+  content: "3"; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; margin-right: 10px;
+  background: var(--k-brand); color: #fff; font-size: 13px; font-weight: 800; vertical-align: 3px;
+}
+html.nl #prodHome > div:first-child > div:first-child span { color: inherit !important; }
+html.nl #prodHome > div:first-child > div:first-child > div:nth-child(2) { color: var(--k-ink2) !important; font-size: 13.5px !important; margin-top: 4px !important; }
+html.nl #prodSidIn { font-size: 20px !important; border-width: 1.5px !important; }
+
+/* ---------- Surfaces ---------- */
+html.nl .box, html.nl .card, html.nl .pcard, html.nl .ship-card {
+  background: #fff; border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow);
+}
+html.nl .box { padding: 18px 20px; margin-bottom: 14px; }
+html.nl .box > div[style*="font-weight:700"]:first-child,
+html.nl .box > div[style*="font-weight:800"]:first-child { font-size: 16px; font-weight: 800 !important; color: var(--k-ink); letter-spacing: -.1px; }
+html.nl .hint { color: var(--k-ink2); font-size: 13px; line-height: 1.5; }
+html.nl label:not(.oh2 *):not(.d2 *) { font-family: var(--k-font); font-size: 11px; font-weight: 750; letter-spacing: .7px; color: var(--k-muted); }
+
+/* Stat tiles (.cards > .card): the On Hand tile */
+html.nl .cards { gap: 12px; margin-bottom: 14px; }
+html.nl .card {
+  position: relative; text-align: left; padding: 13px 16px; overflow: hidden;
+  transition: transform .2s, box-shadow .2s, border-color .2s;
+}
+html.nl .card:hover { border-color: #d3dde4; box-shadow: var(--k-lift); }
+html.nl .card .n { font-family: var(--k-font); font-size: 24px; font-weight: 850; letter-spacing: -.5px; color: var(--k-ink); }
+html.nl .card .l { font-size: 11.5px; font-weight: 750; color: var(--k-ink2); text-transform: none; letter-spacing: 0; margin-top: 2px; }
+
+/* ---------- Controls ---------- */
+html.nl input[type=text]:not(.oh2 *):not(.d2 *), html.nl input[type=number]:not(.oh2 *):not(.d2 *), html.nl input[type=password]:not(.oh2 *):not(.d2 *),
+html.nl input[type=date]:not(.oh2 *):not(.d2 *), html.nl input[type=search]:not(.oh2 *):not(.d2 *), html.nl select:not(.oh2 *):not(.d2 *), html.nl textarea:not(.oh2 *):not(.d2 *) {
+  font-family: var(--k-font); color: var(--k-ink); background: #fff;
+  border: 1px solid var(--k-line) !important; border-radius: 10px !important;
+  transition: border-color .2s, box-shadow .2s;
+}
+html.nl input[type=text]:not(.oh2 *):not(.d2 *), html.nl input[type=number]:not(.oh2 *):not(.d2 *), html.nl input[type=password]:not(.oh2 *):not(.d2 *) { font-size: 16px; padding: 12px 14px; }
+html.nl select:not(.oh2 *):not(.d2 *) { font-size: 13.5px !important; font-weight: 650; padding: 10px 12px !important; }
+html.nl textarea:not(.oh2 *):not(.d2 *) { font-size: 13px; padding: 12px 14px; }
+html.nl input:hover:not(.oh2 *):not(.d2 *), html.nl select:hover:not(.oh2 *):not(.d2 *), html.nl textarea:hover:not(.oh2 *):not(.d2 *) { border-color: #c6d4dc !important; }
+html.nl input:focus:not(.oh2 *):not(.d2 *), html.nl select:focus:not(.oh2 *):not(.d2 *), html.nl textarea:focus:not(.oh2 *):not(.d2 *) {
+  border-color: var(--k-brand) !important; box-shadow: 0 0 0 3px rgba(13,68,80,.12) !important; outline: none;
+}
+/* The scan boxes stay big: they are what the floor looks at */
+html.nl #scanIn, html.nl #scanPrep, html.nl #scanOut { font-size: 18px; padding: 15px 16px; border-width: 1.5px !important; }
+
+/* Buttons. One look for all of them, colour by meaning:
+   brand = normal, orange = the next step, white = secondary, red = removes stock. */
+html.nl button.action, html.nl .action {
+  font-family: var(--k-font); font-size: 14px; font-weight: 750; letter-spacing: 0;
+  border-radius: 10px !important; padding: 11px 16px; line-height: 1.15;
+  background: var(--k-brand) !important; color: #fff !important; border: 1px solid transparent !important;
+  box-shadow: 0 4px 14px -8px rgba(13,68,80,.8) !important; text-shadow: none !important;
+  transition: transform .15s, box-shadow .15s, background .15s;
+}
+html.nl button.action:hover, html.nl .action:hover { background: var(--k-brand2) !important; transform: translateY(-1px); filter: none; }
+html.nl button.action:active { transform: none; }
+html.nl button.action:focus-visible { outline: 2px solid var(--k-brand); outline-offset: 2px; }
+html.nl button.action.full { padding: 13px 16px; }
+/* secondary: white */
+html.nl button.action[style*="background:#eef2f6"], html.nl button.action[style*="background:#5a6472"],
+html.nl button.action[style*="background:#e2e8f0"], html.nl button.action[style*="background:#fff;"],
+html.nl button.action[style*="background:#1e8449"], html.nl button.action[style*="background: #1e8449"],
+html.nl button.action[onclick^="load"], html.nl button.action[onclick*="TickAll"] {
+  background: #fff !important; color: var(--k-brand) !important; border: 1px solid var(--k-line) !important; box-shadow: var(--k-shadow) !important;
+}
+html.nl button.action[style*="background:#eef2f6"]:hover, html.nl button.action[style*="background:#5a6472"]:hover,
+html.nl button.action[style*="background:#e2e8f0"]:hover, html.nl button.action[style*="background:#fff;"]:hover,
+html.nl button.action[style*="background:#1e8449"]:hover, html.nl button.action[onclick^="load"]:hover,
+html.nl button.action[onclick*="TickAll"]:hover { background: #fbfdfe !important; border-color: #c6d4dc !important; }
+/* the next step: Amazon orange, dark text */
+html.nl button.action.gold, html.nl .action.gold, html.nl button.action[onclick^="sendTickedToProduction"],
+html.nl button.action[style*="background:#ff9900"] {
+  background: var(--k-amz) !important; color: #131921 !important; box-shadow: 0 4px 14px -6px rgba(255,153,0,.8) !important;
+}
+html.nl button.action.gold:hover, html.nl button.action[onclick^="sendTickedToProduction"]:hover,
+html.nl button.action[style*="background:#ff9900"]:hover { background: #ffad33 !important; }
+/* removes stock / destructive */
+html.nl button.action.danger, html.nl button.action[style*="background:#c0392b"], html.nl button.action[style*="background:#e74c3c"] {
+  background: var(--k-crit) !important; color: #fff !important; box-shadow: 0 4px 14px -8px rgba(180,45,45,.8) !important;
+}
+html.nl button.action.danger:hover, html.nl button.action[style*="background:#c0392b"]:hover { background: #9e2525 !important; }
+/* caution (fix / reconcile) */
+html.nl button.action[style*="background:#b7791f"] {
+  background: var(--k-warnBg) !important; color: var(--k-warn) !important; border: 1px solid #f1d9a6 !important; box-shadow: none !important;
+}
+html.nl button.action[style*="background:#7a4fb5"] { background: var(--k-brand) !important; }
+html.nl .action.amzbeige, html.nl button.action.amzbeige { border-radius: 10px !important; }
+html.nl button.action:disabled { opacity: .5; transform: none; }
+html.nl .mini {
+  font-family: var(--k-font); font-weight: 700; font-size: 12px; border-radius: 9px; padding: 6px 11px;
+  background: #fff; border: 1px solid var(--k-line); color: var(--k-brand);
+}
+html.nl .mini:hover { background: #fbfdfe; border-color: #c6d4dc; color: var(--k-ink); }
+html.nl .copybtn { opacity: .45; }
+
+/* segmented view switch */
+html.nl .viewtoggle { background: #e9eff3; border-radius: 10px; padding: 3px; }
+html.nl .viewtoggle button { font-family: var(--k-font); font-size: 12.5px; font-weight: 750; color: var(--k-ink2); border-radius: 8px; padding: 8px 12px; }
+html.nl .viewtoggle button.on { background: #fff; color: var(--k-ink); box-shadow: 0 1px 2px rgba(16,24,40,.12); }
+
+/* ---------- Tables: light header, quiet rows ---------- */
+html.nl table:not(.oh2 *):not(.d2 *) { border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow); border-collapse: separate; border-spacing: 0; }
+html.nl th:not(.oh2 *):not(.d2 *) {
+  background: var(--k-sunk) !important; color: var(--k-muted) !important; font-family: var(--k-font);
+  font-size: 11px; font-weight: 750; letter-spacing: .6px; padding: 10px 12px; border-bottom: 1px solid var(--k-line);
+}
+html.nl td:not(.oh2 *):not(.d2 *) { font-size: 13.5px; padding: 10px 12px; border-bottom: 1px solid var(--k-line2); font-variant-numeric: tabular-nums; }
+html.nl tbody tr:last-child td:not(.oh2 *):not(.d2 *), html.nl table:not(.oh2 *):not(.d2 *) tr:last-child td { border-bottom: 0; }
+html.nl tbody tr:hover td:not(.oh2 *):not(.d2 *) { background-color: #fafcfd; }
+/* tables nested in a card don't need a second frame */
+html.nl .box table, html.nl .pcard table { box-shadow: none; }
+
+/* ---------- Pills, badges, log ---------- */
+html.nl .pill, html.nl .badge { font-family: var(--k-font); font-weight: 750; letter-spacing: .2px; border-radius: 999px; }
+html.nl .badge.transit { background: var(--k-warnBg); color: var(--k-warn); }
+html.nl .badge.received, html.nl .pill.in { background: var(--k-goodBg); color: var(--k-good); }
+html.nl .badge.disc, html.nl .pill.out { background: var(--k-critBg); color: var(--k-crit); }
+html.nl .pill.checkin { background: var(--k-infoBg); color: var(--k-info); }
+html.nl .log-entry {
+  background: #fff; border: 1px solid var(--k-line); border-left: 3px solid var(--k-brand); border-radius: 10px;
+  padding: 10px 14px; margin-bottom: 8px; box-shadow: var(--k-shadow); font-size: 13.5px;
+}
+html.nl .log-entry.out { border-left-color: var(--k-crit); }
+html.nl .ship-head:hover { background: var(--k-sunk); }
+html.nl .ship-title { font-weight: 800; color: var(--k-ink); }
+html.nl .ship-item-row { border-bottom-color: var(--k-line2); font-size: 13.5px; }
+html.nl .ship-item-row.short { background: var(--k-critBg); }
+html.nl .matched.ok { background: var(--k-goodBg); border: 1px solid #bfe3c5; border-radius: 12px; }
+html.nl .matched.notfound { background: var(--k-warnBg); border: 1px solid #f1d9a6; border-radius: 12px; }
+html.nl .picker { border-color: var(--k-line); border-radius: 12px; background: #fff; }
+html.nl .picker-item { border-bottom-color: var(--k-line2); }
+html.nl .picker-item:hover { background: #f3f8f9; }
+
+/* ---------- Product cards (Pending Prep, Prepped & Ready) ---------- */
+html.nl .pcard { padding: 16px; gap: 14px; transition: box-shadow .2s, border-color .2s; }
+html.nl .pcard:hover { border-color: #d3dde4; box-shadow: var(--k-lift); }
+html.nl .pcard img, html.nl .noimg { border-radius: 12px; background: #f3f6f8; border: 1px solid var(--k-line2); }
+html.nl .pcard .pc-name { font-weight: 750; color: var(--k-ink); }
+html.nl .pcard .pc-qty .l { color: var(--k-muted); font-weight: 750; letter-spacing: .8px; }
+html.nl .idlabel { color: var(--k-muted); font-weight: 750; letter-spacing: .5px; }
+html.nl .idpill { border-radius: 8px; border: 1px solid var(--k-line2); }
+html.nl .ppSplit { border: 1.5px solid #ffc266; background: #fffaf2; border-radius: 16px; }
+html.nl .ppSplitBanner { font-family: var(--k-font); font-size: 18px; letter-spacing: .4px; padding: 7px 20px; box-shadow: 0 6px 18px -10px rgba(255,153,0,.9); }
+html.nl .ppSplitSub { font-size: 13.5px; color: var(--k-ink2); }
+html.nl .ppPart { font-family: var(--k-font); font-size: 16px; letter-spacing: .3px; }
+
+/* ---------- Admin nav ---------- */
+html.nl .subtabs { background: #fff; border: 1px solid var(--k-line); border-radius: 14px; box-shadow: var(--k-shadow); }
+html.nl .subgroup-label { font-family: var(--k-font); color: var(--k-muted); font-weight: 800; letter-spacing: .7px; }
+html.nl .subtab {
+  font-family: var(--k-font); font-weight: 700; border-radius: 999px; background: #fff; color: var(--k-ink2);
+  border: 1px solid var(--k-line); transition: all .15s;
+}
+html.nl .subtab:hover { border-color: #c6d4dc; color: var(--k-ink); background: #fff; }
+html.nl .subtab.active { background: var(--k-brand); border-color: var(--k-brand); color: #fff; }
+html.nl .subtab.amz { background: #fff6e8; border-color: #ffd699; color: #7a4600; }
+html.nl .subtab.amz:hover { background: #ffefd3; }
+html.nl .subtab.amz.active { background: var(--k-amz); border-color: var(--k-amz); color: #131921; box-shadow: none; }
+html.nl .subtab.betatoggle { background: #f6f2fc; border: 1px dashed #c9b6e6; color: #5b2d9e; }
+html.nl .subtop { color: var(--k-muted); }
+
+/* ---------- Feedback ---------- */
+html.nl .toast {
+  font-family: var(--k-font); font-weight: 750; border-radius: 12px; padding: 12px 18px;
+  background: var(--k-ink); color: #fff; box-shadow: 0 18px 40px -12px rgba(11,31,36,.55);
+  border-left: 4px solid #3ccf62;
+}
+html.nl .toast.err { background: var(--k-ink); border-left-color: #ff6b6b; }
+
+/* ---------- Login ---------- */
+html.nl #login { background: radial-gradient(1200px 600px at 20% 0%, #145c6c 0%, var(--k-ink) 60%); }
+html.nl #login .lbox { border-radius: 18px; padding: 32px 30px; width: 360px; box-shadow: 0 30px 80px -20px rgba(0,0,0,.55); }
+html.nl #login h2 { font-family: var(--k-font); font-weight: 800; letter-spacing: -.2px; color: var(--k-ink); }
+
+/* ---------- Phones ---------- */
+@media (max-width: 760px) {
+  html.nl header { padding: 10px 14px; gap: 8px; }
+  html.nl header h1 small.nl-only { display: none; }
+  html.nl header .sub { margin-left: auto; }
+  html.nl .tabs { padding: 0 6px; }
+  html.nl .tab { padding: 13px 10px 11px; font-size: 13px; }
+  html.nl .flowlabel { display: none; }
+  html.nl .panel { padding: 16px 14px 32px; }
+  html.nl .nl-head h2 { font-size: 21px; }
+  html.nl .cards { flex-wrap: wrap; }
+  /* toolbars (sort, filter, select, send, search): two per row, search full width */
+  html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > select { flex: 1 1 calc(50% - 4px); min-width: 0; }
+  html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > button.action { flex: 1 1 calc(50% - 4px); }
+  html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > button[onclick^="sendTickedToProduction"] { flex-basis: 100%; }
+  html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > input[type=text] { flex: 1 1 100% !important; }
+  html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > .viewtoggle { flex: 1 1 100%; justify-content: stretch; }
+  html.nl .panel > div[style*="display:flex"][style*="flex-wrap:wrap"] > .viewtoggle button { flex: 1; }
+  html.nl .cards .card { flex: 1 1 calc(50% - 6px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html.nl * { transition: none !important; animation: none !important; }
+}
