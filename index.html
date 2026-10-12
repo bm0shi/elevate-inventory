@@ -7733,12 +7733,30 @@ function renderFinProducts() {
   const k = { profit: x => x.profit ?? -1e12, ppu: x => x.profitPerUnit ?? -1e12, margin: x => x.marginPct ?? -1e12, units: x => x.netUnits, worst: x => -(x.profit ?? 1e12) }[sort];
   items.sort((a, c) => k(c) - k(a));
 
+  // Flags (owner's #7): what to look at first. A big seller is in the top
+  // quarter by units sold this period.
+  const sold = d.items.filter(x => x.netUnits > 0).map(x => x.netUnits).sort((a, c) => a - c);
+  const bigAt = sold.length ? sold[Math.floor(sold.length * 0.75)] : Infinity;
+  const top = new Set(d.items.filter(x => x.profit > 0).sort((a, c) => c.profit - a.profit).slice(0, 5).map(x => x.asin || x.sku));
+  const flag = x => x.profit != null && x.profit < 0 ? (x.netUnits >= bigAt ? 'bigloss' : 'loss')
+    : x.marginPct != null && x.marginPct < 8 ? 'thin' : top.has(x.asin || x.sku) ? 'star' : '';
+  const FLAG = { bigloss: ['Big seller, losing money', '#b42d2d', '#fdecec'], loss: ['Losing money', '#b42d2d', '#fdecec'],
+                 thin: ['Thin margin', '#a86b00', '#fff4dc'], star: ['Top earner', '#0b7a0b', '#e8f6ea'] };
+  const allFlags = {}; d.items.filter(x => x.netSales || x.units).forEach(x => { const f = flag(x); if (f) allFlags[f] = (allFlags[f] || 0) + 1; });
+  const fsel = window._fprodFlag || '';
+  if (fsel) items = items.filter(x => fsel === 'loss' ? /loss/.test(flag(x)) : flag(x) === fsel);
+  const lossTot = d.items.filter(x => x.profit != null && x.profit < 0).reduce((n, x) => n + x.profit, 0);
+
   const tot = items.reduce((t, x) => { t.u += x.netUnits; t.s += x.netSales; t.f += x.fees; if (x.profit != null) { t.p += x.profit; t.ps += x.netSales; } else t.nc++; return t; }, { u: 0, s: 0, f: 0, p: 0, ps: 0, nc: 0 });
   let h = '<div class="cards" style="flex-wrap:wrap">'
     + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + tot.u.toLocaleString() + '</div><div class="l">Units sold</div></div>'
     + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + fin$(tot.s) + '</div><div class="l">Net sales</div></div>'
     + '<div class="card" style="border-top:3px solid #c0392b"><div class="n">' + fin$(-tot.f) + '</div><div class="l">Amazon fees · ' + (tot.s ? (Math.abs(tot.f) / tot.s * 100).toFixed(1) : '0') + '%</div></div>'
-    + '<div class="card" style="border-top:3px solid #1e8449"><div class="n" style="color:#1e8449">' + fin$(tot.p) + '</div><div class="l">Profit · ' + (tot.ps ? (tot.p / tot.ps * 100).toFixed(1) + '% margin' : '') + '</div></div></div>';
+    + '<div class="card" style="border-top:3px solid #1e8449"><div class="n" style="color:#1e8449">' + fin$(tot.p) + '</div><div class="l">Profit · ' + (tot.ps ? (tot.p / tot.ps * 100).toFixed(1) + '% margin' : '') + '</div></div>'
+    + '<div class="card" style="border-top:3px solid #b42d2d;cursor:pointer" onclick="window._fprodFlag=\'loss\';renderFinProducts()"><div class="n" style="color:#b42d2d">' + ((allFlags.bigloss || 0) + (allFlags.loss || 0)) + '</div><div class="l">Losing money · ' + fin$(lossTot) + '</div></div></div>';
+  const chip = (k, l, n) => '<button class="mini" onclick="window._fprodFlag=\'' + k + '\';renderFinProducts()" style="' + (fsel === k ? 'background:#0d4450;color:#fff;border-color:#0d4450' : '') + '">' + l + (n != null ? ' · ' + n : '') + '</button>';
+  h += '<div style="display:flex;gap:6px;flex-wrap:wrap;margin:-4px 0 12px">' + chip('', 'All') + chip('loss', 'Losing money', (allFlags.bigloss || 0) + (allFlags.loss || 0))
+    + chip('thin', 'Thin margin (under 8%)', allFlags.thin || 0) + chip('star', 'Top earners', allFlags.star || 0) + '</div>';
   const miss = new Set(); items.forEach(x => x.missing.forEach(m => miss.add(m)));
   if (tot.nc || miss.size) h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><span class="hint">'
     + (tot.nc ? '<b>' + tot.nc + ' product(s) have no cost</b> and are left out of profit. ' : '')
@@ -7752,7 +7770,7 @@ function renderFinProducts() {
   items.forEach((x, i) => {
     const mc = x.marginPct == null ? '#9db0c9' : (x.marginPct < 10 ? '#c0392b' : (x.marginPct >= 20 ? '#1e8449' : '#b7791f'));
     h += '<tr style="cursor:pointer" onclick="finToggleRow(' + i + ')"><td style="max-width:340px">'
-      + '<div style="font-weight:600;color:#1a2a3a;font-size:13px">' + (esc(x.name || x.sku || x.asin)) + '</div>'
+      + '<div style="font-weight:600;color:#1a2a3a;font-size:13px">' + (esc(x.name || x.sku || x.asin)) + (flag(x) ? ' <span style="display:inline-block;font-size:10.5px;font-weight:800;border-radius:999px;padding:2px 8px;vertical-align:1px;white-space:nowrap;color:' + FLAG[flag(x)][1] + ';background:' + FLAG[flag(x)][2] + '">' + FLAG[flag(x)][0] + '</span>' : '') + '</div>'
       + '<div style="font-family:monospace;font-size:11px;color:#2563a8">' + (x.asin || ('SKU ' + x.sku)) + (x.missing.length ? ' · <span style="color:#b7791f;font-family:inherit">missing ' + x.missing.join(', ') + '</span>' : '') + '</div></td>'
       + '<td style="text-align:right">' + x.netUnits + (x.unitsRefunded ? '<div style="font-size:10px;color:#c0392b">' + x.unitsRefunded + ' returned</div>' : '') + '</td>'
       + '<td style="text-align:right">' + fin$(x.netSales) + '</td>'
@@ -7779,7 +7797,7 @@ function finBreakdown(x) {
     + line('Amazon fees', fp == null ? '—' : fin$(fp, 2), { c: '#c0392b' })
     + line('Product cost', x.unitCost == null ? '<span style="color:#c0392b">no cost</span>' : '-' + fin$(x.unitCost, 2), { c: '#c0392b' })
     + line('Supplies', x.suppliesPerUnit == null ? per(null) : '-' + fin$(x.suppliesPerUnit, 2), { c: '#c0392b' })
-    + line('Labor', x.laborPerUnit == null ? per(null) : '-' + fin$(x.laborPerUnit, 2), { c: '#c0392b' })
+    + line('Labor' + (x.laborByPrepTime ? ' <span style="font-size:11px;color:#7d8b97">(by its prep time)</span>' : ''), x.laborPerUnit == null ? per(null) : '-' + fin$(x.laborPerUnit, 2), { c: '#c0392b' })
     + line('Inbound freight', x.carrierPerUnit == null ? per(null) : '-' + fin$(x.carrierPerUnit, 2), { c: '#c0392b' })
     + line('Placement fee', x.placementPerUnit == null ? per(null) : '-' + fin$(x.placementPerUnit, 2), { c: '#c0392b' })
     + line('Profit per unit', x.profitPerUnit == null ? '—' : fin$(x.profitPerUnit, 2), { b: 1, c: (x.profitPerUnit || 0) >= 0 ? '#1e8449' : '#c0392b' })
