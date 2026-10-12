@@ -631,6 +631,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
           <div class="subcard"><div class="subgroup-label">💵 Money</div><div class="subgroup-btns"><button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button><button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button><button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button><button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button><button class="subtab amz" title="Money Amazon owes you: short shipments, refunds with nothing returned" data-sub="claims" onclick="showSubTab('claims',event)">Reimbursements</button><button class="subtab amz" title="Stock at Amazon that can't sell, and fees coming for stock that sits" data-sub="stuck" onclick="showSubTab('stuck',event)">Stuck at Amazon</button></div></div>
           <div class="subcard"><div class="subgroup-label">📦 Data</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="market" onclick="showSubTab('market',event)">Market Data</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button></div></div>
           <div class="subcard"><div class="subgroup-label">🚚 Shipments</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button></div></div>
+          <div class="subcard"><div class="subgroup-label">🏷️ Prices</div><div class="subgroup-btns"><button class="subtab amz" title="Night price drop: lower prices in time slots, put them back after" data-sub="reprice" onclick="showSubTab('reprice',event)">Repricer</button></div></div>
           <div class="subcard"><div class="subgroup-label">🧭 Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button></div></div>
           <div class="subcard"><div class="subgroup-label">✅ Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="status" onclick="showSubTab('status',event)">App status<span id="statusDot" class="fresh-tag" style="display:none"></span></button><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button></div></div>
           <div class="subcard"><div class="subgroup-label">📍 Item locations</div><div class="subgroup-btns"><button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button></div></div>
@@ -728,6 +729,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
 
   <div id="sub-claims" class="subpanel"><div id="claimsBody"></div></div>
   <div id="sub-stuck" class="subpanel"><div id="stuckBody"></div></div>
+  <div id="sub-reprice" class="subpanel"><div id="repriceBody"></div></div>
   <div id="sub-fsrc" class="subpanel">
     <div class="box">
       <h3 style="margin:0 0 4px">Data Sources</h3>
@@ -4057,6 +4059,7 @@ function showSubTab(name, ev){
   if(name==='status') loadStatus();
   if(name==='claims') loadClaims();
   if(name==='stuck') loadStuck();
+  if(name==='reprice'){ _rpEdit=null; loadReprice(); }
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
@@ -9009,6 +9012,187 @@ function claimsClaude(){
     +'<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap"><button class="action" onclick="claimsCopyText(document.getElementById(\'clClaude\').value,this)">📋 Copy instructions</button><button class="action" style="background:#fff!important;color:#0d4450!important;border:1px solid #e3e9ee!important" onclick="claimsQClose()">Close</button></div>'
     +'<div style="font-size:13px;color:#7d8b97;margin-top:10px">It works in your own browser with your own logins, while you watch; no one is given access to your account. Claude reads the pages it works on to do the job.</div></div>';
 }
+// ---- REPRICER (Admin → Prices): the night price drop, owner only ----
+// Rules in lib/reprice.js, scheduler in repricer.js. The screen only edits
+// the settings (on/off, drop $, time slots) and shows what happened.
+const RP_CSS = `
+#sub-reprice{--rp-ink:#0b1f24;--rp-mute:#5e6d79;--rp-line:#e3e9ee}
+#sub-reprice .rp-hero{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px;margin-bottom:16px}
+#sub-reprice .rp-sw{border-radius:18px;padding:22px 24px;color:#fff;background:linear-gradient(135deg,#3b4650,#59646e)}
+#sub-reprice .rp-sw.on{background:linear-gradient(135deg,#0d5b2c,#178a45)}
+#sub-reprice .rp-sw .l{font-size:13px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;opacity:.8}
+#sub-reprice .rp-sw .row{display:flex;align-items:center;gap:18px;margin:10px 0 6px;flex-wrap:wrap}
+#sub-reprice .rp-sw .v{font-size:40px;font-weight:850;letter-spacing:-1px}
+#sub-reprice .rp-tog{all:unset;cursor:pointer;width:96px;height:52px;border-radius:30px;background:rgba(255,255,255,.25);position:relative;flex:none;transition:background .2s}
+#sub-reprice .rp-tog::after{content:'';position:absolute;top:6px;left:6px;width:40px;height:40px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.25);transition:left .2s}
+#sub-reprice .rp-sw.on .rp-tog{background:#5fe08f}
+#sub-reprice .rp-sw.on .rp-tog::after{left:50px}
+#sub-reprice .rp-tog[disabled]{opacity:.6;pointer-events:none}
+#sub-reprice .rp-sw .s{font-size:16px;line-height:1.45;opacity:.95}
+#sub-reprice .rp-sw .acts{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap}
+#sub-reprice .rp-sw .acts button{all:unset;cursor:pointer;font-size:15px;font-weight:800;border-radius:12px;padding:12px 16px;background:#fff;color:#0b1f24}
+#sub-reprice .rp-sw .acts button[disabled]{opacity:.6;pointer-events:none}
+#sub-reprice .rp-now{background:#fff;border:1px solid var(--rp-line);border-radius:18px;padding:18px 20px;font-size:15.5px;color:var(--rp-mute);line-height:1.5}
+#sub-reprice .rp-now b{color:var(--rp-ink)}
+#sub-reprice .rp-now .big{font-size:22px;font-weight:850;color:var(--rp-ink);margin:2px 0 6px}
+#sub-reprice .rp-now .warn{margin-top:10px;background:#fff4e5;border:1px solid #ffd699;border-radius:10px;padding:10px 12px;color:#7a4600;font-size:14.5px}
+#sub-reprice .rp-card{background:#fff;border:1px solid var(--rp-line);border-radius:18px;padding:20px 22px;margin-bottom:16px}
+#sub-reprice .rp-card h3{margin:0 0 4px;font-size:20px;color:var(--rp-ink)}
+#sub-reprice .rp-card .sub{font-size:14.5px;color:var(--rp-mute);margin:0 0 14px}
+#sub-reprice .rp-set{display:grid;grid-template-columns:minmax(0,260px) minmax(0,1fr);gap:22px;align-items:start}
+#sub-reprice .rp-lab{display:block;font-size:13px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:var(--rp-mute);margin-bottom:8px}
+#sub-reprice .rp-money{display:flex;align-items:center;gap:8px;font-size:26px;font-weight:800;color:var(--rp-ink)}
+#sub-reprice .rp-money input{width:130px;font-size:24px !important;font-weight:800;text-align:center}
+#sub-reprice .rp-slot{display:grid;grid-template-columns:auto auto auto auto 1fr auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--rp-line);border-radius:14px;margin-bottom:10px;background:#f8fafb}
+#sub-reprice .rp-slot.off{opacity:.55}
+#sub-reprice .rp-slot input[type=time]{font-size:19px;font-weight:700;padding:10px 12px;border:1px solid #cfd9e0;border-radius:10px;background:#fff;color:var(--rp-ink);font-family:inherit}
+#sub-reprice .rp-slot .to{font-size:15px;color:var(--rp-mute);font-weight:700}
+#sub-reprice .rp-slot .len{font-size:14px;color:var(--rp-mute)}
+#sub-reprice .rp-slot label{display:flex;align-items:center;gap:6px;font-size:15px;font-weight:700;color:var(--rp-ink);cursor:pointer}
+#sub-reprice .rp-slot label input{width:20px;height:20px}
+#sub-reprice .rp-x{all:unset;cursor:pointer;font-size:14px;font-weight:800;color:#b42d2d;padding:8px 10px;border-radius:8px}
+#sub-reprice .rp-x:hover{background:#fdecec}
+#sub-reprice .rp-add{all:unset;cursor:pointer;font-size:15.5px;font-weight:800;color:#1f5fae;padding:10px 14px;border:1.5px dashed #9cbbe0;border-radius:12px}
+#sub-reprice .rp-save{display:flex;gap:12px;align-items:center;margin-top:16px;flex-wrap:wrap}
+#sub-reprice details{margin-top:16px;font-size:15px;color:var(--rp-mute)}
+#sub-reprice details summary{cursor:pointer;font-weight:800;color:var(--rp-ink)}
+#sub-reprice .rp-more{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,220px),1fr));gap:14px;margin-top:12px}
+#sub-reprice .rp-more textarea{width:100%;min-height:70px;box-sizing:border-box}
+#sub-reprice .rp-chips{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+#sub-reprice .rp-chip{font-size:14px;font-weight:700;padding:6px 12px;border-radius:20px;background:#eef3f6;color:#33424d}
+#sub-reprice .rp-chip b{color:var(--rp-ink)}
+#sub-reprice .rp-tbl{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--rp-line);border-radius:14px;overflow:hidden;font-size:15px;table-layout:fixed}
+#sub-reprice .rp-tbl th{font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:#7d8b97;background:#f8fafb;padding:10px;text-align:center;font-weight:800}
+#sub-reprice .rp-tbl th:first-child,#sub-reprice .rp-tbl td:first-child{text-align:left}
+#sub-reprice .rp-tbl td{padding:11px 10px;border-top:1px solid #eef2f5;text-align:center;vertical-align:middle;overflow-wrap:anywhere}
+#sub-reprice .rp-tbl td.n{font-variant-numeric:tabular-nums;font-weight:700}
+#sub-reprice .rp-tbl .sku{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:#7d8b97}
+#sub-reprice .rp-pill{display:inline-block;font-size:13px;font-weight:800;padding:4px 10px;border-radius:20px}
+@media (max-width:820px){
+  #sub-reprice .rp-hero,#sub-reprice .rp-set{grid-template-columns:1fr}
+  #sub-reprice .rp-slot{grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);row-gap:10px;column-gap:6px;padding:10px 8px}
+  #sub-reprice .rp-slot input[type=time]{width:100%;min-width:0;box-sizing:border-box;font-size:15px;padding:8px 4px}
+  #sub-reprice .rp-slot .to{font-size:13px}
+  #sub-reprice .rp-slot .len{text-align:center}
+  #sub-reprice .rp-x{justify-self:end}
+  #sub-reprice .rp-tbl{font-size:14px}
+  #sub-reprice .rp-tbl .hide-sm{display:none}
+  #sub-reprice .rp-tbl td.n{white-space:nowrap;font-size:13.5px}
+  #sub-reprice .rp-tbl col.c1{width:36% !important} #sub-reprice .rp-tbl col.c4{width:32% !important}
+  #sub-reprice .rp-tbl .note{display:none}
+}`;
+let _rp=null, _rpEdit=null, _rpPoll=null;
+const rpMoney=v=>v==null?'—':'$'+Number(v).toFixed(2);
+function rpLabel(t){ const m=/^(\d+):(\d+)$/.exec(t||''); if(!m) return t||''; const h=+m[1]; return (h%12===0?12:h%12)+':'+m[2]+(h<12?' AM':' PM'); }
+function rpLen(s){ const a=s.drop.split(':'), b=s.back.split(':'); const n=((+b[0]*60+ +b[1])-(+a[0]*60+ +a[1])+1440)%1440; return n<60?n+' min':(Math.round(n/6)/10)+' h'; }
+// Arizona time, like the slots (the owner's device may be elsewhere).
+function rpTime(iso){ return new Date(iso).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit',timeZone:'America/Phoenix'}); }
+function loadReprice(){
+  if(!document.getElementById('rpCss')){ const st=document.createElement('style'); st.id='rpCss'; st.textContent=RP_CSS; document.head.appendChild(st); }
+  const el=document.getElementById('repriceBody'); if(!el) return;
+  if(!_rp) el.innerHTML='<div class="hint" style="padding:16px">Loading…</div>';
+  ownerApi('/api/reprice').then(d=>{
+    if(!d||d.ok===false){ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc((d&&d.error)||'no reply')+'</div>'; return; }
+    _rp=d; if(!_rpEdit) _rpEdit=JSON.parse(JSON.stringify(d.settings)); renderReprice();
+    // While a drop or restore runs, refresh every few seconds.
+    clearTimeout(_rpPoll); if(d.job&&d.job.running&&document.getElementById('sub-reprice').classList.contains('active')) _rpPoll=setTimeout(loadReprice, 4000);
+  }).catch(e=>{ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc(e.message)+'</div>'; });
+}
+function renderReprice(){
+  const d=_rp, S=d.settings, E=_rpEdit, el=document.getElementById('repriceBody'); if(!d||!el) return;
+  const pending=d.rows.filter(r=>r.restore_status==='pending');
+  const onSlots=S.slots.filter(s=>s.on);
+  let h='<div class="rp-hero"><div class="rp-sw'+(S.enabled?' on':'')+'"><div class="l">Repricer</div><div class="row">'
+    +'<button class="rp-tog" id="rpTog" title="Turn the repricer '+(S.enabled?'off':'on')+'" onclick="rpToggle()"></button><div class="v">'+(S.enabled?'ON':'OFF')+'</div></div>'
+    +'<div class="s">'+(S.enabled
+      ? 'Drops prices <b>'+rpMoney(S.drop)+'</b> '+(onSlots.length?onSlots.map(s=>rpLabel(s.drop)+' → '+rpLabel(s.back)).join(', '):'(no time slot switched on)')+' Arizona time, then puts them back.'
+      : 'No prices are lowered. Anything still lowered goes back within a minute.')+'</div>'
+    +(pending.length?'<div class="acts"><button id="rpBackBtn" onclick="rpRestoreNow()">↩ Put '+pending.length+' price'+(pending.length===1?'':'s')+' back now</button></div>':'')
+    +'</div><div class="rp-now">';
+  if(d.job&&d.job.running) h+='<div class="big">'+(d.job.running==='drop'?'Dropping prices now':'Putting prices back now')+'</div>'+esc(d.job.progress||'Starting…');
+  else if(d.active) h+='<div class="big">Inside the '+esc(d.active.label)+' slot</div>'+(pending.length?'<b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' lowered right now; they go back at '+rpTime(d.active.end)+'.':'This slot\'s drop has run. Prices go back at '+rpTime(d.active.end)+'.');
+  else if(d.next) h+='<div class="big">Next drop: '+rpTime(d.next.start)+'</div>Back at '+rpTime(d.next.end)+' (Arizona time).'+(pending.length?'<br><b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' waiting to go back.':'');
+  else h+='<div class="big">'+(S.enabled?'No time slot is switched on':'Switched off')+'</div>'+(pending.length?'<b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' waiting to go back (within a minute).':'Nothing is lowered.');
+  if(d.job&&d.job.lastError) h+='<div class="warn">Last problem ('+new Date(d.job.lastError.at).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'): '+esc(d.job.lastError.message)+'</div>';
+  if(!d.sellerKnown) h+='<div class="warn">The app doesn\'t know your Amazon seller id yet, so it can\'t change prices. Add <b>SELLER_ID</b> in Railway (Seller Central → Settings → Account Info → Merchant Token).</div>';
+  h+='</div></div>';
+  // settings
+  h+='<div class="rp-card"><h3>Settings</h3><p class="sub">Only listings with stock at Amazon where someone else has the Buy Box are lowered. Listings on sale, not buyable, or where we already have the Buy Box are left alone.</p><div class="rp-set">'
+    +'<div><span class="rp-lab">Price drop</span><div class="rp-money">− $<input type="number" id="rpDrop" min="0.01" max="50" step="0.01" value="'+Number(E.drop).toFixed(2)+'" oninput="_rpEdit.drop=this.value"></div></div>'
+    +'<div><span class="rp-lab">Time slots (Arizona time)</span>'
+    +E.slots.map((s,i)=>'<div class="rp-slot'+(s.on?'':' off')+'"><input type="time" value="'+esc(s.drop)+'" onchange="_rpEdit.slots['+i+'].drop=this.value;renderReprice()" aria-label="Drop at"><span class="to">back at</span><input type="time" value="'+esc(s.back)+'" onchange="_rpEdit.slots['+i+'].back=this.value;renderReprice()" aria-label="Back at">'
+      +'<label><input type="checkbox"'+(s.on?' checked':'')+' onchange="_rpEdit.slots['+i+'].on=this.checked;renderReprice()"> On</label><span class="len">'+rpLen(s)+'</span><button class="rp-x" onclick="_rpEdit.slots.splice('+i+',1);renderReprice()">Remove</button></div>').join('')
+    +(E.slots.length<6?'<button class="rp-add" onclick="rpAddSlot()">+ Add time slot</button>':'')+'</div></div>'
+    +'<details><summary>More settings</summary><div class="rp-more">'
+    +'<div><span class="rp-lab">Min. units at Amazon</span><input type="number" min="1" value="'+E.minStock+'" oninput="_rpEdit.minStock=this.value"></div>'
+    +'<div><span class="rp-lab">Never more than (% off)</span><input type="number" min="1" max="50" value="'+E.maxPct+'" oninput="_rpEdit.maxPct=this.value"></div>'
+    +'<div style="grid-column:1/-1"><span class="rp-lab">Never drop these SKUs</span><textarea placeholder="SKUs, separated by commas or lines" oninput="_rpEdit.exclude=this.value">'+esc((Array.isArray(E.exclude)?E.exclude.join(', '):E.exclude)||'')+'</textarea></div>'
+    +'</div></details>'
+    +'<div class="rp-save"><button class="action" id="rpSave" onclick="rpSave()">Save settings</button><span class="hint" id="rpSaveNote">'+(rpDirty()?'Not saved yet':'')+'</span></div></div>';
+  // last drop
+  const L=d.last;
+  const shown=d.rows.filter(r=>r.dropped_at||r.restore_status);
+  h+='<div class="rp-card"><h3>Last drop'+(L&&L.cycle?' · '+esc(rpNight(L.cycle)):'')+'</h3>';
+  if(L) h+='<div class="rp-chips">'+[['Dropped',L.dropped],['Already had the Buy Box',L.ownedBB],['Out of stock',L.outOfStock],['Not buyable',L.notBuyable],['On sale',L.salePrice],['Over the % cap',L.blocked],['Amazon errors',(L.bbErrors||0)+(L.listingErrors||0)],['Failed',L.failed]]
+      .filter(x=>x[1]).map(x=>'<span class="rp-chip">'+x[0]+' <b>'+x[1]+'</b></span>').join('')+(L.stopped?'<span class="rp-chip" style="background:#fff4e5;color:#7a4600">Stopped early: '+esc(L.stopped)+'</span>':'')+'</div>';
+  if(shown.length){
+    h+='<table class="rp-tbl"><colgroup><col class="c1" style="width:40%"><col style="width:15%"><col style="width:15%"><col class="c4" style="width:30%"></colgroup><tr><th>Listing</th><th>Price</th><th>Dropped to</th><th>Now</th></tr>'
+      +shown.map(r=>{ const st=rpState(r);
+        return '<tr><td>'+(r.asin?amzLinkSized(r.asin, r.name||r.sku):esc(r.sku))+'<div class="sku">'+esc(r.sku)+(r.cycle!==(L&&L.cycle)?' · '+esc(rpNight(r.cycle)):'')+'</div></td><td class="n">'+rpMoney(r.original)+'</td><td class="n">'+rpMoney(r.drop)+'</td><td><span class="rp-pill" style="background:'+st[1]+';color:'+st[2]+'">'+esc(st[0])+'</span>'+(st[3]?'<div class="sku note" style="margin-top:4px" title="'+esc(st[3])+'">'+esc(st[3].length>90?st[3].slice(0,90)+'…':st[3])+'</div>':'')+'</td></tr>'; }).join('')+'</table>';
+  } else h+='<div class="hint" style="font-size:15px">'+(L?'No prices were lowered.':'The repricer hasn\'t run in this app yet.')+'</div>';
+  h+='</div>';
+  if(d.history.length){
+    h+='<div class="rp-card"><h3>Past nights</h3><table class="rp-tbl"><tr><th>Night</th><th>Dropped</th><th class="hide-sm">Had the Buy Box</th><th>Put back</th><th>Still lowered</th><th class="hide-sm">Left alone</th></tr>'
+      +d.history.map(x=>'<tr><td>'+esc(rpNight(x.cycle))+'</td><td class="n">'+x.dropped+'</td><td class="n hide-sm">'+x.owned+'</td><td class="n">'+x.back+'</td><td class="n" style="color:'+(x.pending?'#b42d2d':'inherit')+'">'+x.pending+'</td><td class="n hide-sm">'+x.left_alone+'</td></tr>').join('')+'</table></div>';
+  }
+  el.innerHTML=h;
+}
+function rpNight(cycle){ const [day,id]=String(cycle||'').split('/'); const p=day.split('-'); const s=(_rp&&_rp.settings.slots||[]).find(x=>x.id===id);
+  const dt=new Date(+p[0], +p[1]-1, +p[2]); return dt.toLocaleDateString([], {weekday:'short',month:'numeric',day:'numeric'})+(s?' · '+rpLabel(s.drop):''); }
+function rpState(r){
+  if(r.restore_status==='pending') return r.restore_attempts?['Lowered: retrying (failed '+r.restore_attempts+'×)','#fdecec','#b42d2d',r.note]:['Lowered','#fff4e5','#7a4600',r.outcome==='drop_failed'?'the drop may not have gone through: '+(r.note||''):''];
+  if(r.restore_status==='restored') return ['Back to '+rpMoney(r.original),'#e7f6ec','#0d6b30',''];
+  if(r.restore_status==='cleared') return ['Back to '+rpMoney(r.original),'#e7f6ec','#0d6b30',r.note||''];
+  if(r.restore_status==='left_alone') return ['Left alone: check it','#fdecec','#b42d2d',r.note||''];
+  return [r.outcome,'#eef3f6','#33424d',r.note||''];
+}
+function rpDirty(){ if(!_rp||!_rpEdit) return false; const a=_rp.settings, b=_rpEdit;
+  return Number(a.drop)!==Number(b.drop)||String(a.minStock)!==String(b.minStock)||String(a.maxPct)!==String(b.maxPct)||JSON.stringify(a.slots)!==JSON.stringify(b.slots)
+    ||(Array.isArray(b.exclude)?b.exclude.join(','):String(b.exclude||'').split(/[\s,]+/).filter(Boolean).join(','))!==a.exclude.join(','); }
+function rpAddSlot(){
+  // Starts right after the last slot ends, an hour long, so it doesn't overlap.
+  const last=_rpEdit.slots[_rpEdit.slots.length-1]; const [h,m]=(last?last.back:'01:00').split(':').map(Number);
+  const t=x=>String(Math.floor(x/60)%24).padStart(2,'0')+':'+String(x%60).padStart(2,'0');
+  _rpEdit.slots.push({drop:t(h*60+m), back:t(h*60+m+60), on:true}); renderReprice();
+}
+function rpPost(path, body){ return ownerApi(path,{method:'POST',body:JSON.stringify(body||{})}); }
+function rpSave(){
+  const b=document.getElementById('rpSave'); b.disabled=true;
+  const body=Object.assign({}, _rpEdit); delete body.enabled;
+  rpPost('/api/reprice/settings', body).then(d=>{ b.disabled=false;
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not save',true); return; }
+    _rpEdit=JSON.parse(JSON.stringify(d.settings)); toast('Saved'); loadReprice();
+  }).catch(e=>{ b.disabled=false; toast(e.message,true); });
+}
+function rpToggle(){
+  const on=!_rp.settings.enabled;
+  if(on && !confirm('Turn the repricer ON?\n\nIt changes your prices on Amazon: '+rpMoney(_rp.settings.drop)+' off during the switched-on time slots, then puts them back.\n\nIf the old repricer (the separate amazon-pricing app on Railway) is still running, switch it off first, or both will lower the same prices.')) return;
+  if(!on && !confirm('Turn the repricer OFF?\n\nNo more drops. Any price lowered right now goes back within a minute.')) return;
+  const t=document.getElementById('rpTog'); if(t) t.disabled=true;
+  rpPost('/api/reprice/settings', {enabled:on}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not switch',true); if(t) t.disabled=false; return; }
+    toast(on?'Repricer is ON':'Repricer is OFF'); loadReprice();
+  }).catch(e=>{ if(t) t.disabled=false; toast(e.message,true); });
+}
+function rpRestoreNow(){
+  if(!confirm('Put every lowered price back now?')) return;
+  const b=document.getElementById('rpBackBtn'); if(b) b.disabled=true;
+  rpPost('/api/reprice/restore-now').then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not start',true); if(b) b.disabled=false; return; }
+    toast(d.count?'Putting '+d.count+' price'+(d.count===1?'':'s')+' back…':'Nothing to put back'); setTimeout(loadReprice, 1200);
+  }).catch(e=>{ if(b) b.disabled=false; toast(e.message,true); });
+}
+
 // ---- STUCK AT AMAZON (Admin → Money): stock that can't sell, fees coming ----
 // Parsers in lib/stuck.js; uses the Reimbursements screen's styles (CL_CSS).
 let _stuck=null, _stuckPoll=null;

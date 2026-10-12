@@ -1226,4 +1226,97 @@ async function getShipmentStatuses(ids) {
   return out;
 }
 
-module.exports = { getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+// ---- Repricer (repricer.js): read and set our own price on one listing ----
+// Ported from the owner's amazon-pricing bot. Listings Items API 2021-08-01
+// needs our seller id in the path; the caller passes it (SELLER_ID or the one
+// learned from our offers, server.js ourSellerId).
+async function spRetry(fn) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await fn(); } catch (e) {
+      if ((e.response?.status === 429) && attempt < 3) { await sleep(3000 * Math.pow(2, attempt)); continue; }
+      throw e;
+    }
+  }
+}
+const spErr = (e) => e.response?.data ? JSON.stringify(e.response.data).slice(0, 300) : e.message;
+
+// A Seller Central sale price (discounted_price) active right now.
+function hasActiveSale(po) {
+  const now = Date.now();
+  for (const dp of po?.discounted_price || []) for (const sch of dp.schedule || []) {
+    const a = sch.start_at ? Date.parse(sch.start_at) : -Infinity, b = sch.end_at ? Date.parse(sch.end_at) : Infinity;
+    if (now >= (isNaN(a) ? -Infinity : a) && now <= (isNaN(b) ? Infinity : b)) return true;
+  }
+  return false;
+}
+
+// { found:false } when the SKU isn't on Amazon (404), else
+// { found, asin, productType, statuses, buyable, hasSalePrice, price }.
+// Throws on any other error: callers skip the SKU (fail closed).
+async function getListingPrice(sellerId, sku) {
+  if (!sellerId) throw new Error('our seller id is not known (set SELLER_ID in Railway)');
+  let r;
+  try {
+    r = await spRetry(() => http.get(`${SP_API_BASE}/listings/2021-08-01/items/${encodeURIComponent(sellerId)}/${encodeURIComponent(sku)}`,
+      { params: { marketplaceIds: MARKETPLACE_ID, includedData: 'summaries,offers,attributes' } }));
+  } catch (e) {
+    if (e.response?.status === 404) return { found: false };
+    throw new Error(`listing ${sku}: Amazon ${e.response?.status || ''} ${spErr(e)}`);
+  }
+  const d = r.data || {};
+  const summary = (d.summaries || []).find(x => !x.marketplaceId || x.marketplaceId === MARKETPLACE_ID) || {};
+  const statuses = summary.status || [];
+  // The price we set (purchasable_offer.our_price), present even when the
+  // listing is inactive; else the live B2C offer price.
+  const po = (d.attributes?.purchasable_offer || []).find(x => (!x.marketplace_id || x.marketplace_id === MARKETPLACE_ID) && (!x.audience || x.audience === 'ALL'));
+  let price = parseFloat(po?.our_price?.[0]?.schedule?.[0]?.value_with_tax);
+  if (!Number.isFinite(price)) {
+    const offer = (d.offers || []).find(o => (!o.marketplaceId || o.marketplaceId === MARKETPLACE_ID) && (!o.offerType || o.offerType === 'B2C'));
+    price = parseFloat(offer?.price?.amount);
+  }
+  return {
+    found: true, asin: summary.asin || null, productType: summary.productType || null, statuses,
+    buyable: statuses.includes('BUYABLE'), hasSalePrice: hasActiveSale(po),
+    price: Number.isFinite(price) ? Math.round(price * 100) / 100 : null,
+  };
+}
+
+// Set our price. Amazon can answer 200 with status INVALID: that is a failure.
+async function setListingPrice(sellerId, sku, price, productType) {
+  const p = Math.round(parseFloat(price) * 100) / 100;
+  // Last line of defence: never send a junk price to Amazon.
+  if (!Number.isFinite(p) || p <= 0) throw new Error(`refusing to send price "${price}" for ${sku}`);
+  if (!sellerId) throw new Error('our seller id is not known (set SELLER_ID in Railway)');
+  if (!productType) throw new Error(`no product type for ${sku}; can't set its price`);
+  const body = { productType, patches: [{ op: 'replace', path: '/attributes/purchasable_offer', value: [{
+    currency: 'USD', audience: 'ALL', marketplace_id: MARKETPLACE_ID, our_price: [{ schedule: [{ value_with_tax: p }] }] }] }] };
+  let r;
+  try {
+    r = await spRetry(() => http.patch(`${SP_API_BASE}/listings/2021-08-01/items/${encodeURIComponent(sellerId)}/${encodeURIComponent(sku)}`,
+      body, { params: { marketplaceIds: MARKETPLACE_ID }, headers: { 'Content-Type': 'application/json' } }));
+  } catch (e) { throw new Error(`price ${sku}: Amazon ${e.response?.status || ''} ${spErr(e)}`); }
+  const st = r.data?.status;
+  if (st && st !== 'ACCEPTED') {
+    const issues = (r.data.issues || []).map(i => i.message).join('; ');
+    throw new Error(`price ${sku}: Amazon said ${st}${issues ? ': ' + issues : ''}`);
+  }
+  return r.data;
+}
+
+// true = we hold the Buy Box, false = someone else (or nobody), null = couldn't
+// tell. Callers treat null as "don't drop".
+async function ownsBuyBox(asin, sellerId) {
+  try {
+    const r = await spRetry(() => http.get(`${SP_API_BASE}/products/pricing/v0/items/${encodeURIComponent(asin)}/offers`,
+      { params: { MarketplaceId: MARKETPLACE_ID, ItemCondition: 'New' } }));
+    const pl = r.data?.payload;
+    if (!pl || (pl.status && pl.status !== 'Success')) return null;
+    const bb = (pl.Offers || []).find(o => o.IsBuyBoxWinner === true);
+    return !!bb && (bb.SellerId === sellerId || bb.MyOffer === true);
+  } catch (e) {
+    console.error('[Reprice] Buy Box check failed for', asin, spErr(e));
+    return null;
+  }
+}
+
+module.exports = { getListingPrice, setListingPrice, ownsBuyBox, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
