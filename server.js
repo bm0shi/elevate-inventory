@@ -31,6 +31,7 @@ const { sendAlert, sendEmail, channels: alertChannels } = require('./lib/notify'
 const pack = require('./lib/pack');
 const pallet = require('./lib/pallet');
 const search = require('./lib/search');
+const health = require('./lib/health');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -205,12 +206,28 @@ for (const m of ['get', 'post', 'put', 'delete', 'patch']) {
 }
 
 // Registered last (after finance/autorun mount) — see the bottom of this file.
+// The last server errors, for Admin → App status (since the last restart).
+// Only real failures (500s), not a bad request.
+const recentErrors = [];
+let lastErrorAlert = 0;
+function noteError(req, err) {
+  const now = Date.now();
+  recentErrors.push({ at: now, method: req.method, path: req.path, message: String((err && err.message) || 'server error').slice(0, 300) });
+  if (recentErrors.length > 50) recentErrors.shift();
+  // several close together = something broken: one alert, then quiet for 2 hours
+  if (now - lastErrorAlert > 2 * 3600 * 1000 && health.errorBurst(recentErrors.map(e => e.at), now)) {
+    lastErrorAlert = now;
+    const last = recentErrors.slice(-5).map(e => `${e.method} ${e.path}: ${e.message}`).join('\n');
+    sendAlert('Elevate Inventory: errors on the server', 'Several requests failed in the last 15 minutes:\n' + last + '\n\nAdmin → App status has the list.', { tags: 'warning' });
+  }
+}
 function errorHandler(err, req, res, next) {
   console.error(`[Inventory] ${req.method} ${req.path} failed:`, err && err.message);
   if (res.headersSent) return next(err);
   // 22P02 invalid text, 22003 out of range, 23502 missing value, 23503 unknown
   // reference, 23505 duplicate: the request was bad, not the server.
   const bad = err && ['22P02', '22003', '22007', '22008', '23502', '23503', '23505'].includes(err.code);
+  if (!bad) noteError(req, err);
   res.status(bad ? 400 : 500).json({ ok: false, error: (err && err.message) || 'server error' });
 }
 
@@ -417,7 +434,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'tablet-mode-1043';
+const BUILD_ID = 'app-status-1044';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1339,6 +1356,53 @@ app.get('/api/search', auth, async (req, res) => {
   ships.rows.forEach(r => { if (!seen.has(r.shipment_id)) shipments.push({ id: r.shipment_id, name: r.name, status: r.status, pack: false, created_at: r.created_at }); });
   shipments.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   res.json({ ok: true, products, shipments: shipments.slice(0, 6), plans: plans.rows, invoices: invs.rows });
+});
+
+// App status (Admin → App status): every background job and connection in
+// one place, green / amber / red (lib/health.js). Owner only.
+app.get('/api/status', ownerAuth, async (req, res) => {
+  const t0 = Date.now();
+  let db = { ok: false };
+  try {
+    const r = await pool.query('SELECT pg_database_size(current_database()) AS b');
+    db = { ok: true, ms: Date.now() - t0, mb: Math.round(Number(r.rows[0].b) / 1048576) };
+  } catch (e) { db = { ok: false, error: e.message }; }
+  const cache = {};
+  try {
+    const r = await pool.query(`SELECT cache_key, data, updated_at FROM inv_cache WHERE cache_key = ANY($1)`,
+      [['amazon_sync_last', 'daily_sync_last', 'daily_sync_day', 'backup_last', 'shipments_checked']]);
+    r.rows.forEach(x => { cache[x.cache_key] = x; });
+  } catch (e) {}
+  let autoRun = null, autoEnabled = null;
+  try {
+    autoRun = (await pool.query('SELECT trigger, started_at, finished_at, ok, steps FROM fin_auto_runs ORDER BY id DESC LIMIT 1')).rows[0] || null;
+    const s = (await pool.query("SELECT value FROM fin_settings WHERE key='auto_enabled'")).rows[0];
+    autoEnabled = s ? s.value !== 'false' : true;
+  } catch (e) {}
+  const now = Date.now();
+  const errors24h = recentErrors.filter(e => now - e.at < 86400000).length;
+  const ch = alertChannels();
+  const out = health.checks({
+    now, build: BUILD_ID, uptimeMs: process.uptime() * 1000, db,
+    amazonCreds: !!((process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN) && (process.env.AMAZON_CLIENT_ID_FM || process.env.AMAZON_CLIENT_ID)),
+    amazonSyncLast: cache.amazon_sync_last ? cache.amazon_sync_last.data : null,
+    lastDailySync: cache.daily_sync_last ? cache.daily_sync_last.data : null,
+    amazonSyncRunning: amazonSync.running, amazonSyncTrigger: amazonSync.trigger,
+    dailySyncDay: cache.daily_sync_day ? cache.daily_sync_day.data : null,
+    checkinsAt: cache.shipments_checked ? cache.shipments_checked.updated_at : null,
+    autoRun, autoEnabled,
+    smtp: !!(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS),
+    backupLast: cache.backup_last ? cache.backup_last.data : null,
+    alerts: { ntfy: !!ch.ntfy, email: !!ch.email }, errors24h,
+  });
+  res.json({ ok: true, ...out, at: new Date(now).toISOString(), errors: recentErrors.slice(-20).reverse() });
+});
+// Proves the phone / email alerts reach the owner.
+app.post('/api/status/test-alert', ownerAuth, async (req, res) => {
+  const ch = alertChannels();
+  if (!ch.ntfy && !ch.email) return res.json({ ok: false, error: 'No alert channel set: add NTFY_TOPIC and/or ALERT_EMAIL_TO in Railway.' });
+  const r = await sendAlert('Elevate Inventory: test alert', 'If you can read this, alerts reach you. Sent from Admin → App status.', { tags: 'white_check_mark' });
+  res.json({ ok: true, result: r });
 });
 
 app.get('/api/products', auth, async (req, res) => {
@@ -7269,6 +7333,11 @@ function startAmazonSync(trigger) {
     amazonSync.step = amazonSync.error ? 'Finished with problems' : 'Done';
     console.log(`[Sync] ${trigger} sync finished: ${result.products} products, ${result.checkedIn} checked in${amazonSync.error ? ' — ' + amazonSync.error : ''}.`);
     try { await saveCache('amazon_sync_last', { at: amazonSync.finishedAt, trigger, result }); } catch (e) {}
+    if (trigger === 'daily') {
+      try { await saveCache('daily_sync_last', { at: amazonSync.finishedAt, trigger, result }); } catch (e) {}
+      // nobody watches the 6:30 sync: say so when it had problems
+      if (amazonSync.error) sendAlert('Elevate Inventory: morning Amazon sync had problems', amazonSync.error.slice(0, 900) + '\n\nAdmin → App status shows what to do.', { tags: 'warning' });
+    }
   })().catch(e => { amazonSync.running = false; amazonSync.error = e.message; });
   return true;
 }
@@ -8907,7 +8976,7 @@ initDb().then(() => {
   // Weekly automatic refresh of every Amazon input — Sundays 11:59 PM Arizona time
   // Weekly auto-refresh; each scheduled run emails its result (lib/weekly-email.js)
   const { sendRunEmail } = require('./lib/weekly-email');
-  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT,
+  require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT, sendAlert,
     onRunFinished: (run) => run.trigger === 'scheduled' ? sendRunEmail(run, pool) : null,
     sendTestEmail: (run) => sendRunEmail(run, pool) });
   app.use(errorHandler);

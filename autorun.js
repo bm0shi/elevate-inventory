@@ -164,6 +164,8 @@ module.exports = function registerAutorun(app, deps) {
         await setSetting('auto_retry_after', String(Date.now() + RETRY_MS)).catch(() => {});
         if (tries >= MAX_TRIES) {
           console.error(`[Auto] ${weekKey}: still failing after ${tries} runs — giving up until next Sunday.`);
+          if (deps.sendAlert) deps.sendAlert('Elevate Inventory: Sunday auto-refresh failed', `The weekly refresh for ${weekKey} still failed after ${tries} tries: ` +
+            steps.filter(x => !x.ok).map(x => x.name).join(', ') + '.\nRun it from Admin → Data Sources. Admin → App status has the details.', { tags: 'warning' });
           await setSetting('auto_last_week', weekKey).catch(() => {});
         }
       }
