@@ -475,6 +475,32 @@ async function getRestockReport() {
   return downloadReportDocument(docId);
 }
 
+// One of Amazon's snapshot reports (no date range: stranded inventory, the
+// Manage FBA Inventory list, inventory planning), raw tab-separated text for
+// lib/stuck.js. A report Amazon can't build throws; it never reads as empty.
+async function getSnapshotReport(reportType, label) {
+  let reportId = null;
+  for (let tries = 0; !reportId; tries++) {
+    try {
+      const r = await http.post(`${SP_API_BASE}/reports/2021-06-30/reports`, { reportType, marketplaceIds: [MARKETPLACE_ID] },
+        { headers: { 'Content-Type': 'application/json' } });
+      reportId = r.data.reportId;
+    } catch (e) {
+      if (e.response?.status === 429 && tries < 4) { await sleep(65000); continue; }
+      throw e;
+    }
+  }
+  for (let i = 0; i < 60; i++) {   // up to ~5 minutes
+    await sleep(5000);
+    const st = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`);
+    const status = st.data.processingStatus;
+    if (status === 'DONE') return downloadReportDocument(st.data.reportDocumentId);
+    if (status === 'CANCELLED') return '';   // Amazon cancels a report with nothing in it
+    if (status === 'FATAL') throw new Error(`Amazon could not build the ${label || reportType} report`);
+  }
+  throw new Error(`The ${label || reportType} report timed out`);
+}
+
 // Get Amazon prices per ASIN. Uses the getItemOffers endpoint per-ASIN which is
 // more reliable for returning a current price than the batch price endpoint.
 // Returns { asin: price }. Also returns diagnostics via a global.
@@ -1194,4 +1220,4 @@ async function getShipmentStatuses(ids) {
   return out;
 }
 
-module.exports = { getOrderRecords, getReturnRecords, getReimbursementBodies, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+module.exports = { getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };

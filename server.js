@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -33,6 +33,7 @@ const pallet = require('./lib/pallet');
 const search = require('./lib/search');
 const health = require('./lib/health');
 const claimsLib = require('./lib/claims');
+const stuckLib = require('./lib/stuck');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -435,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'reimbursements-1046';
+const BUILD_ID = 'stuck-at-amazon-1047';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7343,6 +7344,9 @@ function startAmazonSync(trigger) {
       await saveCache('claims_scan', { ...prev, at: new Date().toISOString() });
     }
     catch (e) { result.errors.push('reimbursements: ' + e.message); }
+    // Money stuck at Amazon: stranded, unsellable, aged (snapshot reports).
+    try { const o = await pullStuck(t => { amazonSync.step = t; }); if (o.errors.length) result.errors.push('stuck stock: ' + o.errors.join(' · ')); }
+    catch (e) { result.errors.push('stuck stock: ' + e.message); }
     // Refunds and Amazon fees, on time (financial events), last 60 days.
     try { amazonSync.step = 'Reading refunds and fees…'; await pullFinEvents(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('refunds/fees: ' + e.message); }
@@ -8192,6 +8196,45 @@ app.post('/api/claims/mark', ownerAuth, async (req, res) => {
     ON CONFLICT (key) DO UPDATE SET status=$2, case_id=COALESCE($3, inv_claims.case_id), note=COALESCE($4, inv_claims.note), snap=COALESCE($5, inv_claims.snap), updated_at=now()`,
     [String(key).slice(0, 200), status, caseId ? String(caseId).trim().slice(0, 40) : null, note ? String(note).slice(0, 500) : null, S]);
   res.json({ ok: true });
+});
+// ---------- Money stuck at Amazon (Admin → Money → Stuck at Amazon) ----------
+// Three snapshot reports, each on its own so one failing doesn't hide the others.
+async function pullStuck(onStep) {
+  const out = { at: new Date().toISOString(), stranded: [], unsellable: [], aged: [], errors: [] };
+  const one = async (label, type, parse, key) => {
+    try { if (onStep) onStep('Reading ' + label + '…'); out[key] = parse(await getSnapshotReport(type, label)); }
+    catch (e) { out.errors.push(label + ': ' + e.message); }
+  };
+  await one('stranded inventory', 'GET_STRANDED_INVENTORY_UI_DATA', stuckLib.parseStranded, 'stranded');
+  await one('unsellable units', 'GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA', stuckLib.parseUnsellable, 'unsellable');
+  await one('aged inventory', 'GET_FBA_INVENTORY_PLANNING_DATA', stuckLib.parseAged, 'aged');
+  // keep the last good list for a report that failed this time
+  const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='stuck_stock'")).rows[0] || {}).data || {};
+  for (const k of ['stranded', 'unsellable', 'aged']) if (out.errors.some(e => e.startsWith({ stranded: 'stranded', unsellable: 'unsellable', aged: 'aged' }[k])) && prev[k]) out[k] = prev[k];
+  await saveCache('stuck_stock', out);
+  return out;
+}
+let stuckJob = { running: false, step: '', done: false, error: null };
+app.post('/api/stuck/start', ownerAuth, (req, res) => {
+  if (stuckJob.running) return res.json({ ok: true, already: true });
+  stuckJob = { running: true, step: 'Starting…', done: false, error: null };
+  pullStuck(t => { stuckJob.step = t; })
+    .then(o => { stuckJob.error = o.errors.length ? o.errors.join(' · ') : null; })
+    .catch(e => { stuckJob.error = e.message; })
+    .finally(() => { stuckJob.running = false; stuckJob.done = true; stuckJob.step = stuckJob.error ? 'Finished with problems' : 'Done'; });
+  res.json({ ok: true, started: true });
+});
+app.get('/api/stuck/status', ownerAuth, (req, res) => res.json(stuckJob));
+app.get('/api/stuck', ownerAuth, async (req, res) => {
+  const d = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='stuck_stock'")).rows[0] || {}).data || null;
+  const cost = {};
+  (await pool.query('SELECT sku, avg_cost FROM inv_products WHERE sku IS NOT NULL AND avg_cost IS NOT NULL')).rows.forEach(r => { cost[r.sku] = Number(r.avg_cost); });
+  if (!d) return res.json({ ok: true, data: null });
+  const stranded = stuckLib.tiedUp(d.stranded || [], 'units', cost);
+  const unsellable = stuckLib.tiedUp(d.unsellable || [], 'unsellable', cost);
+  const surcharge = (d.aged || []).reduce((n, r) => n + (r.surcharge || 0), 0);
+  res.json({ ok: true, data: d, cost, totals: { stranded, unsellable, tiedUp: Math.round((stranded.total + unsellable.total) * 100) / 100,
+    surcharge: Math.round(surcharge * 100) / 100, agedUnits: (d.aged || []).reduce((n, r) => n + r.aged181, 0) } });
 });
 async function pullReturns(fromDay, onProgress) {
   const fromMs = Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
