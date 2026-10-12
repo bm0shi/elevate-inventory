@@ -3117,8 +3117,17 @@ function fbaNormalize(){
     }
   }
   for(const x of rows){
+    // FBA = units physically at Amazon only (available + reserved). Amazon's
+    // total also counts every open inbound shipment, even ones still being
+    // built in our warehouse, so B08N9L6C93 read 353 "at FBA" while those
+    // units sat in On Hand / Transit (owner). Amazon's own figure stays in
+    // _amzTotal; this runs on every render, so it's worked out from that.
+    if(x._amzTotal===undefined) x._amzTotal=x.fba_total||0;
+    x.fba_total = x.fba_onhand!=null ? (x.fba_onhand||0)
+      : Math.max(x.fba_fulfillable||0, x._amzTotal-(x.fba_inbound||0));
     const p=P[x.asin];
-    if(!p){ x.pending_prep=x.pending_prep||0; x.prepped=x.prepped||0; x.onhand_total=x.onhand_total||x.warehouse||0; continue; }
+    if(!p){ x.pending_prep=x.pending_prep||0; x.prepped=x.prepped||0; x.onhand_total=x.onhand_total||x.warehouse||0;
+      x.grand_total=(x.warehouse||0)+(x.transit||0)+x.fba_total; continue; }
     if(p.is_bundle){
       x.is_duo      = true;
       x.warehouse   = 0;
@@ -3235,7 +3244,7 @@ function renderFbaInv(){
      '<th style="cursor:pointer" onclick="fbaSort(\'pending_prep\')">Pend Prep'+arrow('pending_prep')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'prepped\')">Prepped'+arrow('prepped')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'transit\')">Transit'+arrow('transit')+'</th>'+
-     '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')">FBA'+arrow('fba_total')+'</th>'+
+     '<th style="cursor:pointer" onclick="fbaSort(\'fba_total\')" title="Units at Amazon only (available + reserved). Shipments still on the way are under Transit, not here.">FBA'+arrow('fba_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'grand_total\')">Total'+arrow('grand_total')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'_ssMo\')" title="Smart Scout: average units a month of the other sellers that sell it'+(ssAvg&&ssAvg.sellers&&ssAvg.sellers.length?' ('+esc(ssAvg.sellers.join(', '))+')':'')+'. Full average, no discount.">Avg sold / mo'+arrow('_ssMo')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'_daysFba\')" title="Days the units at FBA + in transit last at that rate">Days · FBA'+arrow('_daysFba')+'</th>'+
