@@ -9046,6 +9046,7 @@ const RP_CSS = `
 #sub-reprice .rp-money.sm{font-size:17px;justify-content:center;gap:4px;white-space:nowrap}
 #sub-reprice .rp-money.sm input{width:96px;font-size:17px !important;padding:8px 10px !important}
 #sub-reprice .rp-ov{margin-bottom:12px}
+#sub-reprice .rp-ovlist{margin-top:18px}
 #sub-reprice .rp-ovadd{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 #sub-reprice .rp-ovadd #rpOvProd{flex:1 1 280px;min-width:0}
 #sub-reprice .rp-slot{display:grid;grid-template-columns:auto auto auto auto 1fr auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--rp-line);border-radius:14px;margin-bottom:10px;background:#f8fafb}
@@ -9134,6 +9135,7 @@ function renderReprice(){
     +E.slots.map((s,i)=>'<div class="rp-slot'+(s.on?'':' off')+'"><input type="time" value="'+esc(s.drop)+'" onchange="_rpEdit.slots['+i+'].drop=this.value;renderReprice()" aria-label="Drop at"><span class="to">back at</span><input type="time" value="'+esc(s.back)+'" onchange="_rpEdit.slots['+i+'].back=this.value;renderReprice()" aria-label="Back at">'
       +'<label><input type="checkbox"'+(s.on?' checked':'')+' onchange="_rpEdit.slots['+i+'].on=this.checked;renderReprice()"> On</label><span class="len">'+rpLen(s)+'</span><button class="rp-x" onclick="_rpEdit.slots.splice('+i+',1);renderReprice()">Remove</button></div>').join('')
     +(E.slots.length<6?'<button class="rp-add" onclick="rpAddSlot()">+ Add time slot</button>':'')+'</div></div>'
+    +rpOverridesList(S)
     +rpOverridesHtml(E)
     +'<details'+(_rpMoreOpen?' open':'')+' ontoggle="_rpMoreOpen=this.open"><summary>More settings</summary><div class="rp-more">'
     +'<div><span class="rp-lab">Min. units at Amazon</span><input type="number" min="1" value="'+E.minStock+'" oninput="_rpEdit.minStock=this.value"></div>'
@@ -9150,7 +9152,9 @@ function renderReprice(){
   if(shown.length){
     h+='<table class="rp-tbl"><colgroup><col class="c1" style="width:40%"><col style="width:15%"><col style="width:15%"><col class="c4" style="width:30%"></colgroup><tr><th>Listing</th><th>Price</th><th>Dropped to</th><th>Now</th></tr>'
       +shown.map(r=>{ const st=rpState(r);
-        return '<tr><td>'+(r.asin?amzLinkSized(r.asin, r.name||r.sku):esc(r.sku))+'<div class="sku">'+esc(r.sku)+(r.cycle!==(L&&L.cycle)?' · '+esc(rpNight(r.cycle)):'')+'</div></td><td class="n">'+rpMoney(r.original)+'</td><td class="n">'+rpMoney(r.drop)+'</td><td><span class="rp-pill" style="background:'+st[1]+';color:'+st[2]+'">'+esc(st[0])+'</span>'+(st[3]?'<div class="sku note" style="margin-top:4px" title="'+esc(st[3])+'">'+esc(st[3].length>90?st[3].slice(0,90)+'…':st[3])+'</div>':'')+'</td></tr>'; }).join('')+'</table>';
+        return '<tr><td>'+(r.asin?amzLinkSized(r.asin, r.name||r.sku):esc(r.sku))+'<div class="sku">'+esc(r.sku)+(r.cycle!==(L&&L.cycle)?' · '+esc(rpNight(r.cycle)):'')+'</div>'
+          +(r.original!=null&&r.drop!=null&&Math.abs((r.original-r.drop)-S.drop)>0.005?'<span class="rp-pill" style="background:#eaf1fb;color:#1f5fae;margin-top:4px">own drop − '+rpMoney(r.original-r.drop)+'</span>':'')
+          +'</td><td class="n">'+rpMoney(r.original)+'</td><td class="n">'+rpMoney(r.drop)+'</td><td><span class="rp-pill" style="background:'+st[1]+';color:'+st[2]+'">'+esc(st[0])+'</span>'+(st[3]?'<div class="sku note" style="margin-top:4px" title="'+esc(st[3])+'">'+esc(st[3].length>90?st[3].slice(0,90)+'…':st[3])+'</div>':'')+'</td></tr>'; }).join('')+'</table>';
   } else h+='<div class="hint" style="font-size:15px">'+(L?'No prices were lowered.':'The repricer hasn\'t run in this app yet.')+'</div>';
   h+='</div>';
   if(d.history.length){
@@ -9184,6 +9188,15 @@ function rpOverridesHtml(E){
     +'<button class="rp-add" onclick="rpAddOverride()">+ Add product</button></div>'
     +'<datalist id="rpProdList">'+(products||[]).filter(p=>p.asin).map(p=>'<option value="'+esc(p.asin)+'" label="'+esc(p.name||'')+'"></option>').join('')+'</datalist></details>';
   return h;
+}
+// The saved per-product drops, always in view (owner: "list the items I adjusted in case I forget").
+function rpOverridesList(S){
+  const ov=(S.overrides||[]).slice(); if(!ov.length) return '';
+  const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:''; };
+  ov.sort((a,b)=>(nm(a.asin)||a.asin).localeCompare(nm(b.asin)||b.asin));
+  return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop ('+ov.length+') · everything else drops '+rpMoney(S.drop)+'</span>'
+    +'<table class="rp-tbl"><colgroup><col><col style="width:120px"></colgroup>'
+    +ov.map(o=>'<tr><td>'+amzLinkSized(o.asin, nm(o.asin)||o.asin)+'<div class="sku">'+esc(o.asin)+'</div></td><td class="n">− '+rpMoney(o.drop)+'</td></tr>').join('')+'</table></div>';
 }
 function rpAddOverride(){
   const t=(document.getElementById('rpOvProd').value||'').trim(), amt=parseFloat(document.getElementById('rpOvAmt').value);
