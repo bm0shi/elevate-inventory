@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sortable-1060';
+const BUILD_ID = 'dash-top10-1061';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1211,6 +1211,12 @@ async function initDb() {
     // Orders per day (distinct order ids). NULL on days saved before this
     // was counted, so averages never divide by a missing count.
     await pool.query(`ALTER TABLE inv_sales_daily ADD COLUMN IF NOT EXISTS orders INTEGER`);
+    // The same orders per listing per day, for the dashboard's "Top 10
+    // sellers" by period (owner). Written with inv_sales_daily from the same
+    // pull; a listing with no sales that day has no row.
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_sales_asin_daily (
+      day DATE NOT NULL, asin TEXT NOT NULL, units INTEGER NOT NULL DEFAULT 0, sales NUMERIC NOT NULL DEFAULT 0,
+      PRIMARY KEY (day, asin))`);
     // Customer returns (FBA returns report), one row per returned line.
     await pool.query(`CREATE TABLE IF NOT EXISTS inv_returns (
       key TEXT PRIMARY KEY, day DATE NOT NULL, ts TIMESTAMPTZ, order_id TEXT, sku TEXT, asin TEXT,
@@ -8007,6 +8013,23 @@ async function saveSalesDays(recs, fromDay) {
       SELECT * , now() FROM unnest($1::date[], $2::int[], $3::numeric[], $4::numeric[], $5::int[])
       ON CONFLICT (day) DO UPDATE SET units=EXCLUDED.units, sales=EXCLUDED.sales, est=EXCLUDED.est, orders=EXCLUDED.orders, updated_at=now()`,
     [ks, ks.map(k => days[k].units), ks.map(k => days[k].sales), ks.map(k => days[k].est), ks.map(k => days[k].orders)]);
+  // per listing per day (Top 10 sellers): the pulled days are replaced as a whole
+  if (ks.length) {
+    const per = {};
+    for (const r of recs) {
+      const d = salesDay(r.ts); if (!days[d]) continue;
+      const a = r.asin || r.sku; if (!a) continue;
+      const x = per[d + '|' + a] = per[d + '|' + a] || { d, a, u: 0, s: 0 };
+      x.u += r.qty; x.s += r.price || 0;
+    }
+    const rows = Object.values(per);
+    await withTx(async (db) => {
+      await db.query('DELETE FROM inv_sales_asin_daily WHERE day = ANY($1::date[])', [ks]);
+      if (rows.length) await db.query(`INSERT INTO inv_sales_asin_daily(day, asin, units, sales)
+        SELECT * FROM unnest($1::date[], $2::text[], $3::int[], $4::numeric[])`,
+        [rows.map(x => x.d), rows.map(x => x.a), rows.map(x => x.u), rows.map(x => Math.round(x.s * 100) / 100)]);
+    });
+  }
   // today vs yesterday, hour by hour (for "Today so far vs. yesterday by now")
   const yday = salesDay(Date.now() - 86400000);
   await saveCache('sales_today', { asOf: new Date().toISOString(), today, yday,
@@ -8319,6 +8342,22 @@ app.post('/api/sales/history', ownerAuth, async (req, res) => {
   })();
 });
 app.get('/api/sales/history/status', ownerAuth, (req, res) => res.json(salesJob));
+// Top 10 sellers for a stretch of Pacific days (Dashboard → Gross sales).
+// `from` = the first day with per-listing sales saved, so the screen can say
+// when a period reaches back before that.
+app.get('/api/sales/top', ownerAuth, async (req, res) => {
+  const ok = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+  const { from, to } = req.query;
+  if (!ok(from) || !ok(to) || from > to) return res.status(400).json({ ok: false, error: 'from / to must be dates (YYYY-MM-DD)' });
+  const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 10));
+  const r = await pool.query(`SELECT s.asin, MAX(p.name) AS name, SUM(s.units)::int AS units, SUM(s.sales)::float AS sales
+      FROM inv_sales_asin_daily s LEFT JOIN inv_products p ON p.asin = s.asin
+     WHERE s.day BETWEEN $1 AND $2 GROUP BY s.asin ORDER BY units DESC, sales DESC LIMIT $3`, [from, to, limit]);
+  const t = await pool.query(`SELECT COALESCE(SUM(units),0)::int AS units, COALESCE(SUM(sales),0)::float AS sales,
+      to_char((SELECT MIN(day) FROM inv_sales_asin_daily),'YYYY-MM-DD') AS since
+      FROM inv_sales_asin_daily WHERE day BETWEEN $1 AND $2`, [from, to]);
+  res.json({ ok: true, from, to, items: r.rows, total: { units: t.rows[0].units, sales: t.rows[0].sales }, since: t.rows[0].since });
+});
 
 // Sales velocity (OWNER only) — units sold per SKU + days of stock left.
 // Also refreshed by the morning sync, so the Smart Scout attack list and the

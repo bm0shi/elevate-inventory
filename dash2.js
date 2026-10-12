@@ -166,6 +166,24 @@
   }
   @media (max-width:1180px){.d2-periods{grid-template-columns:repeat(3,minmax(0,1fr))}.d2-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.d2-met:nth-child(5){border-left:0}.d2-met:nth-child(n+5){border-top:1px solid #e9eef2}}
   @media (max-width:760px){.d2-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-met:nth-child(odd){border-left:0}.d2-met:nth-child(n+3){border-top:1px solid #e9eef2}.d2-periods{grid-template-columns:repeat(2,minmax(0,1fr))}.s6,.s3{grid-column:span 12}.d2-legend{grid-template-columns:repeat(2,minmax(0,1fr))}.d2-hval{font-size:48px}.d2-tiles{grid-template-columns:1fr 1fr;gap:12px}}
+  .d2-top10{margin:0 0 16px;border:1px solid #e6ecf0;border-radius:14px;background:#fff;overflow:hidden}
+  .d2-top10>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:12px 16px;font-size:16.5px;font-weight:800;color:${C.ink}}
+  .d2-top10>summary::-webkit-details-marker{display:none}
+  .d2-top10>summary .chev{transition:transform .25s;color:${C.muted}}.d2-top10[open]>summary .chev{transform:rotate(180deg)}
+  .d2-top10>summary .sub{font-size:14px;font-weight:600;color:${C.muted}}
+  .d2-top10 .body{padding:0 16px 14px}
+  .d2-t10{width:100%;border-collapse:collapse;table-layout:fixed;font-size:15.5px}
+  .d2 table.d2-t10 th{background:#f8fafb!important;font-size:12px;letter-spacing:.6px;text-transform:uppercase;color:${C.muted};font-weight:800;padding:8px 6px;text-align:center;border-bottom:1px solid #e9eef2;cursor:pointer;user-select:none}
+  .d2 table.d2-t10 th:nth-child(2),.d2-t10 td:nth-child(2){text-align:left}
+  .d2 table.d2-t10 th.on{color:${C.brand}}.d2 table.d2-t10 th:hover{color:${C.ink}}
+  .d2-t10 td{padding:9px 6px;border-bottom:1px solid #f1f4f6;text-align:center;font-variant-numeric:tabular-nums;vertical-align:middle;overflow-wrap:anywhere}
+  .d2-t10 td.n{font-weight:800}
+  .d2-t10 .rk{display:inline-grid;place-items:center;width:26px;height:26px;border-radius:50%;background:#eef3f6;font-size:13px;font-weight:850;color:${C.ink2}}
+  .d2-t10 tr:nth-child(2) .rk{background:#ff9900;color:#131921}.d2-t10 tr:nth-child(3) .rk{background:#ffc266;color:#131921}.d2-t10 tr:nth-child(4) .rk{background:#ffe0b3;color:#131921}
+  .d2-t10 .bar{height:6px;border-radius:3px;background:#eef3f6;margin-top:5px;overflow:hidden}.d2-t10 .bar i{display:block;height:100%;background:${C.blue};border-radius:3px}
+  .d2-per .t10{display:inline-block;margin-top:7px;font-size:13px;font-weight:800;color:${C.brand};background:#eaf3f5;border-radius:999px;padding:3px 10px}
+  .d2-per .t10:hover{background:#d6eaee}
+  @media (max-width:760px){.d2-t10{font-size:14.5px}.d2-t10 col.crk{width:34px!important}.d2-t10 td{padding:9px 3px}.d2-top10 .body{padding:0 8px 12px}.d2-t10 .rk{width:22px;height:22px;font-size:12px}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
   `;
   function injectCss() { if (document.getElementById('d2css')) return; const s = document.createElement('style'); s.id = 'd2css'; s.textContent = CSS; document.head.appendChild(s); }
@@ -358,7 +376,7 @@
       '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included · history refreshes itself every morning</div></div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update today</button></div></div>' +
       '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4, 5].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
-      '<div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
+      '<div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div id="d2top10"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
       // overview: hero
       '<section id="d2-value" class="d2-card d2-hero s12" style="--d:90ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
       '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
@@ -636,7 +654,8 @@
     per.innerHTML = P.list.map(p => '<button class="d2-per' + (p.k === sel ? ' on' : '') + (p.k === 'custom' ? ' custom' : '') + '" data-per="' + p.k + '"><div class="l">' + p.label + ' <span>· ' + E(p.curLbl) + '</span></div>' +
       '<div class="v">' + (p.cur == null ? '—' : '$' + n0(p.cur)) + '</div>' +
       '<div class="dl">' + deltaChip(p.cur, p.prev) + '<b class="' + (p.cur != null && p.prev != null ? (p.cur >= p.prev ? 'pos' : 'neg') : '') + '">' + moneyDelta(p.cur, p.prev) + '</b></div>' +
-      '<div class="p">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div></button>').join('');
+      '<div class="p">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div>' +
+      '<span class="t10" data-top="' + p.k + '" title="Top 10 sellers for ' + E(p.label) + '">Top 10 ▾</span></button>').join('');
     const p = P.list.find(z => z.k === sel) || P.list[2];
     // custom range picker
     let nt = '';
@@ -657,9 +676,52 @@
       return '<button class="d2-met' + (mt.k === mSel ? ' on' : '') + '" data-met="' + mt.k + '"><div class="l">' + mt.l + '</div><div class="v">' + val + '</div>' + chip + '<div class="p">' + E(sub) + '</div></button>';
     }).join('');
     drawSales(p, METRICS.find(z => z.k === mSel) || METRICS[0]);
+    paintTop10(p);
     const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
     if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('today'); }
   }
+  // Top 10 sellers for the chosen period (owner: a drop-down under each
+  // period). Per-listing units and sales from /api/sales/top, kept per range
+  // for this visit; the table sorts by any column (owner's standing ask).
+  const topCache = {};
+  function topRange(p) { return p.k === 'today' ? [p.D.T, p.D.T] : [p.curDays[0], p.curDays[p.curDays.length - 1]]; }
+  function paintTop10(p) {
+    const box = document.getElementById('d2top10'); if (!box) return;
+    state.topP = p;
+    const [from, to] = topRange(p), key = from + '|' + to, open = store.get('d2TopOpen') === '1';
+    const d = topCache[key];
+    let body;
+    if (!d || d.loading) body = '<div class="d2-sub" style="padding:6px 0">Loading…</div>';
+    else if (d.error) body = '<div class="d2-sub" style="padding:6px 0;color:' + C.crit + '">Couldn’t load: ' + E(d.error) + '</div>';
+    else if (!d.items.length) body = '<div class="d2-sub" style="padding:6px 0">' + (d.since ? 'No sales saved for ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + ' yet.' : 'Sales per product start with the next update. Press <b>Update today</b> above; the morning sync fills the last 60 days.') + '</div>';
+    else {
+      const st = state.topSort || (state.topSort = { col: 'units', dir: -1 });
+      const rows = d.items.map((it, i) => Object.assign({ rank: i + 1 }, it));
+      const g = { rank: r => r.rank, name: r => String(r.name || r.asin).toLowerCase(), units: r => r.units, sales: r => r.sales, share: r => r.units };
+      rows.sort((a, b) => { const x = g[st.col](a), y = g[st.col](b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * st.dir; });
+      const maxU = Math.max(1, ...d.items.map(r => r.units)), tu = d.total.units || 1;
+      const th = (c, l, cls) => '<th data-tsort="' + c + '" class="' + (st.col === c ? 'on ' : '') + (cls || '') + '" title="Sort">' + l + (st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '') + '</th>';
+      const wide = window.innerWidth > 760;   // phones: no Share column, so names have room
+      // phones: units and sales share a column (both still sort), no Share
+      const arrow = c => st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '';
+      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:90px"><col style="width:110px"><col style="width:120px">' : '<col style="width:76px">') + '</colgroup><tr>' +
+        th('rank', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('share', 'Share')
+          : '<th class="' + (st.col === 'units' || st.col === 'sales' ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span><br><span data-tsort="sales">$' + arrow('sales') + '</span></th>') + '</tr>' +
+        rows.map(r => '<tr><td><span class="rk">' + r.rank + '</span></td><td>' + sized(r.asin, r.name) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
+          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td>' + (100 * r.units / tu).toFixed(1) + '% of units</td>'
+            : '<td class="n">' + n0(r.units) + '<div style="font-size:12.5px;font-weight:600;color:' + C.muted + '">$' + n0(r.sales) + '</div></td>') + '</tr>').join('') + '</table>';
+      if (d.since && from < d.since) body += '<div class="d2-note" style="margin-top:10px"><span>Sales per product are saved from ' + E(dShort(d.since)) + ', so this list covers ' + E(dShort(d.since)) + ' – ' + E(dShort(to)) + '.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
+    }
+    box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 10 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
+    box.querySelector('details').addEventListener('toggle', e => { store.set('d2TopOpen', e.target.open ? '1' : '0'); if (e.target.open && !topCache[key]) paintTop10(p); });
+    if (!d && open) {
+      topCache[key] = { loading: true };
+      ownerApi('/api/sales/top?from=' + from + '&to=' + to).then(r => { topCache[key] = (r && r.ok) ? r : { error: (r && r.error) || 'no reply' }; })
+        .catch(e => { topCache[key] = { error: e.message }; })
+        .then(() => { if (state.topP === p) paintTop10(p); });
+    }
+  }
+
   // Bars: this period beside the previous one. Today by hour; long ranges
   // (Year to date, a custom range over 3 months) by month.
   function drawSales(p, mt) {
@@ -720,6 +782,13 @@
   function wire(root) {
     root.addEventListener('click', e => {
       const t = e.target.closest('[data-goto]'); if (t && !e.target.closest('a')) { goTo(t.dataset.goto); return; }
+      const t10 = e.target.closest('[data-top]');
+      if (t10) { store.set('d2Per', t10.dataset.top); store.set('d2TopOpen', '1'); if (state && state.sales) paintSales(state.sales);
+        const dt = document.getElementById('d2top10'); if (dt) dt.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'nearest' }); return; }
+      const ts = e.target.closest('[data-tsort]');
+      if (ts) { const st = state.topSort || (state.topSort = { col: 'units', dir: -1 }), c = ts.dataset.tsort;
+        if (st.col === c) st.dir = -st.dir; else { st.col = c; st.dir = (c === 'name' || c === 'rank') ? 1 : -1; }
+        if (state.topP) paintTop10(state.topP); return; }
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.per) { store.set('d2Per', b.dataset.per); if (state && state.sales) paintSales(state.sales); return; }
       if (b.dataset.met) { store.set('d2Metric', b.dataset.met); if (state && state.sales) paintSales(state.sales); return; }
