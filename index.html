@@ -11,8 +11,15 @@
 <meta name="theme-color" content="#002f36">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700;800&display=swap" rel="stylesheet">
+<script>
+// The new look for the whole app (look2.css) unless this device chose Classic.
+// Set before the first paint so nothing flashes; if the file fails to load
+// the page just looks Classic.
+try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElement.classList.add('nl'); document.write('<link rel="stylesheet" href="/look2.css">'); } } catch (e) {}
+</script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
+  .nl-only { display: none; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #002f36; color: #1f2733; }
   .app { max-width: 100%; margin: 0 auto; min-height: 100vh; background: #f4f6f9; }
@@ -84,7 +91,7 @@
   #login .lbox { background: #fff; padding: 30px; border-radius: 12px; width: 320px; }
   #login h2 { margin-bottom: 16px; color: #002f36; }
   /* Product cards */
-  .pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 14px; }
+  .pcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 430px), 1fr)); gap: 14px; }
   .pcard { background:#fff; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.1); padding:14px; display:flex; gap:12px; align-items:flex-start; }
   .pcard img { width:76px; height:76px; object-fit:contain; border-radius:8px; background:#f4f6f9; flex:0 0 auto; }
   .pcard .pc-body { flex:1 1 auto; min-width:0; }
@@ -97,7 +104,7 @@
   .noimg { width:76px;height:76px;border-radius:8px;background:#eef2f6;display:flex;align-items:center;justify-content:center;font-size:30px;flex:0 0 auto; }
   .idrow { display:flex; align-items:center; gap:6px; margin-top:5px; }
   .idlabel { font-size:11px; color:#5a6472; font-weight:700; text-transform:uppercase; min-width:56px; }
-  .idpill { font-family:monospace; font-size:14px; font-weight:700; color:#0d4450; padding:4px 11px; border-radius:6px; cursor:pointer; letter-spacing:0.3px; }
+  .idpill { white-space:nowrap; font-family:monospace; font-size:14px; font-weight:700; color:#0d4450; padding:4px 11px; border-radius:6px; cursor:pointer; letter-spacing:0.3px; }
   .idpill:hover { outline:1px solid #2563a8; }
   /* Pending Prep: equal-height cards, button pinned to bottom */
   #pendingPrepBody .pcards { align-items: stretch; }
@@ -122,8 +129,14 @@
   .ppcard img { width:120px !important; height:120px !important; }
   .ppcard .noimg { width:120px !important; height:120px !important; font-size:44px !important; }
   .ppcard .pc-name { font-size:16px !important; }
-  #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fit, minmax(520px, 1fr)) !important; gap:16px; }
-  #onhandBody .pcards { grid-template-columns: repeat(auto-fill, minmax(580px, 1fr)) !important; }
+  /* min(100%, …): a 520px minimum ran the cards off a phone screen and hid the quantity */
+  #pendingPrepBody .pcards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)) !important; gap:16px; }
+  @media (max-width:640px){
+    .ppcard img, .ppcard .noimg { width:64px !important; height:64px !important; font-size:26px !important; }
+    .ppSplitBanner { font-size:16px; padding:6px 14px; letter-spacing:.3px; }
+    .ppSplit { padding:8px 8px 10px; }
+  }
+  #onhandBody .pcards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 580px), 1fr)) !important; }
   /* Big view (per-device switch): one wide, easy-to-read card per row. */
   #onhandBody .pcards.bigcards { grid-template-columns: repeat(auto-fill, minmax(min(100%, 760px), 1fr)) !important; }
   #pendingPrepBody.big .pcards { grid-template-columns: 1fr !important; }
@@ -263,10 +276,12 @@
 
 <div class="app" style="display:none" id="mainApp">
   <header>
-    <h1>📦 Elevate Inventory</h1>
+    <h1><span class="nl-mark nl-only">E</span><span class="nl-emoji">📦 </span>Elevate Inventory <small class="nl-only">Warehouse &amp; FBA</small></h1>
     <div class="sub">Scan receiving · live on-hand · FBA deduction <span id="refreshStamp" style="color:#1e8449;margin-left:10px;font-size:11px"></span>
       <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="margin-left:10px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#1e8449;color:#fff;cursor:pointer;font-weight:700">🔄 Live: ON</button>
       <button id="uiScaleBtn" onclick="cycleUiScale()" title="Display size on THIS device only (e.g. smaller on the Surface). Other computers keep their own." style="margin-left:6px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#0d4450;color:#fff;cursor:pointer;font-weight:700">🔍 Size: 100%</button>
+      <button class="nl-hide" onclick="setAppLook('new')" title="The new look for every screen, on this device" style="margin-left:6px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#ff9900;color:#131921;cursor:pointer;font-weight:800">✨ New look</button>
+      <button class="nl-only nl-classic" onclick="setAppLook('classic')" title="Switch this device back to the classic screens">Classic view</button>
     </div>
   </header>
   <div class="tabs">
@@ -276,11 +291,11 @@
     <button class="tab" onclick="showTab('prod',event)"><b>3</b> Shipment Production</button>
     <button class="tab" onclick="showTab('ship',event)"><b>4</b> Ship to FBA</button>
     <span class="flowdiv"></span>
-    <button class="tab" onclick="showTab('onhand',event)">On Hand</button>
-    <button class="tab" onclick="showTab('reconcile',event)">Order Check-In</button>
-    <button class="tab" onclick="showTab('receive',event)">Receiving (Manual)</button>
-    <button class="tab" onclick="showTab('log',event)">Activity</button>
-    <button class="tab" onclick="showTab('admin',event)" style="background:#7a4fb5;color:#fff;margin-left:auto">🔒 ADMIN</button>
+    <button class="tab" onclick="showTab('onhand',event)"><svg class="nl-ico nl-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>On Hand</button>
+    <button class="tab" onclick="showTab('reconcile',event)"><svg class="nl-ico nl-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M9 15l2 2 4-4"/></svg>Order Check-In</button>
+    <button class="tab" onclick="showTab('receive',event)"><svg class="nl-ico nl-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2"/><path d="M8 8v8M11 8v8M14 8v8M17 8v8"/></svg>Receiving (Manual)</button>
+    <button class="tab" onclick="showTab('log',event)"><svg class="nl-ico nl-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>Activity</button>
+    <button class="tab" onclick="showTab('admin',event)" style="background:#7a4fb5;color:#fff;margin-left:auto"><svg class="nl-ico nl-only" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span class="nl-hide" style="display:inline">🔒 </span>ADMIN</button>
   </div>
 
   <div id="receive" class="panel">
@@ -6166,6 +6181,44 @@ function applyUiScale(){
   const app=document.getElementById('mainApp'); if(app) app.style.minHeight = v===100 ? '' : (10000/v)+'vh';
   const b=document.getElementById('uiScaleBtn'); if(b) b.textContent='🔍 Size: '+v+'%';
 }
+// The new look for the whole app (look2.css), per device. One switch for
+// everything: Classic also puts On Hand and the dashboard back to Classic.
+function setAppLook(v){
+  try{
+    localStorage.setItem('appLook', v==='classic' ? 'classic' : 'new');
+    localStorage.setItem('ohView', v==='classic' ? 'classic' : 'new');
+    localStorage.setItem('dashView', v==='classic' ? 'classic' : 'new');
+  }catch(e){}
+  location.reload();
+}
+// Height of the app chrome that stays on screen while scrolling (Classic:
+// the header; new look: the nav row), for toolbars that stick below it.
+function stickyTop(){
+  let t=0;
+  ['header','.tabs'].forEach(q=>{ const e=document.querySelector(q); if(e && getComputedStyle(e).position==='sticky') t+=e.offsetHeight; });
+  return t;
+}
+// Page heads for the new look (hidden in Classic, where each screen keeps its
+// own title box). Shipment Production, On Hand and Admin draw their own.
+const NL_HEADS = {
+  pendingprep: [1, 'Pending Prep', 'What needs to be prepped. Add items from On Hand (Prep on each card). Start a job, and as items are scanned into Prepped & Ready they clear here by themselves.'],
+  prep:        [2, 'Prepped & Ready', 'Scan each FNSKU label as you prep and enter the quantity. It waits here for the next FBA shipment; On Hand only drops when it ships. A duo scan stages one of each bottle.'],
+  ship:        [4, 'Ship to FBA', 'Post a shipment from Amazon\'s plan file or a pack slip. Units move to On the way, and clear by themselves when Amazon checks them in.'],
+  reconcile:   [0, 'Order Check-In', 'Cosmoprof invoices: upload the PDF, then check each order in as the boxes arrive.'],
+  receive:     [0, 'Receiving', 'Scan anything that came in without an invoice.'],
+  log:         [0, 'Activity', 'Who prepped what and how fast, and every stock move, newest first.'],
+};
+function nlHeads(){
+  Object.keys(NL_HEADS).forEach(id=>{
+    const panel=document.getElementById(id); if(!panel || panel.querySelector(':scope > .nl-head')) return;
+    const [step,title,sub]=NL_HEADS[id];
+    const h=document.createElement('div'); h.className='nl-head nl-only';
+    h.innerHTML='<div><h2>'+(step?'<span class="nl-step">'+step+'</span>':'')+esc(title)+'</h2><p>'+esc(sub)+'</p></div>';
+    panel.insertBefore(h, panel.firstChild);
+  });
+}
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', nlHeads); else nlHeads();
+document.addEventListener('click', e=>{ const t=e.target.closest && e.target.closest('.tabs .tab'); if(t && t.scrollIntoView) t.scrollIntoView({block:'nearest', inline:'nearest'}); });
 function cycleUiScale(){
   const next=UI_SCALES[(UI_SCALES.indexOf(uiScale())+1)%UI_SCALES.length];
   try{ window.localStorage.setItem('uiScale', String(next)); }catch(e){}

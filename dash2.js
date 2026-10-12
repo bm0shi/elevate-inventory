@@ -763,7 +763,7 @@
     state = { el };
     el.innerHTML = shell();
     // sit below the app's sticky header, not under it
-    const hd = document.querySelector('header'); el.querySelector('#d2root').style.setProperty('--d2top', ((hd && getComputedStyle(hd).position === 'sticky') ? hd.offsetHeight + 12 : 12) + 'px');
+    const hd = document.querySelector('header'); el.querySelector('#d2root').style.setProperty('--d2top', (typeof stickyTop === 'function' ? stickyTop() + 12 : ((hd && getComputedStyle(hd).position === 'sticky') ? hd.offsetHeight + 12 : 12)) + 'px');
     const root = el.querySelector('#d2root'); wire(root);
     const stamp = () => { const u = document.getElementById('d2upd'); if (u) u.textContent = 'Updated ' + new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); };
     // An error reply ({ok:false,error}) must read as "didn't load", not as zeros.

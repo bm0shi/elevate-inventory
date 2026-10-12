@@ -60,6 +60,9 @@
   .oh2-tile .l{font-size:11.5px;font-weight:750;color:${K.ink2};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .oh2-tile .v{font-size:24px;font-weight:850;letter-spacing:-.5px;margin-top:4px;font-variant-numeric:normal}
   .oh2-tile .s{font-size:11px;color:${K.muted};margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* #ohTop wraps the head, tiles and toolbar; display:contents lets the toolbar
+     stick for the whole list instead of only inside that wrapper (it never stuck) */
+  .oh2 #ohTop{display:contents}
   .oh2-bar{position:sticky;top:var(--ohtop,0px);z-index:5;display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:rgba(244,247,249,.92);backdrop-filter:saturate(1.4) blur(8px);-webkit-backdrop-filter:saturate(1.4) blur(8px);padding:10px 0;margin-bottom:12px;border-bottom:1px solid transparent}
   .oh2-bar.stuck{border-bottom-color:${K.line}}
   .oh2-search{position:relative;flex:1 1 260px;min-width:200px}
@@ -230,7 +233,7 @@
     // the toolbar sticks under the app header; a hairline appears once it does
     const hd = document.querySelector('header');
     const bar = document.getElementById('oh2Bar');
-    const topPx = (hd && getComputedStyle(hd).position === 'sticky') ? hd.offsetHeight : 0;
+    const topPx = typeof stickyTop === 'function' ? stickyTop() : ((hd && getComputedStyle(hd).position === 'sticky') ? hd.offsetHeight : 0);
     bar.style.setProperty('--ohtop', topPx + 'px');
     window.addEventListener('scroll', () => { const r = bar.getBoundingClientRect(); bar.classList.toggle('stuck', r.top <= topPx + 1); }, { passive: true });
   }
