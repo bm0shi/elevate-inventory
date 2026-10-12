@@ -8854,12 +8854,17 @@ function claimsScan(full){
     claimsWatch();
   }).catch(e=>toast(e.message,true));
 }
+let _claimsPhase=0;
 function claimsWatch(){
-  clearInterval(_claimsPoll);
+  clearInterval(_claimsPoll); _claimsPhase=0;
   const tick=()=>ownerApi('/api/claims/scan/status').then(j=>{
     const s=document.getElementById('clScanState'), b=document.getElementById('clScanBtn');
-    if(s) s.textContent=j.running?j.step:(j.error?'Finished with problems: '+j.error:'Done');
+    // how long it has been going, so a long step reads as working, not stuck
+    const mins=j.startedAt?Math.floor((Date.now()-new Date(j.startedAt))/60000):0;
+    if(s) s.textContent=j.running?'⏳ '+j.step+(mins?' · '+mins+' min so far':''):!j.done?'Not running: tap Check for money owed':(j.error?'Finished with problems: '+j.error:'Done');
     if(b) b.disabled=!!j.running;
+    // each part's claims show as soon as it finishes
+    if(j.running && (j.phase||0)>_claimsPhase){ _claimsPhase=j.phase; ownerApi('/api/claims').then(d=>{ if(d&&d.ok!==false){ _claims=d; renderClaims(); } }).catch(()=>{}); }
     if(!j.running){ clearInterval(_claimsPoll); _claimsPoll=null; if(j.done){ toast(j.error?'Check finished with problems':'Check finished', !!j.error); loadClaims(); } }
   }).catch(()=>{});
   _claimsPoll=setInterval(tick,3000); tick();
@@ -8872,7 +8877,7 @@ function renderClaims(){
   let h='<div class="cl-hero"><div class="cl-big"><div class="l">Amazon likely owes you</div><div class="v">'+money(T.owed)+'</div>'
     +'<div class="s">'+T.open+' claim'+(T.open===1?'':'s')+' to file'+(T.unvalued?' ('+T.unvalued+' without a cost, not counted)':'')+' · Amazon paid you '+money(T.recovered90)+' in the last 90 days</div>'
     +'<div class="acts"><button id="clScanBtn" onclick="claimsScan(false)">↻ Check for money owed</button>'+(scan&&scan.deepAt?'<button class="g" onclick="claimsScan(true)" title="Re-read 18 months of reimbursements, refunds and returns">Deep check (18 months)</button>':'')+'</div>'
-    +'<div class="s" id="clScanState" style="margin-top:8px">'+(scan&&scan.at?'Last checked '+ageText(scan.at)+(scan.deepAt?'':' · the first check reads 18 months and takes a few minutes'):'Never checked: the first check reads 18 months from Amazon and takes a few minutes')+'</div></div>'
+    +'<div class="s" id="clScanState" style="margin-top:8px">'+(scan&&scan.at?'Last checked '+ageText(scan.at)+(scan.deepAt?'':' · the first check reads 18 months (usually 5–15 minutes)'):'Never checked: the first check reads 18 months from Amazon (usually 5–15 minutes; claims show as each part finishes)')+'</div></div>'
     +'<div class="cl-how"><b>How to get paid</b> (about a minute each)<ol>'
     +'<li><b>Copy case</b> on a claim below: the message is written for you.</li>'
     +'<li><a href="https://sellercentral.amazon.com/help/hub/support" target="_blank" rel="noopener">Open Seller Central support</a> → Fulfillment by Amazon → inventory or shipment problem.</li>'
@@ -8899,7 +8904,7 @@ function renderClaims(){
     +rf.map(c=>'<tr><td>'+name(c)+'<div class="mono">'+esc(c.sku)+'</div></td><td><span class="mono">'+esc(c.order)+'</span></td><td class="num">'+c.refunded+'</td><td class="num">'+c.returned+'</td><td class="num" style="color:#b42d2d">'+c.owed+'</td><td class="num" title="'+esc(c.valueBasis||'')+'">'+money(c.value)+'</td><td>'+age(c.since)+'</td><td>'+st(c)+'</td><td>'+acts(c)+'</td></tr>').join('')+'</table></div>'
     :'<div class="cl-empty">Nothing here'+(_claimsFilter==='open'?': every refund came back or was paid.':'.')+'</div>';
   el.innerHTML=h;
-  if(_claimsPoll){ const b=document.getElementById('clScanBtn'); if(b) b.disabled=true; }
+  if(_claimsPoll){ const b=document.getElementById('clScanBtn'); if(b) b.disabled=true; const st=document.getElementById('clScanState'); if(st) st.textContent='⏳ Checking… results fill in as each part finishes'; }
 }
 function claimsCopy(key, btn){
   const c=(_claims&&_claims.claims||[]).find(x=>x.key===key); if(!c) return;
