@@ -68,3 +68,18 @@ test('case text: names the shipment, SKU, counts and the invoice as proof', () =
   assert.match(t, /FBA1/); assert.match(t, /Shipped: 100\s+Received: 95\s+Missing: 5/); assert.match(t, /invoice #262023702/);
   assert.match(C.caseText({ type: 'refund', order: '111-1', sku: 'S', refunded: 1, returned: 0, owed: 1, since: NOW }), /nothing came back/);
 });
+
+test('groups: one case per shipment and per order; status and totals add up; one-claim groups keep their text', () => {
+  const claims = [
+    { type: 'inbound', key: 'in:FBA1:A', shipment_id: 'FBA1', sku: 'A', shipped: 10, received: 8, missing: 2, owed: 2, value: 20, status: 'open', since: 5 },
+    { type: 'inbound', key: 'in:FBA1:B', shipment_id: 'FBA1', sku: 'B', shipped: 5, received: 4, missing: 1, reimbursed: 0, owed: 1, value: 9, status: 'filed', caseId: '123', since: 5 },
+    { type: 'refund', key: 'rf:111:A', order: '111', sku: 'A', refunded: 1, returned: 0, owed: 1, value: 10, status: 'open', since: 1 },
+  ];
+  const g = C.groupClaims(claims, { });
+  assert.strictEqual(g.length, 2);
+  const s = g.find(x => x.gkey === 'in:FBA1');
+  assert.deepStrictEqual([s.owed, s.value, s.status, s.caseId, s.keys.length], [3, 29, 'open', '123', 2]);
+  assert.match(s.text, /missing for 2 products/); assert.match(s.text, /Total: 3 units/);
+  const r = g.find(x => x.gkey === 'rf:111');
+  assert.strictEqual(r.text, C.caseText(claims[2], null));
+});

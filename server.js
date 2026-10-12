@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'admin-cards-1051';
+const BUILD_ID = 'file-claims-1052';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8205,21 +8205,33 @@ app.get('/api/claims', ownerAuth, async (req, res) => {
   }
   const open = claims.filter(c => c.status === 'open');
   const recovered90 = reimb.filter(r => now - r.ts <= 90 * 86400000).reduce((n, r) => n + r.total, 0);
-  res.json({ ok: true, claims, scan: scanQ.rows[0] ? scanQ.rows[0].data : null,
+  res.json({ ok: true, claims, groups: claimsLib.groupClaims(claims, proof), scan: scanQ.rows[0] ? scanQ.rows[0].data : null,
     totals: { open: open.length, owed: Math.round(open.reduce((n, c) => n + (c.value || 0), 0) * 100) / 100,
       unvalued: open.filter(c => c.value == null).length, recovered90: Math.round(recovered90 * 100) / 100 } });
 });
+// Mark one claim, or a whole case at once (every claim in a shipment or an
+// order: keys + snaps), e.g. Filed with the case ID.
 app.post('/api/claims/mark', ownerAuth, async (req, res) => {
-  const { key, status, caseId, note, snap } = req.body || {};
+  const { status, caseId, note } = req.body || {};
+  if (!['open', 'filed', 'paid', 'dismissed'].includes(status)) return res.status(400).json({ ok: false, error: 'a valid status is required' });
+  if (Array.isArray(req.body.keys)) {
+    const keys = req.body.keys.slice(0, 200).map(String), snaps = req.body.snaps || {};
+    if (!keys.length) return res.status(400).json({ ok: false, error: 'keys required' });
+    await withTx(async (db) => { for (const k of keys) await markClaim(db, k, status, caseId, note, snaps[k]); });
+    return res.json({ ok: true, marked: keys.length });
+  }
+  if (!req.body.key) return res.status(400).json({ ok: false, error: 'key required' });
+  await markClaim(pool, req.body.key, status, caseId, note, req.body.snap);
+  res.json({ ok: true });
+});
+async function markClaim(db, key, status, caseId, note, snap) {
   // what the screen showed, kept small: shown again as Paid after Amazon pays
   const S = snap && typeof snap === 'object' ? JSON.stringify(Object.fromEntries(['type', 'shipment_id', 'shipment_name', 'order', 'sku', 'fnsku', 'asin', 'product',
     'shipped', 'received', 'refunded', 'returned', 'owed', 'value', 'valueBasis', 'since', 'text'].filter(k => snap[k] != null).map(k => [k, typeof snap[k] === 'string' ? snap[k].slice(0, 2000) : snap[k]]))) : null;
-  if (!key || !['open', 'filed', 'paid', 'dismissed'].includes(status)) return res.status(400).json({ ok: false, error: 'key and a valid status required' });
-  await pool.query(`INSERT INTO inv_claims(key, status, case_id, note, snap, updated_at) VALUES($1,$2,$3,$4,$5,now())
+  await db.query(`INSERT INTO inv_claims(key, status, case_id, note, snap, updated_at) VALUES($1,$2,$3,$4,$5,now())
     ON CONFLICT (key) DO UPDATE SET status=$2, case_id=COALESCE($3, inv_claims.case_id), note=COALESCE($4, inv_claims.note), snap=COALESCE($5, inv_claims.snap), updated_at=now()`,
     [String(key).slice(0, 200), status, caseId ? String(caseId).trim().slice(0, 40) : null, note ? String(note).slice(0, 500) : null, S]);
-  res.json({ ok: true });
-});
+}
 // ---------- Money stuck at Amazon (Admin → Money → Stuck at Amazon) ----------
 // Three snapshot reports, each on its own so one failing doesn't hide the others.
 async function pullStuck(onStep) {

@@ -8875,57 +8875,139 @@ function claimsWatch(){
   }).catch(()=>{});
   _claimsPoll=setInterval(tick,3000); tick();
 }
+// One row per case: a shipment's short products together, or one order
+// (lib/claims.js groupClaims). "File them" walks the open cases one at a
+// time; "Let Claude file them" hands the same queue to Claude in Chrome.
+const SC_SUPPORT='https://sellercentral.amazon.com/help/hub/support';
 function renderClaims(){
   const d=_claims, el=document.getElementById('claimsBody'); if(!d||!el) return;
-  const T=d.totals, scan=d.scan;
+  const T=d.totals, scan=d.scan, G=d.groups||[];
   const money=v=>v==null?'—':'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
-  const counts={}; d.claims.forEach(c=>{ counts[c.status]=(counts[c.status]||0)+1; });
+  const counts={}; G.forEach(g=>{ counts[g.status]=(counts[g.status]||0)+1; });
+  const open=G.filter(g=>g.status==='open');
   let h='<div class="cl-hero"><div class="cl-big"><div class="l">Amazon likely owes you</div><div class="v">'+money(T.owed)+'</div>'
-    +'<div class="s">'+T.open+' claim'+(T.open===1?'':'s')+' to file'+(T.unvalued?' ('+T.unvalued+' without a cost, not counted)':'')+' · Amazon paid you '+money(T.recovered90)+' in the last 90 days</div>'
-    +'<div class="acts"><button id="clScanBtn" onclick="claimsScan(false)">↻ Check for money owed</button>'+(scan&&scan.deepAt?'<button class="g" onclick="claimsScan(true)" title="Re-read 18 months of reimbursements, refunds and returns">Deep check (18 months)</button>':'')+'</div>'
+    +'<div class="s">'+open.length+' case'+(open.length===1?'':'s')+' to file ('+T.open+' claim'+(T.open===1?'':'s')+')'+(T.unvalued?' · '+T.unvalued+' without a cost, not counted':'')+' · Amazon paid you '+money(T.recovered90)+' in the last 90 days</div>'
+    +'<div class="acts">'+(open.length?'<button onclick="claimsQueue()" style="font-size:15px;padding:12px 18px">▶ File them ('+open.length+')</button>':'')
+    +'<button id="clScanBtn" class="g" onclick="claimsScan(false)">↻ Check for money owed</button>'+(scan&&scan.deepAt?'<button class="g" onclick="claimsScan(true)" title="Re-read 18 months of reimbursements and returns">Deep check (18 months)</button>':'')+'</div>'
     +'<div class="s" id="clScanState" style="margin-top:8px">'+(scan&&scan.at?'Last checked '+ageText(scan.at)+(scan.deepAt?'':' · the first check reads 18 months (usually 5–15 minutes)'):'Never checked: the first check reads 18 months from Amazon (usually 5–15 minutes; claims show as each part finishes)')+'</div></div>'
-    +'<div class="cl-how"><b>How to get paid</b> (about a minute each)<ol>'
-    +'<li><b>Copy case</b> on a claim below: the message is written for you.</li>'
-    +'<li><a href="https://sellercentral.amazon.com/help/hub/support" target="_blank" rel="noopener">Open Seller Central support</a> → Fulfillment by Amazon → inventory or shipment problem.</li>'
-    +'<li>Paste, attach the Cosmoprof invoice it names, submit.</li>'
-    +'<li>Tap <b>Filed</b> and enter the case ID. When Amazon pays that case it turns <b>Paid</b> by itself.</li></ol>'
-    +'<div style="margin-top:8px;font-size:12px;color:#7d8b97">File soon: Amazon only accepts these for a limited time. Values are estimates (what Amazon paid for that SKU before, else what it cost you).</div></div></div>';
-  const chip=(k,l)=>'<button class="mini" onclick="_claimsFilter=\''+k+'\';renderClaims()" style="'+(_claimsFilter===k?'background:#0d4450;color:#fff;border-color:#0d4450':'')+'">'+l+' · '+(k==='all'?d.claims.length:(counts[k]||0))+'</button>';
+    +'<div class="cl-how"><b>Three ways to file</b><ol>'
+    +'<li><b>▶ File them</b>: one case at a time, about 30 seconds each. Copy, paste into Seller Central, type the case ID, next.</li>'
+    +'<li><b>Copy case</b> on any row below to file just that one.</li>'
+    +'<li><b>Let Claude do it</b>: on your computer, Claude in Chrome files them in your browser while you watch. <a href="#" onclick="claimsClaude();return false">How</a></li></ol>'
+    +'<div style="margin-top:8px;font-size:12.5px;color:#7d8b97">One case covers a whole shipment (every short product in it) or one order. When Amazon pays a case it turns <b>Paid</b> by itself. File soon: Amazon only accepts these for a limited time. Values are estimates.</div></div></div>';
+  const chip=(k,l)=>'<button class="mini" onclick="_claimsFilter=\''+k+'\';renderClaims()" style="'+(_claimsFilter===k?'background:#0d4450;color:#fff;border-color:#0d4450':'')+'">'+l+' · '+(k==='all'?G.length:(counts[k]||0))+'</button>';
   h+='<div class="cl-chips">'+chip('open','To file')+chip('filed','Filed')+chip('paid','Paid')+chip('dismissed','Dismissed')+chip('all','All')+'</div>';
-  const list=d.claims.filter(c=>_claimsFilter==='all'||c.status===_claimsFilter);
-  const name=c=>c.asin?amzLinkSized(c.asin, c.product||c.sku):esc(c.product||c.sku);
-  const st=c=>{ const x=CL_STATUS[c.status]; return '<span class="cl-st" style="color:'+x[1]+';background:'+x[2]+'">'+x[0]+(c.status==='paid'&&c.paid!=null?' '+money(c.paid):'')+'</span>'+(c.caseId?'<div class="hint" style="margin:3px 0 0">case '+esc(c.caseId)+'</div>':''); };
-  // the key rides in a data attribute: an SKU with a quote in it can't break the onclick
-  const acts=c=>'<div class="cl-acts" data-k="'+esc(c.key)+'"><button class="mini" onclick="claimsCopy(this.parentNode.dataset.k,this)">Copy case</button>'
-    +(c.status!=='filed'&&c.status!=='paid'?'<button class="mini" onclick="claimsMark(this.parentNode.dataset.k,\'filed\')">Filed</button>':'')
-    +(c.status==='open'?'<button class="mini" title="Not worth filing / already handled" onclick="claimsMark(this.parentNode.dataset.k,\'dismissed\')">Dismiss</button>':'<button class="mini" onclick="claimsMark(this.parentNode.dataset.k,\'open\')">Reopen</button>')+'</div>';
+  const list=G.map((g,i)=>({g,i})).filter(x=>_claimsFilter==='all'||x.g.status===_claimsFilter);
+  const pname=c=>c.asin?amzLinkSized(c.asin, c.product||c.sku):esc(c.product||c.sku);
+  const prods=g=>g.items.map(c=>'<div style="margin:2px 0">'+pname(c)+' <span class="hint" style="margin:0">· '+(c.type==='inbound'?c.owed+' of '+c.missing+' missing':c.owed+' not returned')+'</span></div>').join('');
+  const st=g=>{ const x=CL_STATUS[g.status]; return '<span class="cl-st" style="color:'+x[1]+';background:'+x[2]+'">'+x[0]+(g.status==='paid'&&g.paid!=null?' '+money(g.paid):'')+'</span>'+(g.caseId?'<div class="hint" style="margin:3px 0 0">case '+esc(g.caseId)+'</div>':''); };
+  const acts=(g,i)=>'<div class="cl-acts"><button class="mini" onclick="claimsCopyG('+i+',this)">Copy case</button>'
+    +(g.status!=='filed'&&g.status!=='paid'?'<button class="mini" onclick="claimsMarkG('+i+',\'filed\')">Filed</button>':'')
+    +(g.status==='open'?'<button class="mini" title="Not worth filing / already handled" onclick="claimsMarkG('+i+',\'dismissed\')">Dismiss</button>':'<button class="mini" onclick="claimsMarkG('+i+',\'open\')">Reopen</button>')+'</div>';
   const age=ms=>ms?Math.max(0,Math.round((Date.now()-ms)/86400000))+' d':'—';
-  const inb=list.filter(c=>c.type==='inbound'), rf=list.filter(c=>c.type==='refund');
-  h+='<div class="cl-sec">Shipments short at Amazon</div><div class="cl-sub">Amazon finished receiving with fewer units than you sent, less what it already reimbursed for that SKU.</div>';
-  h+=inb.length?'<div class="cl-wrap"><table class="cl-tbl"><colgroup><col style="width:30%"><col style="width:14%"><col><col><col><col><col><col style="width:9%"><col style="width:17%"></colgroup><tr><th>Product</th><th>Shipment</th><th>Sent</th><th>Received</th><th>Owed</th><th>Worth</th><th>Age</th><th>Status</th><th></th></tr>'
-    +inb.map(c=>'<tr><td>'+name(c)+'<div class="mono">'+esc(c.sku)+'</div></td><td><span class="mono">'+esc(c.shipment_id)+'</span></td><td class="num">'+c.shipped+'</td><td class="num">'+c.received+'</td><td class="num" style="color:#b42d2d">'+c.owed+(c.reimbursed?'<div class="hint" style="margin:0">'+c.reimbursed+' paid</div>':'')+'</td><td class="num" title="'+esc(c.valueBasis||'')+'">'+money(c.value)+'</td><td>'+age(c.since)+'</td><td>'+st(c)+'</td><td>'+acts(c)+'</td></tr>').join('')+'</table></div>'
-    :'<div class="cl-empty">Nothing here'+(_claimsFilter==='open'?': every closed shipment came in complete, or Amazon already paid.':'.')+'</div>';
-  h+='<div class="cl-sec">Refunded, nothing returned</div><div class="cl-sub">The customer got their money back over 45 days ago and nothing came back to Amazon, and Amazon hasn\'t paid you for it.</div>';
-  h+=rf.length?'<div class="cl-wrap"><table class="cl-tbl"><colgroup><col style="width:30%"><col style="width:14%"><col><col><col><col><col><col style="width:9%"><col style="width:17%"></colgroup><tr><th>Product</th><th>Order</th><th>Refunded</th><th>Returned</th><th>Owed</th><th>Worth</th><th>Age</th><th>Status</th><th></th></tr>'
-    +rf.map(c=>'<tr><td>'+name(c)+'<div class="mono">'+esc(c.sku)+'</div></td><td><span class="mono">'+esc(c.order)+'</span></td><td class="num">'+c.refunded+'</td><td class="num">'+c.returned+'</td><td class="num" style="color:#b42d2d">'+c.owed+'</td><td class="num" title="'+esc(c.valueBasis||'')+'">'+money(c.value)+'</td><td>'+age(c.since)+'</td><td>'+st(c)+'</td><td>'+acts(c)+'</td></tr>').join('')+'</table></div>'
-    :'<div class="cl-empty">Nothing here'+(_claimsFilter==='open'?': every refund came back or was paid.':'.')+'</div>';
+  const table=(rows,first,empty)=>rows.length?'<div class="cl-wrap"><table class="cl-tbl"><colgroup><col style="width:17%"><col style="width:35%"><col><col><col><col style="width:10%"><col style="width:17%"></colgroup><tr><th>'+first+'</th><th>Products</th><th>Owed</th><th>Worth</th><th>Age</th><th>Status</th><th></th></tr>'
+    +rows.map(({g,i})=>'<tr><td><span class="mono">'+esc(g.type==='inbound'?g.shipment_id:g.order)+'</span>'+(g.shipment_name?'<div class="hint" style="margin:2px 0 0">'+esc(g.shipment_name)+'</div>':'')+'</td><td style="text-align:left">'+prods(g)+'</td><td class="num" style="color:#b42d2d">'+g.owed+'</td><td class="num">'+money(g.value)+'</td><td>'+age(g.since)+'</td><td>'+st(g)+'</td><td>'+acts(g,i)+'</td></tr>').join('')+'</table></div>'
+    :'<div class="cl-empty">'+empty+'</div>';
+  h+='<div class="cl-sec">Shipments short at Amazon</div><div class="cl-sub">Amazon finished receiving with fewer units than you sent, less what it already reimbursed. One case per shipment.</div>';
+  h+=table(list.filter(x=>x.g.type==='inbound'),'Shipment','Nothing here'+(_claimsFilter==='open'?': every closed shipment came in complete, or Amazon already paid.':'.'));
+  h+='<div class="cl-sec">Refunded, nothing returned</div><div class="cl-sub">The customer got their money back over 45 days ago and nothing came back to Amazon, and Amazon hasn\'t paid you for it. One case per order.</div>';
+  h+=table(list.filter(x=>x.g.type==='refund'),'Order','Nothing here'+(_claimsFilter==='open'?': every refund came back or was paid.':'.'));
   el.innerHTML=h;
-  if(_claimsPoll){ const b=document.getElementById('clScanBtn'); if(b) b.disabled=true; const st=document.getElementById('clScanState'); if(st) st.textContent='⏳ Checking… results fill in as each part finishes'; }
+  if(_claimsPoll){ const b=document.getElementById('clScanBtn'); if(b) b.disabled=true; const st2=document.getElementById('clScanState'); if(st2) st2.textContent='⏳ Checking… results fill in as each part finishes'; }
 }
-function claimsCopy(key, btn){
-  const c=(_claims&&_claims.claims||[]).find(x=>x.key===key); if(!c) return;
+function claimsCopyText(text, btn){
   const done=()=>{ if(btn){ const t=btn.textContent; btn.textContent='Copied ✓'; setTimeout(()=>{ btn.textContent=t; },1500); } };
-  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(c.text).then(done,()=>prompt('Copy the case text:',c.text));
-  else prompt('Copy the case text:',c.text);
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done,()=>prompt('Copy the case text:',text));
+  else prompt('Copy the case text:',text);
 }
-function claimsMark(key, status){
+function claimsCopyG(i, btn){ const g=_claims&&_claims.groups&&_claims.groups[i]; if(g) claimsCopyText(g.text, btn); }
+// Mark every claim in a case at once; the snapshots keep a paid case showing.
+function claimsMarkGroup(g, status, caseId){
+  const snaps={}; g.items.forEach(c=>{ snaps[c.key]=c; });
+  return ownerApi('/api/claims/mark',{method:'POST',body:JSON.stringify({keys:g.keys,status,caseId:caseId||null,snaps})});
+}
+function claimsMarkG(i, status){
+  const g=_claims&&_claims.groups&&_claims.groups[i]; if(!g) return;
   let caseId=null;
   if(status==='filed'){ caseId=prompt('Case ID from Seller Central (so it turns Paid by itself when Amazon pays):',''); if(caseId===null) return; }
-  const snap=(_claims&&_claims.claims||[]).find(x=>x.key===key)||null;
-  ownerApi('/api/claims/mark',{method:'POST',body:JSON.stringify({key,status,caseId:caseId||null,snap})}).then(d=>{
+  claimsMarkGroup(g,status,caseId).then(d=>{
     if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
     loadClaims();
   }).catch(e=>toast(e.message,true));
+}
+// ---- ▶ File them: the open cases one at a time ----
+let _clQ=null;
+function claimsQueue(){
+  const open=((_claims&&_claims.groups)||[]).filter(g=>g.status==='open');
+  if(!open.length){ toast('Nothing left to file'); return; }
+  _clQ={list:open, i:0, filed:0, worth:0};
+  let m=document.getElementById('clQueue');
+  if(!m){ m=document.createElement('div'); m.id='clQueue'; document.body.appendChild(m); }
+  m.setAttribute('style','position:fixed;inset:0;z-index:900;background:rgba(11,31,36,.5);display:flex;align-items:flex-start;justify-content:center;padding:5vh 14px;overflow:auto');
+  claimsQPaint();
+}
+function claimsQClose(){ const m=document.getElementById('clQueue'); if(m) m.remove(); const q=_clQ; _clQ=null; if(q&&q.filed) toast(q.filed+' case'+(q.filed===1?'':'s')+' filed'); loadClaims(); }
+function claimsQPaint(){
+  const m=document.getElementById('clQueue'), q=_clQ; if(!m||!q) return;
+  const money=v=>v==null?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:0});
+  const box='background:#fff;border-radius:18px;max-width:760px;width:100%;box-shadow:0 30px 80px -20px rgba(0,0,0,.5);padding:24px 26px;color:#0b1f24';
+  if(q.i>=q.list.length){
+    m.innerHTML='<div style="'+box+';text-align:center"><div style="font-size:44px">✅</div><div style="font-size:24px;font-weight:800;margin:6px 0">All done</div>'
+      +'<div style="font-size:16px;color:#45545f">'+q.filed+' case'+(q.filed===1?'':'s')+' filed this time'+(q.worth?', about '+money(q.worth)+'':'')+'. They turn Paid by themselves when Amazon pays.</div>'
+      +'<button class="action" style="margin-top:18px" onclick="claimsQClose()">Close</button></div>';
+    return;
+  }
+  const g=q.list[q.i], left=q.list.slice(q.i).reduce((n,x)=>n+(x.value||0),0);
+  const pct=Math.round(q.i/q.list.length*100);
+  m.innerHTML='<div style="'+box+'">'
+    +'<div style="display:flex;align-items:center;gap:12px"><div style="font-size:14px;font-weight:800;color:#7d8b97;letter-spacing:.6px">CASE '+(q.i+1)+' OF '+q.list.length+'</div>'
+    +'<div style="flex:1;height:8px;border-radius:999px;background:#eef2f5;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:#ff9900"></div></div>'
+    +'<div style="font-size:14px;color:#45545f">'+money(left)+' left</div><button class="mini" onclick="claimsQClose()" title="Stop (you can come back any time)">✕</button></div>'
+    +'<div style="margin:16px 0 4px;font-size:13px;font-weight:800;color:'+(g.type==='inbound'?'#1f5fae':'#a86b00')+'">'+(g.type==='inbound'?'SHIPMENT SHORT AT AMAZON':'REFUNDED, NOTHING RETURNED')+'</div>'
+    +'<div style="font-size:22px;font-weight:800;font-family:ui-monospace,Menlo,monospace">'+esc(g.type==='inbound'?g.shipment_id:'Order '+g.order)+'</div>'
+    +'<div style="font-size:15px;color:#45545f;margin:4px 0 10px">'+g.items.length+' product'+(g.items.length===1?'':'s')+' · '+g.owed+' unit'+(g.owed===1?'':'s')+' · worth about '+money(g.value)+'</div>'
+    +'<textarea readonly id="clQText" style="width:100%;height:190px;font:13.5px/1.5 ui-monospace,Menlo,monospace;border:1px solid #e3e9ee;border-radius:12px;padding:12px;background:#f8fafb;color:#0b1f24">'+esc(g.text)+'</textarea>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-top:12px">'
+    +'<button class="action" id="clQCopy" onclick="claimsCopyText(_clQ.list[_clQ.i].text,this)" style="font-size:17px!important;padding:16px!important">1 · 📋 Copy case text</button>'
+    +'<a class="action" href="'+SC_SUPPORT+'" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none;font-size:17px;padding:16px;background:#ff9900!important;color:#131921!important">2 · ↗ Open Seller Central</a></div>'
+    +'<div style="font-size:13.5px;color:#45545f;margin-top:8px;line-height:1.5">In Seller Central: Get support → Fulfillment by Amazon → '+(g.type==='inbound'?'the inbound shipment / missing units issue (if the shipment\'s own page has a Reconcile tab, that works too)':'the customer return / refund issue')+'. Paste, attach the Cosmoprof invoice it names, submit.</div>'
+    +'<div style="display:flex;gap:10px;align-items:center;margin-top:16px;flex-wrap:wrap"><input id="clQCase" placeholder="3 · Case ID from Amazon" style="flex:1;min-width:200px;font-size:18px;padding:14px 16px;border:1.5px solid #c6d4dc;border-radius:12px" onkeydown="if(event.key===\'Enter\')claimsQSave()">'
+    +'<button class="action" onclick="claimsQSave()" style="font-size:17px!important;padding:15px 22px!important">Save & next →</button></div>'
+    +'<div style="display:flex;gap:16px;margin-top:12px;font-size:14px"><a href="#" onclick="claimsQSkip();return false">Skip for now</a><a href="#" onclick="claimsQDismiss();return false" style="color:#7d8b97">Not worth filing</a></div></div>';
+  setTimeout(()=>{ const b=document.getElementById('clQCopy'); if(b) b.focus(); },50);
+}
+function claimsQSave(){
+  const q=_clQ, g=q&&q.list[q.i]; if(!g) return;
+  const id=(document.getElementById('clQCase').value||'').trim();
+  if(!id){ toast('Type the case ID Amazon gave you (or Skip)',true); return; }
+  claimsMarkGroup(g,'filed',id).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
+    q.filed++; q.worth+=(g.value||0); q.i++; claimsQPaint();
+  }).catch(e=>toast(e.message,true));
+}
+function claimsQSkip(){ if(_clQ){ _clQ.i++; claimsQPaint(); } }
+function claimsQDismiss(){
+  const q=_clQ, g=q&&q.list[q.i]; if(!g) return;
+  claimsMarkGroup(g,'dismissed').then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; } q.i++; claimsQPaint(); }).catch(e=>toast(e.message,true));
+}
+// ---- Let Claude file them (Claude in Chrome, on the owner's computer) ----
+function claimsClaude(){
+  const text='Please file my Amazon reimbursement cases, one at a time, while I watch.\n\n'
+    +'1. In this Chrome window open my Elevate Inventory app ('+location.origin+'), go to Admin → Money → Reimbursements and click "▶ File them". If it asks for the Admin password, ask me for it.\n'
+    +'2. For each case: click "Copy case text". In a second tab open Seller Central → Get support → Fulfillment by Amazon and choose the matching issue (an inbound shipment with missing units, or a customer refund with nothing returned). Paste the text and submit. If it asks for proof, tell me which Cosmoprof invoice the text names so I can attach it.\n'
+    +'3. Copy the case ID Amazon shows, go back to the app tab, type it in the "Case ID" box and click "Save & next".\n'
+    +'4. Stop and ask me if Amazon asks anything you can\'t answer from the case text, if a page looks different from this, or before clicking anything other than filing a case. Don\'t change any settings, listings or prices.\n'
+    +'5. When the app says "All done", tell me how many cases you filed.';
+  let m=document.getElementById('clQueue');
+  if(!m){ m=document.createElement('div'); m.id='clQueue'; document.body.appendChild(m); }
+  m.setAttribute('style','position:fixed;inset:0;z-index:900;background:rgba(11,31,36,.5);display:flex;align-items:flex-start;justify-content:center;padding:5vh 14px;overflow:auto');
+  m.innerHTML='<div style="background:#fff;border-radius:18px;max-width:720px;width:100%;padding:24px 26px;color:#0b1f24;box-shadow:0 30px 80px -20px rgba(0,0,0,.5)">'
+    +'<div style="font-size:22px;font-weight:800">🤖 Let Claude file them</div>'
+    +'<ol style="font-size:15.5px;line-height:1.6;color:#45545f;margin:12px 0 12px 20px;padding:0"><li>On your computer, install <b>Claude in Chrome</b> (free Chrome extension from Anthropic) and sign in to Claude.</li>'
+    +'<li>In Chrome, log in to Seller Central and to this app.</li><li>Open Claude in Chrome, paste the instructions below, and watch it work. You can stop it at any time.</li></ol>'
+    +'<textarea readonly id="clClaude" style="width:100%;height:220px;font:13.5px/1.5 ui-monospace,Menlo,monospace;border:1px solid #e3e9ee;border-radius:12px;padding:12px;background:#f8fafb">'+esc(text)+'</textarea>'
+    +'<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap"><button class="action" onclick="claimsCopyText(document.getElementById(\'clClaude\').value,this)">📋 Copy instructions</button><button class="action" style="background:#fff!important;color:#0d4450!important;border:1px solid #e3e9ee!important" onclick="claimsQClose()">Close</button></div>'
+    +'<div style="font-size:13px;color:#7d8b97;margin-top:10px">It works in your own browser with your own logins, while you watch; no one is given access to your account. Claude reads the pages it works on to do the job.</div></div>';
 }
 // ---- STUCK AT AMAZON (Admin → Money): stock that can't sell, fees coming ----
 // Parsers in lib/stuck.js; uses the Reimbursements screen's styles (CL_CSS).
