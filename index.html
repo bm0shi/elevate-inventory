@@ -9142,7 +9142,7 @@ function renderReprice(){
     +'<div><span class="rp-lab">Never more than (% off)</span><input type="number" min="1" max="50" value="'+E.maxPct+'" oninput="_rpEdit.maxPct=this.value"></div>'
     +'<div style="grid-column:1/-1"><span class="rp-lab">Never drop these SKUs</span><textarea placeholder="SKUs, separated by commas or lines" oninput="_rpEdit.exclude=this.value">'+esc((Array.isArray(E.exclude)?E.exclude.join(', '):E.exclude)||'')+'</textarea></div>'
     +'</div></details>'
-    +'<div class="rp-save"><button class="action" id="rpSave" onclick="rpSave()">Save settings</button><span class="hint" id="rpSaveNote">'+(rpDirty()?'Not saved yet':'')+'</span></div></div>';
+    +'<div class="rp-save"><button class="action" id="rpSave" onclick="rpSave()">Save settings</button><span class="hint" id="rpSaveNote" style="color:#b42d2d;font-weight:800;font-size:15px">'+(rpDirty()?'Not saved yet':'')+'</span></div></div>';
   // last drop
   const L=d.last;
   const shown=d.rows.filter(r=>r.dropped_at||r.restore_status);
@@ -9178,11 +9178,11 @@ function rpOverridesHtml(E){
   const ov=E.overrides||[];
   const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:''; };
   let h='<details'+(_rpOvOpen?' open':'')+' ontoggle="_rpOvOpen=this.open"><summary>Different drop for some products'+(ov.length?' ('+ov.length+')':'')+'</summary>'
-    +'<p class="sub" style="margin:8px 0 10px">Products listed here drop by their own amount. Everything else drops the main price drop above (now <b>'+rpMoney(E.drop)+'</b>). The safety cap still applies to all.</p>';
+    +'<p class="sub" style="margin:8px 0 10px">Products listed here drop by their own amount. Everything else drops the main price drop above (now <b>'+rpMoney(E.drop)+'</b>). The safety cap still applies to all. Adding, changing or removing a product here saves it right away.</p>';
   if(ov.length) h+='<table class="rp-tbl rp-ov"><colgroup><col><col class="cd" style="width:150px"><col class="cx" style="width:110px"></colgroup><tr><th>Product</th><th>Drop</th><th></th></tr>'
     +ov.map((o,i)=>'<tr><td>'+amzLinkSized(o.asin, nm(o.asin)||o.asin)+'<div class="sku">'+esc(o.asin)+'</div></td>'
-      +'<td><div class="rp-money sm">− $<input type="number" min="0.01" max="50" step="0.01" value="'+Number(o.drop).toFixed(2)+'" oninput="_rpEdit.overrides['+i+'].drop=this.value;rpNote()" aria-label="Drop for '+esc(o.asin)+'"></div></td>'
-      +'<td><button class="rp-x" onclick="_rpEdit.overrides.splice('+i+',1);renderReprice()">Remove</button></td></tr>').join('')+'</table>';
+      +'<td><div class="rp-money sm">− $<input type="number" min="0.01" max="50" step="0.01" value="'+Number(o.drop).toFixed(2)+'" onchange="_rpEdit.overrides['+i+'].drop=this.value;rpSaveOverrides()" aria-label="Drop for '+esc(o.asin)+'"></div></td>'
+      +'<td><button class="rp-x" onclick="_rpEdit.overrides.splice('+i+',1);rpSaveOverrides()">Remove</button></td></tr>').join('')+'</table>';
   h+='<div class="rp-ovadd"><input type="text" id="rpOvProd" list="rpProdList" placeholder="Product name or ASIN" autocomplete="off">'
     +'<div class="rp-money sm">− $<input type="number" id="rpOvAmt" min="0.01" max="50" step="0.01" placeholder="'+Number(E.drop).toFixed(2)+'"></div>'
     +'<button class="rp-add" onclick="rpAddOverride()">+ Add product</button></div>'
@@ -9191,7 +9191,8 @@ function rpOverridesHtml(E){
 }
 // The saved per-product drops, always in view (owner: "list the items I adjusted in case I forget").
 function rpOverridesList(S){
-  const ov=(S.overrides||[]).slice(); if(!ov.length) return '';
+  const ov=(S.overrides||[]).slice();
+  if(!ov.length) return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop</span><div class="hint" style="font-size:15px">None saved. Every product drops '+rpMoney(S.drop)+'. Add some under "Different drop for some products" below.</div></div>';
   const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:''; };
   ov.sort((a,b)=>(nm(a.asin)||a.asin).localeCompare(nm(b.asin)||b.asin));
   return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop ('+ov.length+') · everything else drops '+rpMoney(S.drop)+'</span>'
@@ -9211,7 +9212,18 @@ function rpAddOverride(){
   }
   if(!(amt>=0.01&&amt<=50)){ toast('Enter how much to take off ($0.01 to $50)',true); return; }
   const ov=_rpEdit.overrides=(_rpEdit.overrides||[]).filter(o=>o.asin!==asin);
-  ov.push({asin, drop:Math.round(amt*100)/100}); _rpOvOpen=true; renderReprice();
+  ov.push({asin, drop:Math.round(amt*100)/100}); _rpOvOpen=true; rpSaveOverrides();
+}
+// Per-product drops save on their own, right away: they used to wait for "Save
+// settings", and products added without it were lost when the page was left.
+// Only the list is sent; other unsaved edits on the screen stay as they are.
+function rpSaveOverrides(){
+  const ov=(_rpEdit.overrides||[]).map(o=>({asin:o.asin, drop:o.drop}));
+  rpPost('/api/reprice/settings', {overrides:ov}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not save',true); return; }
+    _rp.settings.overrides=d.settings.overrides; _rpEdit.overrides=JSON.parse(JSON.stringify(d.settings.overrides));
+    toast('Saved · '+d.settings.overrides.length+' product'+(d.settings.overrides.length===1?'':'s')+' with their own drop'); renderReprice();
+  }).catch(e=>toast(e.message,true));
 }
 function rpNote(){ const n=document.getElementById('rpSaveNote'); if(n) n.textContent=rpDirty()?'Not saved yet':''; }
 function rpDirty(){ if(!_rp||!_rpEdit) return false; const a=_rp.settings, b=_rpEdit;
