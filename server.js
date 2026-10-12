@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ask-elevate-1049';
+const BUILD_ID = 'faster-claims-1050';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8102,22 +8102,34 @@ async function pullInboundRecon(onStep) {
   }
   return { shipments: ships.length, failed };
 }
-let claimsJob = { running: false, step: '', done: false, error: null, result: null };
+// The check, in the order that finds money fastest, each part saved as it
+// finishes so the screen fills in while the rest runs (phase counts up).
+// The first version read 18 months of every money event from Amazon, page
+// by page at Amazon's pace: it ran for well over 20 minutes with nothing to
+// show. Refunds now come from the settlement lines already in the app.
+let claimsJob = { running: false, step: '', done: false, error: null, result: null, phase: 0 };
 function startClaimsScan(full) {
   if (claimsJob.running) return false;
-  claimsJob = { running: true, step: 'Starting…', done: false, error: null, result: null, startedAt: new Date().toISOString() };
+  claimsJob = { running: true, step: 'Starting…', done: false, error: null, result: null, phase: 0, startedAt: new Date().toISOString() };
   (async () => {
     const errors = [], step = t => { claimsJob.step = t; };
     // first time: Amazon's 18 months; after that the last 60 days
     const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='claims_scan'")).rows[0] || {}).data || {};
     const deep = full || !prev.deepAt;
     const from = salesDay(Date.now() - (deep ? 540 : 60) * 86400000);
-    try { step('Reading what Amazon already reimbursed…'); await pullReimbursements(from, step); } catch (e) { errors.push('reimbursements: ' + e.message); }
-    try { await pullInboundRecon(step); } catch (e) { errors.push('shipments: ' + e.message); }
+    try { await pullInboundRecon(t => step('1 of 3 · ' + t)); } catch (e) { errors.push('shipments: ' + e.message); }
+    claimsJob.phase = 1;
+    try { step('2 of 3 · Reading what Amazon already reimbursed…'); await pullReimbursements(from, t => step('2 of 3 · ' + t)); } catch (e) { errors.push('reimbursements: ' + e.message); }
+    claimsJob.phase = 2;
+    // Returns only for the part of the 18 months not already read (the sales
+    // history pull reads them from January last year).
     if (deep) {
-      try { step('Reading refunds per order…'); await pullFinEvents(from, step); } catch (e) { errors.push('refunds: ' + e.message); }
-      try { step('Reading customer returns…'); await pullReturns(from, step); } catch (e) { errors.push('returns: ' + e.message); }
+      try {
+        const rf = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='returns_from'")).rows[0] || {}).data || {};
+        if (!rf.from || rf.from > from) { step('3 of 3 · Reading customer returns…'); await pullReturns(from, t => step('3 of 3 · ' + t)); }
+      } catch (e) { errors.push('returns: ' + e.message); }
     }
+    claimsJob.phase = 3;
     claimsJob.result = { errors, deep };
     claimsJob.error = errors.length ? errors.join(' · ') : null;
     const at = new Date().toISOString();
@@ -8140,7 +8152,18 @@ app.get('/api/claims', ownerAuth, async (req, res) => {
     pool.query(`SELECT r.shipment_id, r.sku, r.shipped, r.received, r.closed, s.shipment_name AS name, s.created_at,
         COALESCE(s.received_at, s.amz_status_at, s.created_at) AS done_at
       FROM inv_inbound_recon r JOIN inv_shipments s ON s.shipment_id = r.shipment_id`),
-    pool.query("SELECT order_id, sku, qty, posted_at, amount FROM inv_refund_orders WHERE posted_at > now() - interval '560 days'"),
+    // refunds per order: the money events (recent) and the settlement lines
+    // already imported (history); the same refund in both counts once
+    pool.query(`SELECT order_id, sku, max(qty)::int AS qty, max(posted_at) AS posted_at, min(amount) AS amount FROM (
+        SELECT order_id, sku, sum(qty)::int AS qty, max(posted_at) AS posted_at, sum(amount) AS amount FROM inv_refund_orders
+          WHERE posted_at > now() - interval '560 days' GROUP BY order_id, sku
+        UNION ALL
+        SELECT order_id, sku, GREATEST(1, abs(sum(quantity)))::int, max(posted_date)::timestamptz, sum(amount)
+          FROM inv_settlement_lines
+          WHERE transaction_type ILIKE '%refund%' AND amount_type = 'ItemPrice' AND amount_description ILIKE 'principal'
+            AND order_id IS NOT NULL AND posted_date > now() - interval '560 days'
+          GROUP BY order_id, sku
+      ) x GROUP BY order_id, sku`),
     pool.query("SELECT order_id, sku, qty FROM inv_returns WHERE day > now() - interval '620 days'"),
     pool.query('SELECT * FROM inv_claims'),
     pool.query('SELECT asin, sku, fnsku, name, avg_cost FROM inv_products'),

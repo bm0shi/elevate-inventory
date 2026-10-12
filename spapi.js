@@ -359,9 +359,9 @@ async function getSalesVelocity(days = 30) {
 // create waits a minute and tries again. A window Amazon can't build (too
 // old, or a hiccup) is skipped and listed in `failed`, so the caller saves
 // only the days it can vouch for.
-async function pullReportWindows(reportType, fromMs, onProgress, label) {
+async function pullReportWindows(reportType, fromMs, onProgress, label, maxDays = 30) {
   const zlib = require('zlib');
-  const wins = reportWindows(Math.ceil((Date.now() - fromMs) / 86400000), Date.now());
+  const wins = reportWindows(Math.ceil((Date.now() - fromMs) / 86400000), Date.now(), maxDays);
   const failed = [];
   const one = async ([start, end]) => {
     let reportId = null;
@@ -449,7 +449,13 @@ async function getReturnRecords(fromMs, onProgress) {
 // What Amazon has already reimbursed (lost, damaged, customer returns...),
 // raw report bodies for lib/claims.js, so the reimbursement finder doesn't ask
 // for money Amazon already paid.
+// One report for the whole range first (the first check read 18 monthly
+// reports one after another and took far too long); if Amazon can't build
+// it, fall back to 30-day pieces.
 async function getReimbursementBodies(fromMs, onProgress) {
+  const whole = await pullReportWindows('GET_FBA_REIMBURSEMENTS_DATA', fromMs, onProgress, 'reimbursements', 600);
+  if (!whole.failed.length) return whole;
+  if (onProgress) onProgress('Amazon could not build it in one piece — reading it month by month…');
   return pullReportWindows('GET_FBA_REIMBURSEMENTS_DATA', fromMs, onProgress, 'reimbursements');
 }
 
