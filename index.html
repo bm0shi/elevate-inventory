@@ -9112,6 +9112,8 @@ const RP_CSS = `
 #sub-reprice .rp-money.sm input{width:96px;font-size:17px !important;padding:8px 10px !important}
 #sub-reprice .rp-ov{margin-bottom:12px}
 #sub-reprice .rp-ovlist{margin-top:18px}
+#sub-reprice .rp-ovst .stk-sm{display:none;margin-top:5px;font-size:13.5px;color:#45545f}
+#sub-reprice .rp-ovst .stk-sm b{color:#0b1f24}
 #sub-reprice .rp-ovadd{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 #sub-reprice .rp-ovadd #rpOvProd{flex:1 1 280px;min-width:0}
 #sub-reprice .rp-slot{display:grid;grid-template-columns:auto auto auto auto 1fr auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--rp-line);border-radius:14px;margin-bottom:10px;background:#f8fafb}
@@ -9151,6 +9153,7 @@ const RP_CSS = `
   #sub-reprice .rp-tbl td.n{white-space:nowrap;font-size:13.5px}
   #sub-reprice .rp-tbl col.c1{width:36% !important} #sub-reprice .rp-tbl col.c4{width:32% !important}
   #sub-reprice .rp-tbl .note{display:none}
+  #sub-reprice .rp-ovst .stk{display:none} #sub-reprice .rp-ovst .stk-sm{display:block} #sub-reprice .rp-ovst col.cd{width:96px !important}
   #sub-reprice .rp-ov col.cd{width:104px !important} #sub-reprice .rp-ov col.cx{width:72px !important}
   #sub-reprice .rp-ov td{padding:10px 6px}
   #sub-reprice .rp-ov .rp-money.sm input{width:68px;padding:8px 4px !important}
@@ -9168,6 +9171,11 @@ function loadReprice(){
   if(!_rp) el.innerHTML='<div class="hint" style="padding:16px">Loading…</div>';
   // Product names for the per-product drops
   if(!(products||[]).length) loadProducts().then(()=>{ if(_rp) renderReprice(); }).catch(()=>{});
+  // Stock for the per-product list: the last FBA Inventory pull
+  if(!window._fbaData) api('/api/cache/fba_inventory').then(c=>{
+    if(c&&c.cached&&c.data&&!window._fbaData){ window._fbaData=Array.isArray(c.data)?c.data:(c.data.items||[]); window._fbaVal=Array.isArray(c.data)?null:(c.data.valuation||null);
+      window._fbaSort=window._fbaSort||{col:'grand_total',dir:-1}; window._fbaLoadedAt=new Date(c.updated_at); if(_rp) renderReprice(); }
+  }).catch(()=>{});
   ownerApi('/api/reprice').then(d=>{
     if(!d||d.ok===false){ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc((d&&d.error)||'no reply')+'</div>'; return; }
     _rp=d; if(!_rpEdit) _rpEdit=JSON.parse(JSON.stringify(d.settings)); renderReprice();
@@ -9260,9 +9268,21 @@ function rpOverridesList(S){
   if(!ov.length) return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop</span><div class="hint" style="font-size:15px">None saved. Every product drops '+rpMoney(S.drop)+'. Add some under "Different drop for some products" below.</div></div>';
   const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:''; };
   ov.sort((a,b)=>(nm(a.asin)||a.asin).localeCompare(nm(b.asin)||b.asin));
+  // Stock at Amazon and on the way, the same figures as FBA Inventory
+  // (fbaNormalize: FBA = units physically at Amazon, Transit = our shipments).
+  if(window._fbaData) fbaNormalize();
+  const st=a=>(window._fbaData||[]).find(x=>x.asin===a);
+  const q=v=>v==null?'<span style="color:#9db0c9">—</span>':Number(v).toLocaleString();
+  let tF=0, tT=0;
+  const rows=ov.map(o=>{ const r=st(o.asin), f=r?(r.fba_total||0):null, t=r?(r.transit||0):null; if(r){ tF+=f; tT+=t; }
+    return '<tr><td>'+amzLinkSized(o.asin, nm(o.asin)||o.asin)+'<div class="sku">'+esc(o.asin)+'</div>'
+      +(r?'<div class="stk-sm">At FBA <b>'+q(f)+'</b> · In transit <b>'+q(t)+'</b> · Total <b>'+q(f+t)+'</b></div>':'')
+      +'</td><td class="n stk">'+q(f)+'</td><td class="n stk">'+q(t)+'</td><td class="n stk" style="font-weight:850">'+q(r?f+t:null)+'</td><td class="n">− '+rpMoney(o.drop)+'</td></tr>'; }).join('');
   return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop ('+ov.length+') · everything else drops '+rpMoney(S.drop)+'</span>'
-    +'<table class="rp-tbl"><colgroup><col><col style="width:120px"></colgroup>'
-    +ov.map(o=>'<tr><td>'+amzLinkSized(o.asin, nm(o.asin)||o.asin)+'<div class="sku">'+esc(o.asin)+'</div></td><td class="n">− '+rpMoney(o.drop)+'</td></tr>').join('')+'</table></div>';
+    +'<table class="rp-tbl rp-ovst"><colgroup><col><col class="cq stk" style="width:100px"><col class="cq stk" style="width:100px"><col class="cq stk" style="width:110px"><col class="cd" style="width:110px"></colgroup>'
+    +'<tr><th>Product</th><th class="stk">At FBA</th><th class="stk">In transit</th><th class="stk">FBA + transit</th><th>Drop</th></tr>'+rows
+    +(ov.length>1?'<tr style="background:#f8fafb"><td style="font-weight:800">Total<div class="stk-sm">At FBA <b>'+tF.toLocaleString()+'</b> · In transit <b>'+tT.toLocaleString()+'</b> · Total <b>'+(tF+tT).toLocaleString()+'</b></div></td><td class="n stk">'+tF.toLocaleString()+'</td><td class="n stk">'+tT.toLocaleString()+'</td><td class="n stk" style="font-weight:850">'+(tF+tT).toLocaleString()+'</td><td></td></tr>':'')
+    +'</table>'+(window._fbaData?'<div class="hint" style="margin-top:6px">Stock from the last FBA Inventory pull'+(window._fbaLoadedAt?' ('+ageText(window._fbaLoadedAt)+')':'')+'.</div>':'<div class="hint" style="margin-top:6px">No FBA Inventory pull yet. Load it on Admin → FBA Inventory to see stock here.</div>')+'</div>';
 }
 function rpAddOverride(){
   const t=(document.getElementById('rpOvProd').value||'').trim(), amt=parseFloat(document.getElementById('rpOvAmt').value);
