@@ -620,7 +620,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
         <div class="subtop"><span>Owner admin</span><button class="subtab sublock" onclick="adminLock()">🔒 Lock</button></div>
         <div class="subcol">
           <div class="subrow"><div class="subgroup-label">Dashboard</div><div class="subgroup-btns"><button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button></div></div>
-          <div class="subrow"><div class="subgroup-label">Money</div><div class="subgroup-btns"><button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button><button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button><button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button><button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button></div></div>
+          <div class="subrow"><div class="subgroup-label">Money</div><div class="subgroup-btns"><button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button><button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button><button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button><button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button><button class="subtab amz" title="Money Amazon owes you: short shipments, refunds with nothing returned" data-sub="claims" onclick="showSubTab('claims',event)">Reimbursements</button></div></div>
           <div class="subrow"><div class="subgroup-label">Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button></div></div>
           <div class="subrow"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button><button class="subtab" data-sub="count" onclick="showSubTab('count',event)">Cycle Count</button></span></div></div>
         </div>
@@ -720,6 +720,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
     <div id="fcashBody"><div class="hint" style="padding:16px">Loading…</div></div>
   </div>
 
+  <div id="sub-claims" class="subpanel"><div id="claimsBody"></div></div>
   <div id="sub-fsrc" class="subpanel">
     <div class="box">
       <h3 style="margin:0 0 4px">Data Sources</h3>
@@ -4047,6 +4048,7 @@ function showSubTab(name, ev){
   if(name==='count') countInit();
   if(name==='shortages') loadShortages();
   if(name==='status') loadStatus();
+  if(name==='claims') loadClaims();
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
@@ -8802,12 +8804,123 @@ function statusTestAlert(btn){
     toast('Test alert · '+(parts.join(' · ')||'sent'), parts.some(p=>/failed/.test(p)));
   }).catch(e=>{ btn.disabled=false; toast(e.message,true); });
 }
+// ---- REIMBURSEMENTS (Admin → Money): money Amazon owes, with the case text ----
+// Finder rules in lib/claims.js. The app finds and writes; filing is a paste
+// into Seller Central (Amazon has no API to open a case).
+const CL_CSS = `
+#sub-claims .cl-hero{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:14px;margin-bottom:14px}
+#sub-claims .cl-big{background:linear-gradient(135deg,#0b2a30,#0d4450);color:#fff;border-radius:16px;padding:20px 22px;position:relative;overflow:hidden}
+#sub-claims .cl-big .l{font-size:12px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:#9fd3dc}
+#sub-claims .cl-big .v{font-size:40px;font-weight:850;letter-spacing:-1px;margin:6px 0 2px}
+#sub-claims .cl-big .s{font-size:13px;color:#c7dde1}
+#sub-claims .cl-big .acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+#sub-claims .cl-big button{all:unset;cursor:pointer;font-size:13px;font-weight:800;border-radius:10px;padding:10px 14px;background:#ff9900;color:#131921}
+#sub-claims .cl-big button.g{background:rgba(255,255,255,.1);color:#fff;border:1px solid rgba(255,255,255,.2)}
+#sub-claims .cl-big button[disabled]{opacity:.6;pointer-events:none}
+#sub-claims .cl-how{background:#fff;border:1px solid #e3e9ee;border-radius:16px;padding:16px 18px;font-size:13px;color:#45545f;line-height:1.5}
+#sub-claims .cl-how b{color:#0b1f24}
+#sub-claims .cl-how ol{margin:8px 0 0 18px;padding:0}
+#sub-claims .cl-how li{margin:3px 0}
+#sub-claims .cl-chips{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+#sub-claims .cl-sec{font-size:15px;font-weight:800;color:#0b1f24;margin:16px 2px 4px}
+#sub-claims .cl-sub{font-size:12.5px;color:#7d8b97;margin:0 2px 10px}
+#sub-claims .cl-tbl{width:100%;border-collapse:separate;border-spacing:0;background:#fff;border:1px solid #e3e9ee;border-radius:14px;overflow:hidden;font-size:13px;table-layout:fixed}
+#sub-claims .cl-tbl th{font-size:11px;letter-spacing:.6px;color:#7d8b97;background:#f8fafb;padding:9px 10px;text-align:center;font-weight:750}
+#sub-claims .cl-tbl th:first-child,#sub-claims .cl-tbl td:first-child{text-align:left}
+#sub-claims .cl-tbl td{padding:10px;border-top:1px solid #eef2f5;text-align:center;vertical-align:middle}
+#sub-claims .cl-tbl td.num{font-variant-numeric:tabular-nums;font-weight:700}
+#sub-claims .cl-tbl .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:#1f5fae}
+#sub-claims .cl-st{display:inline-block;font-size:11px;font-weight:800;border-radius:999px;padding:3px 9px;white-space:nowrap}
+#sub-claims .cl-acts{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
+#sub-claims .cl-empty{background:#fff;border:1px dashed #cdd8df;border-radius:14px;padding:26px;text-align:center;color:#45545f;font-size:13.5px}
+@media (max-width:900px){#sub-claims .cl-hero{grid-template-columns:1fr}#sub-claims .cl-tbl{table-layout:auto}#sub-claims .cl-wrap{overflow-x:auto}#sub-claims .cl-tbl{min-width:760px}}`;
+const CL_STATUS = { open:['To file','#a86b00','#fff4dc'], filed:['Filed','#1f5fae','#e8f1fc'], paid:['Paid','#0b7a0b','#e8f6ea'], dismissed:['Dismissed','#7d8b97','#eef2f5'] };
+let _claims=null, _claimsFilter='open', _claimsPoll=null;
+function loadClaims(){
+  if(!document.getElementById('clCss')){ const st=document.createElement('style'); st.id='clCss'; st.textContent=CL_CSS; document.head.appendChild(st); }
+  const el=document.getElementById('claimsBody'); if(!el) return;
+  if(!_claims) el.innerHTML='<div class="hint" style="padding:16px">Loading…</div>';
+  ownerApi('/api/claims').then(d=>{
+    if(!d||d.ok===false){ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc((d&&d.error)||'no reply')+'</div>'; return; }
+    _claims=d; renderClaims();
+  }).catch(e=>{ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc(e.message)+'</div>'; });
+  ownerApi('/api/claims/scan/status').then(j=>{ if(j&&j.running) claimsWatch(); }).catch(()=>{});
+}
+function claimsScan(full){
+  ownerApi('/api/claims/scan/start',{method:'POST',body:JSON.stringify({full:!!full})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not start',true); return; }
+    claimsWatch();
+  }).catch(e=>toast(e.message,true));
+}
+function claimsWatch(){
+  clearInterval(_claimsPoll);
+  const tick=()=>ownerApi('/api/claims/scan/status').then(j=>{
+    const s=document.getElementById('clScanState'), b=document.getElementById('clScanBtn');
+    if(s) s.textContent=j.running?j.step:(j.error?'Finished with problems: '+j.error:'Done');
+    if(b) b.disabled=!!j.running;
+    if(!j.running){ clearInterval(_claimsPoll); _claimsPoll=null; if(j.done){ toast(j.error?'Check finished with problems':'Check finished', !!j.error); loadClaims(); } }
+  }).catch(()=>{});
+  _claimsPoll=setInterval(tick,3000); tick();
+}
+function renderClaims(){
+  const d=_claims, el=document.getElementById('claimsBody'); if(!d||!el) return;
+  const T=d.totals, scan=d.scan;
+  const money=v=>v==null?'—':'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
+  const counts={}; d.claims.forEach(c=>{ counts[c.status]=(counts[c.status]||0)+1; });
+  let h='<div class="cl-hero"><div class="cl-big"><div class="l">Amazon likely owes you</div><div class="v">'+money(T.owed)+'</div>'
+    +'<div class="s">'+T.open+' claim'+(T.open===1?'':'s')+' to file'+(T.unvalued?' ('+T.unvalued+' without a cost, not counted)':'')+' · Amazon paid you '+money(T.recovered90)+' in the last 90 days</div>'
+    +'<div class="acts"><button id="clScanBtn" onclick="claimsScan(false)">↻ Check for money owed</button>'+(scan&&scan.deepAt?'<button class="g" onclick="claimsScan(true)" title="Re-read 18 months of reimbursements, refunds and returns">Deep check (18 months)</button>':'')+'</div>'
+    +'<div class="s" id="clScanState" style="margin-top:8px">'+(scan&&scan.at?'Last checked '+ageText(scan.at)+(scan.deepAt?'':' · the first check reads 18 months and takes a few minutes'):'Never checked: the first check reads 18 months from Amazon and takes a few minutes')+'</div></div>'
+    +'<div class="cl-how"><b>How to get paid</b> (about a minute each)<ol>'
+    +'<li><b>Copy case</b> on a claim below: the message is written for you.</li>'
+    +'<li><a href="https://sellercentral.amazon.com/help/hub/support" target="_blank" rel="noopener">Open Seller Central support</a> → Fulfillment by Amazon → inventory or shipment problem.</li>'
+    +'<li>Paste, attach the Cosmoprof invoice it names, submit.</li>'
+    +'<li>Tap <b>Filed</b> and enter the case ID. When Amazon pays that case it turns <b>Paid</b> by itself.</li></ol>'
+    +'<div style="margin-top:8px;font-size:12px;color:#7d8b97">File soon: Amazon only accepts these for a limited time. Values are estimates (what Amazon paid for that SKU before, else what it cost you).</div></div></div>';
+  const chip=(k,l)=>'<button class="mini" onclick="_claimsFilter=\''+k+'\';renderClaims()" style="'+(_claimsFilter===k?'background:#0d4450;color:#fff;border-color:#0d4450':'')+'">'+l+' · '+(k==='all'?d.claims.length:(counts[k]||0))+'</button>';
+  h+='<div class="cl-chips">'+chip('open','To file')+chip('filed','Filed')+chip('paid','Paid')+chip('dismissed','Dismissed')+chip('all','All')+'</div>';
+  const list=d.claims.filter(c=>_claimsFilter==='all'||c.status===_claimsFilter);
+  const name=c=>c.asin?amzLinkSized(c.asin, c.product||c.sku):esc(c.product||c.sku);
+  const st=c=>{ const x=CL_STATUS[c.status]; return '<span class="cl-st" style="color:'+x[1]+';background:'+x[2]+'">'+x[0]+(c.status==='paid'&&c.paid!=null?' '+money(c.paid):'')+'</span>'+(c.caseId?'<div class="hint" style="margin:3px 0 0">case '+esc(c.caseId)+'</div>':''); };
+  // the key rides in a data attribute: an SKU with a quote in it can't break the onclick
+  const acts=c=>'<div class="cl-acts" data-k="'+esc(c.key)+'"><button class="mini" onclick="claimsCopy(this.parentNode.dataset.k,this)">Copy case</button>'
+    +(c.status!=='filed'&&c.status!=='paid'?'<button class="mini" onclick="claimsMark(this.parentNode.dataset.k,\'filed\')">Filed</button>':'')
+    +(c.status==='open'?'<button class="mini" title="Not worth filing / already handled" onclick="claimsMark(this.parentNode.dataset.k,\'dismissed\')">Dismiss</button>':'<button class="mini" onclick="claimsMark(this.parentNode.dataset.k,\'open\')">Reopen</button>')+'</div>';
+  const age=ms=>ms?Math.max(0,Math.round((Date.now()-ms)/86400000))+' d':'—';
+  const inb=list.filter(c=>c.type==='inbound'), rf=list.filter(c=>c.type==='refund');
+  h+='<div class="cl-sec">Shipments short at Amazon</div><div class="cl-sub">Amazon finished receiving with fewer units than you sent, less what it already reimbursed for that SKU.</div>';
+  h+=inb.length?'<div class="cl-wrap"><table class="cl-tbl"><colgroup><col style="width:30%"><col style="width:14%"><col><col><col><col><col><col style="width:9%"><col style="width:17%"></colgroup><tr><th>Product</th><th>Shipment</th><th>Sent</th><th>Received</th><th>Owed</th><th>Worth</th><th>Age</th><th>Status</th><th></th></tr>'
+    +inb.map(c=>'<tr><td>'+name(c)+'<div class="mono">'+esc(c.sku)+'</div></td><td><span class="mono">'+esc(c.shipment_id)+'</span></td><td class="num">'+c.shipped+'</td><td class="num">'+c.received+'</td><td class="num" style="color:#b42d2d">'+c.owed+(c.reimbursed?'<div class="hint" style="margin:0">'+c.reimbursed+' paid</div>':'')+'</td><td class="num" title="'+esc(c.valueBasis||'')+'">'+money(c.value)+'</td><td>'+age(c.since)+'</td><td>'+st(c)+'</td><td>'+acts(c)+'</td></tr>').join('')+'</table></div>'
+    :'<div class="cl-empty">Nothing here'+(_claimsFilter==='open'?': every closed shipment came in complete, or Amazon already paid.':'.')+'</div>';
+  h+='<div class="cl-sec">Refunded, nothing returned</div><div class="cl-sub">The customer got their money back over 45 days ago and nothing came back to Amazon, and Amazon hasn\'t paid you for it.</div>';
+  h+=rf.length?'<div class="cl-wrap"><table class="cl-tbl"><colgroup><col style="width:30%"><col style="width:14%"><col><col><col><col><col><col style="width:9%"><col style="width:17%"></colgroup><tr><th>Product</th><th>Order</th><th>Refunded</th><th>Returned</th><th>Owed</th><th>Worth</th><th>Age</th><th>Status</th><th></th></tr>'
+    +rf.map(c=>'<tr><td>'+name(c)+'<div class="mono">'+esc(c.sku)+'</div></td><td><span class="mono">'+esc(c.order)+'</span></td><td class="num">'+c.refunded+'</td><td class="num">'+c.returned+'</td><td class="num" style="color:#b42d2d">'+c.owed+'</td><td class="num" title="'+esc(c.valueBasis||'')+'">'+money(c.value)+'</td><td>'+age(c.since)+'</td><td>'+st(c)+'</td><td>'+acts(c)+'</td></tr>').join('')+'</table></div>'
+    :'<div class="cl-empty">Nothing here'+(_claimsFilter==='open'?': every refund came back or was paid.':'.')+'</div>';
+  el.innerHTML=h;
+  if(_claimsPoll){ const b=document.getElementById('clScanBtn'); if(b) b.disabled=true; }
+}
+function claimsCopy(key, btn){
+  const c=(_claims&&_claims.claims||[]).find(x=>x.key===key); if(!c) return;
+  const done=()=>{ if(btn){ const t=btn.textContent; btn.textContent='Copied ✓'; setTimeout(()=>{ btn.textContent=t; },1500); } };
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(c.text).then(done,()=>prompt('Copy the case text:',c.text));
+  else prompt('Copy the case text:',c.text);
+}
+function claimsMark(key, status){
+  let caseId=null;
+  if(status==='filed'){ caseId=prompt('Case ID from Seller Central (so it turns Paid by itself when Amazon pays):',''); if(caseId===null) return; }
+  const snap=(_claims&&_claims.claims||[]).find(x=>x.key===key)||null;
+  ownerApi('/api/claims/mark',{method:'POST',body:JSON.stringify({key,status,caseId:caseId||null,snap})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
+    loadClaims();
+  }).catch(e=>toast(e.message,true));
+}
 const FRESH_SETS = [
   { key:'fba_inventory',  label:'FBA Inventory', warnHrs:24,  subs:['fbainv'] },
   { key:'velocity',       label:'Velocity',      warnHrs:72,  subs:['velocity'] },
   { key:'market_data',    label:'Market (Keepa)',warnHrs:168, subs:['market'] },
   { key:'inventory_value',label:'Value',         warnHrs:168, subs:['value'] },
-  { key:'shipments_checked',label:'Shipments',   warnHrs:12,  subs:['transit','shipments'] }
+  { key:'shipments_checked',label:'Shipments',   warnHrs:12,  subs:['transit','shipments'] },
+  { key:'claims_scan',    label:'Reimbursements',warnHrs:72,  subs:['claims'] }
 ];
 
 function ageText(ts){

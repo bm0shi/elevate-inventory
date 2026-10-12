@@ -446,6 +446,13 @@ async function getReturnRecords(fromMs, onProgress) {
   return { records: parseReturns(r.bodies).filter(x => x.ts >= fromMs), failed: r.failed };
 }
 
+// What Amazon has already reimbursed (lost, damaged, customer returns...),
+// raw report bodies for lib/claims.js, so the reimbursement finder doesn't ask
+// for money Amazon already paid.
+async function getReimbursementBodies(fromMs, onProgress) {
+  return pullReportWindows('GET_FBA_REIMBURSEMENTS_DATA', fromMs, onProgress, 'reimbursements');
+}
+
 // Amazon's restock recommendation (Seller Central → Restock Inventory), raw
 // tab-separated text; lib/restock.js parses it. Same create/poll/download
 // flow as the sales report. Errors are thrown, never returned as empty.
@@ -1187,4 +1194,4 @@ async function getShipmentStatuses(ids) {
   return out;
 }
 
-module.exports = { getOrderRecords, getReturnRecords, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+module.exports = { getOrderRecords, getReturnRecords, getReimbursementBodies, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
