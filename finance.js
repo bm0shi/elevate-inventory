@@ -11,6 +11,8 @@
 //  - Anything not yet tracked returns null and is shown as missing — never 0.
 // ============================================================
 
+const laborSplit = require('./lib/labor-split');
+
 module.exports = function registerFinance(app, deps) {
   const { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts } = deps;
 
@@ -266,7 +268,20 @@ module.exports = function registerFinance(app, deps) {
       SELECT COALESCE(SUM(i.qty),0)::int AS units FROM inv_shipment_items i
       JOIN inv_shipments s ON s.shipment_id = i.shipment_id WHERE s.created_at >= $1`, [from.toISOString()]);
     const units = u.rows[0].units;
-    return { rate: units ? dollars / units : null, dollars, units, days };
+    // The same dollars split by each product's real prep time (lib/labor-split.js):
+    // a liter duo carries more labor than a 3 oz single. Falls back to the flat
+    // rate when the floor hasn't timed any jobs yet.
+    let split = null;
+    try {
+      const log = (await pool.query(
+        'SELECT asin, qty, duration_sec, crew, started_at FROM inv_prep_log WHERE finished_at >= $1 AND duration_sec IS NOT NULL',
+        [from.toISOString()])).rows;
+      const sec = laborSplit.prepSeconds(log);
+      const mix = {}; log.forEach(r => { mix[r.asin] = (mix[r.asin] || 0) + (Number(r.qty) || 0); });
+      split = laborSplit.splitDollars(dollars, sec, mix);
+      if (split) split.timed = Object.keys(sec).length;
+    } catch (e) { console.error('[Finance] labor split:', e.message); }
+    return { rate: units ? dollars / units : null, dollars, units, days, split };
   }
 
   async function overheadFor(month) {
@@ -347,7 +362,10 @@ module.exports = function registerFinance(app, deps) {
       const pSupp = sRate != null ? sRate * net : null;
       const pFreight = fRate != null ? fRate * net : null;
       const pFreightOnly = ib ? ib.freight * net : null, pPlacement = ib ? ib.placement * net : null;
-      const pLabor = laborRate != null ? laborRate * net : null;
+      // by real prep time when the floor's log has it, else the flat rate
+      const lRate = ctx.laborInfo && ctx.laborInfo.split && asin
+        ? (ctx.laborInfo.split.byAsin[asin] != null ? ctx.laborInfo.split.byAsin[asin] : ctx.laborInfo.split.fallback) : laborRate;
+      const pLabor = lRate != null ? lRate * net : null;
 
       if (pCogs != null) { cogs += pCogs; costedSales += p.sales; }
       else {
@@ -378,9 +396,9 @@ module.exports = function registerFinance(app, deps) {
         sales: p.sales, refunds: p.refunds, promotions: p.promotions, netSales,
         fees: p.fees, feeDetail: p.feeDetail,
         unitCost, regularCost: info.regularCost != null ? info.regularCost : null,
-        suppliesPerUnit: sRate, laborPerUnit: laborRate, freightPerUnit: fRate,
+        suppliesPerUnit: sRate, laborPerUnit: lRate, laborByPrepTime: !!(ctx.laborInfo && ctx.laborInfo.split), freightPerUnit: fRate,
         carrierPerUnit: ib ? ib.freight : null, placementPerUnit: ib ? ib.placement : null,
-        landedPerUnit: unitCost != null ? unitCost + (sRate || 0) + (laborRate || 0) + (fRate || 0) : null,
+        landedPerUnit: unitCost != null ? unitCost + (sRate || 0) + (lRate || 0) + (fRate || 0) : null,
         cogs: pCogs, supplies: pSupp, labor: pLabor, freight: pFreight,
         profit: pCogs != null ? profit : null,
         profitPerUnit: pCogs != null && net ? profit / net : null,
