@@ -620,7 +620,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
         <div class="subtop"><span>Owner admin</span><button class="subtab sublock" onclick="adminLock()">🔒 Lock</button></div>
         <div class="subcol">
           <div class="subrow"><div class="subgroup-label">Dashboard</div><div class="subgroup-btns"><button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button></div></div>
-          <div class="subrow"><div class="subgroup-label">Money</div><div class="subgroup-btns"><button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button><button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button><button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button><button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button><button class="subtab amz" title="Money Amazon owes you: short shipments, refunds with nothing returned" data-sub="claims" onclick="showSubTab('claims',event)">Reimbursements</button></div></div>
+          <div class="subrow"><div class="subgroup-label">Money</div><div class="subgroup-btns"><button class="subtab" data-sub="fpnl" onclick="showSubTab('fpnl',event)">P&amp;L</button><button class="subtab" data-sub="fprod" onclick="showSubTab('fprod',event)">Product Profit</button><button class="subtab" data-sub="fcash" onclick="showSubTab('fcash',event)">Cash &amp; Draws</button><button class="subtab" data-sub="labor" onclick="showSubTab('labor',event)">Labor</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fsrc" onclick="showSubTab('fsrc',event)">Data Sources</button><button class="subtab amz" title="Money Amazon owes you: short shipments, refunds with nothing returned" data-sub="claims" onclick="showSubTab('claims',event)">Reimbursements</button><button class="subtab amz" title="Stock at Amazon that can't sell, and fees coming for stock that sits" data-sub="stuck" onclick="showSubTab('stuck',event)">Stuck at Amazon</button></div></div>
           <div class="subrow"><div class="subgroup-label">Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button></div></div>
           <div class="subrow"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button><button class="subtab" data-sub="count" onclick="showSubTab('count',event)">Cycle Count</button></span></div></div>
         </div>
@@ -721,6 +721,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
   </div>
 
   <div id="sub-claims" class="subpanel"><div id="claimsBody"></div></div>
+  <div id="sub-stuck" class="subpanel"><div id="stuckBody"></div></div>
   <div id="sub-fsrc" class="subpanel">
     <div class="box">
       <h3 style="margin:0 0 4px">Data Sources</h3>
@@ -4049,6 +4050,7 @@ function showSubTab(name, ev){
   if(name==='shortages') loadShortages();
   if(name==='status') loadStatus();
   if(name==='claims') loadClaims();
+  if(name==='stuck') loadStuck();
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
   const p=document.getElementById('sub-'+name); if(p) p.classList.add('active');
@@ -8914,18 +8916,75 @@ function claimsMark(key, status){
     loadClaims();
   }).catch(e=>toast(e.message,true));
 }
+// ---- STUCK AT AMAZON (Admin → Money): stock that can't sell, fees coming ----
+// Parsers in lib/stuck.js; uses the Reimbursements screen's styles (CL_CSS).
+let _stuck=null, _stuckPoll=null;
+function loadStuck(){
+  if(!document.getElementById('clxCss')){ const st=document.createElement('style'); st.id='clxCss'; st.textContent=CL_CSS.replace(/#sub-claims/g,'#sub-stuck'); document.head.appendChild(st); }
+  const el=document.getElementById('stuckBody'); if(!el) return;
+  if(!_stuck) el.innerHTML='<div class="hint" style="padding:16px">Loading…</div>';
+  ownerApi('/api/stuck').then(d=>{
+    if(!d||d.ok===false){ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc((d&&d.error)||'no reply')+'</div>'; return; }
+    _stuck=d; renderStuck();
+  }).catch(e=>{ el.innerHTML='<div class="box" style="color:#b42d2d">Could not load: '+esc(e.message)+'</div>'; });
+  ownerApi('/api/stuck/status').then(j=>{ if(j&&j.running) stuckWatch(); }).catch(()=>{});
+}
+function stuckCheck(){ ownerApi('/api/stuck/start',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Could not start',true); return; } stuckWatch(); }).catch(e=>toast(e.message,true)); }
+function stuckWatch(){
+  clearInterval(_stuckPoll);
+  const tick=()=>ownerApi('/api/stuck/status').then(j=>{
+    const s=document.getElementById('stScanState'), b=document.getElementById('stScanBtn');
+    if(s) s.textContent=j.running?j.step:(j.error?'Finished with problems: '+j.error:'Done'); if(b) b.disabled=!!j.running;
+    if(!j.running){ clearInterval(_stuckPoll); _stuckPoll=null; if(j.done){ toast(j.error?'Check finished with problems':'Check finished', !!j.error); loadStuck(); } }
+  }).catch(()=>{});
+  _stuckPoll=setInterval(tick,3000); tick();
+}
+function renderStuck(){
+  const d=_stuck, el=document.getElementById('stuckBody'); if(!d||!el) return;
+  const money=v=>v==null?'—':'$'+Number(v).toLocaleString(undefined,{maximumFractionDigits:0});
+  const D=d.data, T=d.totals||{};
+  const name=r=>r.asin?amzLinkSized(r.asin, r.name||r.sku):esc(r.name||r.sku);
+  const worth=(r,u)=>{ const c=d.cost&&d.cost[r.sku]; return c!=null?money(c*u):'—'; };
+  let h='<div class="cl-hero"><div class="cl-big"><div class="l">Tied up at Amazon, not selling</div><div class="v">'+money(T.tiedUp||0)+'</div>'
+    +'<div class="s">at what it cost you'+(T.surcharge?' · Amazon expects to charge '+money(T.surcharge)+' next month for aged stock':'')+'</div>'
+    +'<div class="acts"><button id="stScanBtn" onclick="stuckCheck()">↻ Check now</button></div>'
+    +'<div class="s" id="stScanState" style="margin-top:8px">'+(D?'Checked '+ageText(D.at)+(D.errors&&D.errors.length?' · problems: '+esc(D.errors.join(' · ')):'')+' · also refreshed every morning':'Never checked: tap Check now (about a minute)')+'</div></div>'
+    +'<div class="cl-how"><b>What to do</b><ol>'
+    +'<li><b>Stranded</b>: the listing is inactive or broken, so the units can\'t sell. Seller Central → Inventory → Manage FBA Inventory → Stranded: fix or relist.</li>'
+    +'<li><b>Unsellable</b>: damaged or customer-damaged units. Make a removal order to get them back, or check the Reimbursements screen if Amazon damaged them.</li>'
+    +'<li><b>Aged</b>: units over 180 days get a monthly surcharge. Lower the price, stop sending more, or remove them.</li></ol></div></div>';
+  if(!D){ el.innerHTML=h; return; }
+  const sec=(title,sub,rows,head,cells,empty)=>'<div class="cl-sec">'+title+'</div><div class="cl-sub">'+sub+'</div>'
+    +(rows.length?'<div class="cl-wrap"><table class="cl-tbl"><colgroup><col style="width:38%">'+head.slice(1).map(()=>'<col>').join('')+'</colgroup><tr>'+head.map(x=>'<th>'+x+'</th>').join('')+'</tr>'+rows.map(r=>'<tr>'+cells(r).map((c,i)=>'<td'+(i&&i<cells(r).length?' class="num"':'')+'>'+c+'</td>').join('')+'</tr>').join('')+'</table></div>':'<div class="cl-empty">'+empty+'</div>');
+  h+=sec('Stranded','At Amazon with no active listing: '+money(T.stranded&&T.stranded.total)+(T.stranded&&T.stranded.unknownUnits?' + '+T.stranded.unknownUnits+' units without a cost':''),
+    D.stranded||[], ['Product','Units','Worth','Why','Amazon says'],
+    r=>[name(r)+'<div class="mono">'+esc(r.sku)+'</div>', r.units, worth(r,r.units), '<span style="font-weight:600">'+esc(r.reason||'—')+'</span>'+(r.since?'<div class="hint" style="margin:0">since '+esc(r.since.slice(0,10))+'</div>':''), esc(r.action||'—')],
+    'Nothing stranded: every unit at Amazon has a live listing.');
+  h+=sec('Unsellable','Damaged or customer-damaged at Amazon, and units Amazon is still looking into: '+money(T.unsellable&&T.unsellable.total),
+    D.unsellable||[], ['Product','Unsellable','Researching','Worth'],
+    r=>[name(r)+'<div class="mono">'+esc(r.sku)+'</div>', r.unsellable, r.researching||0, worth(r,r.unsellable)],
+    'No unsellable units at Amazon.');
+  h+=sec('Aged (over 180 days)','Amazon adds a monthly surcharge for these: '+money(T.surcharge)+' expected next month',
+    D.aged||[], ['Product','Units 181+ days','Surcharge next month','Storage next month','Amazon suggests'],
+    r=>[name(r)+'<div class="mono">'+esc(r.sku)+'</div>', r.aged181, money(r.surcharge), money(r.storageNext), esc(r.action||'—')],
+    'Nothing over 180 days at Amazon.');
+  el.innerHTML=h;
+  if(_stuckPoll){ const b=document.getElementById('stScanBtn'); if(b) b.disabled=true; }
+}
 const FRESH_SETS = [
   { key:'fba_inventory',  label:'FBA Inventory', warnHrs:24,  subs:['fbainv'] },
   { key:'velocity',       label:'Velocity',      warnHrs:72,  subs:['velocity'] },
   { key:'market_data',    label:'Market (Keepa)',warnHrs:168, subs:['market'] },
   { key:'inventory_value',label:'Value',         warnHrs:168, subs:['value'] },
   { key:'shipments_checked',label:'Shipments',   warnHrs:12,  subs:['transit','shipments'] },
-  { key:'claims_scan',    label:'Reimbursements',warnHrs:72,  subs:['claims'] }
+  { key:'claims_scan',    label:'Reimbursements',warnHrs:72,  subs:['claims'] },
+  { key:'stuck_stock',    label:'Stuck at Amazon',warnHrs:72, subs:['stuck'] }
 ];
 
 function ageText(ts){
   if(!ts) return null;
   const mins=Math.floor((Date.now()-new Date(ts).getTime())/60000);
+  if(mins<1) return 'just now';   // a server clock a little ahead read "-3m ago"
   if(mins<60) return mins+'m ago';
   const hrs=Math.floor(mins/60);
   if(hrs<48) return hrs+'h ago';
