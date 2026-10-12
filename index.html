@@ -259,6 +259,11 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
   #login h2 { font-family:var(--head); font-weight:900; letter-spacing:0.5px; }
   .card .n { font-family:var(--head); font-weight:900; }
   .hint { color:var(--muted); }
+  /* Sortable list headers (sortTh): click to sort, again to flip. */
+  th.srt { cursor:pointer; user-select:none; }
+  th.srt:hover { color:#0d4450; }
+  th.srt.on { color:#0d4450; }
+  th.srt .srt-i { opacity:.35; font-size:.9em; }
   /* Admin nav: one card per group in a grid; cards in a row share a height. */
   .subtabs { display:block !important; }
   .subgrid { display:grid; grid-template-columns:repeat(auto-fill, minmax(min(100%, 330px), 1fr)); gap:12px; margin:4px 0 10px; }
@@ -9077,6 +9082,29 @@ function claimsClaude(){
     +'<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap"><button class="action" onclick="claimsCopyText(document.getElementById(\'clClaude\').value,this)">📋 Copy instructions</button><button class="action" style="background:#fff!important;color:#0d4450!important;border:1px solid #e3e9ee!important" onclick="claimsQClose()">Close</button></div>'
     +'<div style="font-size:13px;color:#7d8b97;margin-top:10px">It works in your own browser with your own logins, while you watch; no one is given access to your account. Claude reads the pages it works on to do the job.</div></div>';
 }
+// ---- Sortable lists (owner's standing ask: every list sorts) ----
+// sortState(key, col, dir) sets a list's starting order once; sortTh() draws a
+// header that sorts on click (numbers highest first, text A→Z; again flips);
+// sortRows(key, rows, getters) returns the rows in that order. A list with no
+// column picked keeps its own order. Empty values always go last.
+const _sorts={};
+function sortState(key, col, dir){ return _sorts[key]||(_sorts[key]={col:col||null, dir:dir||-1}); }
+function sortTh(key, col, label, rerender, cls){
+  const st=_sorts[key]||{}, on=st.col===col;
+  return '<th class="srt'+(on?' on':'')+(cls?' '+cls:'')+'" title="Sort by this column" onclick="sortBy(\''+key+'\',\''+col+'\','+rerender+')">'+label+(on?(st.dir<0?' ▼':' ▲'):' <span class="srt-i">↕</span>')+'</th>';
+}
+function sortBy(key, col, rerender){
+  const st=sortState(key);
+  if(st.col===col) st.dir=-st.dir; else { st.col=col; st.dir=(col==='name'||col==='status')?1:-1; }
+  rerender();
+}
+function sortRows(key, rows, get){
+  const st=_sorts[key], g=st&&get[st.col]; if(!g) return rows;
+  return rows.slice().sort((a,b)=>{ const x=g(a), y=g(b);
+    if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1;
+    return (typeof x==='string'?x.localeCompare(y):x-y)*st.dir; });
+}
+
 // ---- REPRICER (Admin → Prices): the night price drop, owner only ----
 // Rules in lib/reprice.js, scheduler in repricer.js. The screen only edits
 // the settings (on/off, drop $, time slots) and shows what happened.
@@ -9223,16 +9251,22 @@ function renderReprice(){
   if(L) h+='<div class="rp-chips">'+[['Dropped',L.dropped],['Already had the Buy Box',L.ownedBB],['Out of stock',L.outOfStock],['Not buyable',L.notBuyable],['On sale',L.salePrice],['Over the % cap',L.blocked],['Amazon errors',(L.bbErrors||0)+(L.listingErrors||0)],['Failed',L.failed]]
       .filter(x=>x[1]).map(x=>'<span class="rp-chip">'+x[0]+' <b>'+x[1]+'</b></span>').join('')+(L.stopped?'<span class="rp-chip" style="background:#fff4e5;color:#7a4600">Stopped early: '+esc(L.stopped)+'</span>':'')+'</div>';
   if(shown.length){
-    h+='<table class="rp-tbl"><colgroup><col class="c1" style="width:40%"><col style="width:15%"><col style="width:15%"><col class="c4" style="width:30%"></colgroup><tr><th>Listing</th><th>Price</th><th>Dropped to</th><th>Now</th></tr>'
-      +shown.map(r=>{ const st=rpState(r);
+    sortState('rplast');
+    const shownS=sortRows('rplast', shown, { name:r=>String(r.name||r.sku||'').toLowerCase(), price:r=>r.original, drop:r=>r.drop, status:r=>rpState(r)[0] });
+    h+='<table class="rp-tbl"><colgroup><col class="c1" style="width:40%"><col style="width:15%"><col style="width:15%"><col class="c4" style="width:30%"></colgroup><tr>'
+      +sortTh('rplast','name','Listing','renderReprice')+sortTh('rplast','price','Price','renderReprice')+sortTh('rplast','drop','Dropped to','renderReprice')+sortTh('rplast','status','Now','renderReprice')+'</tr>'
+      +shownS.map(r=>{ const st=rpState(r);
         return '<tr><td>'+(r.asin?amzLinkSized(r.asin, r.name||r.sku):esc(r.sku))+'<div class="sku">'+esc(r.sku)+(r.cycle!==(L&&L.cycle)?' · '+esc(rpNight(r.cycle)):'')+'</div>'
           +(r.original!=null&&r.drop!=null&&Math.abs((r.original-r.drop)-S.drop)>0.005?'<span class="rp-pill" style="background:#eaf1fb;color:#1f5fae;margin-top:4px">own drop − '+rpMoney(r.original-r.drop)+'</span>':'')
           +'</td><td class="n">'+rpMoney(r.original)+'</td><td class="n">'+rpMoney(r.drop)+'</td><td><span class="rp-pill" style="background:'+st[1]+';color:'+st[2]+'">'+esc(st[0])+'</span>'+(st[3]?'<div class="sku note" style="margin-top:4px" title="'+esc(st[3])+'">'+esc(st[3].length>90?st[3].slice(0,90)+'…':st[3])+'</div>':'')+'</td></tr>'; }).join('')+'</table>';
   } else h+='<div class="hint" style="font-size:15px">'+(L?'No prices were lowered.':'The repricer hasn\'t run in this app yet.')+'</div>';
   h+='</div>';
   if(d.history.length){
-    h+='<div class="rp-card"><h3>Past nights</h3><table class="rp-tbl"><tr><th>Night</th><th>Dropped</th><th class="hide-sm">Had the Buy Box</th><th>Put back</th><th>Still lowered</th><th class="hide-sm">Left alone</th></tr>'
-      +d.history.map(x=>'<tr><td>'+esc(rpNight(x.cycle))+'</td><td class="n">'+x.dropped+'</td><td class="n hide-sm">'+x.owned+'</td><td class="n">'+x.back+'</td><td class="n" style="color:'+(x.pending?'#b42d2d':'inherit')+'">'+x.pending+'</td><td class="n hide-sm">'+x.left_alone+'</td></tr>').join('')+'</table></div>';
+    sortState('rphist','night',-1);   // newest night first
+    const histS=sortRows('rphist', d.history, { night:x=>x.cycle, dropped:x=>x.dropped, owned:x=>x.owned, back:x=>x.back, pending:x=>x.pending, left:x=>x.left_alone });
+    h+='<div class="rp-card"><h3>Past nights</h3><table class="rp-tbl"><tr>'+sortTh('rphist','night','Night','renderReprice')+sortTh('rphist','dropped','Dropped','renderReprice')+sortTh('rphist','owned','Had the Buy Box','renderReprice','hide-sm')
+      +sortTh('rphist','back','Put back','renderReprice')+sortTh('rphist','pending','Still lowered','renderReprice')+sortTh('rphist','left','Left alone','renderReprice','hide-sm')+'</tr>'
+      +histS.map(x=>'<tr><td>'+esc(rpNight(x.cycle))+'</td><td class="n">'+x.dropped+'</td><td class="n hide-sm">'+x.owned+'</td><td class="n">'+x.back+'</td><td class="n" style="color:'+(x.pending?'#b42d2d':'inherit')+'">'+x.pending+'</td><td class="n hide-sm">'+x.left_alone+'</td></tr>').join('')+'</table></div>';
   }
   el.innerHTML=h;
 }
@@ -9267,20 +9301,22 @@ function rpOverridesList(S){
   const ov=(S.overrides||[]).slice();
   if(!ov.length) return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop</span><div class="hint" style="font-size:15px">None saved. Every product drops '+rpMoney(S.drop)+'. Add some under "Different drop for some products" below.</div></div>';
   const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:''; };
-  ov.sort((a,b)=>(nm(a.asin)||a.asin).localeCompare(nm(b.asin)||b.asin));
+  sortState('rpov','name',1);
   // Stock at Amazon and on the way, the same figures as FBA Inventory
   // (fbaNormalize: FBA = units physically at Amazon, Transit = our shipments).
   if(window._fbaData) fbaNormalize();
   const st=a=>(window._fbaData||[]).find(x=>x.asin===a);
   const q=v=>v==null?'<span style="color:#9db0c9">—</span>':Number(v).toLocaleString();
   let tF=0, tT=0;
-  const rows=ov.map(o=>{ const r=st(o.asin), f=r?(r.fba_total||0):null, t=r?(r.transit||0):null; if(r){ tF+=f; tT+=t; }
+  const sF=o=>{ const r=st(o.asin); return r?(r.fba_total||0):null; }, sT=o=>{ const r=st(o.asin); return r?(r.transit||0):null; };
+  const sorted=sortRows('rpov', ov, { name:o=>(nm(o.asin)||o.asin).toLowerCase(), fba:sF, transit:sT, total:o=>{ const f=sF(o); return f==null?null:f+sT(o); }, drop:o=>Number(o.drop) });
+  const rows=sorted.map(o=>{ const r=st(o.asin), f=r?(r.fba_total||0):null, t=r?(r.transit||0):null; if(r){ tF+=f; tT+=t; }
     return '<tr><td>'+amzLinkSized(o.asin, nm(o.asin)||o.asin)+'<div class="sku">'+esc(o.asin)+'</div>'
       +(r?'<div class="stk-sm">At FBA <b>'+q(f)+'</b> · In transit <b>'+q(t)+'</b> · Total <b>'+q(f+t)+'</b></div>':'')
       +'</td><td class="n stk">'+q(f)+'</td><td class="n stk">'+q(t)+'</td><td class="n stk" style="font-weight:850">'+q(r?f+t:null)+'</td><td class="n">− '+rpMoney(o.drop)+'</td></tr>'; }).join('');
   return '<div class="rp-ovlist"><span class="rp-lab">Products with their own drop ('+ov.length+') · everything else drops '+rpMoney(S.drop)+'</span>'
     +'<table class="rp-tbl rp-ovst"><colgroup><col><col class="cq stk" style="width:100px"><col class="cq stk" style="width:100px"><col class="cq stk" style="width:110px"><col class="cd" style="width:110px"></colgroup>'
-    +'<tr><th>Product</th><th class="stk">At FBA</th><th class="stk">In transit</th><th class="stk">FBA + transit</th><th>Drop</th></tr>'+rows
+    +'<tr>'+sortTh('rpov','name','Product','renderReprice')+sortTh('rpov','fba','At FBA','renderReprice','stk')+sortTh('rpov','transit','In transit','renderReprice','stk')+sortTh('rpov','total','FBA + transit','renderReprice','stk')+sortTh('rpov','drop','Drop','renderReprice')+'</tr>'+rows
     +(ov.length>1?'<tr style="background:#f8fafb"><td style="font-weight:800">Total<div class="stk-sm">At FBA <b>'+tF.toLocaleString()+'</b> · In transit <b>'+tT.toLocaleString()+'</b> · Total <b>'+(tF+tT).toLocaleString()+'</b></div></td><td class="n stk">'+tF.toLocaleString()+'</td><td class="n stk">'+tT.toLocaleString()+'</td><td class="n stk" style="font-weight:850">'+(tF+tT).toLocaleString()+'</td><td></td></tr>':'')
     +'</table>'+(window._fbaData?'<div class="hint" style="margin-top:6px">Stock from the last FBA Inventory pull'+(window._fbaLoadedAt?' ('+ageText(window._fbaLoadedAt)+')':'')+'.</div>':'<div class="hint" style="margin-top:6px">No FBA Inventory pull yet. Load it on Admin → FBA Inventory to see stock here.</div>')+'</div>';
 }
