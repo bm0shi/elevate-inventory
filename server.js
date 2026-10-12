@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'bigger-new-look-1048';
+const BUILD_ID = 'ask-elevate-1049';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -9192,6 +9192,8 @@ initDb().then(() => {
   require('./autorun')(app, { pool, ownerAuth, reconcileInTransit, port: PORT, sendAlert,
     onRunFinished: (run) => run.trigger === 'scheduled' ? sendRunEmail(run, pool) : null,
     sendTestEmail: (run) => sendRunEmail(run, pool) });
+  // Ask Elevate: the owner's questions answered by Claude from the app's data (ask.js)
+  require('./ask')(app, { pool, ownerAuth, port: PORT });
   app.use(errorHandler);
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
 }).catch(err => {

@@ -1,7 +1,7 @@
 {
   "name": "elevate-inventory",
   "version": "1.0.0",
-  "description": "Warehouse inventory tracking \u2014 scan receiving, on-hand, FBA deduction",
+  "description": "Warehouse inventory tracking — scan receiving, on-hand, FBA deduction",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -9,6 +9,7 @@
     "test:routes": "node --test test/routes/*.test.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
     "axios": "^1.6.0",
     "bwip-js": "^4.11.4",
     "express": "^4.18.2",
