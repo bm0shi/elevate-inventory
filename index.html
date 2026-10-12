@@ -3224,7 +3224,12 @@ function renderFbaInv(){
   } else {
     h+='<div class="hint" style="color:#b7791f;padding:10px">'+(window._fbaPricesLoading?'Loading prices…':'No prices yet — press <b>Refresh Amazon Prices</b> on the Inventory Value tab once, and the retail values show here.')+'</div>';
   }
+  // Tick products and send them to the repricer with their own drop (owner).
+  if(window._rpOv===undefined){ window._rpOv=null; ownerApi('/api/reprice').then(r=>{ if(r&&r.ok){ window._rpOv=r.settings.overrides||[]; window._rpMain=r.settings.drop; renderFbaInv(); } }).catch(()=>{}); }
+  window._fbaVisible=sorted.filter(x=>x.asin).map(x=>x.asin);
+  h+='<div id="fbaRpBar"></div>';
   h+='<table><thead><tr>'+
+     '<th style="width:34px;text-align:center"><input type="checkbox" title="Tick every product shown" onclick="fbaTickAll(this.checked)" style="width:18px;height:18px"></th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'name\')">Product'+arrow('name')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'warehouse\')">Available'+arrow('warehouse')+'</th>'+
      '<th style="cursor:pointer" onclick="fbaSort(\'pending_prep\')">Pend Prep'+arrow('pending_prep')+'</th>'+
@@ -3238,9 +3243,60 @@ function renderFbaInv(){
   // One cell per header (rows used to have 5 cells under 7 headers, so
   // Transit read under "Pend Prep" and FBA under "Prepped").
   const c='style="text-align:center"';
-  h+=sorted.map(x=>{const link=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#008296;text-decoration:none">${esc(x.name||x.asin)}</a>`:esc(x.name||'');return `<tr><td>${link}</td><td ${c}>${x.warehouse||0}</td><td ${c}>${x.pending_prep||''}</td><td ${c}>${x.prepped||''}</td><td ${c}>${x.transit||''}</td><td ${c}>${x.fba_total||0}</td><td class="onhand-num" ${c}>${x.grand_total||0}</td><td ${c}>${x._ssMo!=null?Math.round(x._ssMo).toLocaleString()+'<div style="font-size:10px;color:#9db0c9">'+x._ssN+' seller'+(x._ssN===1?'':'s')+'</div>':'<span style="color:#9db0c9">—</span>'}</td><td ${c}>${fbaDaysCell(x._daysFba)}</td><td ${c}>${fbaDaysCell(x._daysTot)}</td></tr>`;}).join('');
+  const T=window._fbaTick||(window._fbaTick=new Set());
+  h+=sorted.map(x=>{
+    const ov=x.asin&&(window._rpOv||[]).find(o=>o.asin===x.asin);
+    const link=x.asin?amzLinkSized(x.asin, x.name)+'<div style="margin-top:4px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+asinChip(x.asin)
+      +(ov?'<span title="Has its own drop in the repricer" style="font-size:11.5px;font-weight:800;color:#1f5fae;background:#eaf1fb;border-radius:999px;padding:1px 8px">Repricer − $'+Number(ov.drop).toFixed(2)+'</span>':'')+'</div>':esc(x.name||'');
+    const tick=x.asin?`<input type="checkbox" data-asin="${esc(x.asin)}" ${T.has(x.asin)?'checked':''} onclick="fbaTick(this)" style="width:18px;height:18px">`:'';
+    return `<tr><td style="text-align:center">${tick}</td><td>${link}</td><td ${c}>${x.warehouse||0}</td><td ${c}>${x.pending_prep||''}</td><td ${c}>${x.prepped||''}</td><td ${c}>${x.transit||''}</td><td ${c}>${x.fba_total||0}</td><td class="onhand-num" ${c}>${x.grand_total||0}</td><td ${c}>${x._ssMo!=null?Math.round(x._ssMo).toLocaleString()+'<div style="font-size:10px;color:#9db0c9">'+x._ssN+' seller'+(x._ssN===1?'':'s')+'</div>':'<span style="color:#9db0c9">—</span>'}</td><td ${c}>${fbaDaysCell(x._daysFba)}</td><td ${c}>${fbaDaysCell(x._daysTot)}</td></tr>`;}).join('');
   h+='</tbody></table>';
   b.innerHTML=h;
+  fbaRpBarPaint();
+}
+// ---- FBA Inventory → Repricer: ticked products get their own price drop ----
+function fbaTick(el){ const T=window._fbaTick; if(el.checked) T.add(el.dataset.asin); else T.delete(el.dataset.asin); fbaRpBarPaint(); }
+function fbaTickAll(on){
+  const T=window._fbaTick; (window._fbaVisible||[]).forEach(a=>on?T.add(a):T.delete(a));
+  document.querySelectorAll('#fbaInvBody input[data-asin]').forEach(x=>x.checked=on); fbaRpBarPaint();
+}
+function fbaRpBarPaint(){
+  const el=document.getElementById('fbaRpBar'); if(!el) return;
+  const T=window._fbaTick||new Set(), n=T.size;
+  if(!n){ el.innerHTML=''; return; }
+  const inRp=[...T].filter(a=>(window._rpOv||[]).some(o=>o.asin===a)).length;
+  const amt=window._fbaRpAmt!=null?window._fbaRpAmt:(window._rpMain!=null?Number(window._rpMain).toFixed(2):'1.00');
+  el.innerHTML='<div class="box" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;background:#eaf1fb;border:1.5px solid #9cbbe0;position:sticky;top:'+stickyTop()+'px;z-index:5">'
+    +'<b style="font-size:16px;color:#0b1f24">'+n+' product'+(n===1?'':'s')+' ticked</b>'
+    +'<span style="display:flex;align-items:center;gap:6px;font-size:17px;font-weight:800;white-space:nowrap">Drop − $<input type="number" id="fbaRpAmt" min="0.01" max="50" step="0.01" value="'+esc(String(amt))+'" oninput="window._fbaRpAmt=this.value" style="width:100px;text-align:center;font-weight:800"></span>'
+    +'<button class="action" onclick="fbaSendRepricer()">Send to repricer</button>'
+    +(inRp?'<button class="mini" onclick="fbaRemoveRepricer()">Remove '+inRp+' from repricer</button>':'')
+    +'<button class="mini" onclick="fbaTickAll(false);window._fbaTick.clear();fbaRpBarPaint()">Clear</button>'
+    +'<span class="hint" style="flex-basis:100%;margin:0">Ticked products drop by this amount in the repricer instead of the main drop'+(window._rpMain!=null?' ($'+Number(window._rpMain).toFixed(2)+')':'')+'. Saved right away; see them in Admin → Repricer.</span></div>';
+}
+// Read the saved list fresh, change only the ticked ASINs, save just the list.
+function fbaRpSave(change, msg){
+  return ownerApi('/api/reprice').then(r=>{
+    if(!r||r.ok===false) throw new Error((r&&r.error)||'Could not read the repricer settings');
+    const ov=change((r.settings.overrides||[]).map(o=>({asin:o.asin, drop:o.drop})));
+    return ownerApi('/api/reprice/settings',{method:'POST',body:JSON.stringify({overrides:ov})});
+  }).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not save',true); return; }
+    window._rpOv=d.settings.overrides; window._rpMain=d.settings.drop;
+    toast(msg); window._fbaTick.clear(); renderFbaInv();
+  }).catch(e=>toast(e.message,true));
+}
+function fbaSendRepricer(){
+  const amt=Math.round(parseFloat((document.getElementById('fbaRpAmt')||{}).value)*100)/100;
+  if(!(amt>=0.01&&amt<=50)){ toast('Enter how much to take off ($0.01 to $50)',true); return; }
+  const list=[...window._fbaTick]; if(!list.length) return;
+  fbaRpSave(ov=>ov.filter(o=>!list.includes(o.asin)).concat(list.map(a=>({asin:a, drop:amt}))),
+    'Sent '+list.length+' product'+(list.length===1?'':'s')+' to the repricer at − $'+amt.toFixed(2));
+}
+function fbaRemoveRepricer(){
+  const list=[...window._fbaTick].filter(a=>(window._rpOv||[]).some(o=>o.asin===a)); if(!list.length) return;
+  if(!confirm('Take '+list.length+' product'+(list.length===1?'':'s')+' off their own drop? They go back to the main drop.')) return;
+  fbaRpSave(ov=>ov.filter(o=>!list.includes(o.asin)), list.length+' product'+(list.length===1?'':'s')+' back on the main drop');
 }
 
 // ---- Velocity (owner) ----
@@ -9221,7 +9277,7 @@ function rpSaveOverrides(){
   const ov=(_rpEdit.overrides||[]).map(o=>({asin:o.asin, drop:o.drop}));
   rpPost('/api/reprice/settings', {overrides:ov}).then(d=>{
     if(!d||d.ok===false){ toast((d&&d.error)||'Could not save',true); return; }
-    _rp.settings.overrides=d.settings.overrides; _rpEdit.overrides=JSON.parse(JSON.stringify(d.settings.overrides));
+    _rp.settings.overrides=d.settings.overrides; _rpEdit.overrides=JSON.parse(JSON.stringify(d.settings.overrides)); window._rpOv=d.settings.overrides;
     toast('Saved · '+d.settings.overrides.length+' product'+(d.settings.overrides.length===1?'':'s')+' with their own drop'); renderReprice();
   }).catch(e=>toast(e.message,true));
 }
@@ -9242,7 +9298,7 @@ function rpSave(){
   const body=Object.assign({}, _rpEdit); delete body.enabled;
   rpPost('/api/reprice/settings', body).then(d=>{ b.disabled=false;
     if(!d||d.ok===false){ toast((d&&d.error)||'Could not save',true); return; }
-    _rpEdit=JSON.parse(JSON.stringify(d.settings)); toast('Saved'); loadReprice();
+    _rpEdit=JSON.parse(JSON.stringify(d.settings)); window._rpOv=d.settings.overrides; window._rpMain=d.settings.drop; toast('Saved'); loadReprice();
   }).catch(e=>{ b.disabled=false; toast(e.message,true); });
 }
 function rpToggle(){
