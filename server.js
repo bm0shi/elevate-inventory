@@ -417,7 +417,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'search-everything-1042';
+const BUILD_ID = 'tablet-mode-1043';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8888,6 +8888,9 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.get('/dash2.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'dash2.js')); });
 // On Hand's new look (classic stays in index.html as the backup).
 app.get('/look2.css', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'look2.css')); });
+app.get('/tablet.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'tablet.js')); });
+// Is the server reachable (tablet mode's Online pill)? No login, nothing but the build.
+app.get('/api/ping', (req, res) => { res.set('Cache-Control', 'no-store'); res.json({ ok: true, build: BUILD_ID }); });
 app.get('/palette.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'palette.js')); });
 app.get('/onhand2.js', (req, res) => { res.set('Cache-Control', 'no-cache'); res.sendFile(path.join(__dirname, 'onhand2.js')); });
 // Barcode drawing for the 2D box labels (PDF417), served from the app itself

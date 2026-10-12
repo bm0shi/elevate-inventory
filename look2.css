@@ -60,6 +60,7 @@ html.nl header .sub button {
 }
 html.nl header .sub button:hover { background: rgba(255,255,255,.12) !important; }
 html.nl header .sub #autoRefreshBtn { color: #b8f0c4 !important; }
+html.nl header .sub #tbNet { color: #fff !important; border-color: transparent !important; }
 html.nl header .sub #palBtn { min-width: 200px; justify-content: space-between; color: #c7d6da !important; font-weight: 600 !important; }
 @media (max-width: 760px) { html.nl header .sub #palBtn { min-width: 0; } html.nl header .sub #palBtn kbd { display: none; } }
 html.nl header .sub .nl-classic { background: transparent !important; border-color: transparent !important; color: #9fb4ba !important; text-decoration: underline; text-underline-offset: 3px; }

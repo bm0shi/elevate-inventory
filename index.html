@@ -15,6 +15,7 @@
 // The new look for the whole app (look2.css) unless this device chose Classic.
 // Set before the first paint so nothing flashes; if the file fails to load
 // the page just looks Classic.
+try { if (localStorage.getItem('tabletMode') === '1') document.documentElement.classList.add('tablet'); } catch (e) {}
 try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElement.classList.add('nl'); document.write('<link rel="stylesheet" href="/look2.css">'); } } catch (e) {}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
@@ -261,6 +262,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
 </style>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
 <script src="/palette.js" defer></script>
+<script src="/tablet.js" defer></script>
 </head>
 <body>
 
