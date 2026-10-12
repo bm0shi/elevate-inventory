@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -32,6 +32,7 @@ const pack = require('./lib/pack');
 const pallet = require('./lib/pallet');
 const search = require('./lib/search');
 const health = require('./lib/health');
+const claimsLib = require('./lib/claims');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
@@ -434,7 +435,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'true-profit-1045';
+const BUILD_ID = 'reimbursements-1046';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1216,6 +1217,23 @@ async function initDb() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_returns_day ON inv_returns(day)`);
     // Refunds and Amazon fees per Pacific day from financial events (post
     // within hours; settlements lag two weeks). Every day in a pull is written.
+    // Reimbursement finder (lib/claims.js): what Amazon already paid, each
+    // shipment's shipped vs received per SKU as Amazon counts it, refunds per
+    // order, and what the owner did about each claim.
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_reimbursements (
+      key TEXT PRIMARY KEY, reimbursement_id TEXT, approved TIMESTAMPTZ, case_id TEXT, order_id TEXT, reason TEXT,
+      sku TEXT, fnsku TEXT, asin TEXT, name TEXT, amount_per_unit NUMERIC, amount_total NUMERIC,
+      qty_cash INTEGER, qty_inv INTEGER, qty_total INTEGER)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_inbound_recon (
+      shipment_id TEXT NOT NULL, sku TEXT NOT NULL, shipped INTEGER NOT NULL DEFAULT 0, received INTEGER NOT NULL DEFAULT 0,
+      closed BOOLEAN NOT NULL DEFAULT false, checked_at TIMESTAMPTZ DEFAULT now(), PRIMARY KEY (shipment_id, sku))`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_refund_orders (
+      key TEXT PRIMARY KEY, order_id TEXT NOT NULL, sku TEXT, qty INTEGER NOT NULL DEFAULT 1, posted_at TIMESTAMPTZ, amount NUMERIC)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_refund_orders_order ON inv_refund_orders(order_id)`);
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_claims (
+      key TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'open', case_id TEXT, note TEXT, updated_at TIMESTAMPTZ DEFAULT now())`);
+    // the claim as it was when marked, so a paid one still shows once nothing is owed
+    await pool.query(`ALTER TABLE inv_claims ADD COLUMN IF NOT EXISTS snap JSONB`);
     await pool.query(`CREATE TABLE IF NOT EXISTS inv_fin_daily (
       day DATE PRIMARY KEY, refunds NUMERIC NOT NULL DEFAULT 0, refund_units INTEGER NOT NULL DEFAULT 0,
       fees NUMERIC NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT now())`);
@@ -7317,6 +7335,14 @@ function startAmazonSync(trigger) {
     // Customer returns, last 60 days, for the dashboard's Returns metric.
     try { amazonSync.step = 'Reading customer returns…'; await pullReturns(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('returns report: ' + e.message); }
+    // Reimbursement finder: what Amazon paid lately, and shipments' received counts.
+    try {
+      amazonSync.step = 'Checking reimbursements…';
+      await pullReimbursements(salesDay(Date.now() - 60 * 86400000)); await pullInboundRecon(t => { amazonSync.step = t; });
+      const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='claims_scan'")).rows[0] || {}).data || {};
+      await saveCache('claims_scan', { ...prev, at: new Date().toISOString() });
+    }
+    catch (e) { result.errors.push('reimbursements: ' + e.message); }
     // Refunds and Amazon fees, on time (financial events), last 60 days.
     try { amazonSync.step = 'Reading refunds and fees…'; await pullFinEvents(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('refunds/fees: ' + e.message); }
@@ -8013,6 +8039,14 @@ async function pullFinEvents(fromDay, onProgress) {
   for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
   const today = salesDay(Date.now());
   const days = finEvents.aggregateFinancialEvents(r.pages, from, today);
+  // each refund's order and SKU too, for the reimbursement finder
+  try {
+    const rf = claimsLib.refundOrders(r.pages);
+    if (rf.length) await pool.query(`INSERT INTO inv_refund_orders(key, order_id, sku, qty, posted_at, amount)
+        SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::timestamptz[], $6::numeric[])
+        ON CONFLICT (key) DO UPDATE SET qty=EXCLUDED.qty, amount=EXCLUDED.amount`,
+      [rf.map(x => x.key), rf.map(x => x.order), rf.map(x => x.sku), rf.map(x => x.qty), rf.map(x => new Date(x.ts).toISOString()), rf.map(x => x.amount)]);
+  } catch (e) { console.error('[Claims] refund orders:', e.message); }
   const ks = Object.keys(days);
   if (ks.length) await pool.query(`INSERT INTO inv_fin_daily(day, refunds, refund_units, fees, updated_at)
       SELECT *, now() FROM unnest($1::date[], $2::numeric[], $3::int[], $4::numeric[])
@@ -8023,6 +8057,142 @@ async function pullFinEvents(fromDay, onProgress) {
   await saveCache('fin_events', { from: (!was || from < was) ? from : was, asOf: new Date().toISOString() });
   return { days: ks.length, from, failed: r.failed.length };
 }
+// ---------- Reimbursement finder (Admin → Money → Reimbursements) ----------
+async function pullReimbursements(fromDay, onProgress) {
+  const r = await getReimbursementBodies(Date.parse(fromDay + 'T00:00:00-07:00'), onProgress);
+  const rows = claimsLib.parseReimbursements(r.bodies);
+  if (rows.length) await pool.query(`INSERT INTO inv_reimbursements(key, reimbursement_id, approved, case_id, order_id, reason, sku, fnsku, asin, name,
+      amount_per_unit, amount_total, qty_cash, qty_inv, qty_total)
+      SELECT * FROM unnest($1::text[], $2::text[], $3::timestamptz[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::text[],
+        $11::numeric[], $12::numeric[], $13::int[], $14::int[], $15::int[])
+      ON CONFLICT (key) DO UPDATE SET amount_total=EXCLUDED.amount_total, qty_total=EXCLUDED.qty_total, case_id=EXCLUDED.case_id`,
+    [rows.map(x => x.key), rows.map(x => x.id), rows.map(x => new Date(x.ts).toISOString()), rows.map(x => x.caseId), rows.map(x => x.order),
+     rows.map(x => x.reason), rows.map(x => x.sku), rows.map(x => x.fnsku), rows.map(x => x.asin), rows.map(x => x.name),
+     rows.map(x => x.perUnit), rows.map(x => x.total), rows.map(x => x.qtyCash), rows.map(x => x.qtyInv), rows.map(x => x.qty)]);
+  return { n: rows.length, failed: r.failed.length };
+}
+// Shipped vs received per SKU, as Amazon counts it, for the app's own
+// shipments of the last year. Our check-in reads bottle lines, and a duo's
+// received count is under the duo's SKU, so duo shortages never showed there.
+// A shipment read after Amazon closed it is final and isn't asked again.
+async function pullInboundRecon(onStep) {
+  const ships = (await pool.query(`
+    SELECT s.shipment_id, upper(COALESCE(s.amz_status,'')) = 'CLOSED' AS closed FROM inv_shipments s
+    WHERE s.created_at > now() - interval '365 days'
+      AND NOT EXISTS (SELECT 1 FROM inv_inbound_recon r WHERE r.shipment_id = s.shipment_id AND r.closed)
+      AND NOT EXISTS (SELECT 1 FROM inv_inbound_recon r WHERE r.shipment_id = s.shipment_id AND r.checked_at > now() - interval '20 hours')
+    ORDER BY s.created_at`)).rows;
+  let done = 0, failed = 0;
+  for (const sh of ships) {
+    if (onStep) onStep(`Reading what Amazon received: shipment ${done + 1} of ${ships.length}…`);
+    try {
+      const items = await getShipmentReceivedItems(sh.shipment_id);
+      for (const it of items) {
+        if (!it.sku) continue;
+        await pool.query(`INSERT INTO inv_inbound_recon(shipment_id, sku, shipped, received, closed, checked_at) VALUES($1,$2,$3,$4,$5,now())
+          ON CONFLICT (shipment_id, sku) DO UPDATE SET shipped=$3, received=$4, closed=$5, checked_at=now()`,
+          [sh.shipment_id, it.sku, it.shipped || 0, it.received || 0, !!sh.closed]);
+      }
+    } catch (e) { failed++; console.error('[Claims] recon', sh.shipment_id, e.message); }
+    done++;
+  }
+  return { shipments: ships.length, failed };
+}
+let claimsJob = { running: false, step: '', done: false, error: null, result: null };
+function startClaimsScan(full) {
+  if (claimsJob.running) return false;
+  claimsJob = { running: true, step: 'Starting…', done: false, error: null, result: null, startedAt: new Date().toISOString() };
+  (async () => {
+    const errors = [], step = t => { claimsJob.step = t; };
+    // first time: Amazon's 18 months; after that the last 60 days
+    const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='claims_scan'")).rows[0] || {}).data || {};
+    const deep = full || !prev.deepAt;
+    const from = salesDay(Date.now() - (deep ? 540 : 60) * 86400000);
+    try { step('Reading what Amazon already reimbursed…'); await pullReimbursements(from, step); } catch (e) { errors.push('reimbursements: ' + e.message); }
+    try { await pullInboundRecon(step); } catch (e) { errors.push('shipments: ' + e.message); }
+    if (deep) {
+      try { step('Reading refunds per order…'); await pullFinEvents(from, step); } catch (e) { errors.push('refunds: ' + e.message); }
+      try { step('Reading customer returns…'); await pullReturns(from, step); } catch (e) { errors.push('returns: ' + e.message); }
+    }
+    claimsJob.result = { errors, deep };
+    claimsJob.error = errors.length ? errors.join(' · ') : null;
+    const at = new Date().toISOString();
+    await saveCache('claims_scan', { at, deepAt: deep && !errors.length ? at : prev.deepAt || null, errors }).catch(() => {});
+  })().catch(e => { claimsJob.error = e.message; })
+    .finally(() => { claimsJob.running = false; claimsJob.done = true; claimsJob.step = claimsJob.error ? 'Finished with problems' : 'Done'; });
+  return true;
+}
+app.post('/api/claims/scan/start', ownerAuth, (req, res) => {
+  const started = startClaimsScan(!!(req.body && req.body.full));
+  res.json({ ok: true, started, already: !started });
+});
+app.get('/api/claims/scan/status', ownerAuth, (req, res) => res.json(claimsJob));
+// Every claim the data shows, with what it's likely worth, the proof and the
+// case text. Owner only: money.
+app.get('/api/claims', ownerAuth, async (req, res) => {
+  const now = Date.now();
+  const [reimbQ, reconQ, refQ, retQ, markQ, prodQ, scanQ] = await Promise.all([
+    pool.query('SELECT * FROM inv_reimbursements'),
+    pool.query(`SELECT r.shipment_id, r.sku, r.shipped, r.received, r.closed, s.shipment_name AS name, s.created_at,
+        COALESCE(s.received_at, s.amz_status_at, s.created_at) AS done_at
+      FROM inv_inbound_recon r JOIN inv_shipments s ON s.shipment_id = r.shipment_id`),
+    pool.query("SELECT order_id, sku, qty, posted_at, amount FROM inv_refund_orders WHERE posted_at > now() - interval '560 days'"),
+    pool.query("SELECT order_id, sku, qty FROM inv_returns WHERE day > now() - interval '620 days'"),
+    pool.query('SELECT * FROM inv_claims'),
+    pool.query('SELECT asin, sku, fnsku, name, avg_cost FROM inv_products'),
+    pool.query("SELECT data FROM inv_cache WHERE cache_key='claims_scan'"),
+  ]);
+  const reimb = reimbQ.rows.map(r => ({ ts: new Date(r.approved).getTime(), order: r.order_id, reason: r.reason, sku: r.sku, caseId: r.case_id,
+    qty: r.qty_total || 0, perUnit: Number(r.amount_per_unit) || 0, total: Number(r.amount_total) || 0 }));
+  const bySku = {}; prodQ.rows.forEach(p => { if (p.sku) bySku[p.sku] = p; });
+  const recon = reconQ.rows.map(r => { const p = bySku[r.sku] || {}; return { ...r, asin: p.asin, fnsku: p.fnsku, product: p.name }; });
+  const list = claimsLib.inboundClaims(recon, reimb, { now }).concat(claimsLib.refundClaims(
+    refQ.rows.map(r => ({ order: r.order_id, sku: r.sku, qty: r.qty, ts: new Date(r.posted_at).getTime(), amount: Number(r.amount) || 0 })),
+    retQ.rows.map(r => ({ order: r.order_id, sku: r.sku, qty: r.qty })), reimb, { now })
+    .map(c => { const p = bySku[c.sku] || {}; return { ...c, asin: p.asin, fnsku: p.fnsku, product: p.name }; }));
+  const marks = {}; markQ.rows.forEach(m => { marks[m.key] = m; });
+  const paidCases = {}; reimb.forEach(r => { if (r.caseId) paidCases[r.caseId] = (paidCases[r.caseId] || 0) + r.total; });
+  // latest Cosmoprof invoice with the product, as proof of ownership
+  const asins = [...new Set(list.map(c => c.asin).filter(Boolean))];
+  const proof = {};
+  if (asins.length) (await pool.query(`SELECT DISTINCT ON (it.asin) it.asin, i.order_number, i.invoice_date, it.qty_expected AS qty
+      FROM inv_invoice_items it JOIN inv_invoices i ON i.order_number = it.order_number
+      WHERE it.asin = ANY($1) ORDER BY it.asin, i.created_at DESC`, [asins])).rows.forEach(r => { proof[r.asin] = r; });
+  const claims = list.map(c => {
+    const p = bySku[c.sku] || {};
+    const v = claimsLib.unitValue(c.sku, reimb, p.avg_cost != null ? Number(p.avg_cost) : null);
+    const m = marks[c.key] || {};
+    let status = m.status || 'open', paid = null;
+    if (m.case_id && paidCases[m.case_id] != null) { status = 'paid'; paid = Math.round(paidCases[m.case_id] * 100) / 100; }
+    return { ...c, status, caseId: m.case_id || null, note: m.note || null, paid,
+      unitValue: v.value, valueBasis: v.basis, value: v.value != null ? Math.round(v.value * c.owed * 100) / 100 : null,
+      proof: c.asin ? proof[c.asin] || null : null, text: claimsLib.caseText(c, c.asin ? proof[c.asin] : null) };
+  });
+  // Filed / paid claims Amazon has since paid drop out of the list above
+  // (nothing owed any more); show them from their snapshot as Paid.
+  const listed = new Set(claims.map(c => c.key));
+  for (const m of markQ.rows) {
+    if (listed.has(m.key) || !m.snap || !['filed', 'paid'].includes(m.status)) continue;
+    const paid = m.case_id && paidCases[m.case_id] != null ? Math.round(paidCases[m.case_id] * 100) / 100 : null;
+    claims.push({ ...m.snap, key: m.key, status: 'paid', caseId: m.case_id || null, note: m.note || null, paid, text: m.snap.text || '' });
+  }
+  const open = claims.filter(c => c.status === 'open');
+  const recovered90 = reimb.filter(r => now - r.ts <= 90 * 86400000).reduce((n, r) => n + r.total, 0);
+  res.json({ ok: true, claims, scan: scanQ.rows[0] ? scanQ.rows[0].data : null,
+    totals: { open: open.length, owed: Math.round(open.reduce((n, c) => n + (c.value || 0), 0) * 100) / 100,
+      unvalued: open.filter(c => c.value == null).length, recovered90: Math.round(recovered90 * 100) / 100 } });
+});
+app.post('/api/claims/mark', ownerAuth, async (req, res) => {
+  const { key, status, caseId, note, snap } = req.body || {};
+  // what the screen showed, kept small: shown again as Paid after Amazon pays
+  const S = snap && typeof snap === 'object' ? JSON.stringify(Object.fromEntries(['type', 'shipment_id', 'shipment_name', 'order', 'sku', 'fnsku', 'asin', 'product',
+    'shipped', 'received', 'refunded', 'returned', 'owed', 'value', 'valueBasis', 'since', 'text'].filter(k => snap[k] != null).map(k => [k, typeof snap[k] === 'string' ? snap[k].slice(0, 2000) : snap[k]]))) : null;
+  if (!key || !['open', 'filed', 'paid', 'dismissed'].includes(status)) return res.status(400).json({ ok: false, error: 'key and a valid status required' });
+  await pool.query(`INSERT INTO inv_claims(key, status, case_id, note, snap, updated_at) VALUES($1,$2,$3,$4,$5,now())
+    ON CONFLICT (key) DO UPDATE SET status=$2, case_id=COALESCE($3, inv_claims.case_id), note=COALESCE($4, inv_claims.note), snap=COALESCE($5, inv_claims.snap), updated_at=now()`,
+    [String(key).slice(0, 200), status, caseId ? String(caseId).trim().slice(0, 40) : null, note ? String(note).slice(0, 500) : null, S]);
+  res.json({ ok: true });
+});
 async function pullReturns(fromDay, onProgress) {
   const fromMs = Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
   const r = await getReturnRecords(fromMs, onProgress);
