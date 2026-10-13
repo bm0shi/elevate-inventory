@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'dash-top10-1061';
+const BUILD_ID = 'sales-pull-gaps-1062';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8005,9 +8005,14 @@ setInterval(async () => {
 // Pacific days, like Amazon's app. Every day in the range is written (zeros
 // too), so a gap in the table always means "not pulled", never "no sales".
 const salesDay = ms => velocity.zoneParts(ms, 'America/Los_Angeles').day;
-async function saveSalesDays(recs, fromDay) {
+// `skip`: days inside report windows Amazon couldn't build. They're left as
+// they were (a gap still means "not pulled"), and every other day is saved.
+// The full pull used to save only the days after the last failed window, so
+// one busy month near today threw the whole history away (owner: ~200 orders).
+async function saveSalesDays(recs, fromDay, skip) {
   const today = salesDay(Date.now());
   const days = velocity.salesByDay(recs, fromDay, today);
+  if (skip) for (const d of skip) delete days[d];
   const ks = Object.keys(days);
   if (ks.length) await pool.query(`INSERT INTO inv_sales_daily(day, units, sales, est, orders, updated_at)
       SELECT * , now() FROM unnest($1::date[], $2::int[], $3::numeric[], $4::numeric[], $5::int[])
@@ -8322,10 +8327,15 @@ app.post('/api/sales/history', ownerAuth, async (req, res) => {
   (async () => {
     try {
       const r = await getOrderRecords(fromMs, p => { salesJob.progress = p; });
-      // Save only the days after the last window Amazon couldn't build.
-      let from = fromDay;
-      for (const f of r.failed) { const d = salesDay(Date.parse(f[1]) + 86400000); if (d > from) from = d; }
-      const n = await saveSalesDays(r.records, from);
+      // Every day a window covered is saved; only the days of a window Amazon
+      // couldn't build (after one retry) are skipped, edge days included.
+      const from = fromDay, skip = new Set(), gaps = [];
+      for (const f of r.failed) {
+        const a = salesDay(Date.parse(f[0])), b = salesDay(Date.parse(f[1]));
+        for (let d = a; d <= b; d = salesDay(Date.parse(d + 'T12:00:00Z') + 86400000)) skip.add(d);
+        gaps.push(a + ' to ' + b);
+      }
+      const n = await saveSalesDays(r.records, from, skip);
       // the full pull also reads returns over the same stretch
       let retNote = null, finNote = null;
       if (full) {
@@ -8336,7 +8346,8 @@ app.post('/api/sales/history', ownerAuth, async (req, res) => {
       try { salesJob.progress = 'reading refunds and fees…'; const fr = await pullFinEvents(fromDay, p => { salesJob.progress = p; }); if (fr.failed) finNote = fr.failed + ' month(s) of refunds Amazon couldn’t return; saved from ' + fr.from; }
       catch (e) { finNote = 'refunds not read: ' + e.message; }
       salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from, returnsNote: retNote, refundsNote: finNote,
-        note: r.failed.length ? r.failed.length + ' month(s) Amazon couldn’t build (' + r.failed[0][2] + '); saved from ' + from : null, at: new Date().toISOString() };
+        orders: r.records.length, gaps,
+        note: r.failed.length ? 'Amazon couldn’t build ' + gaps.join(', ') + ' (' + r.failed[0][2] + '); every other day was saved. Pull again later to fill ' + (gaps.length === 1 ? 'it' : 'them') + '.' : null, at: new Date().toISOString() };
       console.log(`[Sales] ${salesJob.mode} pull: ${n} days saved from ${from}.`);
     } catch (e) { salesJob = { running: false, error: e.message, at: new Date().toISOString() }; console.error('[Sales] pull failed:', e.message); }
   })();
