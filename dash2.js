@@ -184,6 +184,12 @@
   .d2-per .t10{display:inline-block;margin-top:7px;font-size:13px;font-weight:800;color:${C.brand};background:#eaf3f5;border-radius:999px;padding:3px 10px}
   .d2-per .t10:hover{background:#d6eaee}
   @media (max-width:760px){.d2-t10{font-size:14.5px}.d2-t10 col.crk{width:34px!important}.d2-t10 td{padding:9px 3px}.d2-top10 .body{padding:0 8px 12px}.d2-t10 .rk{width:22px;height:22px;font-size:12px}}
+  .d2-pullbar{display:flex;gap:14px;align-items:center;border:1.5px solid #9cc7d0;background:#f0f8fa;border-radius:14px;padding:14px 16px;margin:0 0 14px;font-size:16px;color:${C.ink}}
+  .d2-spin{width:26px;height:26px;flex:0 0 26px;border-radius:50%;border:3px solid #cfe3e8;border-top-color:${C.brand};animation:d2spin 0.9s linear infinite}
+  @keyframes d2spin{to{transform:rotate(360deg)}}
+  .d2-pulltrack{height:6px;border-radius:3px;background:#dcebef;margin-top:9px;overflow:hidden;position:relative}
+  .d2-pulltrack i{position:absolute;top:0;bottom:0;width:30%;border-radius:3px;background:${C.brand};animation:d2slide 1.6s ease-in-out infinite}
+  @keyframes d2slide{0%{left:-30%}100%{left:100%}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
   `;
   function injectCss() { if (document.getElementById('d2css')) return; const s = document.createElement('style'); s.id = 'd2css'; s.textContent = CSS; document.head.appendChild(s); }
@@ -376,7 +382,7 @@
       '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included · history refreshes itself every morning</div></div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update today</button></div></div>' +
       '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4, 5].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
-      '<div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div id="d2top10"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
+      '<div id="d2pull"></div><div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div id="d2top10"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
       // overview: hero
       '<section id="d2-value" class="d2-card d2-hero s12" style="--d:90ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
       '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
@@ -637,7 +643,7 @@
     state.sales = x;
     const P = periods(x), job = x && x.salesJob;
     const asof = document.getElementById('d2sasof'), note = document.getElementById('d2snote');
-    if (job && job.running) { asof.textContent = job.progress || 'updating…'; document.getElementById('d2squick').disabled = true; }
+    if (job && job.running) { asof.textContent = job.progress || 'updating…'; document.getElementById('d2squick').disabled = true; if (job.mode === 'full' || job.queuedFull) { paintPull(job.mode === 'full' ? job : { mode: 'today' }); watchPull('full'); } }
     else { const st = x && x.salesToday; asof.textContent = st && st.asOf ? 'as of ' + new Date(st.asOf).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
     const strip = document.getElementById('d2metrics');
     if (!P.rows.length) {
@@ -662,7 +668,7 @@
     if (p.k === 'custom') nt += '<div class="d2-note"><span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>Custom range</b> <input type="date" id="d2cf" value="' + p.curDays[0] + '" max="' + P.D.T + '"> to <input type="date" id="d2ct" value="' + p.curDays[p.curDays.length - 1] + '" max="' + P.D.T + '"></span><span style="font-size:14px;color:' + C.muted + '">compared with the ' + p.curDays.length + ' days just before</span><button class="d2-btn" data-act="custom-apply">Apply</button></div>';
     const missingPrev = P.list.some(z => z.k !== 'today' && z.k !== 'custom' && z.prev == null);
     if (state.pullNote) nt += '<div class="d2-note" style="' + (state.pullNote.ok ? '' : 'border-color:#f3c98b;background:#fff8ec') + '"><span>' + E(state.pullNote.text) + '</span>' + (state.pullNote.ok ? '' : '<button class="d2-btn ghost" data-act="sales-full">Pull again</button>') + '</div>';
-    if (missingPrev && !(job && job.running)) nt += '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
+    if (missingPrev && !(job && job.running) && !state.watching) nt += '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
     note.innerHTML = nt;
     // metrics for the chosen period
     const mSel = store.get('d2Metric') || 'sales';
@@ -765,21 +771,55 @@
     const draw = () => columnChart(box, o);
     draw(); box._draw = draw;
   }
+  // Pulls from Amazon. A full pull takes minutes, so it gets a progress bar
+  // under the periods (it used to change only the small text in the corner,
+  // and a full pull asked for during the automatic quick update never ran;
+  // the server now queues it). The bar picks the pull up again on reload.
+  function paintPull(j) {
+    const box = document.getElementById('d2pull'); if (!box) return;
+    if (!j) { box.innerHTML = ''; return; }
+    const waiting = j.mode !== 'full';
+    box.innerHTML = '<div class="d2-pullbar"><div class="d2-spin"></div><div style="flex:1;min-width:0"><b>' + (waiting ? 'Finishing today’s quick update first…' : 'Reading your order history from Amazon…') + '</b>' +
+      '<div class="d2-sub" style="margin-top:2px">' + E(waiting ? 'Your full history starts right after it.' : (j.progress || 'asking Amazon…')) + ' · This takes several minutes. It keeps going if you leave the page.</div>' +
+      '<div class="d2-pulltrack"><i></i></div></div></div>';
+  }
+  function watchPull(mode) {
+    // already watching the quick update: switch it to watching for the full pull
+    if (state.watching) { if (mode === 'full') state.watchMode = 'full'; return; }
+    state.watching = true; state.watchMode = mode;
+    const btn = document.getElementById('d2squick'); if (btn) btn.disabled = true;
+    const poll = () => ownerApi('/api/sales/history/status').then(j => {
+      if (!document.getElementById('d2sasof')) { state.watching = false; return; }
+      // a full pull queued behind a quick update starts the moment it ends (server)
+      const wantFull = state.watchMode === 'full';
+      if (j && j.running) {
+        if (wantFull) paintPull(j.running ? j : { mode: 'today' });
+        document.getElementById('d2sasof').textContent = j.progress || 'updating…';
+        setTimeout(poll, 4000); return;
+      }
+      state.watching = false; paintPull(null);
+      const b2 = document.getElementById('d2squick'); if (b2) b2.disabled = false;
+      if (j && j.error) {
+        document.getElementById('d2sasof').textContent = 'Update failed: ' + j.error;
+        if (wantFull) state.pullNote = { ok: false, text: 'The history pull stopped: ' + j.error };
+      } else if (wantFull && !(j && j.mode === 'full')) {
+        state.pullNote = { ok: false, text: 'The history pull didn’t start (the server may have restarted). Press Pull full history again.' };
+      } else if (j && j.done && wantFull) {
+        // what the pull read, and any month Amazon couldn't build
+        state.pullNote = { ok: !j.note, text: j.note || ('Order history read: ' + n0(j.orders || 0) + ' order lines since ' + dShort(j.from) + ', ' + n0(j.days || 0) + ' days saved.') };
+      }
+      ownerApi('/api/dash2').then(x => { paintSales(x); if (!wantFull) settle(document.getElementById('d2sales')); });
+    }).catch(() => setTimeout(poll, 6000));
+    setTimeout(poll, 2500);
+  }
   function salesPull(mode) {
     const btn = document.getElementById('d2squick'); if (btn) btn.disabled = true;
     const asof = document.getElementById('d2sasof'); if (asof) asof.textContent = mode === 'full' ? 'reading your order history…' : 'reading today’s orders…';
-    ownerApi('/api/sales/history', { method: 'POST', body: JSON.stringify({ mode }) }).then(() => {
-      const poll = () => ownerApi('/api/sales/history/status').then(j => {
-        if (!document.getElementById('d2sasof')) return;
-        if (j && j.running) { document.getElementById('d2sasof').textContent = j.progress || 'updating…'; if (mode === 'full' && state.sales && !(state.sales.salesDaily || []).length) paintSales(Object.assign({}, state.sales, { salesJob: j })); setTimeout(poll, 4000); return; }
-        if (btn) btn.disabled = false;
-        if (j && j.error) { document.getElementById('d2sasof').textContent = 'Update failed: ' + j.error; return; }
-        // what the pull read, and any month Amazon couldn't build (it used to finish silently)
-        if (j && j.done && mode === 'full') state.pullNote = { ok: !j.note, text: j.note || ('Order history read: ' + n0(j.orders || 0) + ' order lines since ' + dShort(j.from) + ', ' + n0(j.days || 0) + ' days saved.') };
-        ownerApi('/api/dash2').then(x => { paintSales(x); if (mode !== 'full') settle(document.getElementById('d2sales')); });
-      }).catch(() => setTimeout(poll, 6000));
-      setTimeout(poll, 3000);
-    }).catch(() => { if (btn) btn.disabled = false; if (asof) asof.textContent = 'Update failed — try again'; });
+    if (mode === 'full') { state.pullNote = null; paintPull({ mode: 'full', progress: 'asking Amazon…' }); document.querySelectorAll('[data-act="sales-full"]').forEach(b => { b.disabled = true; b.textContent = 'Pulling…'; }); }
+    ownerApi('/api/sales/history', { method: 'POST', body: JSON.stringify({ mode }) }).then(r => {
+      if (r && r.ok === false) throw new Error(r.error || 'refused');
+      watchPull(mode);
+    }).catch(e => { if (btn) btn.disabled = false; paintPull(null); if (asof) asof.textContent = 'Update failed — try again'; if (mode === 'full') { state.pullNote = { ok: false, text: 'Couldn’t start the history pull: ' + (e.message || e) }; if (state.sales) paintSales(state.sales); } });
   }
 
   function wire(root) {
