@@ -362,8 +362,11 @@ async function getSalesVelocity(days = 30) {
 async function pullReportWindows(reportType, fromMs, onProgress, label, maxDays = 30) {
   const zlib = require('zlib');
   const wins = reportWindows(Math.ceil((Date.now() - fromMs) / 86400000), Date.now(), maxDays);
-  const failed = [];
-  const one = async ([start, end]) => {
+  let failed = [];
+  // polls: 5 s each. A window that fails is asked again once at the end with
+  // twice the time (owner: a full sales pull kept ~200 orders when one busy
+  // month timed out).
+  const one = async ([start, end], polls = 60) => {
     let reportId = null;
     for (let tries = 0; !reportId; tries++) {
       try {
@@ -375,7 +378,7 @@ async function pullReportWindows(reportType, fromMs, onProgress, label, maxDays 
         throw e;
       }
     }
-    for (let i = 0; i < 60; i++) {   // up to ~5 minutes per report
+    for (let i = 0; i < polls; i++) {   // ~5 minutes per report, 10 on the retry
       await sleep(5000);
       const st = await http.get(`${SP_API_BASE}/reports/2021-06-30/reports/${reportId}`);
       const status = st.data.processingStatus;
@@ -392,6 +395,14 @@ async function pullReportWindows(reportType, fromMs, onProgress, label, maxDays 
   const bodies = new Array(wins.length); let next = 0, done = 0;
   const worker = async () => { while (next < wins.length) { const i = next++; bodies[i] = await one(wins[i]); done++; if (onProgress) onProgress(`${done} of ${wins.length} months of ${label || 'data'} read…`); } };
   await Promise.all([worker(), worker()]);
+  if (failed.length) {
+    const again = failed; failed = [];
+    for (const f of again) {
+      const i = wins.findIndex(w => w[0] === f[0] && w[1] === f[1]);
+      if (onProgress) onProgress(`asking Amazon again for ${label || 'data'} ${String(f[0]).slice(0, 10)} – ${String(f[1]).slice(0, 10)}…`);
+      try { bodies[i] = await one(wins[i], 120); } catch (e) { failed.push([f[0], f[1], e.message]); }
+    }
+  }
   return { bodies, failed };
 }
 

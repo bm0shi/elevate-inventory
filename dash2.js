@@ -661,6 +661,7 @@
     let nt = '';
     if (p.k === 'custom') nt += '<div class="d2-note"><span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><b>Custom range</b> <input type="date" id="d2cf" value="' + p.curDays[0] + '" max="' + P.D.T + '"> to <input type="date" id="d2ct" value="' + p.curDays[p.curDays.length - 1] + '" max="' + P.D.T + '"></span><span style="font-size:14px;color:' + C.muted + '">compared with the ' + p.curDays.length + ' days just before</span><button class="d2-btn" data-act="custom-apply">Apply</button></div>';
     const missingPrev = P.list.some(z => z.k !== 'today' && z.k !== 'custom' && z.prev == null);
+    if (state.pullNote) nt += '<div class="d2-note" style="' + (state.pullNote.ok ? '' : 'border-color:#f3c98b;background:#fff8ec') + '"><span>' + E(state.pullNote.text) + '</span>' + (state.pullNote.ok ? '' : '<button class="d2-btn ghost" data-act="sales-full">Pull again</button>') + '</div>';
     if (missingPrev && !(job && job.running)) nt += '<div class="d2-note"><span>Some comparisons need older orders than the app has read yet.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
     note.innerHTML = nt;
     // metrics for the chosen period
@@ -773,6 +774,8 @@
         if (j && j.running) { document.getElementById('d2sasof').textContent = j.progress || 'updating…'; if (mode === 'full' && state.sales && !(state.sales.salesDaily || []).length) paintSales(Object.assign({}, state.sales, { salesJob: j })); setTimeout(poll, 4000); return; }
         if (btn) btn.disabled = false;
         if (j && j.error) { document.getElementById('d2sasof').textContent = 'Update failed: ' + j.error; return; }
+        // what the pull read, and any month Amazon couldn't build (it used to finish silently)
+        if (j && j.done && mode === 'full') state.pullNote = { ok: !j.note, text: j.note || ('Order history read: ' + n0(j.orders || 0) + ' order lines since ' + dShort(j.from) + ', ' + n0(j.days || 0) + ' days saved.') };
         ownerApi('/api/dash2').then(x => { paintSales(x); if (mode !== 'full') settle(document.getElementById('d2sales')); });
       }).catch(() => setTimeout(poll, 6000));
       setTimeout(poll, 3000);
