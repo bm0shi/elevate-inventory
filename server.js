@@ -436,7 +436,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sales-pull-gaps-1062';
+const BUILD_ID = 'sales-pull-queue-1063';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8316,14 +8316,16 @@ async function pullReturns(fromDay, onProgress) {
 // once, so YTD can be compared with last year (several minutes: Amazon paces
 // report requests).
 let salesJob = { running: false };
-app.post('/api/sales/history', ownerAuth, async (req, res) => {
-  if (salesJob.running) return res.json({ ok: true, already: true, job: salesJob });
-  const full = req.body && req.body.mode === 'full';
+// A full pull asked for while a quick "today" update runs (the dashboard
+// starts one by itself when its numbers are over an hour old) waits for it
+// and then starts. It used to get "already running" and never ran, so the
+// owner's "Pull full history" looked like it did nothing.
+let salesFullQueued = false;
+function startSalesPull(full) {
   const y = new Date().getUTCFullYear();
   const fromDay = full ? (y - 1) + '-01-01' : salesDay(Date.now() - 86400000);
   const fromMs = full ? Date.parse(fromDay + 'T00:00:00-08:00') : Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
   salesJob = { running: true, mode: full ? 'full' : 'today', progress: full ? 'asking Amazon…' : 'reading today’s orders…', startedAt: new Date().toISOString() };
-  res.json({ ok: true });
   (async () => {
     try {
       const r = await getOrderRecords(fromMs, p => { salesJob.progress = p; });
@@ -8349,8 +8351,18 @@ app.post('/api/sales/history', ownerAuth, async (req, res) => {
         orders: r.records.length, gaps,
         note: r.failed.length ? 'Amazon couldn’t build ' + gaps.join(', ') + ' (' + r.failed[0][2] + '); every other day was saved. Pull again later to fill ' + (gaps.length === 1 ? 'it' : 'them') + '.' : null, at: new Date().toISOString() };
       console.log(`[Sales] ${salesJob.mode} pull: ${n} days saved from ${from}.`);
-    } catch (e) { salesJob = { running: false, error: e.message, at: new Date().toISOString() }; console.error('[Sales] pull failed:', e.message); }
+    } catch (e) { salesJob = { running: false, error: e.message, mode: salesJob.mode, at: new Date().toISOString() }; console.error('[Sales] pull failed:', e.message); }
+    if (salesFullQueued) { salesFullQueued = false; startSalesPull(true); }
   })();
+}
+app.post('/api/sales/history', ownerAuth, async (req, res) => {
+  const full = req.body && req.body.mode === 'full';
+  if (salesJob.running) {
+    if (full && salesJob.mode !== 'full') { salesFullQueued = true; salesJob.queuedFull = true; return res.json({ ok: true, queued: true, job: salesJob }); }
+    return res.json({ ok: true, already: true, job: salesJob });
+  }
+  startSalesPull(full);
+  res.json({ ok: true, started: true });
 });
 app.get('/api/sales/history/status', ownerAuth, (req, res) => res.json(salesJob));
 // Top 10 sellers for a stretch of Pacific days (Dashboard → Gross sales).
