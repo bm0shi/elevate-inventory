@@ -41,15 +41,9 @@ test('a misread digit is flagged (shipped × each ≠ extended); unreadable line
   assert.match(P.toInvoices({ slips: [] }).problems[0], /No invoice/);
 });
 
-test('adding slips to an order: earlier slips stay, a slip added before is skipped, only new slips add lines', () => {
+test('each slip keeps its own lines, so it can be saved as its own delivery', () => {
   const inv = P.toInvoices(read).invoices.find(i => i.orderNumber === '262123863');
-  const first = P.mergeSlips([], [], Object.assign({}, inv, { slips: ['262135324'] }));
-  assert.deepStrictEqual(first.items.map(i => [i.cosmo_num, i.qty_shipped]), [['575394', 36]]);
-  const again = P.mergeSlips(first.items, first.slips, inv);
-  assert.deepStrictEqual(again.skipped, ['262135324']);
-  assert.deepStrictEqual(again.added, ['262131920']);
-  assert.deepStrictEqual(again.items.map(i => [i.cosmo_num, i.qty_shipped]), [['575394', 36], ['037622', 60]]);
-  const third = P.mergeSlips(again.items, again.slips, inv);
-  assert.deepStrictEqual(third.added, []);
-  assert.deepStrictEqual(third.items.map(i => i.qty_shipped), [36, 60]);
+  assert.deepStrictEqual(inv.slips, ['262135324', '262131920']);
+  assert.deepStrictEqual(inv.bySlip['262135324'].map(i => [i.cosmo_num, i.qty_shipped]), [['575394', 36]]);
+  assert.deepStrictEqual(inv.bySlip['262131920'].map(i => [i.cosmo_num, i.qty_shipped]), [['037622', 60]]);
 });

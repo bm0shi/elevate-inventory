@@ -119,6 +119,47 @@ test('a short invoice line is saved as owed; late units come in once, never past
   assert.strictEqual(list.find(i => i.order_number === 'INV-T3').owed, 0);
 });
 
+test('a split invoice: each delivery is its own check-in; a repeat slip is refused; the later one takes down what was owed', { skip }, async () => {
+  // 573244 is in the seeded Cosmo map; stock is read from whatever it maps to
+  const slip = (shp, shipped) => ['10/7/26 Beauty Systems Group', 'FOR ORDER NUMBER: 262106088', shp ? 'SHP# ' + shp : '',
+    `573244 PM TEA TREE SPECIAL SHAMPOO LITER 2000 22.91 ${shipped} ${(shipped * 22.91).toFixed(2)} N`].join('\n');
+  // first delivery: the invoice says 1322, 1300 came; checked in short
+  const a = await post('/api/invoices/add-multi', { text: slip('262100001', 1322) });
+  assert.strictEqual(a.status, 200);
+  assert.strictEqual(a.body.created[0].orderNumber, '262106088');
+  const l1 = await one(`SELECT id, asin FROM inv_invoice_items WHERE order_number='262106088'`);
+  assert.ok(l1.asin);
+  const LITER = l1.asin;
+  assert.strictEqual((await post('/api/invoices/262106088/set-line', { id: l1.id, qty_received: 1300 })).status, 200);
+  const s0 = (await stock(LITER)).onhand;
+  assert.strictEqual((await post('/api/invoices/262106088/complete', {})).status, 200);
+  assert.strictEqual((await stock(LITER)).onhand, s0 + 1300);
+  assert.strictEqual((await one('SELECT qty_owed FROM inv_invoice_items WHERE id=$1', [l1.id])).qty_owed, 22);
+  // the same first slip again: refused, nothing changes
+  const again = await post('/api/invoices/add-multi', { text: slip('262100001', 1322) });
+  assert.strictEqual(again.status, 400);
+  assert.match(again.body.error, /already added as #262106088/);
+  // a week later, two slips at once (two phones): -2 and -3, never both -2
+  const [b, c] = await Promise.all([post('/api/invoices/add-multi', { text: slip('262114389', 678) }),
+                                    post('/api/invoices/add-multi', { text: slip('262119999', 5) })]);
+  assert.deepStrictEqual([b.body.created[0].orderNumber, c.body.created[0].orderNumber].sort(), ['262106088-2', '262106088-3']);
+  assert.ok(b.body.created[0].laterDelivery);
+  // the same later slip pasted again while it waits: still one -2/-3, not a -4
+  assert.strictEqual((await post('/api/invoices/add-multi', { text: slip('262114389', 678) })).status, 200);
+  assert.strictEqual((await one(`SELECT COUNT(*)::int AS n FROM inv_invoices WHERE base_order='262106088'`)).n, 2);
+  // the 678 delivery checks in on its own, once (two tablets at once)
+  const p2 = (await one(`SELECT i.order_number, ii.id FROM inv_invoices i JOIN inv_invoice_items ii ON ii.order_number=i.order_number WHERE i.photo_slips @> ARRAY['262114389']`));
+  assert.strictEqual((await post(`/api/invoices/${p2.order_number}/set-line`, { id: p2.id, qty_received: 678 })).status, 200);
+  const s1 = (await stock(LITER)).onhand;
+  const [d1, d2] = await Promise.all([post(`/api/invoices/${p2.order_number}/complete`, {}), post(`/api/invoices/${p2.order_number}/complete`, {})]);
+  assert.deepStrictEqual([d1.status, d2.status].sort(), [200, 409]);
+  assert.strictEqual((await stock(LITER)).onhand, s1 + 678);
+  // the first delivery no longer says Cosmoprof owes the 22 that came
+  assert.strictEqual((await one('SELECT qty_owed FROM inv_invoice_items WHERE id=$1', [l1.id])).qty_owed, 0);
+  // and once checked in, that slip is refused too
+  assert.match((await post('/api/invoices/add-multi', { text: slip('262114389', 678) })).body.error, /already added/);
+});
+
 test('Shortages: an owed line is listed; marking it credited moves it to history without touching stock', { skip }, async () => {
   await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES ('INV-T4','10/1/26','pending')`);
   await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES ('INV-T4','444','Test Conditioner','TSTB',30,24)`);
