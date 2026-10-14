@@ -246,6 +246,8 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
   .subtop .sublock { margin-left:auto; }
   .subkey { grid-column:1 / -1; font-size:11px; color:#8a97a6; padding-top:4px; border-top:1px solid #eef2f6; }
   @media (max-width:900px){ .subtabs { grid-template-columns:1fr; } }
+  /* paper invoice preview: on a phone give the description the room */
+  @media (max-width:640px){ table.photoInvT col.pc{ width:64px!important } table.photoInvT col.pq{ width:44px!important } table.photoInvT th, table.photoInvT td{ padding:8px 4px!important; font-size:14px } }
   @media (max-width:520px){ .subrow { grid-template-columns:1fr; gap:3px; } }
   .subgroup-label { color:var(--link); font-family:var(--head); }
   .pill, .badge { border-radius:999px; font-family:var(--head); letter-spacing:0.4px; }
@@ -412,6 +414,10 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <div class="hint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
       <input type="file" id="pdfFile" accept="application/pdf" style="display:none" onchange="uploadPdf()">
       <button class="action full" onclick="document.getElementById('pdfFile').click()" id="uploadPdfBtn" style="background:#008296">📄 Upload Cosmoprof PDF</button>
+      <input type="file" id="photoInvFile" accept="application/pdf,image/*" multiple style="display:none" onchange="readPhotoInvoice([...this.files]);this.value=''">
+      <button class="action full" onclick="document.getElementById('photoInvFile').click()" id="photoInvBtn" style="background:#2563a8;margin-top:8px">📷 Paper invoice (photo or scan)</button>
+      <div class="hint" style="margin-top:4px">For paper slips: take a photo or pick a scanned PDF (several pages at once is fine). You'll see what was read before anything is added.</div>
+      <div id="photoInvBox"></div>
       <div style="text-align:center;color:#9db0c9;font-size:12px;margin:12px 0">— or paste text as backup —</div>
       <textarea id="invoiceText" placeholder="Paste Cosmoprof invoice text here (backup option)..."></textarea>
       <div style="height:10px"></div>
@@ -3487,8 +3493,70 @@ function uploadPdf(){
         toast('Added '+d.created.length+' order(s) from PDF');
         alert('Created '+d.created.length+' invoice(s):\n\n'+msg+'\n\nSelect one below to receive against it.');
         loadInvoiceList();
+      } else if(d.pdfReaderFailed){
+        // a phone scan or photo saved as PDF has no text: read it as a picture instead
+        toast('This PDF is a scan. Reading it as a paper invoice…'); readPhotoInvoice([f]);
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
     }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });
+}
+// ---- Snap an invoice (paper slips from a photo or scan) ----
+// Photos are shrunk in the browser first (the reader takes images up to 5 MB;
+// phone photos are often 3-8 MB). PDFs go as they are.
+function shrinkPhoto(f){
+  return new Promise(res=>{
+    if(!/^image\//.test(f.type) || f.size < 1.5*1024*1024){ res(f); return; }
+    const img=new Image(), url=URL.createObjectURL(f);
+    img.onload=()=>{ const k=Math.min(1, 2400/Math.max(img.width,img.height)), c=document.createElement('canvas');
+      c.width=Math.round(img.width*k); c.height=Math.round(img.height*k); c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+      c.toBlob(b=>{ URL.revokeObjectURL(url); res(b?new File([b], (f.name||'photo').replace(/\.\w+$/,'')+'.jpg', {type:'image/jpeg'}):f); }, 'image/jpeg', 0.85); };
+    img.onerror=()=>{ URL.revokeObjectURL(url); res(f); };
+    img.src=url;
+  });
+}
+let _photoInv=null;
+async function readPhotoInvoice(files){
+  if(!files||!files.length) return;
+  const box=document.getElementById('photoInvBox'), btn=document.getElementById('photoInvBtn');
+  btn.disabled=true; btn.textContent='Reading the paper invoice…';
+  box.innerHTML='<div class="box" style="margin-top:10px;text-align:center">Reading '+files.length+' file'+(files.length===1?'':'s')+'… this takes about half a minute.</div>';
+  const fd=new FormData();
+  for(const f of files) fd.append('files', await shrinkPhoto(f));
+  fetch('/api/invoices/read-photo',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
+    btn.disabled=false; btn.textContent='📷 Paper invoice (photo or scan)';
+    if(!d||d.ok===false){ box.innerHTML='<div class="box" style="margin-top:10px;color:#b42d2d">'+esc((d&&d.error)||'Could not read it')+'</div>'; return; }
+    _photoInv=d; paintPhotoInvoice();
+  }).catch(e=>{ btn.disabled=false; btn.textContent='📷 Paper invoice (photo or scan)'; box.innerHTML='<div class="box" style="margin-top:10px;color:#b42d2d">Could not read it: '+esc(e.message)+'</div>'; });
+}
+function paintPhotoInvoice(){
+  const d=_photoInv, box=document.getElementById('photoInvBox'); if(!d||!box) return;
+  const STATE={ new:['New order','#e7f6ec','#0d6b30'], more:['Adds these slips to the order already here','#eaf1fb','#1f5fae'],
+    already:['Already added. Nothing new','#f3f5f7','#5a6876'], emailed:['Already loaded from the emailed invoice. Won\'t be added','#fff4e5','#7a4600'], received:['Already checked in. Won\'t be added','#fff4e5','#7a4600'] };
+  let h='<div class="box" style="margin-top:10px;border:2px solid #9cbbe0"><div style="font-weight:800;font-size:17px;margin-bottom:6px">Here’s what was read. Check it against the paper.</div>';
+  for(const p of (d.problems||[])) h+='<div style="color:#b42d2d;margin:4px 0">⚠ '+esc(p)+'</div>';
+  const canAdd=d.invoices.some(i=>i.state==='new'||i.state==='more');
+  for(const inv of d.invoices){
+    const st=STATE[inv.state]||STATE.new;
+    h+='<div style="margin:12px 0 6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:16px">Invoice #'+esc(inv.orderNumber)+'</b><span class="hint">'+esc(inv.date||'no date')+' · '+inv.slips+' slip'+(inv.slips===1?'':'s')+'</span>'
+      +'<span style="font-size:13px;font-weight:800;padding:3px 10px;border-radius:999px;background:'+st[1]+';color:'+st[2]+'">'+st[0]+'</span></div>';
+    for(const w of inv.warnings) h+='<div style="background:#fff8ec;border:1px solid #f3c98b;border-radius:8px;padding:6px 10px;margin:4px 0;font-size:14px">⚠ '+esc(w)+'</div>';
+    h+='<table class="photoInvT" style="width:100%;table-layout:fixed"><colgroup><col class="pc" style="width:90px"><col><col class="pq" style="width:90px"></colgroup><tr><th>Item #</th><th style="text-align:left">Paper · app</th><th>Qty</th></tr>'
+      +inv.lines.map(l=>'<tr><td style="text-align:center;font-family:monospace">'+esc(l.cosmo_num)+'</td><td>'+esc(l.description)
+        +'<div style="font-size:13px;margin-top:2px">'+(l.asin?amzLinkSized(l.asin,l.name||l.asin):'<span style="color:#b7791f">not linked yet. You’ll link it when you scan it</span>')+'</div></td><td style="text-align:center;font-weight:800">'+l.qty+'</td></tr>').join('')+'</table>';
+  }
+  h+='<div style="display:flex;gap:10px;margin-top:12px;flex-wrap:wrap">'+(canAdd?'<button class="action" id="photoInvAdd" onclick="addPhotoInvoice()">Add to Order Check-In</button>':'')
+    +'<button class="mini" onclick="_photoInv=null;document.getElementById(\'photoInvBox\').innerHTML=\'\'">'+(canAdd?'Cancel':'Close')+'</button></div></div>';
+  box.innerHTML=h;
+}
+function addPhotoInvoice(){
+  const b=document.getElementById('photoInvAdd'); if(b){ b.disabled=true; b.textContent='Adding…'; }
+  api('/api/invoices/add-photo',{method:'POST',body:JSON.stringify({token:_photoInv.token})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to Order Check-In'; } return; }
+    let msg=(d.created||[]).map(c=>'#'+c.orderNumber+': '+c.items+' item'+(c.items===1?'':'s')+(c.unmapped?' ('+c.unmapped+' to link)':'')).join('\n');
+    if(d.errors&&d.errors.length) msg+=(msg?'\n\n':'')+'⚠ '+d.errors.join('\n⚠ ');
+    toast(d.created&&d.created.length?'Added '+d.created.length+' order(s) from the paper invoice':'Nothing new added', !(d.created&&d.created.length));
+    if(msg) alert(msg);
+    _photoInv=null; document.getElementById('photoInvBox').innerHTML=''; loadInvoiceList();
+  }).catch(e=>{ toast(e.message,true); if(b){ b.disabled=false; b.textContent='Add to Order Check-In'; } });
 }
 // ==================== PRODUCTS TO ADD ====================
 function loadToAdd(){

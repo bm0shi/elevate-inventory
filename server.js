@@ -14,6 +14,7 @@ const pdfParse = require('pdf-parse');
 // Pure helpers (parsers, matching, cost blending, codes) live in lib/ so they
 // can be unit-tested; see test/.
 const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
+const invoicePhoto = require('./lib/invoice-photo');
 const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
 const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec, weekStart, crewShares } = require('./lib/homebase');
@@ -107,8 +108,25 @@ async function writeInvoiceLines(orderNumber, date, items, opts = {}) {
     if (cur.rows[0] && cur.rows[0].status === 'received') {
       return { refused: `Order ${orderNumber} is already checked in — not re-imported (its stock is on hand). Delete it first if it really needs reloading.` };
     }
+    // Paper slips (a photo): add this upload's slips to the lines already on
+    // the order instead of replacing them. A split shipment comes as several
+    // slips, and the write below starts by deleting the order's lines.
+    let photoSlips = null;
+    if (opts.photo) {
+      const ex = (await c.query('SELECT photo_slips FROM inv_invoices WHERE order_number=$1', [orderNumber])).rows[0];
+      const cur = await c.query('SELECT cosmo_num, description, qty_expected, unit_cost FROM inv_invoice_items WHERE order_number=$1 ORDER BY id', [orderNumber]);
+      if (ex && ex.photo_slips == null && cur.rows.length) {
+        return { refused: `Order ${orderNumber} is already in Order Check-In from the emailed invoice. The paper slip wasn't added, so nothing is counted twice.` };
+      }
+      const m = invoicePhoto.mergeSlips(cur.rows.map(r => ({ cosmo_num: r.cosmo_num, description: r.description, qty_shipped: r.qty_expected || 0, unit_cost: r.unit_cost == null ? null : Number(r.unit_cost) })),
+        ex && ex.photo_slips, opts.photo);
+      if (!m.added.length) return { refused: `Order ${orderNumber}: ${m.skipped.length === 1 ? 'this slip was' : 'these slips were'} already added.` };
+      items = m.items; photoSlips = m.slips;
+    }
     await c.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
       ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date || '']);
+    // the emailed invoice replaces slips added from photos (it lists the whole order)
+    await c.query('UPDATE inv_invoices SET photo_slips=$2 WHERE order_number=$1', [orderNumber, photoSlips]);
     if (opts.oms) await c.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, opts.oms]);
 
     const prev = new Map();
@@ -436,7 +454,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sales-pull-queue-1063';
+const BUILD_ID = 'snap-invoice-1064';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -592,6 +610,9 @@ async function initDb() {
     -- tables don't exist yet, and one failed statement rolls back the batch.
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
+    -- Paper slips added from a photo (lib/invoice-photo.js): their SHP# numbers,
+    -- so a slip is never added twice. NULL = the order came from an emailed invoice.
+    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS photo_slips TEXT[];
     -- Units Cosmoprof still owes on a checked-in invoice: set at complete for a
     -- line that came in short, counted down when the late units are received
     -- on the same invoice (or cleared when Cosmoprof credits them instead).
@@ -6091,6 +6112,89 @@ async function extractPdfText(buffer) {
 
   return { text: '', via: null, tried };
 }
+
+// ---- Snap an invoice: paper slips from a photo or a scanned PDF ----
+// Phone scans have no text, so the readers above find nothing. Claude reads
+// the picture (lib/invoice-photo.js SCHEMA); the screen shows what was read
+// and someone confirms before anything is saved. What was read (with prices)
+// stays on the server under a one-time token: staff use this screen, and cost
+// is owner-only, so the preview carries item numbers, names and quantities.
+app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(400).json({ ok: false, error: 'Reading paper invoices needs ANTHROPIC_API_KEY in Railway (the same key as Ask Elevate). Until it is added, use the emailed PDF or the paste box.' });
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ ok: false, error: 'No file uploaded.' });
+  const content = [];
+  let total = 0;
+  for (const f of files) {
+    total += f.size;
+    const data = f.buffer.toString('base64');
+    if (f.mimetype === 'application/pdf') content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } });
+    else if (/^image\/(jpeg|png|gif|webp)$/.test(f.mimetype)) {
+      if (f.size > 5 * 1024 * 1024) return res.status(400).json({ ok: false, error: `${f.originalname} is over 5 MB. Take the photo again or send it as a PDF.` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: f.mimetype, data } });
+    } else return res.status(400).json({ ok: false, error: `${f.originalname}: send a PDF or a JPG / PNG photo.` });
+  }
+  if (total > 24 * 1024 * 1024) return res.status(400).json({ ok: false, error: 'Those files are too big together. Send fewer at a time.' });
+  content.push({ type: 'text', text: invoicePhoto.PROMPT });
+  const Anthropic = require('@anthropic-ai/sdk');
+  const client = Anthropic.default ? new Anthropic.default() : new Anthropic();
+  const params = { model: 'claude-opus-5-5', max_tokens: 16000, messages: [{ role: 'user', content }],
+    output_config: { effort: 'medium', format: { type: 'json_schema', schema: invoicePhoto.SCHEMA } },
+    betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' };
+  let msg;
+  try { msg = await client.beta.messages.create(params); }
+  catch (e) {
+    // the refusal fallback is a beta option: if the API refuses the option itself, ask without it
+    if (!(e && e.status === 400 && /fallback/i.test(e.message || ''))) throw e;
+    const { betas, fallbacks, ...plain } = params;
+    msg = await client.messages.create(plain);
+  }
+  if (msg.stop_reason === 'refusal') return res.status(422).json({ ok: false, error: 'The invoice reader declined this file. Use the emailed PDF or type the lines.' });
+  if (msg.stop_reason === 'max_tokens') return res.status(422).json({ ok: false, error: 'That was too much to read at once. Send fewer pages at a time.' });
+  let data;
+  try { data = JSON.parse(msg.content.filter(b => b.type === 'text').map(b => b.text).join('')); }
+  catch (e) { return res.status(502).json({ ok: false, error: 'The invoice reader sent back something unreadable. Try again.' }); }
+  const r = invoicePhoto.toInvoices(data);
+  const token = crypto.randomBytes(12).toString('hex');
+  await pool.query("DELETE FROM inv_cache WHERE cache_key LIKE 'photoinv:%' AND updated_at < now() - interval '1 day'");
+  await saveCache('photoinv:' + token, r.invoices);
+  // the preview: no prices; each line with the product it maps to, and what the app already has for the order
+  const out = [];
+  for (const inv of r.invoices) {
+    const ex = (await pool.query(`SELECT status, photo_slips, (SELECT COUNT(*) FROM inv_invoice_items i WHERE i.order_number=v.order_number)::int AS lines
+      FROM inv_invoices v WHERE order_number=$1`, [inv.orderNumber])).rows[0];
+    const lines = [];
+    for (const it of inv.items) {
+      const m = (await pool.query(`SELECT m.asin, p.name FROM inv_cosmo_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.cosmo_num=$1 LIMIT 1`, [it.cosmo_num])).rows[0];
+      lines.push({ cosmo_num: it.cosmo_num, description: it.description, qty: it.qty_shipped, asin: m ? m.asin : null, name: m ? m.name : null });
+    }
+    let state = 'new';
+    if (ex && ex.status === 'received') state = 'received';
+    else if (ex && ex.photo_slips == null && ex.lines) state = 'emailed';
+    else if (ex && ex.photo_slips) state = inv.slips.every(k => ex.photo_slips.includes(k)) ? 'already' : 'more';
+    out.push({ orderNumber: inv.orderNumber, date: inv.date, slips: inv.slips.length, lines, warnings: inv.warnings, state });
+  }
+  const u = msg.usage || {};
+  res.json({ ok: true, token, invoices: out, problems: r.problems });
+  console.log(`[Photo invoice] read ${files.length} file(s): ${r.invoices.length} invoice(s), ${u.input_tokens || 0} in / ${u.output_tokens || 0} out tokens.`);
+});
+// Save what was read (after the screen showed it): each invoice is added, or
+// its new slips merged into the order (writeInvoiceLines opts.photo).
+app.post('/api/invoices/add-photo', auth, async (req, res) => {
+  const token = String((req.body && req.body.token) || '');
+  if (!/^[0-9a-f]{24}$/.test(token)) return res.status(400).json({ ok: false, error: 'Read the invoice again.' });
+  // claimed by deleting it: a double tap finds nothing and adds nothing
+  const c = (await pool.query('DELETE FROM inv_cache WHERE cache_key=$1 RETURNING data', ['photoinv:' + token])).rows[0];
+  if (!c) return res.status(410).json({ ok: false, error: 'That reading has expired or was already added. Read the invoice again.' });
+  const created = [], errors = [];
+  for (const inv of c.data || []) {
+    if (!inv.items || !inv.items.length) { errors.push(`Order ${inv.orderNumber}: no lines could be read.`); continue; }
+    const w = await writeInvoiceLines(inv.orderNumber, inv.date, inv.items, { photo: inv, seedUnitCost: true });
+    if (w.refused) { errors.push(w.refused); continue; }
+    created.push({ orderNumber: inv.orderNumber, items: inv.items.length, mapped: w.mapped, unmapped: w.unmapped.length });
+  }
+  res.json({ ok: true, created, errors });
+});
 
 app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
