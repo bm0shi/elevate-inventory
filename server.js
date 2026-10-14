@@ -454,7 +454,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'scan-pdf-1065';
+const BUILD_ID = 'paste-why-1066';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3496,7 +3496,9 @@ app.post('/api/invoices/audit', auth, async (req, res) => {
 
 app.post('/api/invoices/add-multi', auth, async (req, res) => {
   const { created, errors } = await processInvoiceText(req.body.text || '');
-  if (!created.length) return res.status(400).json({ error: 'No orders found. Text needs "FOR ORDER NUMBER:" headers.', errors });
+  // Say WHY nothing was added: "No orders found" also covered an order that was
+  // refused (already checked in), and the owner kept re-pasting good text (10/14).
+  if (!created.length) return res.status(400).json({ error: errors.length ? errors.join('\n') : 'No orders found. Text needs "FOR ORDER NUMBER:" headers.', errors });
   res.json({ ok: true, created, errors });
 });
 
