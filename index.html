@@ -3493,8 +3493,8 @@ function uploadPdf(){
         toast('Added '+d.created.length+' order(s) from PDF');
         alert('Created '+d.created.length+' invoice(s):\n\n'+msg+'\n\nSelect one below to receive against it.');
         loadInvoiceList();
-      } else if(d.pdfReaderFailed){
-        // a phone scan or photo saved as PDF has no text: read it as a picture instead
+      } else if(d.pdfReaderFailed || d.readAsPaper){
+        // a scan: no text at all, or a scanner app's own text in a layout we can't parse. Read it as a picture instead
         toast('This PDF is a scan. Reading it as a paper invoice…'); readPhotoInvoice([f]);
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
     }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });

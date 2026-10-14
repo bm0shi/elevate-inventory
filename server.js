@@ -454,7 +454,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'snap-invoice-1064';
+const BUILD_ID = 'scan-pdf-1065';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6209,11 +6209,16 @@ app.post('/api/invoices/upload-pdf', auth, upload.single('pdf'), async (req, res
     });
   }
   console.log(`[PDF] Text extracted via ${extracted.via} (${text.length} chars).`);
+  // readAsPaper: the screen hands the file to the paper-invoice reader. Scanner
+  // apps (Adobe Scan) put their own recognised text in the PDF, so a scan of a
+  // printed slip HAS text, just not the emailed layout: the slip shows
+  // "** Invoice ** 262123863", never "FOR ORDER NUMBER:", and long tables come
+  // out one word per line (owner, 10/14: "Says no order number").
   if (!/FOR ORDER NUMBER:/i.test(text)) {
-    return res.status(400).json({ error: 'No "FOR ORDER NUMBER:" found in PDF. It may be a different format — try the paste option.' });
+    return res.status(400).json({ error: 'No "FOR ORDER NUMBER:" found in PDF. It may be a different format — try the paste option.', readAsPaper: true });
   }
   const { created, errors } = await processInvoiceText(text);
-  if (!created.length) return res.status(400).json({ error: 'Found order headers but no line items parsed. Try paste as backup.', errors, via: extracted.via });
+  if (!created.length) return res.status(400).json({ error: 'Found order headers but no line items parsed. Try paste as backup.', errors, via: extracted.via, readAsPaper: true });
   res.json({ ok: true, created, errors, via: extracted.via });
 });
 
