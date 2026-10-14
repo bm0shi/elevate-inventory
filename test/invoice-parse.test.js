@@ -92,3 +92,22 @@ test('invoice lines flagged Y parse like N (570366 Awapuhi gallon, 9/17/26 invoi
   assert.strictEqual(bo.not_shipped, true); assert.strictEqual(bo.qty_shipped, 0);   // ordered, not shipped
   assert.ok(parseCosmoInvoice(text).items.some(i => i.cosmo_num === '570366' && i.qty_shipped === 90));
 });
+
+test('the slip number (SHP#) under the order number is read, so a split delivery is its own check-in', () => {
+  const orders = parseInvoiceText([
+    '10/7/26 Beauty Systems Group',
+    'FOR ORDER NUMBER: 262106088',
+    'SHP# 262114389',
+    '573244 PM TEA TREE SPECIAL SHAMPOO LITER 2000 22.91 678 15,532.98 N',
+  ].join('\n'));
+  const o = orders.get('262106088');
+  assert.strictEqual(o.shp, '262114389');
+  assert.strictEqual(o.items[0].qty_shipped, 678);
+  assert.strictEqual(parseInvoiceText('FOR ORDER NUMBER: 262106088\n573244 X LITER 1 1.00 1 1.00 N').get('262106088').shp, undefined);
+});
+
+test('pages of two shipments under one order number keep both SHP#s', () => {
+  const o = parseInvoiceText(['FOR ORDER NUMBER: 262106088', 'SHP# 262100001', '573244 A LITER 2 1.00 1 1.00 N',
+    'FOR ORDER NUMBER: 262106088', 'SHP# 262114389', '570303 B LITER 2 1.00 1 1.00 N'].join('\n')).get('262106088');
+  assert.deepStrictEqual(o.shps, ['262100001', '262114389']);
+});

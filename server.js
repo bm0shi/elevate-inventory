@@ -15,6 +15,7 @@ const pdfParse = require('pdf-parse');
 // can be unit-tested; see test/.
 const { findInvoiceDate, parseInvoiceText, parseCosmoInvoice, parseXstoreOrder } = require('./lib/invoice-parse');
 const invoicePhoto = require('./lib/invoice-photo');
+const invoiceParts = require('./lib/invoice-parts');
 const { MATCH_STOPWORDS, normalizeSizeTerms, matchTokens, coverage, productHead, matchScore, PRODUCT_TYPES, KNOWN_SIZES, detectTypes, detectSizes, inter, crossCheck, SUGGEST_MIN_SCORE, SUGGEST_MIN_GAP, suggestProducts } = require('./lib/matching');
 const { parseSettlementFlatFile, isPassThroughTax, INBOUND_FEE_PATTERNS } = require('./lib/settlement-parse');
 const { splitCsvLine, HB_MONTHS, hbDate, hbMinutes, mkTs, parseHomebaseCsv, laborRates, overlapSec, weekStart, crewShares } = require('./lib/homebase');
@@ -102,31 +103,37 @@ async function applyUndo(db, id) {
   return { status: 200, body: { ok: true, undone: u.label || u.kind } };
 }
 
-async function writeInvoiceLines(orderNumber, date, items, opts = {}) {
+// What the app has for an invoice number: the invoice and its later
+// deliveries, with their slip numbers and lines (lib/invoice-parts.js input).
+async function invoicePartsOf(db, base, lock) {
+  const parts = (await db.query(
+    'SELECT order_number, status, photo_slips FROM inv_invoices WHERE order_number=$1 OR base_order=$1' + (lock ? ' FOR UPDATE' : ''), [String(base)])).rows;
+  const lines = parts.length ? (await db.query(
+    'SELECT order_number, cosmo_num, qty_expected FROM inv_invoice_items WHERE order_number = ANY($1)', [parts.map(p => p.order_number)])).rows : [];
+  return parts.map(p => ({ order_number: p.order_number, status: p.status, slips: p.photo_slips,
+    sig: invoiceParts.lineSig(lines.filter(l => l.order_number === p.order_number)) }));
+}
+
+// Saves one delivery's lines. `base` is the invoice number on the paper; the
+// delivery lands on the invoice itself or on a later part (base-2, base-3 …)
+// as lib/invoice-parts.js decides: a split shipment is checked in one
+// delivery at a time, for what came (owner, 10/14). opts.key is the slip's
+// SHP#, '' when unknown (opts.keys: several). → { orderNumber, mode, mapped, unmapped, carried } or { refused }
+async function writeInvoiceLines(base, date, items, opts = {}) {
   return withTx(async (c) => {
-    const cur = await c.query('SELECT status FROM inv_invoices WHERE order_number=$1 FOR UPDATE', [orderNumber]);
-    if (cur.rows[0] && cur.rows[0].status === 'received') {
-      return { refused: `Order ${orderNumber} is already checked in — not re-imported (its stock is on hand). Delete it first if it really needs reloading.` };
-    }
-    // Paper slips (a photo): add this upload's slips to the lines already on
-    // the order instead of replacing them. A split shipment comes as several
-    // slips, and the write below starts by deleting the order's lines.
-    let photoSlips = null;
-    if (opts.photo) {
-      const ex = (await c.query('SELECT photo_slips FROM inv_invoices WHERE order_number=$1', [orderNumber])).rows[0];
-      const cur = await c.query('SELECT cosmo_num, description, qty_expected, unit_cost FROM inv_invoice_items WHERE order_number=$1 ORDER BY id', [orderNumber]);
-      if (ex && ex.photo_slips == null && cur.rows.length) {
-        return { refused: `Order ${orderNumber} is already in Order Check-In from the emailed invoice. The paper slip wasn't added, so nothing is counted twice.` };
-      }
-      const m = invoicePhoto.mergeSlips(cur.rows.map(r => ({ cosmo_num: r.cosmo_num, description: r.description, qty_shipped: r.qty_expected || 0, unit_cost: r.unit_cost == null ? null : Number(r.unit_cost) })),
-        ex && ex.photo_slips, opts.photo);
-      if (!m.added.length) return { refused: `Order ${orderNumber}: ${m.skipped.length === 1 ? 'this slip was' : 'these slips were'} already added.` };
-      items = m.items; photoSlips = m.slips;
-    }
-    await c.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES($1,NULLIF($2,''),'pending')
-      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`, [orderNumber, date || '']);
-    // the emailed invoice replaces slips added from photos (it lists the whole order)
-    await c.query('UPDATE inv_invoices SET photo_slips=$2 WHERE order_number=$1', [orderNumber, photoSlips]);
+    // two slips of the same invoice at once must not both become "-2"
+    await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['invoice:' + base]);
+    const keys = (opts.keys && opts.keys.length) ? opts.keys : (opts.key ? [opts.key] : []);
+    const key = keys.join(', ');
+    const plan = invoiceParts.planInvoiceWrite({ base, keys, sig: invoiceParts.lineSig(items),
+      parts: await invoicePartsOf(c, base, true) });
+    if (!plan.write) return { refused: invoiceParts.refusalText(plan, base, key), orderNumber: plan.orderNumber };
+    const orderNumber = plan.orderNumber;
+
+    await c.query(`INSERT INTO inv_invoices(order_number, invoice_date, status, base_order) VALUES($1,NULLIF($2,''),'pending',$3)
+      ON CONFLICT (order_number) DO UPDATE SET invoice_date=COALESCE(NULLIF($2,''), inv_invoices.invoice_date)`,
+      [orderNumber, date || '', orderNumber === String(base) ? null : String(base)]);
+    if (keys.length) await c.query('UPDATE inv_invoices SET photo_slips=$2 WHERE order_number=$1', [orderNumber, keys]);
     if (opts.oms) await c.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, opts.oms]);
 
     const prev = new Map();
@@ -158,7 +165,7 @@ async function writeInvoiceLines(orderNumber, date, items, opts = {}) {
         await c.query('UPDATE inv_products SET unit_cost=$1 WHERE asin=$2 AND unit_cost IS NULL', [it.unit_cost, asin]);
       }
     }
-    return { mapped, unmapped, carried };
+    return { orderNumber, mode: plan.mode, mapped, unmapped, carried };
   });
 }
 
@@ -186,11 +193,12 @@ async function processInvoiceText(text) {
       errors.push(`Order ${orderNumber}: ${o.rejected.length} line(s) looked like items but did NOT parse — ${o.rejected.join(' | ')}`);
     }
 
-    const w = await writeInvoiceLines(orderNumber, date, items, { oms: o.oms, seedUnitCost: true });
+    const w = await writeInvoiceLines(orderNumber, date, items, { oms: o.oms, keys: o.shps || [], seedUnitCost: true });
     if (w.refused) { errors.push(w.refused); continue; }
     const mapped = w.mapped, unmapped = w.unmapped.length;
-    console.log(`[Invoice] ${orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
-    created.push({ orderNumber, items: items.length, mapped, unmapped, date,
+    console.log(`[Invoice] ${w.orderNumber}: ${items.length} items from ${o.pages} page segment(s), ${mapped} mapped, ${unmapped} unmapped.`);
+    created.push({ orderNumber: w.orderNumber, base: orderNumber, laterDelivery: w.orderNumber !== orderNumber,
+                   items: items.length, mapped, unmapped, date,
                    pages: o.pages, merged: mergedCount, rejected: o.rejected.length });
   }
   // Only complain about empty segments if NOTHING parsed — a header with no
@@ -454,7 +462,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'paste-why-1066';
+const BUILD_ID = 'split-delivery-1067';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -610,9 +618,14 @@ async function initDb() {
     -- tables don't exist yet, and one failed statement rolls back the batch.
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS unit_cost NUMERIC;
     ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS oms_id TEXT;
-    -- Paper slips added from a photo (lib/invoice-photo.js): their SHP# numbers,
-    -- so a slip is never added twice. NULL = the order came from an emailed invoice.
+    -- The slip (SHP#, shipment) on this invoice row, from a photo or the text,
+    -- so a slip is never added twice. NULL = not known (older rows, text
+    -- without a SHP#). Name kept from when only photos set it.
     ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS photo_slips TEXT[];
+    -- A later delivery of a split invoice is its own row (262106088-2, lib/invoice-parts.js);
+    -- base_order is the invoice number on the paper. NULL on the invoice itself.
+    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS base_order TEXT;
+    CREATE INDEX IF NOT EXISTS inv_invoices_base_order ON inv_invoices(base_order);
     -- Units Cosmoprof still owes on a checked-in invoice: set at complete for a
     -- line that came in short, counted down when the late units are received
     -- on the same invoice (or cleared when Cosmoprof credits them instead).
@@ -3509,7 +3522,7 @@ app.post('/api/invoices/add', auth, async (req, res) => {
   if (!parsed.items.length) return res.status(400).json({ error: 'No line items found' });
   const w = await writeInvoiceLines(parsed.orderNumber, parsed.date || findInvoiceDate(req.body.text || ''), parsed.items);
   if (w.refused) return res.status(409).json({ ok: false, error: w.refused });
-  res.json({ ok: true, orderNumber: parsed.orderNumber, items: parsed.items.length, mapped: w.mapped, unmapped: w.unmapped, carried: w.carried });
+  res.json({ ok: true, orderNumber: w.orderNumber, items: parsed.items.length, mapped: w.mapped, unmapped: w.unmapped, carried: w.carried });
 });
 
 // List invoices (pending + recent)
@@ -5698,7 +5711,24 @@ app.post('/api/invoices/:orderNumber/complete', auth, async (req, res) => {
     }
   }
 
+  // A later delivery of a split invoice (262106088-2) brings units an earlier
+  // part came in short on: take them off what that part says Cosmoprof owes,
+  // so the Shortages list never asks for a credit on units that arrived.
   if (!dryRun) {
+    const baseRow = await db.query('SELECT base_order FROM inv_invoices WHERE order_number=$1', [order]);
+    const base = baseRow.rows[0] && baseRow.rows[0].base_order;
+    if (base) {
+      const owed = (await db.query(
+        `SELECT ii.id, ii.cosmo_num, ii.qty_owed, i.order_number FROM inv_invoice_items ii
+         JOIN inv_invoices i ON i.order_number = ii.order_number
+         WHERE (i.order_number=$1 OR i.base_order=$1) AND i.order_number<>$2 AND i.status='received' AND ii.qty_owed > 0
+         ORDER BY ii.id FOR UPDATE OF ii`, [base, order])).rows
+        .sort((a, b) => invoiceParts.partNo(a.order_number, base) - invoiceParts.partNo(b.order_number, base));
+      const got = lines.rows.filter(l => l.qty_received > 0).map(l => ({ cosmo_num: l.cosmo_num, qty: l.qty_received }));
+      for (const t of invoiceParts.owedTakeoff(owed, got)) {
+        await db.query('UPDATE inv_invoice_items SET qty_owed = qty_owed - $1 WHERE id=$2', [t.take, t.id]);
+      }
+    }
     await db.query("UPDATE inv_invoices SET status='received', completed_at=now() WHERE order_number=$1", [order]);
   }
 
@@ -6157,31 +6187,49 @@ app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req,
   try { data = JSON.parse(msg.content.filter(b => b.type === 'text').map(b => b.text).join('')); }
   catch (e) { return res.status(502).json({ ok: false, error: 'The invoice reader sent back something unreadable. Try again.' }); }
   const r = invoicePhoto.toInvoices(data);
+  // Each slip is one delivery, saved on its own (lib/invoice-parts.js): the
+  // first under the invoice number, a later one as 262106088-2 …
+  const slips = [];
+  for (const inv of r.invoices) for (const k of inv.slips) {
+    const items = (inv.bySlip && inv.bySlip[k]) || [];
+    if (items.length) slips.push({ orderNumber: inv.orderNumber, date: inv.date, key: k.startsWith('noshp:') ? '' : k, items });
+  }
   const token = crypto.randomBytes(12).toString('hex');
   await pool.query("DELETE FROM inv_cache WHERE cache_key LIKE 'photoinv:%' AND updated_at < now() - interval '1 day'");
-  await saveCache('photoinv:' + token, r.invoices);
-  // the preview: no prices; each line with the product it maps to, and what the app already has for the order
-  const out = [];
+  await saveCache('photoinv:' + token, slips);
+  // the preview: no prices; per slip, the invoice it becomes and each line with
+  // the product it maps to. Slips planned earlier in this upload count, so two
+  // new slips of one invoice show as #N and #N-2, as they will be saved.
+  const out = [], partsBy = new Map();
   for (const inv of r.invoices) {
-    const ex = (await pool.query(`SELECT status, photo_slips, (SELECT COUNT(*) FROM inv_invoice_items i WHERE i.order_number=v.order_number)::int AS lines
-      FROM inv_invoices v WHERE order_number=$1`, [inv.orderNumber])).rows[0];
-    const lines = [];
-    for (const it of inv.items) {
-      const m = (await pool.query(`SELECT m.asin, p.name FROM inv_cosmo_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.cosmo_num=$1 LIMIT 1`, [it.cosmo_num])).rows[0];
-      lines.push({ cosmo_num: it.cosmo_num, description: it.description, qty: it.qty_shipped, asin: m ? m.asin : null, name: m ? m.name : null });
+    if (!partsBy.has(inv.orderNumber)) partsBy.set(inv.orderNumber, await invoicePartsOf(pool, inv.orderNumber, false));
+    const parts = partsBy.get(inv.orderNumber);
+    const rows = [];
+    for (const sl of slips.filter(x => x.orderNumber === inv.orderNumber)) {
+      const sig = invoiceParts.lineSig(sl.items);
+      const plan = invoiceParts.planInvoiceWrite({ base: inv.orderNumber, key: sl.key, sig, parts });
+      let state = 'refused';
+      if (plan.write) {
+        state = plan.mode === 'replace' ? 'replace' : (plan.orderNumber === String(inv.orderNumber) ? 'new' : 'part');
+        // read again with nothing changed: say so instead of offering to "replace" it
+        if (plan.mode === 'replace' && (parts.find(p => p.order_number === plan.orderNumber) || {}).sig === sig) state = 'same';
+        if (plan.mode === 'create') parts.push({ order_number: plan.orderNumber, status: 'pending', slips: sl.key ? [sl.key] : null, sig });
+      }
+      const lines = [];
+      for (const it of sl.items) {
+        const m = (await pool.query(`SELECT m.asin, p.name FROM inv_cosmo_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.cosmo_num=$1 LIMIT 1`, [it.cosmo_num])).rows[0];
+        lines.push({ cosmo_num: it.cosmo_num, description: it.description, qty: it.qty_shipped, asin: m ? m.asin : null, name: m ? m.name : null });
+      }
+      rows.push({ slip: sl.key, target: plan.orderNumber, state, note: plan.write ? '' : invoiceParts.refusalText(plan, inv.orderNumber, sl.key), lines });
     }
-    let state = 'new';
-    if (ex && ex.status === 'received') state = 'received';
-    else if (ex && ex.photo_slips == null && ex.lines) state = 'emailed';
-    else if (ex && ex.photo_slips) state = inv.slips.every(k => ex.photo_slips.includes(k)) ? 'already' : 'more';
-    out.push({ orderNumber: inv.orderNumber, date: inv.date, slips: inv.slips.length, lines, warnings: inv.warnings, state });
+    out.push({ orderNumber: inv.orderNumber, date: inv.date, warnings: inv.warnings, slips: rows });
   }
   const u = msg.usage || {};
   res.json({ ok: true, token, invoices: out, problems: r.problems });
-  console.log(`[Photo invoice] read ${files.length} file(s): ${r.invoices.length} invoice(s), ${u.input_tokens || 0} in / ${u.output_tokens || 0} out tokens.`);
+  console.log(`[Photo invoice] read ${files.length} file(s): ${r.invoices.length} invoice(s), ${slips.length} slip(s), ${u.input_tokens || 0} in / ${u.output_tokens || 0} out tokens.`);
 });
-// Save what was read (after the screen showed it): each invoice is added, or
-// its new slips merged into the order (writeInvoiceLines opts.photo).
+// Save what was read (after the screen showed it): each slip becomes its
+// delivery's invoice (writeInvoiceLines decides which, and refuses a repeat).
 app.post('/api/invoices/add-photo', auth, async (req, res) => {
   const token = String((req.body && req.body.token) || '');
   if (!/^[0-9a-f]{24}$/.test(token)) return res.status(400).json({ ok: false, error: 'Read the invoice again.' });
@@ -6189,11 +6237,12 @@ app.post('/api/invoices/add-photo', auth, async (req, res) => {
   const c = (await pool.query('DELETE FROM inv_cache WHERE cache_key=$1 RETURNING data', ['photoinv:' + token])).rows[0];
   if (!c) return res.status(410).json({ ok: false, error: 'That reading has expired or was already added. Read the invoice again.' });
   const created = [], errors = [];
-  for (const inv of c.data || []) {
-    if (!inv.items || !inv.items.length) { errors.push(`Order ${inv.orderNumber}: no lines could be read.`); continue; }
-    const w = await writeInvoiceLines(inv.orderNumber, inv.date, inv.items, { photo: inv, seedUnitCost: true });
+  for (const sl of c.data || []) {
+    if (!sl || !Array.isArray(sl.items)) { errors.push('That reading is from an older version. Read the invoice again.'); break; }
+    const w = await writeInvoiceLines(sl.orderNumber, sl.date, sl.items, { key: sl.key || '', seedUnitCost: true });
     if (w.refused) { errors.push(w.refused); continue; }
-    created.push({ orderNumber: inv.orderNumber, items: inv.items.length, mapped: w.mapped, unmapped: w.unmapped.length });
+    created.push({ orderNumber: w.orderNumber, base: sl.orderNumber, laterDelivery: w.orderNumber !== String(sl.orderNumber),
+      items: sl.items.length, mapped: w.mapped, unmapped: w.unmapped.length });
   }
   res.json({ ok: true, created, errors });
 });
