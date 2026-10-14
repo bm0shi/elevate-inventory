@@ -6611,6 +6611,8 @@ function addInvoiceMulti(){
     if(d.ok){
       let msg=d.created.map(c=>`#${c.orderNumber}: ${c.items} items (${c.mapped} mapped${c.unmapped?', '+c.unmapped+' need mapping':''})`).join('\n');
       toast('Added '+d.created.length+' order(s)');
+      // orders the paste skipped (e.g. already checked in) are named, never dropped quietly
+      if(d.errors&&d.errors.length) msg+='\n\n⚠ Not added:\n'+d.errors.join('\n');
       alert('Created '+d.created.length+' invoice(s):\n\n'+msg);
       document.getElementById('invoiceText').value='';
       loadInvoiceList();
