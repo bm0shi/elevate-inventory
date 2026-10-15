@@ -462,7 +462,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'split-delivery-1067';
+const BUILD_ID = 'new-product-1068';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3113,7 +3113,11 @@ app.get('/api/activity', auth, async (req, res) => {
 app.post('/api/add-product', auth, async (req, res) => {
   const { asin, name, sku, upc } = req.body;
   if (!asin) return res.status(400).json({ error: 'asin required' });
-  await pool.query('INSERT INTO inv_products(asin,name,sku,upc,upc_norm) VALUES($1,$2,$3,$4,$5) ON CONFLICT (asin) DO UPDATE SET name=$2, sku=$3, upc=$4, upc_norm=$5',
+  // Re-adding a product already in the catalog only fills in what was typed:
+  // an empty box used to blank its SKU and barcode.
+  await pool.query(`INSERT INTO inv_products(asin,name,sku,upc,upc_norm) VALUES($1,$2,$3,$4,$5) ON CONFLICT (asin) DO UPDATE SET
+      name=COALESCE(NULLIF($2,''), inv_products.name), sku=COALESCE(NULLIF($3,''), inv_products.sku),
+      upc=COALESCE(NULLIF($4,''), inv_products.upc), upc_norm=COALESCE(NULLIF($5,''), inv_products.upc_norm)`,
     [asin.trim(), name || '', sku || '', upc || '', normCode(upc||'')]);
   await pool.query('INSERT INTO inv_stock(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [asin.trim()]);
   if (upc && upc.trim()) {
@@ -5561,6 +5565,60 @@ app.post('/api/cosmo-map', auth, async (req, res) => {
   // backfill any invoice lines using this cosmo_num
   await pool.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2 AND asin IS NULL', [asin, cosmo_num]);
   res.json({ ok: true });
+});
+
+// A brand-new product on an invoice line: add it to the catalog and link the
+// line's Cosmo# in one step, from the line itself (owner, 10/15: "lets put it
+// on those items that need to be added that are within the order check in
+// page"). Never overwrites a product already in the catalog (the old
+// "Add a Product" form blanked its SKU and barcode on a repeat). Amazon is
+// asked first when it can be: a typo'd ASIN is refused, and the real title
+// and picture are saved. The link stays unverified until a bottle is scanned,
+// like any picked link.
+app.post('/api/invoices/new-product', auth, async (req, res) => {
+  const b = req.body || {};
+  const asin = String(b.asin || '').trim().toUpperCase();
+  const cosmo = String(b.cosmo_num || '').trim();
+  const upc = String(b.upc || '').trim();
+  let name = String(b.name || '').trim().slice(0, 300);
+  if (!/^[A-Z0-9]{10}$/.test(asin)) return res.status(400).json({ ok: false, error: 'An ASIN is 10 letters and numbers, like B07DXL29H6.' });
+  if (!cosmo) return res.status(400).json({ ok: false, error: 'Pick the invoice line first.' });
+  if (upc && !/^\d{8,14}$/.test(upc.replace(/\s/g, ''))) return res.status(400).json({ ok: false, error: 'The barcode should be 8–14 digits. Scan the bottle, or leave it empty.' });
+  let image = null, amazon = 'not_checked';
+  const creds = (process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN) && (process.env.AMAZON_CLIENT_ID_FM || process.env.AMAZON_CLIENT_ID);
+  if (creds) {
+    try {
+      const live = (await getCatalogItems([asin]))[asin];
+      if (live && live.name) { name = live.name; image = live.image || null; amazon = 'found'; }
+      else if (live && live.error && /not found|NOT_FOUND|404|invalid/i.test(live.error)) {
+        return res.status(400).json({ ok: false, error: `Amazon has no product ${asin}. Check the ASIN on the listing.` });
+      } else amazon = 'unreachable';
+    } catch (e) { amazon = 'unreachable'; }
+  }
+  if (!name) return res.status(400).json({ ok: false, error: 'Type the product name (with its size).' });
+  const out = await withTx(async (db) => {
+    const ex = (await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin])).rows[0];
+    if (ex) return { status: 409, body: { ok: false, error: `${asin} is already in the catalog (${ex.name || 'no name'}). Search for it in the box above and tap Link.` } };
+    const mapped = (await db.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1', [cosmo])).rows[0];
+    if (mapped && mapped.asin) return { status: 409, body: { ok: false, error: `Cosmo# ${cosmo} is already linked to ${mapped.asin}.` } };
+    const un = upc ? normCode(upc) : '';
+    if (un) {
+      const owner = (await db.query('SELECT asin FROM inv_upcs WHERE upc_norm=$1', [un])).rows[0];
+      if (owner) return { status: 409, body: { ok: false, error: `That barcode already belongs to ${owner.asin}. Check the bottle.` } };
+    }
+    // a double tap: the second finds the row the first just added
+    const ins = await db.query('INSERT INTO inv_products(asin, name, sku, upc, upc_norm, image) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (asin) DO NOTHING RETURNING asin',
+      [asin, name, '', upc, un, image]);
+    if (!ins.rowCount) return { status: 409, body: { ok: false, error: `${asin} is already in the catalog. Search for it in the box above and tap Link.` } };
+    await db.query('INSERT INTO inv_stock(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [asin]);
+    if (un) await db.query('INSERT INTO inv_upcs(upc_norm, upc_raw, asin) VALUES($1,$2,$3)', [un, upc, asin]);
+    await db.query(
+      `INSERT INTO inv_cosmo_map(cosmo_num, asin, verified, source) VALUES($1,$2,false,'new_product')
+       ON CONFLICT (cosmo_num) DO UPDATE SET asin=$2, verified=false, verified_at=NULL, verified_upc=NULL, source='new_product'`, [cosmo, asin]);
+    const lines = await db.query('UPDATE inv_invoice_items SET asin=$1 WHERE cosmo_num=$2 AND asin IS NULL', [asin, cosmo]);
+    return { status: 200, body: { ok: true, asin, name, amazon, linesLinked: lines.rowCount } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // Bulk import Cosmoprof# -> ASIN mappings (lines of "cosmoNum, ASIN")

@@ -169,6 +169,9 @@ html.nl input:hover:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:hover:not
 html.nl input:focus:not(.oh2 *):not(.d2 *):not(.pal *), html.nl select:focus:not(.oh2 *):not(.d2 *):not(.pal *), html.nl textarea:focus:not(.oh2 *):not(.d2 *):not(.pal *) {
   border-color: var(--k-brand) !important; box-shadow: 0 0 0 3px rgba(13,68,80,.12) !important; outline: none;
 }
+/* Count boxes on Order Check-In (exp / Received): small boxes, so the big padding
+   above left ~30px and cut 4-digit counts in half (owner, 10/15) */
+html.nl input[type=number].qtyin:not(.oh2 *):not(.d2 *):not(.pal *) { font-size: 16px !important; padding: 6px 4px !important; width: 84px !important; text-align: center; font-weight: 750; }
 /* The scan boxes stay big: they are what the floor looks at */
 html.nl #scanIn, html.nl #scanPrep, html.nl #scanOut { font-size: 22px; padding: 17px 18px; border-width: 1.5px !important; }
 

@@ -83,6 +83,7 @@ These live in comments next to the code. Read the comment before changing the co
 - **Split deliveries:** one invoice number can arrive as several shipments (SHP#). Each is its own check-in (`262106088-2`, `lib/invoice-parts.js`); never merge a later delivery into a checked-in invoice.
 - **Cosmoprof invoices repeat `FOR ORDER NUMBER:` on every page.** Merge all segments with the same order number *before* writing. Writes start with `DELETE ... WHERE order_number`, so writing page by page used to wipe earlier pages.
 - **Invoice dates come in several formats** (`9/18/26`, `Sep 18, 2026`). `findInvoiceDate` normalizes them to M/D/YY.
+- **New products from an invoice line:** "+ Add product to catalog" on an unlinked Order Check-In line (`/api/invoices/new-product`) adds the product and links the Cosmo# in one step, checks the ASIN with Amazon when it can (real title and picture), and never overwrites a product already in the catalog. The link starts unverified like any pick.
 - **Cosmo-map entries are only trusted after a physical barcode scan confirms them** (`inv_cosmo_map.verified`). Seeded or hand-picked mappings start unverified.
 - **Name-match suggestions never show a percentage.** Only a single, clearly winning match is offered, because workers treat a number as certainty.
 - **Hazmat:** a manual call by the owner always outranks Amazon's declaration (`hazmat_source`).
