@@ -6860,6 +6860,32 @@ function candBtn(cosmoNum, asin, name, conf, image){
     +'</div>';
 }
 
+// "+ Add product to catalog" on an unlinked check-in line: ASIN (from the
+// Amazon listing), the name prefilled from the invoice, an optional barcode.
+// /api/invoices/new-product adds it and links this Cosmo# in one step.
+function newProdForm(cosmo){
+  const box=document.getElementById('newprod_'+cosmo); if(!box) return;
+  if(box.innerHTML){ box.innerHTML=''; return; }
+  const l=(typeof _reconLines!=='undefined'?_reconLines:[]).find(x=>String(x.cosmo_num)===String(cosmo))||{};
+  box.innerHTML='<div style="margin-top:8px;padding:11px;background:#f4fbf7;border:1px solid #cdebdb;border-radius:6px">'
+    +'<label style="font-size:12px">ASIN (from the Amazon listing)</label><input type="text" id="npA_'+esc(cosmo)+'" placeholder="B07DXL29H6" autocomplete="off" autocapitalize="characters" style="width:100%">'
+    +'<label style="font-size:12px;margin-top:8px;display:block">Name with size (Amazon\'s title replaces it when Amazon answers)</label><input type="text" id="npN_'+esc(cosmo)+'" value="'+esc(l.description||'')+'" autocomplete="off" style="width:100%">'
+    +'<label style="font-size:12px;margin-top:8px;display:block">Barcode (optional: scan a bottle)</label><input type="text" id="npU_'+esc(cosmo)+'" inputmode="numeric" autocomplete="off" style="width:100%">'
+    +'<button id="npB_'+esc(cosmo)+'" onclick="newProdSave(\''+esc(cosmo)+'\')" style="margin-top:10px;width:100%;padding:11px;font-size:14px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer">Add to catalog & link Cosmo# '+esc(cosmo)+'</button></div>';
+  const a=document.getElementById('npA_'+cosmo); if(a) a.focus();
+}
+function newProdSave(cosmo){
+  const v=id=>(document.getElementById(id+cosmo)||{}).value||'';
+  const asin=v('npA_').trim().toUpperCase(), name=v('npN_').trim(), upc=v('npU_').trim();
+  if(!/^[A-Z0-9]{10}$/.test(asin)){ toast('An ASIN is 10 letters and numbers, like B07DXL29H6',true); return; }
+  const b=document.getElementById('npB_'+cosmo); if(b){ b.disabled=true; b.textContent='Checking with Amazon…'; }
+  api('/api/invoices/new-product',{method:'POST',body:JSON.stringify({asin,name,upc,cosmo_num:cosmo})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to catalog & link Cosmo# '+cosmo; } return; }
+    toast('Added '+String(d.name||asin).slice(0,40)+' and linked');
+    if(d.amazon==='unreachable') alert('Added and linked. Amazon didn\'t answer, so the name you typed was kept. Double-check the ASIN on the listing.');
+    loadLocations().then(renderReconLines); if(typeof loadProducts==='function') loadProducts();
+  }).catch(e=>{ toast(e.message||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to catalog & link Cosmo# '+cosmo; } });
+}
 function mapCosmo(cosmoNum, asin, name){
   if(!confirm('Link Cosmoprof #'+cosmoNum+' to:\n\n'+name+'\n\nSaved permanently — future invoices recognise it automatically.')) return;
   api('/api/cosmo-map',{method:'POST',body:JSON.stringify({cosmo_num:cosmoNum, asin:asin})}).then(d=>{
@@ -9754,6 +9780,11 @@ function renderReconLines(){
                 + '<span style="font-weight:500;font-size:12px">The barcode identifies it exactly and links it permanently. Guessing from the description is unreliable for near-identical Paul Mitchell names, so nothing is suggested here on purpose. If you cannot open a case, search the catalog below and verify on Amazon before linking.</span></div>')
           +'<input type="text" placeholder="Search all products…" oninput="searchMapCandidates(this,\''+l.cosmo_num+'\')" style="width:100%;margin-top:9px;padding:9px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:13px">'
           +'<div id="mapres_'+l.cosmo_num+'"></div>'
+          // brand-new product: add it to the catalog and link this line in one step
+          +'<div style="margin-top:10px;padding-top:9px;border-top:1px dashed #e8dcc0;display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+            +'<span class="hint" style="flex:1;min-width:160px">New product, not in the app yet?</span>'
+            +'<button onclick="newProdForm(\''+esc(l.cosmo_num)+'\')" style="padding:8px 14px;font-size:13px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer">+ Add product to catalog</button></div>'
+          +'<div id="newprod_'+esc(l.cosmo_num)+'"></div>'
           +'</div>';
       }
       // Pallet location: pre-filled when we already stock this item, flagged red when new.
@@ -9805,12 +9836,12 @@ function renderReconLines(){
           +(!l.has_upc?' <span style="font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:#eef2f6;color:#5a6472;white-space:nowrap" title="This product has no barcode saved. Scanning a bottle saves it.">no barcode on file</span>':'')
         : '';
       const recBox=l.asin
-        ? `<label style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;font-weight:700;color:#5a6472">Received <input type="number" min="0" inputmode="numeric" value="${rec}" data-line="${l.id}" onchange="setReceived(this)" style="width:72px;padding:5px;border:1.5px solid #008296;border-radius:5px;font-size:15px;font-weight:800;text-align:center"></label> / ${exp}`
+        ? `<label style="display:inline;text-transform:none;letter-spacing:0;font-size:12px;font-weight:700;color:#5a6472">Received <input type="number" class="qtyin" min="0" inputmode="numeric" value="${rec}" data-line="${l.id}" onchange="setReceived(this)" style="width:84px;padding:5px;border:1.5px solid #008296;border-radius:5px;font-size:15px;font-weight:800;text-align:center"></label> / ${exp}`
         : `${rec} / ${exp}`;
       return `<div class="box" ${cls} id="rline_${l.id}" style="margin-bottom:6px;padding:12px">
         <div style="font-weight:700;font-size:13px">${esc(nm)}${tags}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px;flex-wrap:wrap">
-          <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:64px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:13px">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
+          <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" class="qtyin" inputmode="numeric" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:84px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:14px;text-align:center">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${recBox} &nbsp; <span id="rstat_${l.id}">${status}</span></span>
         </div>
         ${locBlock}

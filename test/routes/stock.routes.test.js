@@ -160,6 +160,26 @@ test('a split invoice: each delivery is its own check-in; a repeat slip is refus
   assert.match((await post('/api/invoices/add-multi', { text: slip('262114389', 678) })).body.error, /already added/);
 });
 
+test('a new product added from an invoice line is linked once; an existing product is never overwritten', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_invoices(order_number, status) VALUES ('INV-NP','pending')`);
+  await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, qty_expected, qty_received) VALUES ('INV-NP','999001','PM NEW THING 3 OZ',12,0)`);
+  // an ASIN already in the catalog: refused, its SKU untouched
+  await pool.query(`INSERT INTO inv_products(asin, name, sku) VALUES ('B0EXISTS01','Kept Name','KEEP-SKU') ON CONFLICT (asin) DO NOTHING`);
+  const dup = await post('/api/invoices/new-product', { asin: 'B0EXISTS01', cosmo_num: '999001', name: 'Other' });
+  assert.strictEqual(dup.status, 409);
+  assert.strictEqual((await one(`SELECT sku FROM inv_products WHERE asin='B0EXISTS01'`)).sku, 'KEEP-SKU');
+  assert.strictEqual((await post('/api/invoices/new-product', { asin: 'nope', cosmo_num: '999001', name: 'x' })).status, 400);
+  // the real add: product, stock row, unverified link, the line linked; a second tap is refused
+  const [a, b] = await Promise.all([
+    post('/api/invoices/new-product', { asin: 'b0newprod1', cosmo_num: '999001', name: 'PM NEW THING 3 OZ' }),
+    post('/api/invoices/new-product', { asin: 'B0NEWPROD1', cosmo_num: '999001', name: 'PM NEW THING 3 OZ' })]);
+  assert.deepStrictEqual([a.status, b.status].sort(), [200, 409]);
+  assert.strictEqual((await one(`SELECT asin FROM inv_invoice_items WHERE order_number='INV-NP'`)).asin, 'B0NEWPROD1');
+  const m = await one(`SELECT asin, verified FROM inv_cosmo_map WHERE cosmo_num='999001'`);
+  assert.deepStrictEqual([m.asin, m.verified], ['B0NEWPROD1', false]);
+  assert.strictEqual((await stock('B0NEWPROD1')).onhand, 0);
+});
+
 test('Shortages: an owed line is listed; marking it credited moves it to history without touching stock', { skip }, async () => {
   await pool.query(`INSERT INTO inv_invoices(order_number, invoice_date, status) VALUES ('INV-T4','10/1/26','pending')`);
   await pool.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received) VALUES ('INV-T4','444','Test Conditioner','TSTB',30,24)`);
