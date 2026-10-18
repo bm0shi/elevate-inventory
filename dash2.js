@@ -707,7 +707,11 @@
       const st = state.topSort || (state.topSort = { col: 'units', dir: -1 });
       const rows = d.items.map((it, i) => Object.assign({ rank: i + 1 }, it));
       const g = { rank: r => r.rank, name: r => String(r.name || r.asin).toLowerCase(), units: r => r.units, sales: r => r.sales, share: r => r.units,
-                  profit: r => r.profit == null ? -1e12 : r.profit };
+                  profit: r => r.profit == null ? -1e12 : r.profit, margin: r => r.margin == null ? -1e12 : r.margin };
+      // margin = net profit ÷ sales (owner 10/18)
+      rows.forEach(r => { r.margin = r.profit != null && r.sales > 0 ? 100 * r.profit / r.sales : null; });
+      const mg = r => r.margin == null ? '<span style="color:' + C.muted + '">—</span>'
+        : '<span style="color:' + (r.margin < 0 ? C.crit : '#1e8449') + '">' + (r.profitBasis === 'store' ? '≈' : '') + r.margin.toFixed(1) + '%</span>';
       // net profit: estimate (see the note under the table); ≈ = the store's average Amazon fees, not this listing's own
       const pf = r => r.profit == null ? '<span title="' + E('Needs ' + (r.profitMissing || 'data')) + '" style="color:' + C.muted + '">—</span>'
         : '<span style="color:' + (r.profit < 0 ? C.crit : '#1e8449') + '" title="' + E((r.profitPerUnit != null ? '$' + r.profitPerUnit.toFixed(2) + ' per unit' : '') + (r.profitBasis === 'store' ? ' · Amazon fees at the store average (few settled sales on this listing yet)' : '')) + '">'
@@ -718,14 +722,15 @@
       const wide = window.innerWidth > 760;   // phones: no Share column, so names have room
       // phones: units and sales share a column (both still sort), no Share
       const arrow = c => st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '';
-      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:84px"><col style="width:104px"><col style="width:116px"><col style="width:112px">' : '<col style="width:84px">') + '</colgroup><tr>' +
-        th('rank', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('share', 'Share')
-          : '<th class="' + (['units', 'sales', 'profit'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span><br><span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span></th>') + '</tr>' +
+      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:76px"><col style="width:96px"><col style="width:108px"><col style="width:84px"><col style="width:104px">' : '<col style="width:84px">') + '</colgroup><tr>' +
+        th('rank', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('margin', 'Margin') + th('share', 'Share')
+          : '<th class="' + (['units', 'sales', 'profit', 'margin'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span><br><span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span><br><span data-tsort="margin">Margin' + arrow('margin') + '</span></th>') + '</tr>' +
         rows.map(r => '<tr><td><span class="rk">' + r.rank + '</span></td><td>' + sized(r.asin, r.name) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
-          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td>' + (100 * r.units / tu).toFixed(1) + '% of units</td>'
-            : '<td class="n">' + n0(r.units) + '<div style="font-size:12.5px;font-weight:600;color:' + C.muted + '">$' + n0(r.sales) + '</div><div style="font-size:12.5px;font-weight:700">' + pf(r) + '</div></td>') + '</tr>').join('') + '</table>'
-        + '<div class="d2-sub" style="margin-top:8px">' + (d.profitRows ? 'Net profit, these ' + d.profitRows + ' listings: <b>' + (d.profitSum < 0 ? '−$' : '$') + n0(Math.abs(d.profitSum)) + '</b>. ' : '')
-        + 'Estimate: sales − Amazon fees, refunds &amp; promos (each listing’s average over the last 6 months of settlements) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</div>';
+          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td class="n">' + mg(r) + '</td><td>' + (100 * r.units / tu).toFixed(1) + '% of units</td>'
+            : '<td class="n">' + n0(r.units) + '<div style="font-size:12.5px;font-weight:600;color:' + C.muted + '">$' + n0(r.sales) + '</div><div style="font-size:12.5px;font-weight:700">' + pf(r) + '</div><div style="font-size:12px;font-weight:700">' + mg(r) + '</div></td>') + '</tr>').join('') + '</table>'
+        + '<div class="d2-sub" style="margin-top:8px">' + (d.profitRows ? 'Net profit, these ' + d.profitRows + ' listings: <b>' + (d.profitSum < 0 ? '−$' : '$') + n0(Math.abs(d.profitSum)) + '</b>'
+          + (() => { const s = d.items.filter(r => r.profit != null).reduce((t, r) => t + (r.sales || 0), 0); return s > 0 ? ' · <b>' + (100 * d.profitSum / s).toFixed(1) + '%</b> margin' : ''; })() + '. ' : '')
+        + 'Margin = net profit ÷ sales. Estimate: sales − Amazon fees, refunds &amp; promos (each listing’s average over the last 6 months of settlements) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</div>';
       if (d.since && from < d.since) body += '<div class="d2-note" style="margin-top:10px"><span>Sales per product are saved from ' + E(dShort(d.since)) + ', so this list covers ' + E(dShort(d.since)) + ' – ' + E(dShort(to)) + '.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
     }
     box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 20 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
