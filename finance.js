@@ -551,6 +551,21 @@ module.exports = function registerFinance(app, deps) {
     let bundles = {};
     try { for (const b of (await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles')).rows)
             (bundles[b.bundle_asin] = bundles[b.bundle_asin] || []).push(b); } catch (e) {}
+    // Shipments record a duo as its bottles (inv_shipment_items), so freight is
+    // known per bottle, never under the duo's ASIN: a duo looked itself up,
+    // found nothing and carried $0 freight (owner, 10/18: "39.6 seems super
+    // high … make sure its taking into account the cost of each component").
+    // A duo's freight is its bottles' freight; none if a bottle has no rate yet.
+    for (const [b, comps] of Object.entries(bundles)) {
+      if (inbound[b]) continue;
+      let f = 0, p = 0, ok = comps.length > 0;
+      for (const c of comps) {
+        const r = inbound[c.component_asin], q = Number(c.qty) || 1;
+        if (!r) { ok = false; break; }
+        f += r.freight * q; p += r.placement * q;
+      }
+      if (ok) inbound[b] = { freight: f, placement: p, total: f + p, fromBottles: true };
+    }
     return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles, waiting, settled };
   }
 
@@ -712,7 +727,10 @@ module.exports = function registerFinance(app, deps) {
       const back = new Date(Date.now() - 182 * 86400000).toISOString().slice(0, 10);
       const settled = await aggregate(back, new Date(Date.now() + 86400000).toISOString().slice(0, 10), ctx);
       const rates = topProfit.amazonRates(settled.items);
-      // landed cost per unit, as Product Profit adds it up
+      // landed cost per unit, as Product Profit adds it up, in its parts so the
+      // dashboard can show where a margin comes from (owner checks duos by hand)
+      const ownLots = new Set((await pool.query(`SELECT DISTINCT asin FROM inv_cost_history WHERE qty > 0 AND order_number <> 'MANUAL' AND asin = ANY($1)`,
+        [r.rows.map(x => x.asin)])).rows.map(x => x.asin));
       const landed = asin => {
         const info = ctx.products[asin] || {};
         if (info.avgCost == null) return null;
@@ -720,13 +738,21 @@ module.exports = function registerFinance(app, deps) {
         const lRate = ctx.laborInfo && ctx.laborInfo.split
           ? (ctx.laborInfo.split.byAsin[asin] != null ? ctx.laborInfo.split.byAsin[asin] : ctx.laborInfo.split.fallback) : ctx.laborRate;
         const ib = ctx.inbound[asin];
-        return info.avgCost + (sRate || 0) + (lRate || 0) + (ib ? ib.total : 0);
+        const comps = ctx.bundles[asin];
+        return { product: info.avgCost, supplies: sRate != null ? sRate : null, labor: lRate != null ? lRate : null, freight: ib ? ib.total : null,
+          total: info.avgCost + (sRate || 0) + (lRate || 0) + (ib ? ib.total : 0),
+          // a duo bought as a set has its own invoice cost; otherwise it's its bottles added up
+          costFrom: comps ? (ownLots.has(asin) ? 'set' : 'bottles') : 'item',
+          bottles: comps ? comps.map(c => ({ asin: c.component_asin, qty: Number(c.qty) || 1,
+            name: (ctx.products[c.component_asin] || {}).name || c.component_asin, cost: (ctx.products[c.component_asin] || {}).avgCost ?? null })) : null };
       };
       let profitSum = 0, profitRows = 0;
       const items = r.rows.map(row => {
-        const e = topProfit.estimateProfit(row, rates, landed(row.asin));
+        const L = landed(row.asin);
+        const e = topProfit.estimateProfit(row, rates, L ? L.total : null);
         if (e.profit != null) { profitSum += e.profit; profitRows++; }
-        return Object.assign({}, row, { profit: e.profit, profitPerUnit: e.perUnit, profitBasis: e.basis, profitMissing: e.missing });
+        return Object.assign({}, row, { profit: e.profit, profitPerUnit: e.perUnit, profitBasis: e.basis, profitMissing: e.missing,
+          breakdown: L ? Object.assign({ priceEach: row.units ? row.sales / row.units : null, amazon: e.amazonPerUnit }, L) : null });
       });
       res.json({ ok: true, from, to, items, total: { units: t.rows[0].units, sales: t.rows[0].sales },
                  since: t.rows[0].since, profitSum, profitRows, lookbackFrom: back });
