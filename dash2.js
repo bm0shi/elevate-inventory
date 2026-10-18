@@ -661,7 +661,7 @@
       '<div class="v">' + (p.cur == null ? '—' : '$' + n0(p.cur)) + '</div>' +
       '<div class="dl">' + deltaChip(p.cur, p.prev) + '<b class="' + (p.cur != null && p.prev != null ? (p.cur >= p.prev ? 'pos' : 'neg') : '') + '">' + moneyDelta(p.cur, p.prev) + '</b></div>' +
       '<div class="p">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div>' +
-      '<span class="t10" data-top="' + p.k + '" title="Top 20 sellers for ' + E(p.label) + '">Top 20 ▾</span></button>').join('');
+      '<span class="t10" data-top="' + p.k + '" title="Top 50 sellers for ' + E(p.label) + '">Top 50 ▾</span></button>').join('');
     const p = P.list.find(z => z.k === sel) || P.list[2];
     // custom range picker
     let nt = '';
@@ -687,8 +687,9 @@
     const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
     if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('today'); }
   }
-  // Top 20 sellers for the chosen period (owner: a drop-down under each
-  // period; 10 → 20 and net profit added 10/18). Per-listing units, sales and
+  // Top 50 sellers for the chosen period (owner: a drop-down under each
+  // period; 10 → 20 → 50, net profit, margin, and a worth-reordering rank by
+  // profit per day with ROI beside it, all added 10/18). Per-listing units, sales and
   // estimated net profit from /api/finance/top-sellers (lib/top-profit.js),
   // kept per range for this visit; the table sorts by any column (owner's
   // standing ask).
@@ -704,10 +705,17 @@
     else if (d.error) body = '<div class="d2-sub" style="padding:6px 0;color:' + C.crit + '">Couldn’t load: ' + E(d.error) + '</div>';
     else if (!d.items.length) body = '<div class="d2-sub" style="padding:6px 0">' + (d.since ? 'No sales saved for ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + ' yet.' : 'Sales per product start with the next update. Press <b>Update today</b> above; the morning sync fills the last 60 days.') + '</div>';
     else {
-      const st = state.topSort || (state.topSort = { col: 'units', dir: -1 });
+      // # = worth-reordering rank: profit per day (owner 10/18), best first
+      const st = state.topSort || (state.topSort = { col: 'score', dir: 1 });
       const rows = d.items.map((it, i) => Object.assign({ rank: i + 1 }, it));
       const g = { rank: r => r.rank, name: r => String(r.name || r.asin).toLowerCase(), units: r => r.units, sales: r => r.sales, share: r => r.units,
-                  profit: r => r.profit == null ? -1e12 : r.profit, margin: r => r.margin == null ? -1e12 : r.margin };
+                  profit: r => r.profit == null ? -1e12 : r.profit, margin: r => r.margin == null ? -1e12 : r.margin,
+                  score: r => r.scoreRank == null ? 1e9 : r.scoreRank, perday: r => r.profitPerDay == null ? -1e12 : r.profitPerDay,
+                  roi: r => r.roi == null ? -1e12 : r.roi };
+      const pd = r => r.profitPerDay == null ? '<span style="color:' + C.muted + '">—</span>'
+        : '<span style="color:' + (r.profitPerDay < 0 ? C.crit : '#1e8449') + '">' + (r.profitPerDay < 0 ? '−$' : '$') + Math.abs(r.profitPerDay).toFixed(Math.abs(r.profitPerDay) < 100 ? 2 : 0) + '</span>';
+      const ri = r => r.roi == null ? '<span style="color:' + C.muted + '">—</span>'
+        : '<span style="color:' + (r.roi < 0 ? C.crit : '#1e8449') + '">' + (100 * r.roi).toFixed(0) + '%</span>';
       // margin = net profit ÷ sales (owner 10/18)
       rows.forEach(r => { r.margin = r.profit != null && r.sales > 0 ? 100 * r.profit / r.sales : null; });
       const mg = r => r.margin == null ? '<span style="color:' + C.muted + '">—</span>'
@@ -732,28 +740,30 @@
         : '<span style="color:' + (r.profit < 0 ? C.crit : '#1e8449') + '" title="' + E((r.profitPerUnit != null ? '$' + r.profitPerUnit.toFixed(2) + ' per unit' : '') + (r.profitBasis === 'store' ? ' · Amazon fees at the store average (few settled sales on this listing yet)' : '')) + '">'
           + (r.profitBasis === 'store' ? '≈' : '') + (r.profit < 0 ? '−$' : '$') + n0(Math.abs(r.profit)) + '</span>';
       rows.sort((a, b) => { const x = g[st.col](a), y = g[st.col](b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * st.dir; });
-      const maxU = Math.max(1, ...d.items.map(r => r.units)), tu = d.total.units || 1;
+      const maxU = Math.max(1, ...d.items.map(r => r.units));
       const th = (c, l, cls) => '<th data-tsort="' + c + '" class="' + (st.col === c ? 'on ' : '') + (cls || '') + '" title="Sort">' + l + (st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '') + '</th>';
       const wide = window.innerWidth > 760;   // phones: no Share column, so names have room
       // phones: units and sales share a column (both still sort), no Share
       const arrow = c => st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '';
-      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:76px"><col style="width:96px"><col style="width:108px"><col style="width:84px"><col style="width:104px">' : '<col style="width:84px">') + '</colgroup><tr>' +
-        th('rank', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('margin', 'Margin') + th('share', 'Share')
-          : '<th class="' + (['units', 'sales', 'profit', 'margin'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span><br><span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span><br><span data-tsort="margin">Margin' + arrow('margin') + '</span></th>') + '</tr>' +
-        rows.map(r => '<tr data-bd="' + E(r.asin) + '" style="cursor:pointer" title="Tap for the numbers behind the profit"><td><span class="rk">' + r.rank + '</span></td><td>' + sized(r.asin, r.name) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
-          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td class="n">' + mg(r) + '</td><td>' + (100 * r.units / tu).toFixed(1) + '% of units</td>'
-            : '<td class="n">' + n0(r.units) + '<div style="font-size:12.5px;font-weight:600;color:' + C.muted + '">$' + n0(r.sales) + '</div><div style="font-size:12.5px;font-weight:700">' + pf(r) + '</div><div style="font-size:12px;font-weight:700">' + mg(r) + '</div></td>') + '</tr>'
-          + (openBd[r.asin] ? '<tr><td></td><td colspan="' + (wide ? 6 : 2) + '" style="font-size:13px;line-height:1.6;text-align:left;background:#f7f9fb;padding:8px 10px">' + bdHtml(r) + '</td></tr>' : '')).join('') + '</table>'
+      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:68px"><col style="width:88px"><col style="width:100px"><col style="width:76px"><col style="width:96px"><col style="width:68px">' : '<col style="width:118px">') + '</colgroup><tr>' +
+        th('score', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('margin', 'Margin') + th('perday', 'Profit/day') + th('roi', 'ROI')
+          : '<th class="' + (['units', 'sales', 'profit', 'margin', 'perday', 'roi'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span> · <span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span> · <span data-tsort="margin">%' + arrow('margin') + '</span><br><span data-tsort="perday">/day' + arrow('perday') + '</span> · <span data-tsort="roi">ROI' + arrow('roi') + '</span></th>') + '</tr>' +
+        rows.map(r => '<tr data-bd="' + E(r.asin) + '" style="cursor:pointer" title="Tap for the numbers behind the profit"><td><span class="rk">' + (r.scoreRank == null ? '—' : r.scoreRank) + '</span></td><td>' + sized(r.asin, r.name) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
+          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td class="n">' + mg(r) + '</td><td class="n">' + pd(r) + '</td><td class="n">' + ri(r) + '</td>'
+            : '<td class="n">' + n0(r.units) + ' <span style="font-size:12.5px;font-weight:600;color:' + C.muted + '">· $' + n0(r.sales) + '</span><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pf(r) + ' · ' + mg(r) + '</div><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pd(r) + '/d · ' + ri(r) + '</div></td>') + '</tr>'
+          + (openBd[r.asin] ? '<tr><td></td><td colspan="' + (wide ? 7 : 2) + '" style="font-size:13px;line-height:1.6;text-align:left;background:#f7f9fb;padding:8px 10px">' + bdHtml(r) + '</td></tr>' : '')).join('') + '</table>'
         + '<div class="d2-sub" style="margin-top:8px">' + (d.profitRows ? 'Net profit, these ' + d.profitRows + ' listings: <b>' + (d.profitSum < 0 ? '−$' : '$') + n0(Math.abs(d.profitSum)) + '</b>'
           + (() => { const s = d.items.filter(r => r.profit != null).reduce((t, r) => t + (r.sales || 0), 0); return s > 0 ? ' · <b>' + (100 * d.profitSum / s).toFixed(1) + '%</b> margin' : ''; })() + '. ' : '')
-        + 'Tap a row to see its numbers. Margin = net profit ÷ sales. Estimate: sales − Amazon (referral, refunds &amp; promos as each listing’s own % of price from 6 months of payouts, plus its FBA fee per unit from the last 60 days) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</div>';
+        + '<b>#</b> = rank by <b>profit per day</b> (units sold per day × net profit per unit) over ' + (d.days || 1) + ' day' + (d.days === 1 ? '' : 's') + (d.days <= 1 ? ' (today so far: pick 30 days for steadier numbers)' : '') + '. Tap a row to see its numbers.'
+        + '<details style="margin-top:4px"><summary style="cursor:pointer;font-weight:700">How it’s worked out</summary>'
+        + '<b>Profit/day</b> = net profit ÷ days in the period, the same as margin × sales per day. <b>ROI</b> = profit per unit ÷ what one unit costs you landed (product, supplies, labor, freight). Margin = net profit ÷ sales. Estimate: sales − Amazon (referral, refunds &amp; promos as each listing’s own % of price from 6 months of payouts, plus its FBA fee per unit from the last 60 days) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</details></div>';
       if (d.since && from < d.since) body += '<div class="d2-note" style="margin-top:10px"><span>Sales per product are saved from ' + E(dShort(d.since)) + ', so this list covers ' + E(dShort(d.since)) + ' – ' + E(dShort(to)) + '.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
     }
-    box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 20 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
+    box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 50 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
     box.querySelector('details').addEventListener('toggle', e => { store.set('d2TopOpen', e.target.open ? '1' : '0'); if (e.target.open && !topCache[key]) paintTop10(p); });
     if (!d && open) {
       topCache[key] = { loading: true };
-      ownerApi('/api/finance/top-sellers?limit=20&from=' + from + '&to=' + to).then(r => { topCache[key] = (r && r.ok) ? r : { error: (r && r.error) || 'no reply' }; })
+      ownerApi('/api/finance/top-sellers?limit=50&from=' + from + '&to=' + to).then(r => { topCache[key] = (r && r.ok) ? r : { error: (r && r.error) || 'no reply' }; })
         .catch(e => { topCache[key] = { error: e.message }; })
         .then(() => { if (state.topP === p) paintTop10(p); });
     }
@@ -862,7 +872,7 @@
       const bdr = !ts && !e.target.closest('a') && e.target.closest('[data-bd]');
       if (bdr) { const o = state.topBd || (state.topBd = {}), a = bdr.dataset.bd; o[a] = !o[a]; if (state.topP) paintTop10(state.topP); return; }
       if (ts) { const st = state.topSort || (state.topSort = { col: 'units', dir: -1 }), c = ts.dataset.tsort;
-        if (st.col === c) st.dir = -st.dir; else { st.col = c; st.dir = (c === 'name' || c === 'rank') ? 1 : -1; }
+        if (st.col === c) st.dir = -st.dir; else { st.col = c; st.dir = (c === 'name' || c === 'rank' || c === 'score') ? 1 : -1; }
         if (state.topP) paintTop10(state.topP); return; }
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.per) { store.set('d2Per', b.dataset.per); if (state && state.sales) paintSales(state.sales); return; }
