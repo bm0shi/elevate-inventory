@@ -42,3 +42,23 @@ test('few settled units borrow the store share; no cost or no fee history gives 
   assert.strictEqual(T.estimateProfit({ asin: 'A', units: 1, sales: 26 }, r, null).missing, 'product cost');
   assert.match(T.estimateProfit({ asin: 'Z', units: 1, sales: 26 }, T.amazonRates([]), 10).missing, /no settled sales/);
 });
+
+test('worth reordering: ranked by profit per day (velocity × profit per unit); ROI shown beside it', () => {
+  const rows = [
+    { asin: 'fastThin', profit: 140, profitPerUnit: 2, landed: 20 },     // 70 units, $2 each → $20/day over 7 days
+    { asin: 'slowFat', profit: 105, profitPerUnit: 15, landed: 30 },     // 7 units, $15 each → $15/day
+    { asin: 'both', profit: 420, profitPerUnit: 12, landed: 24 },        // 35 units, $12 each → $60/day
+    { asin: 'noCost', profit: null, profitPerUnit: null, landed: null },
+  ];
+  T.scoreRows(rows, 7);
+  assert.deepStrictEqual(rows.map(r => r.scoreRank), [2, 3, 1, null]);
+  assert.strictEqual(rows[2].profitPerDay, 60);
+  assert.strictEqual(rows[2].roi, 0.5);
+  assert.strictEqual(rows[3].profitPerDay, null);
+});
+
+test('days covered: both ends counted, never before the first saved day', () => {
+  assert.strictEqual(T.daysCovered('2026-10-12', '2026-10-18', '2026-01-01'), 7);
+  assert.strictEqual(T.daysCovered('2026-10-01', '2026-10-18', '2026-10-12'), 7);
+  assert.strictEqual(T.daysCovered('2026-10-18', '2026-10-18', null), 1);
+});
