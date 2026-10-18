@@ -661,7 +661,7 @@
       '<div class="v">' + (p.cur == null ? '—' : '$' + n0(p.cur)) + '</div>' +
       '<div class="dl">' + deltaChip(p.cur, p.prev) + '<b class="' + (p.cur != null && p.prev != null ? (p.cur >= p.prev ? 'pos' : 'neg') : '') + '">' + moneyDelta(p.cur, p.prev) + '</b></div>' +
       '<div class="p">' + (p.prev == null ? 'vs ' + E(p.prevLbl) + ': not pulled yet' : 'vs $' + n0(p.prev) + ' ' + E(p.prevLbl)) + '</div>' +
-      '<span class="t10" data-top="' + p.k + '" title="Top 10 sellers for ' + E(p.label) + '">Top 10 ▾</span></button>').join('');
+      '<span class="t10" data-top="' + p.k + '" title="Top 20 sellers for ' + E(p.label) + '">Top 20 ▾</span></button>').join('');
     const p = P.list.find(z => z.k === sel) || P.list[2];
     // custom range picker
     let nt = '';
@@ -687,9 +687,11 @@
     const st = x.salesToday, age = st && st.asOf ? Date.now() - Date.parse(st.asOf) : Infinity;
     if (!(job && job.running) && age > 3600000 && !state.autoPulled) { state.autoPulled = true; salesPull('today'); }
   }
-  // Top 10 sellers for the chosen period (owner: a drop-down under each
-  // period). Per-listing units and sales from /api/sales/top, kept per range
-  // for this visit; the table sorts by any column (owner's standing ask).
+  // Top 20 sellers for the chosen period (owner: a drop-down under each
+  // period; 10 → 20 and net profit added 10/18). Per-listing units, sales and
+  // estimated net profit from /api/finance/top-sellers (lib/top-profit.js),
+  // kept per range for this visit; the table sorts by any column (owner's
+  // standing ask).
   const topCache = {};
   function topRange(p) { return p.k === 'today' ? [p.D.T, p.D.T] : [p.curDays[0], p.curDays[p.curDays.length - 1]]; }
   function paintTop10(p) {
@@ -704,26 +706,33 @@
     else {
       const st = state.topSort || (state.topSort = { col: 'units', dir: -1 });
       const rows = d.items.map((it, i) => Object.assign({ rank: i + 1 }, it));
-      const g = { rank: r => r.rank, name: r => String(r.name || r.asin).toLowerCase(), units: r => r.units, sales: r => r.sales, share: r => r.units };
+      const g = { rank: r => r.rank, name: r => String(r.name || r.asin).toLowerCase(), units: r => r.units, sales: r => r.sales, share: r => r.units,
+                  profit: r => r.profit == null ? -1e12 : r.profit };
+      // net profit: estimate (see the note under the table); ≈ = the store's average Amazon fees, not this listing's own
+      const pf = r => r.profit == null ? '<span title="' + E('Needs ' + (r.profitMissing || 'data')) + '" style="color:' + C.muted + '">—</span>'
+        : '<span style="color:' + (r.profit < 0 ? C.crit : '#1e8449') + '" title="' + E((r.profitPerUnit != null ? '$' + r.profitPerUnit.toFixed(2) + ' per unit' : '') + (r.profitBasis === 'store' ? ' · Amazon fees at the store average (few settled sales on this listing yet)' : '')) + '">'
+          + (r.profitBasis === 'store' ? '≈' : '') + (r.profit < 0 ? '−$' : '$') + n0(Math.abs(r.profit)) + '</span>';
       rows.sort((a, b) => { const x = g[st.col](a), y = g[st.col](b); return (typeof x === 'string' ? x.localeCompare(y) : x - y) * st.dir; });
       const maxU = Math.max(1, ...d.items.map(r => r.units)), tu = d.total.units || 1;
       const th = (c, l, cls) => '<th data-tsort="' + c + '" class="' + (st.col === c ? 'on ' : '') + (cls || '') + '" title="Sort">' + l + (st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '') + '</th>';
       const wide = window.innerWidth > 760;   // phones: no Share column, so names have room
       // phones: units and sales share a column (both still sort), no Share
       const arrow = c => st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '';
-      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:90px"><col style="width:110px"><col style="width:120px">' : '<col style="width:76px">') + '</colgroup><tr>' +
-        th('rank', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('share', 'Share')
-          : '<th class="' + (st.col === 'units' || st.col === 'sales' ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span><br><span data-tsort="sales">$' + arrow('sales') + '</span></th>') + '</tr>' +
+      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:84px"><col style="width:104px"><col style="width:116px"><col style="width:112px">' : '<col style="width:84px">') + '</colgroup><tr>' +
+        th('rank', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('share', 'Share')
+          : '<th class="' + (['units', 'sales', 'profit'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span><br><span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span></th>') + '</tr>' +
         rows.map(r => '<tr><td><span class="rk">' + r.rank + '</span></td><td>' + sized(r.asin, r.name) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
-          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td>' + (100 * r.units / tu).toFixed(1) + '% of units</td>'
-            : '<td class="n">' + n0(r.units) + '<div style="font-size:12.5px;font-weight:600;color:' + C.muted + '">$' + n0(r.sales) + '</div></td>') + '</tr>').join('') + '</table>';
+          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td>' + (100 * r.units / tu).toFixed(1) + '% of units</td>'
+            : '<td class="n">' + n0(r.units) + '<div style="font-size:12.5px;font-weight:600;color:' + C.muted + '">$' + n0(r.sales) + '</div><div style="font-size:12.5px;font-weight:700">' + pf(r) + '</div></td>') + '</tr>').join('') + '</table>'
+        + '<div class="d2-sub" style="margin-top:8px">' + (d.profitRows ? 'Net profit, these ' + d.profitRows + ' listings: <b>' + (d.profitSum < 0 ? '−$' : '$') + n0(Math.abs(d.profitSum)) + '</b>. ' : '')
+        + 'Estimate: sales − Amazon fees, refunds &amp; promos (each listing’s average over the last 6 months of settlements) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</div>';
       if (d.since && from < d.since) body += '<div class="d2-note" style="margin-top:10px"><span>Sales per product are saved from ' + E(dShort(d.since)) + ', so this list covers ' + E(dShort(d.since)) + ' – ' + E(dShort(to)) + '.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
     }
-    box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 10 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
+    box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 20 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
     box.querySelector('details').addEventListener('toggle', e => { store.set('d2TopOpen', e.target.open ? '1' : '0'); if (e.target.open && !topCache[key]) paintTop10(p); });
     if (!d && open) {
       topCache[key] = { loading: true };
-      ownerApi('/api/sales/top?from=' + from + '&to=' + to).then(r => { topCache[key] = (r && r.ok) ? r : { error: (r && r.error) || 'no reply' }; })
+      ownerApi('/api/finance/top-sellers?limit=20&from=' + from + '&to=' + to).then(r => { topCache[key] = (r && r.ok) ? r : { error: (r && r.error) || 'no reply' }; })
         .catch(e => { topCache[key] = { error: e.message }; })
         .then(() => { if (state.topP === p) paintTop10(p); });
     }

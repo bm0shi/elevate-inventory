@@ -12,6 +12,7 @@
 // ============================================================
 
 const laborSplit = require('./lib/labor-split');
+const topProfit = require('./lib/top-profit');
 
 module.exports = function registerFinance(app, deps) {
   const { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts } = deps;
@@ -688,6 +689,48 @@ module.exports = function registerFinance(app, deps) {
       res.json({ from, to, items: a.items, laborInfo: ctx.laborInfo,
                  supplyRatesSet: Object.values(ctx.supplies).some(v => v != null) });
     } catch (e) { console.error('[Finance] products:', e.message); res.status(500).json({ error: e.message }); }
+  });
+
+  // Top 20 sellers with net profit (Dashboard → Gross sales, owner 10/18).
+  // Units and sales come from the order pulls (inv_sales_asin_daily, on time);
+  // what Amazon keeps per unit comes from the last 6 months of settlements and
+  // the landed cost per unit from the same numbers Product Profit uses, so a
+  // period like Today has a profit before its money settles (lib/top-profit.js).
+  app.get('/api/finance/top-sellers', ownerAuth, async (req, res) => {
+    try {
+      const ok = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+      const { from, to } = req.query;
+      if (!ok(from) || !ok(to) || from > to) return res.status(400).json({ ok: false, error: 'from / to must be dates (YYYY-MM-DD)' });
+      const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+      const r = await pool.query(`SELECT s.asin, MAX(p.name) AS name, SUM(s.units)::int AS units, SUM(s.sales)::float AS sales
+          FROM inv_sales_asin_daily s LEFT JOIN inv_products p ON p.asin = s.asin
+         WHERE s.day BETWEEN $1 AND $2 GROUP BY s.asin ORDER BY units DESC, sales DESC LIMIT $3`, [from, to, limit]);
+      const t = await pool.query(`SELECT COALESCE(SUM(units),0)::int AS units, COALESCE(SUM(sales),0)::float AS sales,
+          to_char((SELECT MIN(day) FROM inv_sales_asin_daily),'YYYY-MM-DD') AS since
+          FROM inv_sales_asin_daily WHERE day BETWEEN $1 AND $2`, [from, to]);
+      const ctx = await context();
+      const back = new Date(Date.now() - 182 * 86400000).toISOString().slice(0, 10);
+      const settled = await aggregate(back, new Date(Date.now() + 86400000).toISOString().slice(0, 10), ctx);
+      const rates = topProfit.amazonRates(settled.items);
+      // landed cost per unit, as Product Profit adds it up
+      const landed = asin => {
+        const info = ctx.products[asin] || {};
+        if (info.avgCost == null) return null;
+        const sRate = ctx.supplies[info.size || 'other'];
+        const lRate = ctx.laborInfo && ctx.laborInfo.split
+          ? (ctx.laborInfo.split.byAsin[asin] != null ? ctx.laborInfo.split.byAsin[asin] : ctx.laborInfo.split.fallback) : ctx.laborRate;
+        const ib = ctx.inbound[asin];
+        return info.avgCost + (sRate || 0) + (lRate || 0) + (ib ? ib.total : 0);
+      };
+      let profitSum = 0, profitRows = 0;
+      const items = r.rows.map(row => {
+        const e = topProfit.estimateProfit(row, rates, landed(row.asin));
+        if (e.profit != null) { profitSum += e.profit; profitRows++; }
+        return Object.assign({}, row, { profit: e.profit, profitPerUnit: e.perUnit, profitBasis: e.basis, profitMissing: e.missing });
+      });
+      res.json({ ok: true, from, to, items, total: { units: t.rows[0].units, sales: t.rows[0].sales },
+                 since: t.rows[0].since, profitSum, profitRows, lookbackFrom: back });
+    } catch (e) { console.error('[Finance] top sellers:', e.message); res.status(500).json({ ok: false, error: e.message }); }
   });
 
   async function inventoryAtCost(products) {
