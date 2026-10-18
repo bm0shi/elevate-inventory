@@ -21,6 +21,7 @@ test('profit: sales less Amazon per unit less landed cost; few settled units bor
   assert.strictEqual(a.basis, 'listing');
   assert.strictEqual(a.profit, 260 - 90 - 115);
   assert.strictEqual(a.perUnit, 5.5);
+  assert.strictEqual(a.amazonPerUnit, -9);   // shown in the row's breakdown
   const b = T.estimateProfit({ asin: 'B', units: 4, sales: 120 }, r, 10);
   assert.strictEqual(b.basis, 'store');
   assert.ok(Math.abs(b.profit - (120 + 120 * (-930 / 2600) - 40)) < 1e-9);
