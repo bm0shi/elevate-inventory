@@ -764,8 +764,26 @@ module.exports = function registerFinance(app, deps) {
       const days = topProfit.daysCovered(from, to, t.rows[0].since);
       items.forEach(it => { it.landed = it.breakdown ? it.breakdown.total : null; });
       topProfit.scoreRows(items, days);
+      // the same-length stretch before: profit per day then, with the same
+      // costs and Amazon rates, so the change is the selling, not the math
+      const pr = topProfit.prevRange(from, to);
+      const prevDays = topProfit.daysCovered(pr.from, pr.to, t.rows[0].since);
+      const before = {};
+      if (prevDays > 0 && items.length) {
+        for (const x of (await pool.query(`SELECT asin, SUM(units)::int AS units, SUM(sales)::float AS sales FROM inv_sales_asin_daily
+            WHERE day BETWEEN $1 AND $2 AND asin = ANY($3) GROUP BY asin`, [pr.from, pr.to, items.map(i => i.asin)])).rows) before[x.asin] = x;
+      }
+      for (const it of items) {
+        if (!(prevDays > 0) || it.landed == null) { it.prevPerDay = null; it.trend = null; continue; }
+        const b = before[it.asin] || { units: 0, sales: 0 };
+        const e = topProfit.estimateProfit({ asin: it.asin, units: b.units, sales: b.sales }, rates, it.landed);
+        it.prevUnits = b.units;
+        it.prevPerDay = b.units === 0 ? 0 : (e.profit != null ? e.profit / prevDays : null);
+        it.trend = topProfit.trend(it.profitPerDay, it.prevPerDay);
+      }
       res.json({ ok: true, from, to, items, total: { units: t.rows[0].units, sales: t.rows[0].sales },
-                 since: t.rows[0].since, profitSum, profitRows, lookbackFrom: back, days });
+                 since: t.rows[0].since, profitSum, profitRows, lookbackFrom: back, days,
+                 prev: { from: pr.from, to: pr.to, days: prevDays, partial: prevDays > 0 && prevDays < pr.days } });
     } catch (e) { console.error('[Finance] top sellers:', e.message); res.status(500).json({ ok: false, error: e.message }); }
   });
 
