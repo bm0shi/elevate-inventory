@@ -2,33 +2,43 @@ const test = require('node:test');
 const assert = require('node:assert');
 const T = require('../lib/top-profit');
 
-const settled = [
-  { asin: 'A', units: 100, sales: 2500, refunds: -50, promotions: -10, fees: -840 },   // Amazon kept 9.00/unit
-  { asin: 'B', units: 2, sales: 60, refunds: 0, promotions: 0, fees: -20 },
-  { asin: null, units: 3, sales: 40, refunds: 0, promotions: 0, fees: -10 },             // unlinked SKU: store rate only
-];
+// A listing that settled at ~$95: 15% referral, $7.50 FBA fee, a refund, a promo.
+const A6 = { asin: 'A', units: 100, sales: 9500, refunds: -190, promotions: -95,
+  fees: -2175, feeDetail: { Commission: -1425, FBAPerUnitFulfillmentFee: -750 } };
+const settled = [A6,
+  { asin: 'B', units: 2, sales: 60, refunds: 0, promotions: 0, fees: -20, feeDetail: { Commission: -9, FBAPerUnitFulfillmentFee: -11 } },
+  { asin: null, units: 3, sales: 40, refunds: 0, promotions: 0, fees: -10, feeDetail: { Commission: -6, FBAPerUnitFulfillmentFee: -4 } }];
 
-test('rates: per listing per unit sold, and the store-wide share of sales', () => {
-  const r = T.amazonRates(settled);
-  assert.strictEqual(r.byAsin.A.perUnit, -9);
-  assert.strictEqual(r.byAsin.B.units, 2);
-  assert.ok(Math.abs(r.storeShare - (-930 / 2600)) < 1e-9);
+test('split: referral, refunds, promos and digital services are a share of price; FBA and flat fees are per unit', () => {
+  assert.deepStrictEqual(T.split(A6), { pct: -1710, unit: -750 });
+  assert.deepStrictEqual(T.split({ refunds: -5, promotions: 0, fees: -3, feeDetail: { DigitalServicesFee: -1, RefundCommission: -2 } }), { pct: -8, unit: 0 });
+  assert.deepStrictEqual(T.split({ fees: -7 }), { pct: 0, unit: -7 });   // no detail: per unit, as before
 });
 
-test('profit: sales less Amazon per unit less landed cost; few settled units borrow the store share', () => {
+test('a price rise raises the referral fee with it (the Lavender Mint case: $95 history, sold at $112)', () => {
   const r = T.amazonRates(settled);
-  const a = T.estimateProfit({ asin: 'A', units: 10, sales: 260 }, r, 11.5);
-  assert.strictEqual(a.basis, 'listing');
-  assert.strictEqual(a.profit, 260 - 90 - 115);
-  assert.strictEqual(a.perUnit, 5.5);
-  assert.strictEqual(a.amazonPerUnit, -9);   // shown in the row's breakdown
+  assert.ok(Math.abs(r.byAsin.A.pctShare - (-1710 / 9500)) < 1e-12);   // 18% of price
+  assert.strictEqual(r.byAsin.A.perUnit, -7.5);
+  const e = T.estimateProfit({ asin: 'A', units: 58, sales: 58 * 112 }, r, 47.74);
+  // Amazon per unit at $112: 18% × 112 + 7.50 = 27.66 (the old flat average said 24.60)
+  assert.ok(Math.abs(e.amazonPerUnit - (-(0.18 * 112) - 7.5)) < 1e-9);
+  assert.ok(Math.abs(e.perUnit - (112 - 27.66 - 47.74)) < 1e-9);
+  assert.strictEqual(e.basis, 'listing');
+});
+
+test('the per-unit fee comes from the last 60 days when there are enough units (Amazon changes FBA fees)', () => {
+  const recent = [{ asin: 'A', units: 10, sales: 1120, refunds: 0, promotions: 0, fees: -248, feeDetail: { Commission: -168, FBAPerUnitFulfillmentFee: -80 } }];
+  const r = T.amazonRates(settled, recent);
+  assert.strictEqual(r.byAsin.A.perUnit, -8);
+  assert.strictEqual(r.byAsin.A.perUnitFrom, '60d');
+  assert.strictEqual(T.amazonRates(settled, [{ asin: 'A', units: 2, sales: 224, fees: -16, feeDetail: { FBAPerUnitFulfillmentFee: -16 } }]).byAsin.A.perUnitFrom, '6mo');
+});
+
+test('few settled units borrow the store share; no cost or no fee history gives no number', () => {
+  const r = T.amazonRates(settled);
   const b = T.estimateProfit({ asin: 'B', units: 4, sales: 120 }, r, 10);
   assert.strictEqual(b.basis, 'store');
-  assert.ok(Math.abs(b.profit - (120 + 120 * (-930 / 2600) - 40)) < 1e-9);
-});
-
-test('no product cost or no fee history: no number, and why', () => {
-  const r = T.amazonRates(settled);
-  assert.deepStrictEqual(T.estimateProfit({ asin: 'A', units: 1, sales: 26 }, r, null).missing, 'product cost');
+  assert.ok(Math.abs(r.storeShare - ((-1710 - 750 - 20 - 10) / 9600)) < 1e-12);
+  assert.strictEqual(T.estimateProfit({ asin: 'A', units: 1, sales: 26 }, r, null).missing, 'product cost');
   assert.match(T.estimateProfit({ asin: 'Z', units: 1, sales: 26 }, T.amazonRates([]), 10).missing, /no settled sales/);
 });

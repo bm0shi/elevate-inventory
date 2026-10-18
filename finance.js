@@ -725,8 +725,11 @@ module.exports = function registerFinance(app, deps) {
           FROM inv_sales_asin_daily WHERE day BETWEEN $1 AND $2`, [from, to]);
       const ctx = await context();
       const back = new Date(Date.now() - 182 * 86400000).toISOString().slice(0, 10);
-      const settled = await aggregate(back, new Date(Date.now() + 86400000).toISOString().slice(0, 10), ctx);
-      const rates = topProfit.amazonRates(settled.items);
+      const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
+      const settled = await aggregate(back, tomorrow, ctx);
+      // the per-unit fees (FBA) from the last 60 days, since Amazon changes them
+      const recent = await aggregate(new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10), tomorrow, ctx);
+      const rates = topProfit.amazonRates(settled.items, recent.items);
       // landed cost per unit, as Product Profit adds it up, in its parts so the
       // dashboard can show where a margin comes from (owner checks duos by hand)
       const ownLots = new Set((await pool.query(`SELECT DISTINCT asin FROM inv_cost_history WHERE qty > 0 AND order_number <> 'MANUAL' AND asin = ANY($1)`,
@@ -752,7 +755,10 @@ module.exports = function registerFinance(app, deps) {
         const e = topProfit.estimateProfit(row, rates, L ? L.total : null);
         if (e.profit != null) { profitSum += e.profit; profitRows++; }
         return Object.assign({}, row, { profit: e.profit, profitPerUnit: e.perUnit, profitBasis: e.basis, profitMissing: e.missing,
-          breakdown: L ? Object.assign({ priceEach: row.units ? row.sales / row.units : null, amazon: e.amazonPerUnit }, L) : null });
+          breakdown: L ? Object.assign({ priceEach: row.units ? row.sales / row.units : null, amazon: e.amazonPerUnit,
+            amazonPct: e.amazonPct, amazonFixed: e.amazonFixed,
+            pctShare: rates.byAsin[row.asin] ? rates.byAsin[row.asin].pctShare : null,
+            perUnitFrom: rates.byAsin[row.asin] ? rates.byAsin[row.asin].perUnitFrom : null }, L) : null });
       });
       res.json({ ok: true, from, to, items, total: { units: t.rows[0].units, sales: t.rows[0].sales },
                  since: t.rows[0].since, profitSum, profitRows, lookbackFrom: back });
