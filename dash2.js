@@ -711,9 +711,20 @@
       const g = { rank: r => r.rank, name: r => String(r.name || r.asin).toLowerCase(), units: r => r.units, sales: r => r.sales, share: r => r.units,
                   profit: r => r.profit == null ? -1e12 : r.profit, margin: r => r.margin == null ? -1e12 : r.margin,
                   score: r => r.scoreRank == null ? 1e9 : r.scoreRank, perday: r => r.profitPerDay == null ? -1e12 : r.profitPerDay,
+                  trend: r => !r.trend ? -1e12 : r.trend.dir === 'new' ? 1e6 : r.trend.dir === 'gone' ? -1e6 : r.trend.pct,
                   roi: r => r.roi == null ? -1e12 : r.roi };
       const pd = r => r.profitPerDay == null ? '<span style="color:' + C.muted + '">—</span>'
         : '<span style="color:' + (r.profitPerDay < 0 ? C.crit : '#1e8449') + '">' + (r.profitPerDay < 0 ? '−$' : '$') + Math.abs(r.profitPerDay).toFixed(Math.abs(r.profitPerDay) < 100 ? 2 : 0) + '</span>';
+      // rising or fading: profit per day against the same-length stretch before (owner 10/18); not for Today (a part day)
+      const showTr = p.k !== 'today' && d.prev && d.prev.days > 0;
+      const tr = (r, short) => {
+        const t = r.trend; if (!t) return '<span style="color:' + C.muted + '">—</span>';
+        const was = r.prevPerDay != null ? 'was ' + (r.prevPerDay < 0 ? '−$' : '$') + Math.abs(r.prevPerDay).toFixed(Math.abs(r.prevPerDay) < 100 ? 2 : 0) + '/day' : '';
+        const lbl = t.dir === 'new' ? '<span style="color:#1e8449">new</span>' : t.dir === 'gone' ? '<span style="color:' + C.crit + '">none sold</span>'
+          : t.dir === 'flat' ? '<span style="color:' + C.muted + '">= flat</span>'
+          : '<span style="color:' + (t.dir === 'up' ? '#1e8449' : C.crit) + '">' + (t.dir === 'up' ? '▲ ' : '▼ ') + (Math.abs(t.pct) * 100).toFixed(0) + '%</span>';
+        return short ? lbl : lbl + (was ? '<div style="font-size:11.5px;font-weight:600;color:' + C.muted + '">' + was + '</div>' : '');
+      };
       const ri = r => r.roi == null ? '<span style="color:' + C.muted + '">—</span>'
         : '<span style="color:' + (r.roi < 0 ? C.crit : '#1e8449') + '">' + (100 * r.roi).toFixed(0) + '%</span>';
       // margin = net profit ÷ sales (owner 10/18)
@@ -732,7 +743,10 @@
           + (b.amazon == null ? part('Amazon', null) : part('Amazon', b.amazon, r.profitBasis === 'store' ? 'store average, few settled sales on this listing'
               : 'referral, refunds &amp; promos ' + (b.pctShare != null ? (Math.abs(b.pctShare) * 100).toFixed(1) + '% of price = ' + m2(b.amazonPct || 0) : '') + ' + FBA &amp; flat fees ' + m2(b.amazonFixed || 0) + (b.perUnitFrom === '60d' ? ' (last 60 days)' : ' (6 months)'))) + ' '
           + part('product', b.product, prodNote) + ' ' + part('supplies', b.supplies) + ' ' + part('labor', b.labor) + ' ' + part('freight', b.freight, b.freight == null ? 'no shipment cost yet' : '')
-          + (r.profitPerUnit != null ? ' = <b>' + (r.profitPerUnit < 0 ? '−' : '') + m2(r.profitPerUnit) + ' profit</b>' + (r.margin != null ? ' (' + r.margin.toFixed(1) + '%)' : '') : '');
+          + (r.profitPerUnit != null ? ' = <b>' + (r.profitPerUnit < 0 ? '−' : '') + m2(r.profitPerUnit) + ' profit</b>' + (r.margin != null ? ' (' + r.margin.toFixed(1) + '% margin)' : '') : '')
+          // ROI is profit over what the unit cost you, not over the price (owner asked why 132%)
+          + (r.roi != null && b.total ? '<br><b>ROI</b>: ' + m2(r.profitPerUnit) + ' profit ÷ ' + m2(b.total) + ' landed cost = <b>' + (100 * r.roi).toFixed(0) + '%</b>, every $1 spent on it comes back plus $' + r.roi.toFixed(2) + ' profit' : '')
+          + (showTr && r.prevPerDay != null ? '<br><b>Before</b> (' + E(dShort(d.prev.from)) + ' – ' + E(dShort(d.prev.to)) + '): ' + (r.prevUnits || 0) + ' sold, ' + (r.prevPerDay < 0 ? '−' : '') + m2(r.prevPerDay) + ' profit/day' : '');
       };
       const openBd = state.topBd || (state.topBd = {});
       // net profit: estimate (see the note under the table); ≈ = the store's average Amazon fees, not this listing's own
@@ -745,18 +759,24 @@
       const wide = window.innerWidth > 760;   // phones: no Share column, so names have room
       // phones: units and sales share a column (both still sort), no Share
       const arrow = c => st.col === c ? (st.dir < 0 ? ' ▼' : ' ▲') : '';
-      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:68px"><col style="width:88px"><col style="width:100px"><col style="width:76px"><col style="width:96px"><col style="width:68px">' : '<col style="width:118px">') + '</colgroup><tr>' +
-        th('score', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('margin', 'Margin') + th('perday', 'Profit/day') + th('roi', 'ROI')
-          : '<th class="' + (['units', 'sales', 'profit', 'margin', 'perday', 'roi'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span> · <span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span> · <span data-tsort="margin">%' + arrow('margin') + '</span><br><span data-tsort="perday">/day' + arrow('perday') + '</span> · <span data-tsort="roi">ROI' + arrow('roi') + '</span></th>') + '</tr>' +
+      body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:64px"><col style="width:84px"><col style="width:96px"><col style="width:72px"><col style="width:92px">' + (showTr ? '<col style="width:104px">' : '') + '<col style="width:76px">' : '<col style="width:118px">') + '</colgroup><tr>' +
+        th('score', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('margin', 'Margin') + th('perday', 'Profit/day') + (showTr ? th('trend', 'vs before') : '') + th('roi', 'ROI on cost')
+          : '<th class="' + (['units', 'sales', 'profit', 'margin', 'perday', 'roi', 'trend'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span> · <span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span> · <span data-tsort="margin">%' + arrow('margin') + '</span><br><span data-tsort="perday">/day' + arrow('perday') + '</span> · <span data-tsort="roi">ROI' + arrow('roi') + '</span>' + (showTr ? '<br><span data-tsort="trend">vs before' + arrow('trend') + '</span>' : '') + '</th>') + '</tr>' +
         rows.map(r => '<tr data-bd="' + E(r.asin) + '" style="cursor:pointer" title="Tap for the numbers behind the profit"><td><span class="rk">' + (r.scoreRank == null ? '—' : r.scoreRank) + '</span></td><td>' + sized(r.asin, r.name) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
-          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td class="n">' + mg(r) + '</td><td class="n">' + pd(r) + '</td><td class="n">' + ri(r) + '</td>'
-            : '<td class="n">' + n0(r.units) + ' <span style="font-size:12.5px;font-weight:600;color:' + C.muted + '">· $' + n0(r.sales) + '</span><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pf(r) + ' · ' + mg(r) + '</div><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pd(r) + '/d · ' + ri(r) + '</div></td>') + '</tr>'
-          + (openBd[r.asin] ? '<tr><td></td><td colspan="' + (wide ? 7 : 2) + '" style="font-size:13px;line-height:1.6;text-align:left;background:#f7f9fb;padding:8px 10px">' + bdHtml(r) + '</td></tr>' : '')).join('') + '</table>'
+          (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td class="n">' + mg(r) + '</td><td class="n">' + pd(r) + '</td>' + (showTr ? '<td class="n">' + tr(r) + '</td>' : '') + '<td class="n">' + ri(r) + '</td>'
+            : '<td class="n">' + n0(r.units) + ' <span style="font-size:12.5px;font-weight:600;color:' + C.muted + '">· $' + n0(r.sales) + '</span><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pf(r) + ' · ' + mg(r) + '</div><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pd(r) + '/d · ' + ri(r) + '</div>' + (showTr ? '<div style="font-size:12px;font-weight:700;white-space:nowrap">' + tr(r, true) + ' vs before</div>' : '') + '</td>') + '</tr>'
+          + (openBd[r.asin] ? '<tr><td></td><td colspan="' + (wide ? (showTr ? 8 : 7) : 2) + '" style="font-size:13px;line-height:1.6;text-align:left;background:#f7f9fb;padding:8px 10px">' + bdHtml(r) + '</td></tr>' : '')).join('') + '</table>'
         + '<div class="d2-sub" style="margin-top:8px">' + (d.profitRows ? 'Net profit, these ' + d.profitRows + ' listings: <b>' + (d.profitSum < 0 ? '−$' : '$') + n0(Math.abs(d.profitSum)) + '</b>'
           + (() => { const s = d.items.filter(r => r.profit != null).reduce((t, r) => t + (r.sales || 0), 0); return s > 0 ? ' · <b>' + (100 * d.profitSum / s).toFixed(1) + '%</b> margin' : ''; })() + '. ' : '')
-        + '<b>#</b> = rank by <b>profit per day</b> (units sold per day × net profit per unit) over ' + (d.days || 1) + ' day' + (d.days === 1 ? '' : 's') + (d.days <= 1 ? ' (today so far: pick 30 days for steadier numbers)' : '') + '. Tap a row to see its numbers.'
+        + '<b>#</b> = rank by <b>profit per day</b> (units sold per day × net profit per unit) over ' + (d.days || 1) + ' day' + (d.days === 1 ? '' : 's') + (d.days <= 1 ? ' (today so far: pick 30 days for steadier numbers)' : '') + '. '
+        // how many are ranked, so a small seller ranking high is explained (owner: "i sold 5 and 6 … hows that good ranking")
+        + (() => { const ranked = rows.filter(r => r.scoreRank != null).length, miss = rows.length - ranked;
+            return '<b>Ranked: ' + ranked + ' of ' + rows.length + '</b>' + (miss ? ' · <span style="color:' + C.crit + '">' + miss + ' have no cost yet (—), so they aren’t ranked and everything below them moves up</span>' : '') + '. '; })()
+        + 'Tap a row to see its numbers.'
         + '<details style="margin-top:4px"><summary style="cursor:pointer;font-weight:700">How it’s worked out</summary>'
-        + '<b>Profit/day</b> = net profit ÷ days in the period, the same as margin × sales per day. <b>ROI</b> = profit per unit ÷ what one unit costs you landed (product, supplies, labor, freight). Margin = net profit ÷ sales. Estimate: sales − Amazon (referral, refunds &amp; promos as each listing’s own % of price from 6 months of payouts, plus its FBA fee per unit from the last 60 days) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</details></div>';
+        + '<b>Profit/day</b> = net profit ÷ days in the period, the same as margin × sales per day. <b>ROI on cost</b> = profit per unit ÷ what one unit costs you landed (product, supplies, labor, freight); over 100% means the profit is bigger than the cost (margin divides by the price instead). '
+        + (showTr ? '<b>vs before</b> = profit per day now against ' + E(dShort(d.prev.from)) + ' – ' + E(dShort(d.prev.to)) + ', the same number of days just before' + (d.prev.partial ? ' (only partly saved, so fewer days count)' : '') + ', with the same costs and Amazon rates, so the change is the selling. ' : '')
+        + ' Margin = net profit ÷ sales. Estimate: sales − Amazon (referral, refunds &amp; promos as each listing’s own % of price from 6 months of payouts, plus its FBA fee per unit from the last 60 days) − landed cost (product, supplies, labor, freight, as in Product Profit). — = a cost is missing · ≈ = store-average Amazon fees.</details></div>';
       if (d.since && from < d.since) body += '<div class="d2-note" style="margin-top:10px"><span>Sales per product are saved from ' + E(dShort(d.since)) + ', so this list covers ' + E(dShort(d.since)) + ' – ' + E(dShort(to)) + '.</span><button class="d2-btn ghost" data-act="sales-full">Pull full history (a few minutes)</button></div>';
     }
     box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 50 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';

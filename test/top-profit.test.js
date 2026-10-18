@@ -62,3 +62,17 @@ test('days covered: both ends counted, never before the first saved day', () => 
   assert.strictEqual(T.daysCovered('2026-10-01', '2026-10-18', '2026-10-12'), 7);
   assert.strictEqual(T.daysCovered('2026-10-18', '2026-10-18', null), 1);
 });
+
+test('the period before: same length, ending the day before', () => {
+  assert.deepStrictEqual(T.prevRange('2026-09-19', '2026-10-18'), { from: '2026-08-20', to: '2026-09-18', days: 30 });
+  assert.deepStrictEqual(T.prevRange('2026-10-18', '2026-10-18'), { from: '2026-10-17', to: '2026-10-17', days: 1 });
+});
+
+test('rising or fading: change in profit per day against the earlier number', () => {
+  assert.deepStrictEqual(T.trend(15, 10), { pct: 0.5, dir: 'up' });
+  assert.deepStrictEqual(T.trend(5, 10), { pct: -0.5, dir: 'down' });
+  assert.deepStrictEqual(T.trend(-5, -10), { pct: 0.5, dir: 'up' });      // a loss shrinking is better
+  assert.deepStrictEqual(T.trend(8, 0), { pct: null, dir: 'new' });
+  assert.deepStrictEqual(T.trend(0, 12), { pct: -1, dir: 'gone' });
+  assert.strictEqual(T.trend(8, null), null);
+});
