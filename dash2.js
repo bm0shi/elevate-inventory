@@ -189,6 +189,22 @@
   @keyframes d2spin{to{transform:rotate(360deg)}}
   .d2-pulltrack{height:6px;border-radius:3px;background:#dcebef;margin-top:9px;overflow:hidden;position:relative}
   .d2-pulltrack i{position:absolute;top:0;bottom:0;width:30%;border-radius:3px;background:${C.brand};animation:d2slide 1.6s ease-in-out infinite}
+  .d2-pullbar.pro{display:block;padding:14px 16px 12px;box-shadow:0 6px 18px -10px rgba(13,68,80,.35)}
+  .d2-pull-head{display:flex;gap:12px;align-items:center}
+  .d2-pull-pct{font-size:20px;font-weight:850;color:${C.brand};font-variant-numeric:tabular-nums;min-width:52px;text-align:right}
+  .d2-pulltrack.det{height:8px;margin-top:11px;border-radius:4px}
+  .d2-pulltrack.det i{position:absolute;left:0;top:0;bottom:0;animation:none;border-radius:4px;transition:width .9s ease;background:linear-gradient(90deg,${C.brand},#1d8a9c);background-size:200% 100%}
+  .d2-pulltrack.det i::after{content:'';position:absolute;inset:0;border-radius:4px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.45),transparent);animation:d2shine 1.4s linear infinite}
+  @keyframes d2shine{0%{transform:translateX(-100%)}100%{transform:translateX(100%)}}
+  .d2-pull-steps{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;font-size:13px}
+  .d2-pull-steps span{padding:3px 10px;border-radius:999px;background:#e6f0f3;color:${C.muted};font-weight:700}
+  .d2-pull-steps span.now{background:${C.brand};color:#fff}
+  .d2-pull-steps span.done{background:#e3f4ea;color:#1e8449}
+  .d2-pullbar.ok{border-color:#a8d8bb;background:#f1faf4}.d2-pullbar.ok .d2-pulltrack.det i{background:#1e8449}.d2-pullbar.ok .d2-pulltrack.det i::after{display:none}
+  .d2-pullbar.bad{border-color:#f0b7b0;background:#fdf3f2}.d2-pullbar.bad .d2-pulltrack.det i{background:${C.crit}}.d2-pullbar.bad .d2-pulltrack.det i::after{display:none}
+  .d2-pull-ic{width:28px;height:28px;flex:0 0 28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff;background:#1e8449}
+  .d2-pullbar.bad .d2-pull-ic{background:${C.crit}}
+  .d2-btn.busy{opacity:.6;cursor:progress}
   @keyframes d2slide{0%{left:-30%}100%{left:100%}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
   `;
@@ -643,7 +659,8 @@
     state.sales = x;
     const P = periods(x), job = x && x.salesJob;
     const asof = document.getElementById('d2sasof'), note = document.getElementById('d2snote');
-    if (job && job.running) { asof.textContent = job.progress || 'updating…'; document.getElementById('d2squick').disabled = true; if (job.mode === 'full' || job.queuedFull) { paintPull(job.mode === 'full' ? job : { mode: 'today' }); watchPull('full'); } }
+    // an update already running (another tab, the morning sync, a reload): show its bar and follow it
+    if (job && job.running) { asof.textContent = 'updating…'; document.getElementById('d2squick').disabled = true; if (!state.watching) state.watchMode = job.mode === 'full' || job.queuedFull ? 'full' : 'today'; paintPull(job); watchPull(state.watchMode); }
     else { const st = x && x.salesToday; asof.textContent = st && st.asOf ? 'as of ' + new Date(st.asOf).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : ''; }
     const strip = document.getElementById('d2metrics');
     if (!P.rows.length) {
@@ -835,51 +852,101 @@
   // under the periods (it used to change only the small text in the corner,
   // and a full pull asked for during the automatic quick update never ran;
   // the server now queues it). The bar picks the pull up again on reload.
+  // The update bar (owner 10/19: "when i click update today, it seems like
+  // nothing happens … have a bar showing its loading"): the server's named
+  // steps, a bar that fills by step (a report Amazon is still building fills
+  // toward a typical time, never to 100% until it's done; "3 of 22 months"
+  // fills exactly), the elapsed time, and a done line when it finishes.
+  const PULL_STEPS = { today: ['Today’s orders', 'Saving sales', 'Refunds & fees'], full: ['Order history', 'Saving sales', 'Returns', 'Refunds & fees'] };
+  const PULL_EXPECT = { today: [75, 4, 25], full: [600, 15, 240, 180] };   // typical seconds per step
+  function pullView(j) {
+    const kind = j.mode === 'full' ? 'full' : 'today', steps = j.steps || PULL_STEPS[kind], n = steps.length;
+    const i = Math.max(1, Math.min(n, j.step || 1)) - 1;
+    const ps = state.pullStep;   // when this step started, on this device's clock
+    if (!ps || ps.step !== i || ps.mode !== kind) state.pullStep = { step: i, mode: kind, at: Date.now() };
+    const m = /(\d+) of (\d+)/.exec(j.progress || '');
+    const exp = steps.map((_, k) => (PULL_EXPECT[kind] || [])[k] || 60), total = exp.reduce((a, b) => a + b, 0);
+    let within = m && +m[2] ? +m[1] / +m[2] : 1 - Math.exp(-((Date.now() - state.pullStep.at) / 1000) / exp[i]);
+    within = Math.min(0.95, Math.max(0, within));
+    // each step fills its share of the bar by how long it usually takes
+    const before = exp.slice(0, i).reduce((a, b) => a + b, 0);
+    return { steps, i, pct: Math.max(3, Math.min(99, 100 * (before + within * exp[i]) / total)), waitedInStep: Date.now() - state.pullStep.at };
+  }
+  const clock = ms => { const s2 = Math.max(0, Math.round(ms / 1000)); return Math.floor(s2 / 60) + ':' + String(s2 % 60).padStart(2, '0'); };
   function paintPull(j) {
     const box = document.getElementById('d2pull'); if (!box) return;
-    if (!j) { box.innerHTML = ''; return; }
-    const waiting = j.mode !== 'full';
-    box.innerHTML = '<div class="d2-pullbar"><div class="d2-spin"></div><div style="flex:1;min-width:0"><b>' + (waiting ? 'Finishing today’s quick update first…' : 'Reading your order history from Amazon…') + '</b>' +
-      '<div class="d2-sub" style="margin-top:2px">' + E(waiting ? 'Your full history starts right after it.' : (j.progress || 'asking Amazon…')) + ' · This takes several minutes. It keeps going if you leave the page.</div>' +
-      '<div class="d2-pulltrack"><i></i></div></div></div>';
+    clearInterval(state.pullTick); state.pullTick = null;
+    if (!j) { box.innerHTML = ''; state.pullJob = null; state.pullStart = null; return; }
+    if (j.doneView) {   // finished: a full bar and what happened, then it goes away
+      box.innerHTML = '<div class="d2-pullbar pro ' + (j.ok ? 'ok' : 'bad') + '"><div class="d2-pull-head"><span class="d2-pull-ic">' + (j.ok ? '✓' : '!') + '</span><div style="flex:1;min-width:0"><b>' + E(j.title) + '</b><div class="d2-sub">' + E(j.text || '') + '</div></div></div>'
+        + '<div class="d2-pulltrack det"><i style="width:100%"></i></div></div>';
+      state.pullJob = null; state.pullStart = null;
+      if (j.ok) setTimeout(() => { if (!state.pullJob && box.querySelector('.d2-pullbar.ok')) box.innerHTML = ''; }, 6000);
+      return;
+    }
+    state.pullJob = j; if (!state.pullStart) state.pullStart = Date.now();
+    const waiting = state.watchMode === 'full' && j.mode !== 'full';
+    const v = pullView(j);
+    const title = waiting ? 'Finishing today’s update, then your full history' : j.mode === 'full' ? 'Reading your order history from Amazon' : 'Updating today’s sales';
+    // Amazon builds the orders report before sending it; say so while it does
+    const say = j.mode !== 'full' && v.i === 0 && v.waitedInStep > 6000 ? 'Amazon is preparing today’s orders report…' : (j.progress || 'asking Amazon…');
+    const sub = say.charAt(0).toUpperCase() + say.slice(1) + ' · ' + clock(Date.now() - state.pullStart)
+      + (j.mode === 'full' ? ' · takes several minutes, keeps going if you leave' : ' · usually about a minute');
+    box.innerHTML = '<div class="d2-pullbar pro" role="status" aria-live="polite"><div class="d2-pull-head"><div class="d2-spin"></div><div style="flex:1;min-width:0"><b>' + E(title) + '</b><div class="d2-sub">' + E(sub) + '</div></div><div class="d2-pull-pct">' + Math.round(v.pct) + '%</div></div>'
+      + '<div class="d2-pulltrack det"><i style="width:' + v.pct.toFixed(1) + '%"></i></div>'
+      + '<div class="d2-pull-steps">' + v.steps.map((l, k) => '<span class="' + (k < v.i ? 'done' : k === v.i ? 'now' : '') + '">' + (k < v.i ? '✓ ' : '') + E(l) + '</span>').join('') + '</div></div>';
+    // keep the bar and clock moving between server checks
+    state.pullTick = setInterval(() => { if (state.pullJob && document.getElementById('d2pull')) paintPull(state.pullJob); else { clearInterval(state.pullTick); state.pullTick = null; } }, 1000);
   }
   function watchPull(mode) {
     // already watching the quick update: switch it to watching for the full pull
     if (state.watching) { if (mode === 'full') state.watchMode = 'full'; return; }
     state.watching = true; state.watchMode = mode;
-    const btn = document.getElementById('d2squick'); if (btn) btn.disabled = true;
+    const btn = document.getElementById('d2squick'); if (btn) { btn.disabled = true; btn.classList.add('busy'); }
     const poll = () => ownerApi('/api/sales/history/status').then(j => {
-      if (!document.getElementById('d2sasof')) { state.watching = false; return; }
+      if (!document.getElementById('d2sasof')) { state.watching = false; clearInterval(state.pullTick); return; }
       // a full pull queued behind a quick update starts the moment it ends (server)
       const wantFull = state.watchMode === 'full';
       if (j && j.running) {
-        if (wantFull) paintPull(j.running ? j : { mode: 'today' });
-        document.getElementById('d2sasof').textContent = j.progress || 'updating…';
-        setTimeout(poll, 4000); return;
+        paintPull(j);
+        document.getElementById('d2sasof').textContent = 'updating…';
+        setTimeout(poll, 2000); return;
       }
-      state.watching = false; paintPull(null);
-      const b2 = document.getElementById('d2squick'); if (b2) b2.disabled = false;
+      state.watching = false;
+      const took = state.pullStart ? ' · took ' + clock(Date.now() - state.pullStart) : '';
+      const b2 = document.getElementById('d2squick'); if (b2) { b2.disabled = false; b2.classList.remove('busy'); }
       if (j && j.error) {
-        document.getElementById('d2sasof').textContent = 'Update failed: ' + j.error;
+        document.getElementById('d2sasof').textContent = 'Update failed';
+        paintPull({ doneView: true, ok: false, title: 'The update didn’t finish', text: j.error + ' · press Update today to try again' });
         if (wantFull) state.pullNote = { ok: false, text: 'The history pull stopped: ' + j.error };
       } else if (wantFull && !(j && j.mode === 'full')) {
+        paintPull(null);
         state.pullNote = { ok: false, text: 'The history pull didn’t start (the server may have restarted). Press Pull full history again.' };
       } else if (j && j.done && wantFull) {
+        paintPull(null);
         // what the pull read, and any month Amazon couldn't build
         state.pullNote = { ok: !j.note, text: j.note || ('Order history read: ' + n0(j.orders || 0) + ' order lines since ' + dShort(j.from) + ', ' + n0(j.days || 0) + ' days saved.') };
+      } else {
+        paintPull({ doneView: true, ok: !(j && j.note), title: j && j.note ? 'Updated, with a gap' : 'Today’s sales are up to date',
+          text: j && j.note ? j.note : (n0((j && j.orders) || 0) + ' order lines read' + took) });
       }
       ownerApi('/api/dash2').then(x => { paintSales(x); if (!wantFull) settle(document.getElementById('d2sales')); });
     }).catch(() => setTimeout(poll, 6000));
-    setTimeout(poll, 2500);
+    setTimeout(poll, 1500);
   }
   function salesPull(mode) {
     const btn = document.getElementById('d2squick'); if (btn) btn.disabled = true;
     const asof = document.getElementById('d2sasof'); if (asof) asof.textContent = mode === 'full' ? 'reading your order history…' : 'reading today’s orders…';
-    if (mode === 'full') { state.pullNote = null; paintPull({ mode: 'full', progress: 'asking Amazon…' }); document.querySelectorAll('[data-act="sales-full"]').forEach(b => { b.disabled = true; b.textContent = 'Pulling…'; }); }
+    // the bar shows the moment the button is pressed, before the server answers
+    state.pullStart = Date.now(); state.pullStep = null;
+    if (!state.watching) state.watchMode = mode;
+    paintPull({ mode, progress: 'asking Amazon…', step: 1 });
+    if (btn) btn.classList.add('busy');
+    if (mode === 'full') { state.pullNote = null; document.querySelectorAll('[data-act="sales-full"]').forEach(b => { b.disabled = true; b.textContent = 'Pulling…'; }); }
     ownerApi('/api/sales/history', { method: 'POST', body: JSON.stringify({ mode }) }).then(r => {
       if (r && r.ok === false) throw new Error(r.error || 'refused');
       watchPull(mode);
-    }).catch(e => { if (btn) btn.disabled = false; paintPull(null); if (asof) asof.textContent = 'Update failed — try again'; if (mode === 'full') { state.pullNote = { ok: false, text: 'Couldn’t start the history pull: ' + (e.message || e) }; if (state.sales) paintSales(state.sales); } });
+    }).catch(e => { if (btn) { btn.disabled = false; btn.classList.remove('busy'); } paintPull({ doneView: true, ok: false, title: 'The update didn’t start', text: (e.message || String(e)) + ' · try again' }); if (asof) asof.textContent = 'Update failed — try again'; if (mode === 'full') { state.pullNote = { ok: false, text: 'Couldn’t start the history pull: ' + (e.message || e) }; if (state.sales) paintSales(state.sales); } });
   }
 
   function wire(root) {

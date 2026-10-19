@@ -462,7 +462,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'top50-trend-1075';
+const BUILD_ID = 'pull-progress-1076';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8543,10 +8543,16 @@ function startSalesPull(full) {
   const y = new Date().getUTCFullYear();
   const fromDay = full ? (y - 1) + '-01-01' : salesDay(Date.now() - 86400000);
   const fromMs = full ? Date.parse(fromDay + 'T00:00:00-08:00') : Date.parse(fromDay + 'T00:00:00-07:00') - 3600000;
-  salesJob = { running: true, mode: full ? 'full' : 'today', progress: full ? 'asking Amazon…' : 'reading today’s orders…', startedAt: new Date().toISOString() };
+  // Named steps, so the dashboard can show a real progress bar (owner 10/19:
+  // "when i click update today, it seems like nothing happens").
+  const steps = full ? ['Order history', 'Saving sales', 'Returns', 'Refunds & fees'] : ['Today’s orders', 'Saving sales', 'Refunds & fees'];
+  salesJob = { running: true, mode: full ? 'full' : 'today', progress: full ? 'asking Amazon…' : 'asking Amazon for today’s orders…',
+    startedAt: new Date().toISOString(), steps, step: 1, stepAt: new Date().toISOString() };
+  const stepTo = (label, text) => { const i = steps.indexOf(label); if (i >= 0) { salesJob.step = i + 1; salesJob.stepAt = new Date().toISOString(); } if (text) salesJob.progress = text; };
   (async () => {
     try {
       const r = await getOrderRecords(fromMs, p => { salesJob.progress = p; });
+      stepTo('Saving sales', 'saving sales…');
       // Every day a window covered is saved; only the days of a window Amazon
       // couldn't build (after one retry) are skipped, edge days included.
       const from = fromDay, skip = new Set(), gaps = [];
@@ -8559,13 +8565,13 @@ function startSalesPull(full) {
       // the full pull also reads returns over the same stretch
       let retNote = null, finNote = null;
       if (full) {
-        try { salesJob.progress = 'reading returns…'; const rr = await pullReturns(fromDay, p => { salesJob.progress = p; }); if (rr.failed) retNote = rr.failed + ' month(s) of returns Amazon couldn’t build'; }
+        try { stepTo('Returns', 'reading returns…'); const rr = await pullReturns(fromDay, p => { salesJob.progress = p; }); if (rr.failed) retNote = rr.failed + ' month(s) of returns Amazon couldn’t build'; }
         catch (e) { retNote = 'returns not read: ' + e.message; }
       }
       // refunds and fees, on time (financial events): the same stretch
-      try { salesJob.progress = 'reading refunds and fees…'; const fr = await pullFinEvents(fromDay, p => { salesJob.progress = p; }); if (fr.failed) finNote = fr.failed + ' month(s) of refunds Amazon couldn’t return; saved from ' + fr.from; }
+      try { stepTo('Refunds & fees', 'reading refunds and fees…'); const fr = await pullFinEvents(fromDay, p => { salesJob.progress = p; }); if (fr.failed) finNote = fr.failed + ' month(s) of refunds Amazon couldn’t return; saved from ' + fr.from; }
       catch (e) { finNote = 'refunds not read: ' + e.message; }
-      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from, returnsNote: retNote, refundsNote: finNote,
+      salesJob = { running: false, done: true, mode: salesJob.mode, days: n, from, returnsNote: retNote, refundsNote: finNote, steps, startedAt: salesJob.startedAt,
         orders: r.records.length, gaps,
         note: r.failed.length ? 'Amazon couldn’t build ' + gaps.join(', ') + ' (' + r.failed[0][2] + '); every other day was saved. Pull again later to fill ' + (gaps.length === 1 ? 'it' : 'them') + '.' : null, at: new Date().toISOString() };
       console.log(`[Sales] ${salesJob.mode} pull: ${n} days saved from ${from}.`);
