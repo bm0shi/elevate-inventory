@@ -463,7 +463,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fnsku-pick-1077';
+const BUILD_ID = 'fnsku-pin-1078';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -5932,9 +5932,11 @@ app.post('/api/sync-fnskus', auth, async (req, res) => {
     else unmatched.push({ sku, asin: f.asin, fnsku: f.fnSku });
   }
   try { await fillBlankSkus(fba); } catch (e) { console.error('[FBA] SKU fill failed:', e.message); }
-  try { await checkFnskuListings(fba); } catch (e) { console.error('[FBA] listing check failed:', e.message); }
+  let listings = null;
+  try { const lr = await checkFnskuListings(fba); listings = { switched: lr.autoSwitch.length, toPick: lr.conflicts.length }; }
+  catch (e) { console.error('[FBA] listing check failed:', e.message); }
   console.log(`[FNSKU Sync] Matched ${matched}, unmatched ${unmatched.length}`);
-  res.json({ ok: true, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0,30) });
+  res.json({ ok: true, matched, unmatchedCount: unmatched.length, unmatched: unmatched.slice(0,30), listings });
 });
 
 // How many products have an FNSKU (diagnostic)
@@ -9253,9 +9255,27 @@ app.post('/api/products/set-sku', auth, async (req, res) => {
 // ASIN Amazon shows under two FNSKUs is listed for the owner to pick on Pending
 // Prep / Prepped & Ready, and nothing is guessed.
 async function checkFnskuListings(fba) {
-  const cat = (await pool.query('SELECT asin, sku, fnsku FROM inv_products')).rows;
+  // Hand fixes first (fnskuPick.resolvePins): the sync above has just put the
+  // saved SKU's FNSKU back, which undid "🔧 Fix a wrong FNSKU mapping".
+  const pinRow = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fnsku_pin'")).rows[0];
+  const pins = (pinRow && pinRow.data) || {};
   const ackRow = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fnsku_ack'")).rows[0];
-  const r = fnskuPick.findConflicts(cat, fba, (ackRow && ackRow.data) || {});
+  const ack = (ackRow && ackRow.data) || {};
+  let pinsChanged = false;
+  for (const p of fnskuPick.resolvePins(pins, fba)) {
+    const taken = p.release && (await pool.query('SELECT 1 FROM inv_products WHERE sku=$1 AND asin<>$2', [p.sku, p.asin])).rowCount;
+    if (p.release && !taken) {
+      await pool.query('UPDATE inv_products SET sku=$2, fnsku=$3 WHERE asin=$1', [p.asin, p.sku, p.fnsku]);
+      ack[p.asin] = p.skus; delete pins[p.asin]; pinsChanged = true;
+      console.log(`[FBA] ${p.asin}: hand-set FNSKU ${p.fnsku} found at Amazon under listing ${p.sku}; product moved to it.`);
+    } else await pool.query('UPDATE inv_products SET fnsku=$2 WHERE asin=$1', [p.asin, p.fnsku]);
+  }
+  if (pinsChanged) { await saveCache('fnsku_pin', pins); await saveCache('fnsku_ack', ack); }
+  const cat = (await pool.query('SELECT asin, sku, fnsku FROM inv_products')).rows;
+  const r = fnskuPick.findConflicts(cat, fba, ack);
+  // a product still pinned by hand: the owner has decided, don't switch or ask
+  r.autoSwitch = r.autoSwitch.filter(a => !pins[a.asin]);
+  r.conflicts = r.conflicts.filter(c => !pins[c.asin]);
   for (const a of r.autoSwitch) {
     await pool.query('UPDATE inv_products SET sku=$2, fnsku=$3 WHERE asin=$1', [a.asin, a.sku, a.fnsku]);
     console.log(`[FBA] ${a.asin}: saved listing ${a.from.sku} is gone from Amazon; switched to ${a.sku} / ${a.fnsku}.`);
@@ -9272,7 +9292,8 @@ app.get('/api/fnsku-conflicts', auth, async (req, res) => {
   const by = {}; for (const n of names) by[n.asin] = n;
   // a pick made since the last read hides the row at once
   const ackRow = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fnsku_ack'")).rows[0], ack = (ackRow && ackRow.data) || {};
-  const open = d.conflicts.filter(c => !c.options.every(o => (ack[c.asin] || []).includes(o.sku)))
+  const pinRow = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fnsku_pin'")).rows[0], pins = (pinRow && pinRow.data) || {};
+  const open = d.conflicts.filter(c => !pins[c.asin] && !c.options.every(o => (ack[c.asin] || []).includes(o.sku)))
     .map(c => Object.assign({}, c, { name: by[c.asin] ? by[c.asin].name : c.asin,
       current: { sku: by[c.asin] ? by[c.asin].sku : c.current.sku, fnsku: by[c.asin] ? by[c.asin].fnsku : c.current.fnsku } }));
   res.json({ ok: true, at: d.at || null, conflicts: open, switched: d.switched || [] });
@@ -9294,6 +9315,7 @@ app.post('/api/fnsku-choose', auth, async (req, res) => {
     const ack = (ackRow && ackRow.data) || {}; ack[asin] = c.options.map(o => o.sku);
     await db.query(`INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('fnsku_ack',$1,now())
       ON CONFLICT (cache_key) DO UPDATE SET data=$1, updated_at=now()`, [JSON.stringify(ack)]);
+    await db.query("UPDATE inv_cache SET data = data - $1::text WHERE cache_key='fnsku_pin'", [asin]);
     console.log(`[FNSKU] ${asin}: labels now use ${opt.fnsku} (listing ${sku}); was ${c.current.fnsku || 'none'}.`);
     return { status: 200, body: { ok: true, sku, fnsku: opt.fnsku } };
   });
@@ -9312,6 +9334,16 @@ app.post('/api/remap-fnsku', auth, async (req, res) => {
     // assign to the correct product
     const r = await db.query('UPDATE inv_products SET fnsku=$1 WHERE asin=$2', [fn, asin]);
     if (!r.rowCount) throw Object.assign(new Error('No product with ASIN ' + asin + ' — nothing changed.'), { code: 'NOASIN' });
+    // Pin it, or the next sync puts the saved SKU's FNSKU back (the gel and the
+    // pomade, 10/19). checkFnskuListings releases the pin once Amazon shows this
+    // FNSKU under one of the ASIN's listings, and moves the product onto it.
+    const pinRow = (await db.query("SELECT data FROM inv_cache WHERE cache_key='fnsku_pin' FOR UPDATE")).rows[0];
+    const pins = (pinRow && pinRow.data) || {};
+    for (const a of Object.keys(pins)) if (String(pins[a]).toUpperCase() === fn.toUpperCase()) delete pins[a];
+    pins[asin] = fn;
+    await db.query(`INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('fnsku_pin',$1,now())
+      ON CONFLICT (cache_key) DO UPDATE SET data=$1, updated_at=now()`, [JSON.stringify(pins)]);
+    console.log(`[FNSKU] ${asin}: set by hand to ${fn} (kept over the sync).`);
     return true;
   }).catch(e => { if (e.code === 'NOASIN') return e.message; throw e; });
   if (ok !== true) return res.status(404).json({ ok: false, error: ok });
@@ -9577,6 +9609,13 @@ initDb().then(() => {
   require('./repricer')(app, { pool, ownerAuth, spapi: require('./spapi'), sendAlert, ourSellerId });
   app.use(errorHandler);
   app.listen(PORT, () => { console.log(`[Inventory] BUILD ${BUILD_ID}`); console.log(`[Inventory] Live on port ${PORT}`); });
+  // Check for a second Amazon listing per product a minute after each start,
+  // not only at the next sync: the gel / pomade fix went live and nothing
+  // showed until someone pressed Sync (10/19).
+  if ((process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN) && (process.env.AMAZON_CLIENT_ID_FM || process.env.AMAZON_CLIENT_ID))
+    setTimeout(() => { getFbaInventory().then(checkFnskuListings)
+      .then(r => console.log(`[FBA] Listing check at start: ${r.autoSwitch.length} switched, ${r.conflicts.length} to pick.`))
+      .catch(e => console.error('[FBA] listing check at start failed:', e.message)); }, 60 * 1000);
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
   app.use(errorHandler);
