@@ -287,6 +287,8 @@ async function getFbaInventory(onProgress, sellerSkus) {
     for (const s of sums) {
       results[s.sellerSku] = {
         sku: s.sellerSku, asin: s.asin, fnSku: s.fnSku,
+        // when Amazon last changed this listing's stock: tells an old listing from a new one (lib/fnsku-pick.js)
+        lastUpdated: s.lastUpdatedTime || null,
         total: s.totalQuantity || 0,
         fulfillable: s.inventoryDetails?.fulfillableQuantity || 0,
         inbound: (s.inventoryDetails?.inboundWorkingQuantity||0) + (s.inventoryDetails?.inboundShippedQuantity||0) + (s.inventoryDetails?.inboundReceivingQuantity||0),
