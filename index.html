@@ -6469,7 +6469,7 @@ function filterFixProd(){
 function remapFnsku(asin){
   const fn=window._fixFnsku; const p=products.find(x=>x.asin===asin);
   api('/api/remap-fnsku',{method:'POST',body:JSON.stringify({fnsku:fn,asin})}).then(d=>{
-    if(d.ok){ toast('FNSKU '+fn+' → '+p.name.slice(0,22)); document.getElementById('fixFnskuResult').innerHTML='<div class="hint" style="color:#1e8449">✓ Fixed — '+fn+' now links to '+esc(p.name)+'</div>'; document.getElementById('fixFnsku').value=''; loadProducts(); loadFnStatus(); }
+    if(d.ok){ toast('FNSKU '+fn+' → '+p.name.slice(0,22)); document.getElementById('fixFnskuResult').innerHTML='<div class="hint" style="color:#1e8449">✓ Fixed — '+esc(fn)+' now links to '+esc(p.name)+'. It stays this way when the app syncs with Amazon.</div>'; loadFnskuWarn(); document.getElementById('fixFnsku').value=''; loadProducts(); loadFnStatus(); }
     else toast('Fix failed',true);
   });
 }
@@ -6521,7 +6521,9 @@ function syncFnskus(){
   api('/api/sync-fnskus',{method:'POST'}).then(d=>{
     btn.textContent='↻ Sync FNSKUs from Amazon'; btn.disabled=false;
     if(d.error){ toast('Sync error: '+d.error,true); return; }
-    toast('Matched '+d.matched+' FNSKUs'+(d.unmatchedCount?', '+d.unmatchedCount+' unmatched':''));
+    const L=d.listings;
+    toast('Matched '+d.matched+' FNSKUs'+(d.unmatchedCount?', '+d.unmatchedCount+' unmatched':'')
+      +(L&&L.switched?' · '+L.switched+' moved to their new Amazon listing':'')+(L&&L.toPick?' · '+L.toPick+' need a pick (red box)':''));
     loadFnStatus(); loadFnskuWarn();
     if(d.unmatchedCount) alert(d.matched+' FNSKUs matched to products.\n\n'+d.unmatchedCount+' FBA items could not be matched (SKU/ASIN not in your catalog). Those will use scan-to-assign the first time.');
   }).catch(()=>{ btn.textContent='↻ Sync FNSKUs from Amazon'; btn.disabled=false; toast('Sync failed',true); });

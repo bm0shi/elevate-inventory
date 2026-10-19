@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { findConflicts } = require('../lib/fnsku-pick');
+const { findConflicts, resolvePins } = require('../lib/fnsku-pick');
 
 // The real case: Extra-Body Sculpting Gel, old SKU kept by the app, new listing made Oct 16.
 const gel = { asin: 'B0FPJH8RZL', sku: 'BS-47MN-GI3G', fnsku: 'X00565HNWX' };
@@ -39,4 +39,10 @@ test('nothing to do: one listing, same FNSKU twice, or a SKU that belongs to ano
   assert.strictEqual(findConflicts([gel], dup, {}).conflicts.length, 0);
   const other = { asin: 'B0OTHER', sku: 'Extra Body Sculpt Gel - 5.1oz', fnsku: 'X005DIWTZ9' };
   assert.strictEqual(findConflicts([gel, other], fbaGel, {}).conflicts.length, 0);
+});
+
+test('a hand fix holds over the sync until Amazon shows that FNSKU, then moves the product onto that listing', () => {
+  assert.deepStrictEqual(resolvePins({ B0FPJH8RZL: 'x005diwtz9' }, fbaGel), [{ asin: 'B0FPJH8RZL', fnsku: 'X005DIWTZ9', sku: 'Extra Body Sculpt Gel - 5.1oz', release: true, skus: ['BS-47MN-GI3G', 'Extra Body Sculpt Gel - 5.1oz'] }]);
+  // the new listing not in Amazon's stock list yet: keep the hand fix
+  assert.deepStrictEqual(resolvePins({ B0FPJH8RZL: 'X005DIWTZ9' }, { a: fbaGel['BS-47MN-GI3G'] }), [{ asin: 'B0FPJH8RZL', fnsku: 'X005DIWTZ9', sku: null, release: false, skus: ['BS-47MN-GI3G'] }]);
 });
