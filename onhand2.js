@@ -381,7 +381,7 @@
       '<td>' + (p.is_bundle ? '—' : E(typeof casesText === 'function' ? casesText(available, caseQtyOf(p)) : '')) + '</td>' +
       '<td>' + n0(pend) + '</td><td>' + n0(prep) + '</td><td>' + n0(p.transit) + '</td><td>' + n0(lt.at) + '</td>' +
       '<td>' + coverBadge(cover) + '</td><td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
-      '<td><div style="display:flex;gap:6px;justify-content:center"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Prelabeling only: label now, not part of any shipment">Prelabel</button><button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')">Fix</button></div></td></tr>';
+      '<td><div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Prelabeling only: label now, not part of any shipment">Prelabel</button><button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')">Fix</button></div></td></tr>';
   }
   function emptyState(filter, q) {
     const M = {
@@ -417,7 +417,7 @@
     const pre = ctx.pickBar || '';
     if (!list.length) { body.innerHTML = pre + '<div class="oh2-grid">' + emptyState(filter, q) + '</div>'; return; }
     if (lay === 'table') {
-      body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl"><colgroup><col style="width:30%"><col style="width:8%"><col style="width:11%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:7%"></colgroup>' +
+      body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl"><colgroup><col style="width:27%"><col style="width:7%"><col style="width:10%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:16%"></colgroup>' +
         '<thead><tr><th>Product</th><th>Available</th><th>Cases</th><th>Pending</th><th>Prepped</th><th>On the way</th><th>At Amazon</th><th>FBA cover</th><th>3P avg / mo</th><th></th></tr></thead><tbody>' +
         list.map(row).join('') + '</tbody></table></div>';
       return;
