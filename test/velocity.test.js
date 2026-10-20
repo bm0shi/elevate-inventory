@@ -80,3 +80,20 @@ test('orders count each order once, even with two products in it', () => {
   const h = hourlyStats(recs, '2026-10-08');
   assert.deepStrictEqual([h.orders[10], h.units[10], h.sales[10], h.orders[11]], [1, 3, 70, 1]);
 });
+
+test('gross sales match Seller Central: free replacements and orders from outside Amazon are not sales', () => {
+  const H = 'amazon-order-id\tpurchase-date\torder-status\tsales-channel\tsku\tasin\titem-status\tquantity\titem-price';
+  const body = [H,
+    'R1\t2026-10-08T17:00:00+00:00\tShipped\tAmazon.com\tS1\tB1\tShipped\t1\t30.00',
+    'R2\t2026-10-08T17:00:00+00:00\tShipped\tAmazon.com\tS1\tB1\tShipped\t1\t0.00',     // free replacement: was priced at $30
+    'R3\t2026-10-08T17:00:00+00:00\tShipped\tNon-Amazon\tS1\tB1\tShipped\t2\t60.00',    // Multi-Channel Fulfillment
+    'R4\t2026-10-08T17:00:00+00:00\tPending\tAmazon.com\tS1\tB1\tUnshipped\t1\t',        // pending, no price yet: still estimated
+    'R5\t2026-10-08T17:00:00+00:00\tPending\tAmazon.com\tS1\tB1\tUnshipped\t1\t0.00',    // pending at $0: not priced yet either
+  ].join('\n');
+  const d = salesByDay(orderRecords(body, null), '2026-10-08', '2026-10-08')['2026-10-08'];
+  assert.deepStrictEqual([d.orders, d.units, d.sales, d.est], [3, 3, 90, 60]);   // the two pending lines at the $30 average
+  const withFlag = ['amazon-order-id\tpurchase-date\torder-status\tsku\tasin\titem-status\tquantity\titem-price\tis-replacement-order',
+    'X1\t2026-10-08T17:00:00+00:00\tShipped\tS1\tB1\tShipped\t1\t30.00\tfalse',
+    'X2\t2026-10-08T17:00:00+00:00\tShipped\tS1\tB1\tShipped\t1\t30.00\ttrue'].join('\n');
+  assert.strictEqual(orderRecords(withFlag, null).length, 1);
+});
