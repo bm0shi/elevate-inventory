@@ -130,8 +130,12 @@
   .oh2-more summary::before{content:"";width:7px;height:7px;border-right:2px solid ${K.muted};border-bottom:2px solid ${K.muted};transform:rotate(-45deg);transition:transform .2s;margin:0 3px 0 2px}
   .oh2-more[open] summary::before{transform:rotate(45deg)}
   .oh2-more summary .cnt{font-weight:650;color:${K.muted}}
-  .oh2-duo{width:100%;border-collapse:collapse;font-size:15px;margin:2px 0 6px}
-  .oh2-duo th{font-size:13px;font-weight:750;color:${K.muted};text-align:center;padding:4px 6px;white-space:nowrap}
+  .oh2-duo{width:100%;border-collapse:collapse;font-size:15px;margin:2px 0 6px;table-layout:fixed}
+  .oh2-duo th{font-size:13px;font-weight:750;color:${K.muted};text-align:center;padding:4px 6px;white-space:normal;line-height:1.25}
+  .oh2-duo th:first-child{width:27%}
+  .oh2-duo th:nth-child(3),.oh2-duo th:nth-child(4){width:18%}
+  .oh2-duo td:first-child{overflow-wrap:anywhere}
+  .oh2-duo td .oh2-mono{white-space:nowrap}
   .oh2-duo th:first-child{text-align:left}
   .oh2-duo td{padding:7px 6px;border-top:1px solid ${K.line2};text-align:center;vertical-align:middle}
   .oh2-duo td:first-child{text-align:left}
@@ -333,7 +337,7 @@
         '<td>' + (d.monthlySold != null ? '~' + n0(d.monthlySold) : '—') + '</td>' +
         '<td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td></tr>';
     }).join('');
-    return '<details class="oh2-more" data-k="duo-' + E(p.asin) + '"><summary>Pairs into duos <span class="cnt">· ' + p.partners.length + ' duo' + (p.partners.length === 1 ? '' : 's') + '</span></summary>' +
+    return '<details class="oh2-more" open data-k="duo-' + E(p.asin) + '"><summary>Pairs into duos <span class="cnt">· ' + p.partners.length + ' duo' + (p.partners.length === 1 ? '' : 's') + '</span></summary>' +
       '<table class="oh2-duo"><thead><tr><th>Partner bottle</th><th>Partner on hand</th><th>Duo ASIN</th><th>Duo FNSKU</th><th>Sold / mo</th><th>3P avg / mo</th></tr></thead><tbody>' + rows + '</tbody></table></details>';
   }
   function card(p, i) {
@@ -358,7 +362,7 @@
       '</div></div>' +
       '<div class="oh2-av"><div class="n' + (available <= 0 ? ' zero' : '') + '">' + n0(available) + '</div><div class="l">Available</div>' + cases + '</div></div>' +
       stockBar(p, available) + stats(p, t) + alerts + duoTable(p) +
-      (amz ? '<details class="oh2-more" data-k="amz-' + E(p.asin) + '"><summary>At Amazon by listing</summary><div class="oh2-amz">' + amz + '</div></details>' : '') +
+      (amz ? '<details class="oh2-more" open data-k="amz-' + E(p.asin) + '"><summary>At Amazon by listing</summary><div class="oh2-amz">' + amz + '</div></details>' : '') +
       '<div class="oh2-foot"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Label now, not part of any shipment">Prelabeling only</button>' +
       '<button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')" title="Units missing on the floor (or found again): corrects On Hand and keeps a log on this card">Fix count</button>' +
       (p.fba_as_of ? '<button class="oh-btn quiet sm" onclick="amazonCheck(\'' + q1(p.asin) + '\')">Check with Amazon</button>' : '') +
@@ -418,12 +422,13 @@
         list.map(row).join('') + '</tbody></table></div>';
       return;
     }
-    // A live refresh (every 30 s) redraws the cards: keep what was open, and
-    // don't replay the entrance.
-    const open = new Set([...body.querySelectorAll('details.oh2-more[open]')].map(d => d.dataset.k));
+    // "Pairs into duos" and "At Amazon by listing" start open (owner 10/20:
+    // scan everything at a glance). A live refresh (every 30 s) redraws the
+    // cards: keep shut what was shut, and don't replay the entrance.
+    const shut = new Set([...body.querySelectorAll('details.oh2-more:not([open])')].map(d => d.dataset.k));
     const again = !!body.querySelector('.oh2-grid');
     body.innerHTML = pre + '<div class="oh2-grid' + (again ? ' still' : '') + '">' + list.map(card).join('') + '</div>';
-    if (open.size) body.querySelectorAll('details.oh2-more').forEach(d => { if (open.has(d.dataset.k)) d.open = true; });
+    if (shut.size) body.querySelectorAll('details.oh2-more').forEach(d => { if (shut.has(d.dataset.k)) d.open = false; });
   }
   // Leave the new look: hand the page back to the classic screen untouched.
   function teardown() {
