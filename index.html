@@ -2147,11 +2147,16 @@ function prodMixClose(n){
 // text, and the 2D box-content PDF417 across the bottom.
 // Barcode sizes are whole dots of the owner's 203 dpi thermal printers
 // (Zebra ZP450, Rollo), so every bar prints crisp and even:
-//   contents PDF417  Always one label per box. 4 dots (0.0197 in) — Amazon
-//                    asks for 0.020 in, the nearest printable size — or 3 dots
-//                    (0.0148 in) when rows can then be taller. Source Correct's
-//                    is 0.0124 in and Amazon reads it. Error correction 6, rows
-//                    3-5 modules tall (4+ survives a tilted scan), 6-11 columns.
+//   contents PDF417  Always one label per box. Source Correct's exactly (owner
+//                    10/20, after the first app-labelled test box went missing
+//                    at Amazon; measured from their FBA19TBD1Q01 box 147 label,
+//                    one Amazon received): error correction 6, 12 columns,
+//                    bars 0.01238 in, rows 0.092 in, at 0.395 in from the left
+//                    and 4.21 in from the top (3.38 × 1.38 in for 15 rows).
+//                    Ours used to be 4-dot bars over 6 columns with stretched
+//                    rows, which ran to the label's right and bottom edges.
+//                    A mixed box (more rows) starts higher and, only if it
+//                    must, gets shorter rows (never under 3 bar widths).
 //                    Mixed boxes list the first two FNSKUs in text (as Wizard
 //                    Industries did); the barcode carries every product.
 //   box ID Code 128 / PDF417  2 dots.
@@ -2215,20 +2220,14 @@ function prodPrint(nums){
     +'document.querySelectorAll(".c128").forEach(function(e){var r=draw(e,{bcid:"code128",text:e.dataset.t,height:10},2*DOT,0.718);e.style.left=(1.40-r.w/2)+"in";});'
     // Sideways box-ID barcode: full length (8 columns) on single-product labels, 5 columns (about 1.5 in) on mixed ones.
     +'document.querySelectorAll(".side").forEach(function(e){var sh=!!e.dataset.short,o={bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:sh?5:8,rowmult:1,rotate:"R"};var r=draw(e,o,2*DOT);var rows=r.vb.width;o.rowmult=Math.max(3,Math.floor(0.9/(rows*2*DOT)));r=draw(e,o,2*DOT);e.style.left=(3.85-r.w)+"in";e.style.top=(sh?1.673:1.673+(2.164-r.h)/2)+"in";});'
-    // Contents barcode: bars 4 printer dots wide (0.0197 in, the closest a 203 dpi printer gets to Amazon's 0.020 in) when it fits,
-    // else 3 dots (0.0148 in, still wider than Source Correct's 0.0124 in). Rows at least 3 bars tall, taller when there is room (reads better tilted).
-    // Scan tests (both decoders, 203 dpi, blur / missing dots / fading / tilt): rows 4+ modules tall survive a 4 degree tilt, rows 3 tall
-    // mostly don't, whatever the bar width. So first choice is rows 4+ tall, then the thicker bar; 11 columns (3.78 in, little edge
-    // margin) only when nothing else fits. Within a choice, the tallest rows for the width.
-    +'var C=[[4,6],[4,7],[3,8],[3,9],[3,10],[3,11]];'
-    +'document.querySelectorAll(".c2d").forEach(function(e){var t=e.dataset.t,avail=BOTTOM-(+e.dataset.top),pick=null,r;'
-    +'for(var i=0;i<C.length;i++){try{r=draw(e,{bcid:"pdf417",text:t,eclevel:6,columns:C[i][1],rowmult:1},C[i][0]*DOT);}catch(x){continue;}'
-    +'var rm=Math.min(5,Math.floor(avail/(r.vb.height*C[i][0]*DOT)+1e-9));if(rm<3)continue;'
-    +'var tier=C[i][1]===11?4:(rm>=4?0:2)+(C[i][0]===4?0:1),q=rm/r.vb.width;'
-    +'if(!pick||tier<pick.tier||(tier===pick.tier&&q>pick.q))pick={d:C[i][0],c:C[i][1],rm:rm,tier:tier,q:q};}'
-    +'if(!pick){e.innerHTML="";e.className="err";e.style.cssText="position:absolute!important;left:0.24in;top:4.2in;white-space:normal;width:3.5in";e.textContent="Too many products for one label \u2014 split this box.";return;}'
-    +'r=draw(e,{bcid:"pdf417",text:t,eclevel:6,columns:pick.c,rowmult:pick.rm},pick.d*DOT);e.querySelector("svg").setAttribute("data-text",t);e.dataset.dots=pick.d;e.dataset.cols=pick.c;e.dataset.rm=pick.rm;'
-    +'e.style.left=((4-r.w)/2)+"in";e.style.top=(BOTTOM-r.h)+"in";});'
+    // Contents barcode: Source Correct's settings (see the note above prodPrint).
+    +'var SCM=0.01238,SCROW=0.092,SCTOP=4.21,SCLEFT=0.395;'
+    +'document.querySelectorAll(".c2d").forEach(function(e){var t=e.dataset.t,top=+e.dataset.top,o={bcid:"pdf417",text:t,eclevel:6,columns:12,rowmult:1},r;'
+    +'try{r=draw(e,o,SCM);}catch(x){r=null;}var rows=r?r.vb.height:0,y=Math.max(top,SCTOP),rh=SCROW;'
+    +'if(r&&y+rows*rh>BOTTOM){y=top;rh=Math.min(SCROW,(BOTTOM-top)/rows);}'
+    +'if(!r||rh<3*SCM){e.innerHTML="";e.className="err";e.style.cssText="position:absolute!important;left:0.24in;top:4.2in;white-space:normal;width:3.5in";e.textContent="Too many products for one label \u2014 split this box.";return;}'
+    +'r=draw(e,o,SCM,rows*rh);e.querySelector("svg").setAttribute("data-text",t);e.dataset.cols=12;e.dataset.rows=rows;'
+    +'e.style.left=SCLEFT+"in";e.style.top=y+"in";});'
     +'setTimeout(function(){window.print();},300);}catch(err){document.body.insertAdjacentHTML("afterbegin","<div class=err>Could not draw a barcode: "+String(err.message||err).replace(/</g,"&lt;")+"</div>");}})();<\/script></body></html>');
   w.document.close();
 }
