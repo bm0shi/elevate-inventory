@@ -3,16 +3,21 @@ const assert = require('node:assert');
 const { boxBarcode, mergeItems, normShipmentId, boxWarnings, boxId, normExp, expText } = require('../lib/pack');
 const { unitWeightLb } = require('../lib/capacity');
 
-test('2D barcode text in Amazon\'s format, one entry per FNSKU', () => {
+test('2D barcode text exactly as Source Correct prints it (decoded from their FBA19TBD1Q01 box 147 label)', () => {
+  assert.strictEqual(boxBarcode('FBA19TBD1Q01', [{ fnsku: 'X003TH6D2B', qty: 6, exp: '291015' }]).text,
+    'AMZN,PO:FBA19TBD1Q01,FNSKU:X003TH6D2B, QTY:6,EXPs:10-15-2029,');
+});
+
+test('2D barcode: one entry per FNSKU, each in the same form', () => {
   const r = boxBarcode('fba18xrl8gv5', [{ fnsku: 'X003EH4VQ1', qty: 12 }, { fnsku: 'X0049MFSTJ', qty: 6 }, { fnsku: 'x003eh4vq1', qty: 3 }]);
-  assert.strictEqual(r.text, 'AMZN,PO:FBA18XRL8GV5,FNSKU:X003EH4VQ1,QTY:15,FNSKU:X0049MFSTJ,QTY:6');
+  assert.strictEqual(r.text, 'AMZN,PO:FBA18XRL8GV5,FNSKU:X003EH4VQ1, QTY:15,FNSKU:X0049MFSTJ, QTY:6,');
   assert.strictEqual(r.units, 21);
   assert.strictEqual(r.skus, 2);
 });
 
 test('expiration date only when it is YYMMDD', () => {
-  assert.strictEqual(boxBarcode('FBA18XRL8GV5', [{ fnsku: 'X003EH4VQ1', qty: 1, exp: '270131' }]).text, 'AMZN,PO:FBA18XRL8GV5,FNSKU:X003EH4VQ1,QTY:1,EXP:270131');
-  assert.strictEqual(boxBarcode('FBA18XRL8GV5', [{ fnsku: 'X003EH4VQ1', qty: 1, exp: '2027-01' }]).text, 'AMZN,PO:FBA18XRL8GV5,FNSKU:X003EH4VQ1,QTY:1');
+  assert.strictEqual(boxBarcode('FBA18XRL8GV5', [{ fnsku: 'X003EH4VQ1', qty: 1, exp: '270131' }]).text, 'AMZN,PO:FBA18XRL8GV5,FNSKU:X003EH4VQ1, QTY:1,EXPs:01-31-2027,');
+  assert.strictEqual(boxBarcode('FBA18XRL8GV5', [{ fnsku: 'X003EH4VQ1', qty: 1, exp: '2027-01' }]).text, 'AMZN,PO:FBA18XRL8GV5,FNSKU:X003EH4VQ1, QTY:1,');
 });
 
 test('a bad label is refused, never printed', () => {
