@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'label-sc-size-1085';
+const BUILD_ID = 'pack-live-1086';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1901,6 +1901,25 @@ async function packRefreshStatuses(force) {
   for (const id of ids) if (st[id]) { await pool.query('UPDATE inv_pack_shipments SET amz_status=$2, amz_status_at=now() WHERE shipment_id=$1', [id, st[id]]); n++; }
   return { updated: n };
 }
+// ---- Live view: two computers on one shipment (owner 10/20: "if two people
+// are on the same page at different computers, theyre not seeing the
+// updates"). Every change that goes through /api/pack for a shipment bumps
+// its counter once the reply has gone out; an open Build boxes screen asks
+// for the counter every 1.5 s (/api/pack/:sid/rev, a memory read) and
+// reloads only when it moved. The boot id makes a restart count as a change.
+// One server (Railway runs a single instance), so memory is enough.
+const packRevs = new Map(), PACK_BOOT = Date.now().toString(36);
+const packRev = (sid) => PACK_BOOT + '.' + (packRevs.get(sid) || 0);
+app.use('/api/pack', (req, res, next) => {
+  const sid = req.method === 'POST' && pack.normShipmentId(req.body && req.body.shipmentId);
+  if (sid) res.on('finish', () => { if (res.statusCode < 400) packRevs.set(sid, (packRevs.get(sid) || 0) + 1); });
+  next();
+});
+app.get('/api/pack/:sid/rev', auth, (req, res) => {
+  const sid = pack.normShipmentId(req.params.sid);
+  if (!sid) return res.status(400).json({ ok: false, error: 'Bad shipment ID' });
+  res.json({ ok: true, rev: packRev(sid) });
+});
 app.get('/api/pack/list', auth, async (req, res) => { res.json(await packList()); });
 app.post('/api/pack/list/refresh', auth, async (req, res) => {
   let error = null;
@@ -1919,9 +1938,10 @@ app.post('/api/pack/settings', auth, async (req, res) => {
 });
 app.get('/api/pack/:sid', auth, async (req, res) => {
   const sid = pack.normShipmentId(req.params.sid);
+  const rev = sid && packRev(sid);   // read before the view, so a change during it still shows as new
   const v = sid && await packView(sid);
   if (!v) return res.status(404).json({ ok: false, error: 'Not found' });
-  res.json(v);
+  res.json(Object.assign(v, { rev }));
 });
 const packAddr = (a) => a ? { name: String(a.name || '').slice(0, 80), line1: String(a.line1 || '').slice(0, 120), line2: String(a.line2 || '').slice(0, 120),
   city: String(a.city || '').slice(0, 60), state: String(a.state || '').slice(0, 20), zip: String(a.zip || '').slice(0, 20), country: String(a.country || 'US').slice(0, 3) } : null;
