@@ -1665,9 +1665,43 @@ function prodStart(refresh){
 function prodLoad(sid){
   return api('/api/pack/'+encodeURIComponent(sid)).then(d=>{
     if(!d||d.ok===false){ toast((d&&d.error)||'Not found',true); _prod=null; return prodOpen(); }
-    _prod=Object.assign(_prod&&prodSid()===sid?_prod:{}, {v:d}); prodRender();
+    _prod=Object.assign(_prod&&prodSid()===sid?_prod:{}, {v:d, rev:d.rev}); _prodDirty.clear(); prodRender();
   }).catch(e=>toast('Could not load: '+e.message,true));
 }
+// LIVE VIEW (owner 10/20: two people on Build boxes at different computers
+// didn't see each other's boxes). While a shipment is open on screen, ask the
+// server every 1.5 s whether it changed (a tiny call, /api/pack/:sid/rev) and
+// reload it as soon as it did. What someone is typing here survives the
+// reload: the boxes they typed in (_prodDirty) keep their text, and the
+// cursor stays where it was. Everything else shows the new data. Paused
+// while the tab is hidden or a pop-up is waiting for an answer.
+const _prodDirty=new Set();
+document.addEventListener('input',e=>{ const t=e.target; if(t&&t.id&&t.closest&&t.closest('#prodArea')) _prodDirty.add(t.id); },true);
+let _prodLiveBusy=false;
+function prodLiveTick(){
+  const el=document.getElementById('prodArea'), sid=prodSid();
+  if(_prodLiveBusy||!sid||!el||!el.offsetParent||document.hidden||document.getElementById('prodFullModal')) return;
+  _prodLiveBusy=true;
+  api('/api/pack/'+encodeURIComponent(sid)+'/rev').then(d=>{
+    if(!d||!d.rev||prodSid()!==sid) return;
+    if(!_prod.rev){ _prod.rev=d.rev; return; }
+    if(d.rev!==_prod.rev) return prodLiveReload(sid);
+  }).catch(()=>{}).finally(()=>{ _prodLiveBusy=false; });
+}
+function prodLiveReload(sid){
+  return api('/api/pack/'+encodeURIComponent(sid)).then(d=>{
+    if(!d||d.ok===false||prodSid()!==sid) return;
+    const keep={}, a=document.activeElement, area=document.getElementById('prodArea');
+    _prodDirty.forEach(id=>{ const i=document.getElementById(id); if(i) keep[id]=i.type==='checkbox'?i.checked:i.value; });
+    const focus=a&&area&&area.contains(a)&&a.id?{id:a.id,s:a.selectionStart,e:a.selectionEnd}:null;
+    if(focus&&!(focus.id in keep)) keep[focus.id]=a.type==='checkbox'?a.checked:a.value;
+    _prod.v=d; _prod.rev=d.rev; prodRender();
+    for(const id in keep){ const i=document.getElementById(id); if(i){ if(i.type==='checkbox') i.checked=keep[id]; else i.value=keep[id]; } }
+    if(focus){ const i=document.getElementById(focus.id); if(i){ i.focus(); try{ i.setSelectionRange(focus.s,focus.e); }catch(e){} } }
+    if(_prod.sel&&document.getElementById('prodPrev')) prodPreview();
+  }).catch(()=>{});
+}
+setInterval(prodLiveTick, 1500);
 const prodAddrHtml=a=>a&&a.line1?esc(a.name||'')+'<br>'+esc(a.line1)+(a.line2?'<br>'+esc(a.line2):'')+'<br>'+esc(a.city)+', '+esc(a.state)+', '+esc(a.zip)+' '+esc(a.country||''):'<span style="color:#c0392b">missing</span>';
 // Same arithmetic as lib/pallet.js boxesThatFit, for the live preview:
 // each box counts its cardboard and a bag per unit, and the pallet stops at
