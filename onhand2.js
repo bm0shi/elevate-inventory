@@ -41,6 +41,8 @@
   .oh-btn.secondary:hover{background:#145c6c;transform:translateY(-1px)}
   .oh-btn.ghost{background:#fff;color:${K.brand};border:1px solid ${K.line}}
   .oh-btn.ghost:hover{border-color:#c6d4dc;background:#fbfdfe}
+  .oh-btn.oh2-pre{background:#7a4fb5;color:#fff}
+  .oh-btn.oh2-pre:hover{background:#6a3fa5;transform:translateY(-1px)}
   .oh-btn.quiet{color:${K.ink2};padding:7px 10px;font-weight:700}
   .oh-btn.quiet:hover{background:#f1f5f8;color:${K.ink}}
   .oh-btn.sm{font-size:14px;padding:7px 11px;border-radius:9px}
@@ -357,7 +359,7 @@
       '<div class="oh2-av"><div class="n' + (available <= 0 ? ' zero' : '') + '">' + n0(available) + '</div><div class="l">Available</div>' + cases + '</div></div>' +
       stockBar(p, available) + stats(p, t) + alerts + duoTable(p) +
       (amz ? '<details class="oh2-more" data-k="amz-' + E(p.asin) + '"><summary>At Amazon by listing</summary><div class="oh2-amz">' + amz + '</div></details>' : '') +
-      '<div class="oh2-foot"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button>' +
+      '<div class="oh2-foot"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Label now, not part of any shipment">Prelabeling only</button>' +
       '<button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')" title="Units missing on the floor (or found again): corrects On Hand and keeps a log on this card">Fix count</button>' +
       (p.fba_as_of ? '<button class="oh-btn quiet sm" onclick="amazonCheck(\'' + q1(p.asin) + '\')">Check with Amazon</button>' : '') +
       '<span class="sp"></span><span class="meta">' + n0(o) + ' in the warehouse</span></div>' +
@@ -375,7 +377,7 @@
       '<td>' + (p.is_bundle ? '—' : E(typeof casesText === 'function' ? casesText(available, caseQtyOf(p)) : '')) + '</td>' +
       '<td>' + n0(pend) + '</td><td>' + n0(prep) + '</td><td>' + n0(p.transit) + '</td><td>' + n0(lt.at) + '</td>' +
       '<td>' + coverBadge(cover) + '</td><td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
-      '<td><div style="display:flex;gap:6px;justify-content:center"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')">Fix</button></div></td></tr>';
+      '<td><div style="display:flex;gap:6px;justify-content:center"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Prelabeling only: label now, not part of any shipment">Prelabel</button><button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')">Fix</button></div></td></tr>';
   }
   function emptyState(filter, q) {
     const M = {
