@@ -615,3 +615,48 @@ test('staff cannot reach owner routes', { skip }, async () => {
   assert.strictEqual((await fetch(`http://localhost:${PORT}/api/cache/fba_inventory`, { headers: H() })).status, 200);
   assert.strictEqual((await fetch(`http://localhost:${PORT}/api/cache/velocity`, { headers: H({ 'x-owner-password': OWNER }) })).status, 200);
 });
+
+test('prelabeling only: its own job, never ticked into a shipment; shipment jobs and ready units go first', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTPRE','Test Pre-label','SKU-PRE','X00TESTPRE') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTPRE', qty: 100 });
+  const pre = async () => (await one(`SELECT COALESCE(qty,0)::int AS qty, COALESCE(prelabel_qty,0)::int AS pre FROM inv_prepped WHERE asin='TSTPRE'`)) || { qty: 0, pre: 0 };
+  const jobs = async () => (await pool.query(`SELECT id, qty, prelabel FROM inv_pending_prep WHERE asin='TSTPRE' ORDER BY prelabel, id`)).rows;
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTPRE', qty: 10 })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTPRE', qty: 20, prelabel: true })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTPRE', qty: 5, prelabel: true })).status, 200);
+  // two jobs: the shipment one, and one pre-label job (the second add merged into it)
+  assert.deepStrictEqual((await jobs()).map(j => [j.qty, j.prelabel]), [[10, false], [25, true]]);
+  const preJob = (await jobs())[1];
+  assert.strictEqual((await post('/api/pending-prep/in-plan-many', { ids: [preJob.id], inPlan: true })).body.changed, 0);
+  // a scan fills the shipment job first; the rest is pre-labelled
+  const s = await post('/api/prep/scan', { code: 'TSTPRE', qty: 15 });
+  assert.strictEqual(s.status, 200, JSON.stringify(s.body));
+  assert.deepStrictEqual(await pre(), { qty: 15, pre: 5 });
+  assert.deepStrictEqual((await jobs()).map(j => [j.qty, j.prelabel]), [[20, true]]);
+  const list = (await fetch(`http://localhost:${PORT}/api/prep/list`, { headers: H() }).then(r => r.json()));
+  assert.strictEqual(list.items.find(x => x.asin === 'TSTPRE').prepped, 10);
+  assert.strictEqual(list.prelabeled.find(x => x.asin === 'TSTPRE').prepped, 5);
+  // undo puts both jobs and both counts back
+  assert.strictEqual((await post('/api/undo/' + s.body.undoId, {})).status, 200);
+  assert.deepStrictEqual(await pre(), { qty: 0, pre: 0 });
+  assert.deepStrictEqual((await jobs()).map(j => [j.qty, j.prelabel]).sort(), [[10, false], [25, true]]);
+  // finishing the pre-label job lands it all under PRE-LABELED SKUS
+  const pj = (await jobs()).find(j => j.prelabel);
+  assert.strictEqual((await post('/api/pending-prep/complete', { id: pj.id, qty: 25, completedBy: 'Tester' })).status, 200);
+  assert.deepStrictEqual(await pre(), { qty: 25, pre: 25 });
+  await post('/api/prep/scan', { code: 'TSTPRE', qty: 10 });
+  assert.deepStrictEqual(await pre(), { qty: 35, pre: 25 });
+  // move 5 up to Prepped & Ready; a double tap with the same action id moves once
+  const [m1, m2] = await Promise.all([post('/api/prep/prelabel-move', { asin: 'TSTPRE', qty: 5 }, { idem: 'pre-move-1' }), post('/api/prep/prelabel-move', { asin: 'TSTPRE', qty: 5 }, { idem: 'pre-move-1' })]);
+  assert.ok([m1.status, m2.status].includes(200));   // the other is the replay, or 'still working on it' (409)
+  assert.deepStrictEqual(await pre(), { qty: 35, pre: 20 });
+  // shipping 20 uses the 15 ready first, then 5 pre-labelled
+  const r = await post('/api/bulk-ship', { shipmentId: 'FBAPRE1', shipmentName: 'Pre test', items: [{ code: 'SKU-PRE', qty: 20 }] });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  assert.deepStrictEqual(await pre(), { qty: 15, pre: 15 });
+  // a correction on PRE-LABELED SKUS sets only that part
+  await post('/api/prep/set', { asin: 'TSTPRE', qty: 12, part: 'prelabel' });
+  assert.deepStrictEqual(await pre(), { qty: 12, pre: 12 });
+  await post('/api/prep/set', { asin: 'TSTPRE', qty: 4 });
+  assert.deepStrictEqual(await pre(), { qty: 16, pre: 12 });
+});

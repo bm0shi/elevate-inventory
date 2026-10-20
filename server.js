@@ -88,14 +88,15 @@ async function applyUndo(db, id) {
     if (op.t === 'stock') {
       await db.query('UPDATE inv_stock SET onhand = onhand + $2, transit = GREATEST(0, transit + $3) WHERE asin=$1', [op.asin, op.onhand || 0, op.transit || 0]);
     } else if (op.t === 'prepped') {
-      await db.query('UPDATE inv_prepped SET qty = GREATEST(0, qty + $2), updated_at=now() WHERE asin=$1', [op.asin, op.qty]);
+      // op.pre: the pre-labelled part of a prep scan comes off the pre-labelled count
+      await db.query('UPDATE inv_prepped SET qty = GREATEST(0, qty + $2), prelabel_qty = GREATEST(0, prelabel_qty + $3), updated_at=now() WHERE asin=$1', [op.asin, op.qty, op.pre || 0]);
       await db.query('DELETE FROM inv_prepped WHERE qty <= 0');
     } else if (op.t === 'shrink') {
       await db.query('DELETE FROM inv_shrink WHERE id=$1', [op.id]);
     } else if (op.t === 'pending' && op.qty > 0) {
       const up = await db.query('UPDATE inv_pending_prep SET qty = qty + $2 WHERE id=$1', [op.id, op.qty]);
       // A half that was scanned out comes back still linked to its partner
-      if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part) VALUES($1,$2,$3,$4,$5)', [op.asin, op.qty, !!op.is_duo, op.group ?? null, op.part ?? null]);
+      if (!up.rowCount) await db.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part, prelabel) VALUES($1,$2,$3,$4,$5,$6)', [op.asin, op.qty, !!op.is_duo, op.group ?? null, op.part ?? null, !!op.prelabel]);
     }
   }
   await db.query('UPDATE inv_undo SET undone_at=now() WHERE id=$1', [id]);
@@ -463,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fnsku-pin-1078';
+const BUILD_ID = 'prelabel-1079';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -563,6 +564,16 @@ async function initDb() {
     -- Ticked on Prepped & Ready to go into the next shipment (with Pending
     -- Prep's ticked jobs). Only a tick: no stock moves.
     ALTER TABLE inv_prepped ADD COLUMN IF NOT EXISTS in_plan BOOLEAN DEFAULT false;
+    -- PRELABELING ONLY (owner 10/20: "pre labeling so theyre ready and it
+    -- gives workers something to do while we wait for inbound shipments"):
+    -- labelled now, not for any shipment yet. A work order with prelabel=true
+    -- is its own job, never merged with a shipment job, and can't be ticked
+    -- into a shipment. What it makes is still prepped stock, so it stays in
+    -- inv_prepped (one row per product, as scanned); prelabel_qty says how
+    -- many of that row's qty are the pre-labelled ones. Prepped & Ready lists
+    -- qty − prelabel_qty, and PRE-LABELED SKUS lists prelabel_qty.
+    ALTER TABLE inv_pending_prep ADD COLUMN IF NOT EXISTS prelabel BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE inv_prepped ADD COLUMN IF NOT EXISTS prelabel_qty INTEGER NOT NULL DEFAULT 0;
     CREATE INDEX IF NOT EXISTS idx_upc ON inv_products(upc);
     CREATE INDEX IF NOT EXISTS idx_upc_norm ON inv_products(upc_norm);
     -- Many UPCs can map to one product (bottle redesigns, multipacks, etc.)
@@ -1085,6 +1096,17 @@ async function initDb() {
         [disp, hb]);
     }
     console.log('[Inventory] Employees + timecards ready.');
+    // Pre-labelled can never be more than the row holds. Every path that takes
+    // prepped units off (shipping, a pack slip, reconcile, undo, a correction)
+    // only lowers qty, so this clamp makes them take the ready-for-shipment
+    // units first and the pre-labelled ones only after those are gone.
+    try {
+      await pool.query(`CREATE OR REPLACE FUNCTION inv_prepped_clamp() RETURNS trigger AS $$
+        BEGIN NEW.prelabel_qty := LEAST(GREATEST(COALESCE(NEW.prelabel_qty, 0), 0), GREATEST(NEW.qty, 0)); RETURN NEW; END
+        $$ LANGUAGE plpgsql`);
+      await pool.query(`DROP TRIGGER IF EXISTS inv_prepped_clamp ON inv_prepped;
+        CREATE TRIGGER inv_prepped_clamp BEFORE INSERT OR UPDATE ON inv_prepped FOR EACH ROW EXECUTE PROCEDURE inv_prepped_clamp()`);
+    } catch (e) { console.error('[Inventory] pre-label clamp skipped:', e.message); }
     // Jobs already over 200 when splitting arrived: split the unclaimed ones
     // into linked halves (same rule as adding, lib/prep-split.js). A job
     // someone is working is left alone. The total to prep doesn't change.
@@ -1093,8 +1115,8 @@ async function initDb() {
         const big = (await db.query(`SELECT id, qty FROM inv_pending_prep WHERE split_group IS NULL AND claimed_by IS NULL AND NOT staged AND qty > $1 FOR UPDATE SKIP LOCKED`, [SPLIT_OVER])).rows;
         for (const r of big) {
           await db.query('UPDATE inv_pending_prep SET qty=$2, split_group=$1, split_part=1 WHERE id=$1', [r.id, Math.ceil(r.qty / 2)]);
-          await db.query(`INSERT INTO inv_pending_prep(asin, qty, is_duo, in_plan, in_plan_at, split_group, split_part)
-            SELECT asin, $2, is_duo, in_plan, in_plan_at, id, 2 FROM inv_pending_prep WHERE id=$1`, [r.id, Math.floor(r.qty / 2)]);
+          await db.query(`INSERT INTO inv_pending_prep(asin, qty, is_duo, in_plan, in_plan_at, split_group, split_part, prelabel)
+            SELECT asin, $2, is_duo, in_plan, in_plan_at, id, 2, prelabel FROM inv_pending_prep WHERE id=$1`, [r.id, Math.floor(r.qty / 2)]);
         }
         if (big.length) console.log(`[Inventory] Split ${big.length} large prep job(s) in half.`);
       });
@@ -7653,8 +7675,9 @@ async function capacityNow() {
   const lim = (limR.rows[0] && limR.rows[0].data) || {};
   const prods = (await pool.query('SELECT asin, name, cuft::float AS cuft, hazmat, cuft_error FROM inv_products')).rows;
   const P = {}; for (const p of prods) P[p.asin] = p;
-  const prepped = {}; for (const r of (await pool.query('SELECT asin, qty FROM inv_prepped WHERE qty > 0')).rows) prepped[r.asin] = r.qty;
-  const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep GROUP BY asin')).rows) pending[r.asin] = r.q;
+  // Pre-labelled stock isn't headed to Amazon yet, so it takes no room there.
+  const prepped = {}; for (const r of (await pool.query('SELECT asin, qty - prelabel_qty AS qty FROM inv_prepped WHERE qty - prelabel_qty > 0')).rows) prepped[r.asin] = r.qty;
+  const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep WHERE NOT prelabel GROUP BY asin')).rows) pending[r.asin] = r.q;
   const row = (asin, units) => ({ cuft: P[asin] ? P[asin].cuft : null, hazmat: !!(P[asin] && P[asin].hazmat), units, asin });
   // Each listing counted on its own ASIN: a duo takes a duo box, not two bottles.
   const nowRows = fba.map(f => row(f.asin, Math.max(f.fba_onhand || 0, f.fba_fulfillable || 0) + (f.fba_inbound || 0)));
@@ -8694,8 +8717,9 @@ async function lockDuoBottles(db, duoAsin) {
 // Put q of an item on the floor's list: merges with its open job, and over
 // 200 units it becomes two linked halves so two people can each take one
 // (splitPlan); a half someone is working never shrinks.
-async function addLivePrep(c, requestAsin, duoFlag, q) {
-  const ex = await c.query('SELECT id, qty, claimed_by, split_group FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 AND NOT staged ORDER BY id FOR UPDATE', [requestAsin, duoFlag]);
+// prelabel: a PRELABELING ONLY job, which merges only with another one.
+async function addLivePrep(c, requestAsin, duoFlag, q, prelabel) {
+  const ex = await c.query('SELECT id, qty, claimed_by, split_group FROM inv_pending_prep WHERE asin=$1 AND is_duo=$2 AND NOT staged AND prelabel=$3 ORDER BY id FOR UPDATE', [requestAsin, duoFlag, !!prelabel]);
   const plan = splitPlan(ex.rows.map(x => ({ id: x.id, qty: x.qty, claimed: !!x.claimed_by, group: x.split_group })), q);
   for (const u of plan.updates) {
     if (u.group !== undefined) await c.query('UPDATE inv_pending_prep SET qty=$2, split_group=$3, split_part=$4 WHERE id=$1', [u.id, u.qty, u.group, u.part]);
@@ -8704,15 +8728,16 @@ async function addLivePrep(c, requestAsin, duoFlag, q) {
   let newGroup = null;
   for (const ins of plan.inserts) {
     const g = ins.group === 'new' ? newGroup : (ins.group ?? null);
-    const row = (await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part) VALUES($1,$2,$3,$4,$5) RETURNING id',
-      [requestAsin, ins.qty, duoFlag, g, ins.part ?? null])).rows[0];
+    const row = (await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, split_group, split_part, prelabel) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',
+      [requestAsin, ins.qty, duoFlag, g, ins.part ?? null, !!prelabel])).rows[0];
     if (ins.group === 'new' && newGroup == null) { newGroup = row.id; await c.query('UPDATE inv_pending_prep SET split_group=$1 WHERE id=$1', [row.id]); }
   }
 }
 
 app.post('/api/pending-prep/add', auth, async (req, res) => {
   const { asin, qty, isDuo, duoAsin } = req.body;
-  const staged = !!req.body.staged;
+  const prelabel = !!req.body.prelabel;
+  const staged = !!req.body.staged && !prelabel;   // pre-labelling goes straight onto the list
   const q = parseInt(qty);
   if (!asin || !q || badQty(q)) return res.status(400).json({ ok: false, error: `asin + qty (1–${MAX_QTY}) required` });
 
@@ -8760,11 +8785,11 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
       else await c.query('INSERT INTO inv_pending_prep(asin, qty, is_duo, staged) VALUES($1,$2,$3,true)', [requestAsin, q, duoFlag]);
       return null;
     }
-    await addLivePrep(c, requestAsin, duoFlag, q);
+    await addLivePrep(c, requestAsin, duoFlag, q, prelabel);
     return null;
   });
   if (short) return res.status(400).json({ ok: false, error: duoShortMsg(q, short), short, notEnough: true });
-  res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag, staged });
+  res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag, staged, prelabel });
 });
 
 // Release the next batch onto the floor's list: each held job joins the
@@ -8786,7 +8811,7 @@ app.post('/api/pending-prep/next/release', auth, async (req, res) => {
 // List pending prep (worker's task list)
 app.get('/api/pending-prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, pp.split_group, pp.split_part, p.name, p.sku, p.fnsku, p.image, p.location, p.case_qty,
+    `SELECT pp.id, pp.asin, pp.qty, pp.is_duo, pp.claimed_by, pp.claimed_at, pp.in_plan, pp.in_plan_at, pp.split_group, pp.split_part, pp.prelabel, p.name, p.sku, p.fnsku, p.image, p.location, p.case_qty,
             COALESCE(st.onhand,0) AS onhand
      FROM inv_pending_prep pp JOIN inv_products p ON p.asin = pp.asin
      LEFT JOIN inv_stock st ON st.asin = pp.asin
@@ -8812,10 +8837,12 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     out.push({ ...r, components });
   }
   // Units AS SHIPPED — a duo is ONE sellable unit (one FNSKU), matching Amazon/3rd-party plan counts
-  const totalUnits = out.reduce((s,x)=> s + x.qty, 0);
+  // (shipment jobs only; PRELABELING ONLY jobs aren't going anywhere yet)
+  const ship = out.filter(x => !x.prelabel);
+  const totalUnits = ship.reduce((s,x)=> s + x.qty, 0);
   // Bottles actually handled on the floor (duo = 2 bottles) — for prep-labor context
-  const totalBottles = out.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
-  const duoCount = out.filter(x=>x.is_duo).reduce((s,x)=> s + x.qty, 0);
+  const totalBottles = ship.reduce((s,x)=> s + (x.is_duo ? x.qty*2 : x.qty), 0);
+  const duoCount = ship.filter(x=>x.is_duo).reduce((s,x)=> s + x.qty, 0);
 
   // Who is on each job right now, and since when.
   try {
@@ -8845,7 +8872,7 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     for (const r of os.rows) (openShipments[r.asin] = openShipments[r.asin] || []).push({ shipmentId: r.shipment_id, name: r.name, fc: r.fc, planned: r.planned, built: r.built });
   } catch (e) { console.error('[Pending prep] open shipments:', e.message); }
 
-  res.json({ items: out, totalRequests: out.length, totalUnits, totalBottles, duoCount, openShipments, next });
+  res.json({ items: out, totalRequests: ship.length, totalUnits, totalBottles, duoCount, openShipments, next });
 });
 
 // Tick / untick many jobs at once (Pending Prep "Select all"). Only the
@@ -8854,7 +8881,7 @@ app.post('/api/pending-prep/in-plan-many', auth, async (req, res) => {
   const ids = (Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map(x => parseInt(x, 10)).filter(x => x > 0).slice(0, 2000);
   if (!ids.length) return res.status(400).json({ ok: false, error: 'Nothing to tick.' });
   const on = !!req.body.inPlan;
-  const r = await pool.query(on ? 'UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE id = ANY($1) AND NOT staged'
+  const r = await pool.query(on ? 'UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE id = ANY($1) AND NOT staged AND NOT prelabel'
                                 : 'UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id = ANY($1)', [ids]);
   res.json({ ok: true, changed: r.rowCount });
 });
@@ -8862,7 +8889,7 @@ app.post('/api/pending-prep/in-plan-many', auth, async (req, res) => {
 app.post('/api/pending-prep/in-plan', auth, async (req, res) => {
   const { id, inPlan } = req.body;
   if (!id) return res.status(400).json({ error: 'id required' });
-  if (inPlan) await pool.query('UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE id=$1 AND NOT staged', [id]);
+  if (inPlan) await pool.query('UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE id=$1 AND NOT staged AND NOT prelabel', [id]);
   else await pool.query('UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id=$1', [id]);
   res.json({ ok: true });
 });
@@ -9090,7 +9117,7 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
   const q = parseInt(qty);
   if (!id || badQty(q)) return res.status(400).json({ error: `id + qty (1–${MAX_QTY}) required` });
 
-  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at, staged FROM inv_pending_prep WHERE id=$1', [id]);
+  const job = await pool.query('SELECT asin, qty, is_duo, claimed_by, claimed_at, staged, prelabel FROM inv_pending_prep WHERE id=$1', [id]);
   if (!job.rows.length) return res.status(404).json({ error: 'Job not found' });
   if (job.rows[0].staged) return res.status(409).json({ ok: false, error: NEXT_BATCH_MSG });
   const { asin, qty: requested, is_duo } = job.rows[0];
@@ -9112,14 +9139,16 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
   // Locked, all-or-nothing. A double-submitted Complete used to add the
   // prepped quantity twice and log the job twice.
   const out = await withTx(async (db) => {
-    const lk = await db.query('SELECT qty FROM inv_pending_prep WHERE id=$1 FOR UPDATE', [id]);
+    const lk = await db.query('SELECT qty, prelabel FROM inv_pending_prep WHERE id=$1 FOR UPDATE', [id]);
     if (!lk.rows.length) return { status: 409, body: { ok: false, error: 'This job was already completed or removed. Nothing was added.' } };
-    const requested = lk.rows[0].qty;
-    // move into Prepped & Ready (stored as-scanned: duo asin or single asin)
-    await db.query('INSERT INTO inv_prepped(asin, qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty = inv_prepped.qty + $2, updated_at=now()', [asin, q]);
+    const requested = lk.rows[0].qty, pre = !!lk.rows[0].prelabel;
+    // move into Prepped & Ready (stored as-scanned: duo asin or single asin);
+    // a PRELABELING ONLY job lands under PRE-LABELED SKUS
+    await db.query(`INSERT INTO inv_prepped(asin, qty, prelabel_qty) VALUES($1,$2,$3) ON CONFLICT (asin)
+      DO UPDATE SET qty = inv_prepped.qty + $2, prelabel_qty = inv_prepped.prelabel_qty + $3, updated_at=now()`, [asin, q, pre ? q : 0]);
     const nm = await db.query('SELECT name FROM inv_products WHERE asin=$1', [asin]);
     await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
-      ['prep', asin, nm.rows[0]?.name || asin, q, 'Prep completed by ' + who + (is_duo ? ' (duo)' : '')]);
+      ['prep', asin, nm.rows[0]?.name || asin, q, (pre ? 'Pre-labeling completed by ' : 'Prep completed by ') + who + (is_duo ? ' (duo)' : '')]);
 
     // ---- record prep performance ----
     const startedAt = job.rows[0].claimed_at || null;
@@ -9489,16 +9518,22 @@ app.post('/api/prep/scan', auth, async (req, res) => {
     // decrement the matching PENDING PREP work order (if any). Row-locked: two
     // scans at once used to both read 10 and both write 9.
     let pendingInfo = null;
-    const undoOps = [{ t: 'prepped', asin: prod.asin, qty: -q }];
+    const undoOps = [{ t: 'prepped', asin: prod.asin, qty: -q, pre: 0 }];
     // A split job is two rows: the scan counts down part 1, then spills into part 2.
-    const pend = await db.query('SELECT id, qty, is_duo, split_group, split_part FROM inv_pending_prep WHERE asin=$1 AND NOT staged ORDER BY id FOR UPDATE', [prod.asin]);
+    // Shipment jobs first; what's left counts down a PRELABELING ONLY job and
+    // is pre-labelled stock (undo takes it back off that count).
+    const pend = await db.query('SELECT id, qty, is_duo, split_group, split_part, prelabel FROM inv_pending_prep WHERE asin=$1 AND NOT staged ORDER BY prelabel, id FOR UPDATE', [prod.asin]);
     if (pend.rows.length) {
       const requested = pend.rows.reduce((t, x) => t + x.qty, 0);
       let left = q;
       for (const row of pend.rows) {
         if (left <= 0) break;
         const take = Math.min(left, row.qty);
-        undoOps.push({ t: 'pending', id: row.id, asin: prod.asin, is_duo: row.is_duo, qty: take, group: row.split_group, part: row.split_part });
+        if (row.prelabel) {
+          await db.query('UPDATE inv_prepped SET prelabel_qty = prelabel_qty + $2 WHERE asin=$1', [prod.asin, take]);
+          undoOps[0].pre -= take;
+        }
+        undoOps.push({ t: 'pending', id: row.id, asin: prod.asin, is_duo: row.is_duo, qty: take, group: row.split_group, part: row.split_part, prelabel: !!row.prelabel });
         if (row.qty - take <= 0) {
           await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [row.id]);
           await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id=$1 AND left_at IS NULL', [row.id]);
@@ -9534,17 +9569,21 @@ async function componentCommitted(componentAsin) {
 // Current prepped list — items shown AS SCANNED (duos as duos, singles as singles)
 app.get('/api/prep/list', auth, async (req, res) => {
   const rows = await pool.query(
-    `SELECT pr.asin, p.name, p.sku, p.fnsku, p.image, p.upc, pr.qty AS prepped, s.onhand, COALESCE(pr.in_plan,false) AS in_plan
+    `SELECT pr.asin, p.name, p.sku, p.fnsku, p.image, p.upc, pr.qty - pr.prelabel_qty AS prepped, pr.prelabel_qty, s.onhand, COALESCE(pr.in_plan,false) AS in_plan
      FROM inv_prepped pr JOIN inv_products p ON p.asin=pr.asin LEFT JOIN inv_stock s ON s.asin=pr.asin
      WHERE pr.qty > 0 ORDER BY p.name`);
   // mark which are bundles
-  const out = [];
+  const all = [];
   for (const r of rows.rows) {
     const b = await pool.query('SELECT 1 FROM inv_bundles WHERE bundle_asin=$1 LIMIT 1', [r.asin]);
-    out.push({ ...r, isBundle: b.rows.length>0 });
+    all.push({ ...r, isBundle: b.rows.length>0 });
   }
-  const totalPrepped = rows.rows.reduce((sum,x)=>sum+x.prepped,0);
-  res.json({ items: out, totalPrepped });
+  // items: ready for a shipment (what the ticks and shipments read);
+  // prelabeled: PRE-LABELED SKUS, labelled but not for any shipment yet.
+  const out = all.filter(x => x.prepped > 0);
+  const prelabeled = all.filter(x => x.prelabel_qty > 0).map(x => Object.assign({}, x, { prepped: x.prelabel_qty, in_plan: false }));
+  const totalPrepped = out.reduce((sum,x)=>sum+x.prepped,0);
+  res.json({ items: out, totalPrepped, prelabeled, totalPrelabeled: prelabeled.reduce((n, x) => n + x.prepped, 0) });
 });
 
 // Tick / untick Prepped & Ready lines for the next shipment (Select all too).
@@ -9556,12 +9595,35 @@ app.post('/api/prep/in-plan', auth, async (req, res) => {
 });
 
 // Adjust/remove a prepped line (corrections)
+// The number typed is the one on the card: Prepped & Ready's (ready for a
+// shipment) or, with part='prelabel', PRE-LABELED SKUS'. The other part stays.
 app.post('/api/prep/set', auth, async (req, res) => {
   const { asin, qty } = req.body;
-  const q = Math.max(0, parseInt(qty)||0);
-  if (q === 0) await pool.query('DELETE FROM inv_prepped WHERE asin=$1', [asin]);
-  else await pool.query('INSERT INTO inv_prepped(asin,qty) VALUES($1,$2) ON CONFLICT (asin) DO UPDATE SET qty=$2, updated_at=now()', [asin, q]);
+  const q = Math.max(0, parseInt(qty)||0), pre = req.body.part === 'prelabel';
+  await withTx(async (db) => {
+    const cur = (await db.query('SELECT qty, prelabel_qty FROM inv_prepped WHERE asin=$1 FOR UPDATE', [asin])).rows[0] || { qty: 0, prelabel_qty: 0 };
+    const ready = cur.qty - cur.prelabel_qty;
+    const total = pre ? ready + q : q + cur.prelabel_qty, preQ = pre ? q : cur.prelabel_qty;
+    if (total <= 0) await db.query('DELETE FROM inv_prepped WHERE asin=$1', [asin]);
+    else await db.query(`INSERT INTO inv_prepped(asin, qty, prelabel_qty) VALUES($1,$2,$3) ON CONFLICT (asin)
+      DO UPDATE SET qty=$2, prelabel_qty=$3, updated_at=now()`, [asin, total, preQ]);
+  });
   res.json({ ok: true });
+});
+// PRE-LABELED SKUS → Prepped & Ready: these labelled units are wanted for a
+// shipment now. Only which list they're on changes; no stock moves.
+app.post('/api/prep/prelabel-move', auth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim(), q = parseInt(req.body && req.body.qty);
+  if (!asin || badQty(q)) return res.status(400).json({ ok: false, error: `asin + qty (1–${MAX_QTY}) required` });
+  const out = await withTx(async (db) => {
+    const cur = (await db.query('SELECT prelabel_qty FROM inv_prepped WHERE asin=$1 FOR UPDATE', [asin])).rows[0];
+    if (!cur || cur.prelabel_qty <= 0) return { status: 409, body: { ok: false, error: 'Nothing pre-labeled left for this product. Refresh.' } };
+    const moved = Math.min(q, cur.prelabel_qty);
+    await db.query('UPDATE inv_prepped SET prelabel_qty = prelabel_qty - $2, updated_at=now() WHERE asin=$1', [asin, moved]);
+    console.log(`[Prep] ${asin}: ${moved} pre-labeled moved to Prepped & Ready.`);
+    return { status: 200, body: { ok: true, moved, left: cur.prelabel_qty - moved } };
+  });
+  res.status(out.status).json(out.body);
 });
 
 // Clear ALL prepped (called after a shipment is finalized)

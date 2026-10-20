@@ -113,6 +113,23 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
   /* Large job split in half: the two halves sit side by side, linked */
   .ppSplit { grid-column: 1 / -1; border: 2px solid #ff9900; background: #fff8ec; border-radius: 14px; padding: 10px 12px 12px; }
   .ppSplitHead { text-align: center; margin: 0 auto 12px; }
+  /* PRELABELING ONLY (owner 10/20): its own section on Pending Prep and Prepped & Ready */
+  .prelabelHead { margin: 22px 0 10px; padding: 12px 16px; border-radius: 10px; background: #f3eefa; border: 2px dashed #7a4fb5; text-align: center; }
+  .prelabelHead .t { font-weight: 900; font-size: 17px; letter-spacing: .5px; color: #5b3a8c; }
+  .prelabelHead .s { font-size: 12.5px; color: #5a6472; margin-top: 4px; }
+  .prelabelTag { display: inline-block; background: #7a4fb5; color: #fff; font-size: 10.5px; font-weight: 800; letter-spacing: .3px; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+  table.prelabelT { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; background: #fff; border-radius: 10px; overflow: hidden; }
+  table.prelabelT th { font-size: 10.5px; text-transform: uppercase; color: #5a6472; padding: 8px; text-align: center; }
+  table.prelabelT th:nth-child(2), table.prelabelT td:nth-child(2) { text-align: left; }
+  table.prelabelT td { padding: 8px; border-top: 1px solid #eef2f6; text-align: center; vertical-align: middle; }
+  table.prelabelT img { width: 54px !important; height: 54px !important; object-fit: contain; border-radius: 6px; }
+  table.prelabelT .fn-sm { display: none; }
+  @media (max-width: 640px) {
+    table.prelabelT { table-layout: auto; }
+    table.prelabelT .hsm { display: none; }
+    table.prelabelT .fn-sm { display: block; }
+    table.prelabelT td, table.prelabelT th { padding: 7px 5px; }
+  }
   .ppSplitBanner { display: inline-block; background: #ff9900; color: #0f1111; font-family: Montserrat, sans-serif; font-size: 24px; font-weight: 900; letter-spacing: 1px; padding: 8px 26px; border-radius: 999px; box-shadow: 0 3px 10px rgba(240,136,4,.35); }
   .ppSplitSub { font-size: 15px; font-weight: 800; color: #5f6675; margin-top: 6px; }
   .ppSplitRow { display: grid; grid-template-columns: minmax(0,1fr) 44px minmax(0,1fr); align-items: stretch; }
@@ -516,6 +533,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
     <div id="capBar"></div>
     <div id="pendingPrepBody"></div>
     <div id="ppNextBatch"></div>
+    <div id="ppPrelabelBody"></div>
     <button class="action full" onclick="loadPendingPrep()" style="margin-top:10px;background:#5a6472">↻ Refresh</button>
   </div>
   <div id="prep" class="panel">
@@ -565,6 +583,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <button class="action" onclick="sendTickedToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment with everything ticked here AND on Pending Prep, added together. No stock changes until Finish.">🏷️ Send ticked to production →</button>
     </div>
     <div id="prepListBox"></div>
+    <div id="prepPrelabelBox"></div>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
   </div>
   <div id="prod" class="panel"><div id="prodArea"></div></div>
@@ -4365,9 +4384,12 @@ function prepCasesNote(per){
 }
 
 // ==================== PENDING PREP (work orders) ====================
-function requestPrep(asin, canDuo){
+// pre: PRELABELING ONLY (On Hand's second button): the same window, but the
+// job goes into Pending Prep's "items needing label" section, not a shipment.
+function requestPrep(asin, canDuo, pre){
   const p = products.find(x=>x.asin===asin);
   if(!p) return;
+  window._prepPre=!!pre;
   const avail = Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0));
   // One choice per duo this bottle is in (a bottle can be in several), with
   // the partner's stock and how many can be built from free stock now.
@@ -4387,7 +4409,8 @@ function requestPrep(asin, canDuo){
   modal.style.cssText='position:fixed;inset:0;background:rgba(15,27,45,0.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px';
   modal.innerHTML=`
     <div style="background:#fff;border-radius:12px;padding:22px;max-width:460px;width:100%;box-shadow:0 10px 40px rgba(0,0,0,0.3)">
-      <div style="font-weight:700;font-size:17px;margin-bottom:4px">Request Prep</div>
+      <div style="font-weight:700;font-size:17px;margin-bottom:4px">${pre?'🏷️ Prelabeling only':'Request Prep'}</div>
+      ${pre?'<div style="font-size:12.5px;color:#5b3a8c;background:#f3eefa;border-radius:8px;padding:8px 10px;margin-bottom:8px">Labels go on now so they\'re ready later. <b>Not part of any shipment.</b> The job shows under <b>Items needing label</b> on Pending Prep.</div>':''}
       <div style="font-size:13px;color:#5a6472;line-height:1.4;margin-bottom:4px">${esc(p.name)}</div>
       <div style="font-size:12px;color:#9db0c9">Available: <b style="color:#1e8449">${avail}</b> · ${casesText(avail, caseQtyOf(p))}</div>
       ${partnerHtml}
@@ -4419,10 +4442,10 @@ function requestPrep(asin, canDuo){
           <span><b style="color:#c0392b">DUOS</b> <span style="color:#5a6472;font-size:12px">— uses this + its partner</span></span>
         </label>`}
       </div>` : ''}
-      ${prepTargetHtml('prepTarget')}
+      ${pre?'':prepTargetHtml('prepTarget')}
       <div style="display:flex;gap:8px;margin-top:18px">
         <button onclick="closePrepModal()" style="flex:1;padding:12px;font-size:14px;font-weight:700;background:#e2e8f0;color:#1f2733;border:none;border-radius:8px;cursor:pointer">Cancel</button>
-        <button onclick="submitPrepRequest('${asin}')" style="flex:2;padding:12px;font-size:14px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">🔧 Add to Pending Prep</button>
+        <button onclick="submitPrepRequest('${asin}')" style="flex:2;padding:12px;font-size:14px;font-weight:700;background:${pre?'#7a4fb5':'#0d4450'};color:#fff;border:none;border-radius:8px;cursor:pointer">${pre?'🏷️ Add to prelabeling':'🔧 Add to Pending Prep'}</button>
       </div>
     </div>`;
   document.body.appendChild(modal);
@@ -4442,12 +4465,12 @@ function submitPrepRequest(asin){
     alert('⛔ NOT ENOUGH STOCK\n\n'+qty+' × '+(duoEl.dataset.name||'this duo')+'\n\nOne of its bottles is short: you can build '+can+' at most right now.'+(can>0?'\n\nLower the quantity to '+can+' or less.':''));
     return;
   }
-  const staged=prepTargetNext('prepTarget');
+  const prelabel=!!window._prepPre, staged=!prelabel && prepTargetNext('prepTarget');
   closePrepModal();
-  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo,duoAsin,staged})}).then(d=>{
+  api('/api/pending-prep/add',{method:'POST',body:JSON.stringify({asin,qty,isDuo,duoAsin,staged,prelabel})}).then(d=>{
     if(!d || d.ok===false || d.error){ if(d&&d.notEnough) alert('⛔ NOT ENOUGH STOCK\n\n'+d.error); else toast((d&&d.error)||'Could not add',true); loadProducts(); return; }
     const dn=d.isDuo?(((products||[]).find(x=>x.asin===d.asin)||{}).name||d.asin):'';
-    toast((d.staged?'Added to the NEXT BATCH: ':'Added to Pending Prep: ')+qty+(d.isDuo?' duos — '+String(dn).slice(0,40):' units'));
+    toast((d.prelabel?'Added to PRELABELING (not for a shipment): ':d.staged?'Added to the NEXT BATCH: ':'Added to Pending Prep: ')+qty+(d.isDuo?' duos — '+String(dn).slice(0,40):' units'));
     loadProducts();
   });
 }
@@ -5916,8 +5939,18 @@ function ppFiltered(all){
 function renderPendingPrep(){
   picZoomOff();   // a refresh replaces the thumbnail, so its mouseleave would never fire
   paintViewToggles();
-  const d=window._pendingPrepData; if(!d)return;
-  const b=document.getElementById('pendingPrepBody');
+  const all=window._pendingPrepData; if(!all)return;
+  // Shipment jobs up top; PRELABELING ONLY jobs in their own section below
+  // (owner 10/20), drawn with the same cards / list and the same buttons.
+  const part=pre=>{ const items=all.items.filter(x=>!!x.prelabel===pre);
+    return Object.assign({}, all, { items, totalRequests:items.length, totalUnits:items.reduce((n,x)=>n+x.qty,0),
+      totalBottles:items.reduce((n,x)=>n+(x.is_duo?x.qty*2:x.qty),0), duoCount:items.filter(x=>x.is_duo).reduce((n,x)=>n+x.qty,0) }); };
+  renderPrepJobs(part(false), document.getElementById('pendingPrepBody'), false);
+  renderPrepJobs(part(true), document.getElementById('ppPrelabelBody'), true);
+}
+function renderPrepJobs(d, b, pre){
+  if(!b) return;
+  if(pre && !d.items.length){ b.innerHTML=''; return; }
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
   const claimedCount=d.items.filter(x=>x.claimed_by).length;
   const inPlanCount=d.items.filter(x=>x.in_plan).length;
@@ -5935,7 +5968,7 @@ function renderPendingPrep(){
     if(ppFilter==='inplan' && !x.in_plan) return false;
     return true;
   });
-  window._ppShown=items.map(x=>x.id);
+  if(!pre) window._ppShown=items.map(x=>x.id);
   // DEFAULT ('active_first'): anything a worker has claimed floats to the top,
   // longest-running first, so the floor sees live jobs without scrolling.
   // Everything not started falls back to quantity high->low underneath.
@@ -5957,7 +5990,9 @@ function renderPendingPrep(){
     }
   });
   items=ppLinkSplits(items);   // the two halves of a split job always sit together
-  let h='<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
+  let h=pre?'<div class="prelabelHead"><div class="t">🏷️ ITEMS NEEDING LABEL (NOT PART OF ANY SHIPMENT)</div>'
+      +'<div class="s">'+d.items.length+' job'+(d.items.length===1?'':'s')+' · '+d.totalUnits.toLocaleString()+' '+(d.duoCount?'units ('+d.totalBottles.toLocaleString()+' bottles)':'units')+' · work these when the shipment jobs above are done. Finished ones go to PRE-LABELED SKUS on Prepped &amp; Ready.</div></div>'
+    :'<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
   if(ppList()){ b.innerHTML=h+ppListRows(items); updateElapsed(); return; }
   // Default view only: divider after the last in-progress card.
   const showDivider=(ppSort==='active_first') && items.some(x=>x.claimed_by) && items.some(x=>!x.claimed_by);
@@ -6009,7 +6044,7 @@ function renderPendingPrep(){
       : `<button onclick="claimPrepJob(${x.id})" style="margin-top:12px;width:100%;padding:12px;font-size:15px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer;letter-spacing:0.3px">▶ START PREP</button>`;
     const cardBorder = claimed ? 'border:2px solid #1e8449' : (x.is_duo?'border:1px solid #fdeceb':'');
     const inPlan = !!x.in_plan;
-    const planBadge = `<div style="position:absolute;top:10px;right:12px;z-index:2">
+    const planBadge = x.prelabel ? `<div style="position:absolute;top:10px;right:12px;z-index:2"><span class="prelabelTag">🏷️ PRE-LABEL ONLY</span></div>` : `<div style="position:absolute;top:10px;right:12px;z-index:2">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer;padding:5px 10px;border-radius:6px;background:${inPlan?'#eafaf1':'#f4f6f9'};border:1.5px solid ${inPlan?'#1e8449':'#d8dee6'}" title="${inPlan?'Added to shipment plan'+(x.in_plan_at?' — '+new Date(x.in_plan_at).toLocaleString():''):'Check when you have added this ASIN to the shipment plan software'}">
           <input type="checkbox" ${inPlan?'checked':''} onclick="toggleInPlan(${x.id}, this.checked)" style="width:17px;height:17px;cursor:pointer">
           <span style="font-size:10px;font-weight:800;letter-spacing:0.3px;color:${inPlan?'#1e8449':'#8a97a6'};text-transform:uppercase">${inPlan?'✓ In Plan':'In Plan?'}</span>
@@ -6035,7 +6070,7 @@ function renderPendingPrep(){
     } else h+=cardHtml(x,i);
     h+=divAfter;
   }
-  h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>';
+  h+='</div>'+(pre?'':'<div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — this is the number that should match your shipment plan software. <b>Bottles</b> is the physical count your team handles (a duo = 2 bottles). Workers: hit <b>START PREP</b> to claim a job, then <b>PREP FINISHED</b> when done.</div>');
   b.innerHTML=h;
   updateElapsed();
 }
@@ -6066,7 +6101,7 @@ function ppListRows(items){
   const amz=a=>{ const p=(products||[]).find(y=>y.asin===a)||{}; return {p, total:Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0), known:!!p.fba_as_of}; };
   const num='text-align:center;white-space:nowrap;font-weight:800';
   // Everything queued in prep for a listing (a listing can have several work orders).
-  const queued={}; for(const y of ((window._pendingPrepData&&window._pendingPrepData.items)||items)) queued[y.asin]=(queued[y.asin]||0)+(y.qty||0);
+  const queued={}; for(const y of ((window._pendingPrepData&&window._pendingPrepData.items)||items)) if(!y.prelabel) queued[y.asin]=(queued[y.asin]||0)+(y.qty||0);
   const dColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
   // Click a header to sort (per device). Item: duos first, then singles;
   // numbers: biggest first. Clicking the same header again flips it.
@@ -6119,7 +6154,7 @@ function ppListRows(items){
               +'<td style="'+td+';'+num+';color:#7a4fb5">'+(av!=null?'~'+Math.round(av).toLocaleString():'—')+'</td>'
               +'<td style="'+td+';'+num+';color:'+dColor(d)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit'+why:'')+'">'+(d==null?'—':d+' days'+star)+'</td>'
               +'<td style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep'+why:'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
-        +'<td style="'+td+';text-align:center"><input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer"></td>'
+        +'<td style="'+td+';text-align:center">'+(x.prelabel?'<span class="prelabelTag" title="Pre-labeling only: not for any shipment">🏷️</span>':'<input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer">')+'</td>'
         +'<td style="'+td+'">'+status+'</td></tr>';
     }).join('')+'</table></div>';
 }
@@ -6594,6 +6629,7 @@ function loadPrepList(){
 }
 function renderPrepList(){
   const d=window._prepData; if(!d)return;
+  renderPrelabelList();
   const b=document.getElementById('prepListBox');
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Nothing prepped yet. Scan labeled items above.</div>'; return; }
   const sort=(document.getElementById('prepSort')||{}).value||'qty_desc';
@@ -6625,6 +6661,46 @@ function renderPrepList(){
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — matches your shipment plan software. Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
   b.innerHTML=h;
 }
+// PRE-LABELED SKUS: labelled with nothing planned for them yet (PRELABELING
+// ONLY jobs). One table, sortable. "Ready to ship" moves units up into
+// Prepped & Ready when a shipment wants them; no stock changes either way.
+function renderPrelabelList(){
+  const el=document.getElementById('prepPrelabelBox'), d=window._prepData; if(!el) return;
+  const L=(d&&d.prelabeled)||[];
+  if(!L.length){ el.innerHTML=''; return; }
+  sortState('prelabel','qty',-1);
+  const rows=sortRows('prelabel', L, { name:x=>String(x.name||''), qty:x=>x.prepped, fnsku:x=>String(x.fnsku||'') });
+  const nm=x=>String(x.name||x.asin).replace(/'/g,"\\'").replace(/"/g,'');
+  el.innerHTML='<div class="prelabelHead"><div class="t">🏷️ PRE-LABELED SKUS</div><div class="s">'+L.length+' product'+(L.length===1?'':'s')+' · '+(d.totalPrelabeled||0).toLocaleString()+' units labeled, not part of any shipment. When a shipment needs them, tap <b>Ready to ship</b>.</div></div>'
+    +'<div class="box" style="padding:6px 8px;overflow-x:auto"><table class="prelabelT"><tr><th class="hsm" style="width:70px"></th>'
+    +sortTh('prelabel','name','Product','renderPrelabelList')+sortTh('prelabel','fnsku','FNSKU','renderPrelabelList','hsm')+sortTh('prelabel','qty','Pre-labeled','renderPrelabelList')+'<th style="width:150px"></th></tr>'
+    +rows.map(x=>'<tr><td class="hsm">'+(x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'">':'📦')+'</td>'
+      +'<td><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
+        +'<div style="font-size:11.5px;margin-top:2px"><span onclick="copyText(\''+esc(x.asin)+'\',this)" style="cursor:pointer;font-family:monospace;color:#2563a8">'+esc(x.asin)+'</span></div>'
+        +(x.fnsku?'<div class="fn-sm" style="font-size:11.5px;margin-top:2px;font-family:monospace;font-weight:700">FNSKU '+esc(x.fnsku)+'</div>':'')+'</td>'
+      +'<td class="hsm" style="width:130px">'+(x.fnsku?'<span onclick="copyText(\''+esc(x.fnsku)+'\',this)" style="cursor:pointer;font-family:monospace;font-weight:700;background:#fdf3e6;border-radius:4px;padding:2px 6px">'+esc(x.fnsku)+'</span>':'—')+'</td>'
+      +'<td style="width:96px"><b style="font-size:20px;color:#7a4fb5">'+x.prepped.toLocaleString()+'</b><div><a href="#" onclick="event.preventDefault();editPrelabel(\''+esc(x.asin)+'\','+x.prepped+')" style="font-size:11px">edit</a></div></td>'
+      +'<td><button onclick="prelabelToReady(\''+esc(x.asin)+'\',\''+esc(nm(x))+'\','+x.prepped+')" style="padding:8px 12px;font-size:12.5px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">→ Ready to ship</button></td></tr>').join('')
+    +'</table></div>';
+}
+function prelabelToReady(asin, name, have){
+  const v=prompt('Move how many of\n'+name+'\ninto Prepped & Ready (for a shipment)?\n\n'+have+' pre-labeled.', String(have));
+  if(v===null) return;
+  const q=parseInt(v,10);
+  if(!(q>=1)){ toast('Enter a number from 1 to '+have,true); return; }
+  api('/api/prep/prelabel-move',{method:'POST',idem:newIdem(),body:JSON.stringify({asin, qty:Math.min(q,have)})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Not moved',true); loadPrepList(); return; }
+    toast(d.moved+' moved to Prepped & Ready'); loadPrepList();
+  }).catch(e=>toast('Not moved: '+e.message,true));
+}
+function editPrelabel(asin, current){
+  const v=prompt('Set the pre-labeled quantity (0 to remove):', current);
+  if(v===null) return;
+  api('/api/prep/set',{method:'POST',body:JSON.stringify({asin, qty:parseInt(v)||0, part:'prelabel'})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Not saved',true); return; }
+    loadPrepList(); loadProducts();
+  });
+}
 function copyText(txt, el){
   navigator.clipboard.writeText(txt).then(()=>{
     if(el && el.classList && el.classList.contains('copybtn')){
@@ -6655,7 +6731,7 @@ function prepTickAll(on){
 function editPrep(asin, current){
   const v=prompt('Set prepped quantity (0 to remove):', current);
   if(v===null)return;
-  api('/api/prep/set',{method:'POST',body:JSON.stringify({asin,qty:parseInt(v)||0})}).then(()=>{ loadPrepList(); loadProducts(); });
+  api('/api/prep/set',{method:'POST',body:JSON.stringify({asin,qty:parseInt(v)||0})}).then(d=>{ if(!d||d.ok===false||d.error) toast((d&&d.error)||'Not saved',true); loadPrepList(); loadProducts(); });
 }
 function addInvoiceMulti(){
   const text=document.getElementById('invoiceText').value.trim();
@@ -10635,6 +10711,7 @@ function bigOhCard(p, v){
       +(v.t?big(p.transit_split?(p.transit_split.single||0):v.t,p.transit_split?'ON THE WAY · SINGLE'+(p.transit_split.duo?' (+'+p.transit_split.duo+' in duos)':''):'ON THE WAY','#2563a8','Left the warehouse, not checked in at Amazon yet'):'')
       +big(v.o,'IN WAREHOUSE','#5a6472')
       +'<button onclick="requestPrep(\''+esc(p.asin)+'\','+((p.is_component||p.is_bundle)?'true':'false')+')" style="flex:1;min-width:120px;padding:12px;font-size:17px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">🔧 PREP</button>'
+      +'<button onclick="requestPrep(\''+esc(p.asin)+'\','+((p.is_component||p.is_bundle)?'true':'false')+',true)" title="Label now, not part of any shipment" style="min-width:120px;padding:12px;font-size:13px;font-weight:800;background:#7a4fb5;color:#fff;border:none;border-radius:8px;cursor:pointer">🏷️ PRELABELING ONLY</button>'
       +'<button onclick="ohAdjust(\''+esc(p.asin)+'\')" title="Units missing on the floor (or found again)" style="min-width:110px;padding:12px;font-size:14px;font-weight:800;background:#fff;color:#5a6472;border:1.5px solid #d5d9d9;border-radius:8px;cursor:pointer">✏️ Fix count</button>'
     +'</div>'+shrinkNote(p)
     +(duos.length?'<div style="margin-top:10px;font-size:11px;font-weight:800;letter-spacing:0.6px;color:#8a97a6">MAKES THESE DUOS</div>'+duos.join(''):'')
@@ -11027,7 +11104,7 @@ function renderOnhand(){
     const pend=p.pending_prep||0;
     const available=Math.max(0, o - pend - prep);
     const fbaF=p.fba_fulfillable||0, fbaIn=p.fba_inbound||0;
-    const buildBtn=`<button onclick="requestPrep('${p.asin}',${p.is_component||p.is_bundle?'true':'false'})" title="Request prep" style="margin-top:6px;padding:5px 10px;font-size:11px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">🔧 PREP</button>`;
+    const buildBtn=`<button onclick="requestPrep('${p.asin}',${p.is_component||p.is_bundle?'true':'false'})" title="Request prep" style="margin-top:6px;padding:5px 10px;font-size:11px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">🔧 PREP</button><button onclick="requestPrep('${p.asin}',${p.is_component||p.is_bundle?'true':'false'},true)" title="Prelabeling only: label now, not part of any shipment" style="display:block;margin:6px 0 0 auto;padding:5px 10px;font-size:11px;font-weight:700;background:#7a4fb5;color:#fff;border:none;border-radius:5px;cursor:pointer;white-space:nowrap">🏷️ PRELABEL</button>`;
     // The old strip under the card (duos buildable, rank, sold/mo, at FBA,
     // FBA cover, sellers) was removed at the owner's request: the "At Amazon
     // by listing" table above it shows the same, per listing.
