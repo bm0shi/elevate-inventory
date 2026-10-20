@@ -1648,6 +1648,12 @@ function prodPaper(kind){
     if(w) w.location=d.url; else window.open(d.url,'_blank');
   }).catch(e=>{ if(w) w.close(); toast('Could not get it: '+e.message,true); });
 }
+function prodPalletLabels(){
+  const n0=Object.keys(_prod.v.pallets||{}).length||1, t=prompt('How many pallets? (4 labels each, one per side)', n0);
+  if(t==null) return;
+  const n=parseInt(t,10); if(!(n>=1&&n<=60)){ toast('Enter 1–60 pallets',true); return; }
+  prodPrint(null, n);
+}
 function prodRefreshList(btn){
   if(btn){ btn.disabled=true; btn.textContent='Asking Amazon…'; }
   api('/api/pack/list/refresh',{method:'POST',body:JSON.stringify({force:true})}).then(d=>{ if(!prodSid()) prodHome(d); })
@@ -1764,7 +1770,8 @@ function prodRender(){
     +'<div style="font-size:16px;margin-top:6px">Print the bill of lading and the pallet labels, put the labels on each pallet, and hand the BOL to the driver.</div>'
     +'<div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:14px">'
     +'<button class="action amzbeige" onclick="prodPaper(\'bol\')" style="font-size:18px;padding:14px 28px">📄 BILL OF LADING</button>'
-    +'<button class="action amzbeige" onclick="prodPaper(\'pallet\')" style="font-size:18px;padding:14px 28px">🏷️ AMAZON PALLET LABELS</button></div></div>';
+    +'<button class="action amzbeige" onclick="prodPalletLabels()" style="font-size:18px;padding:14px 28px">🏷️ PALLET LABELS</button></div>'
+    +'<div style="margin-top:8px"><a href="#" onclick="event.preventDefault();prodPaper(\'pallet\')" class="hint">or Amazon\'s own pallet labels</a></div></div>';
   else if(done&&planRow&&v.planStage==='freight') next='<div class="box" style="border:3px solid #ff9900;background:#fff8ec;text-align:center;padding:22px">'
     +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ BOX INFO SENT — NEXT STEP</div>'
     +'<div style="font-size:16px;margin-top:6px">Get freight quotes and book the freight on the shipment\'s main page. Nothing is charged until you book.</div>'
@@ -1781,7 +1788,8 @@ function prodRender(){
     +(sh.amz_at?'<div class="hint">From Amazon '+new Date(sh.amz_at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+(sh.amz&&sh.amz.source==='v0'?' · older API (no street address — enter it once below)':'')+'</div>':'')+'</div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap">'+(done?'':'<button class="action" id="prodRefreshBtn" onclick="prodStart(true)" style="padding:6px 12px;font-size:12px;background:#2563a8">↻ Refresh from Amazon</button>')
     +'<button class="action" onclick="prodBigToggle()" style="padding:6px 12px;font-size:12px;background:#0d4450">📺 Big screen</button>'
-    +'<button class="action amzbeige" onclick="prodPaper(\'pallet\')" style="padding:6px 12px;font-size:12px">📄 AMAZON PALLET LABELS</button>'
+    +'<button class="action amzbeige" onclick="prodPalletLabels()" style="padding:6px 12px;font-size:12px">🏷️ PALLET LABELS</button>'
+    +'<button class="action amzbeige" onclick="prodPaper(\'pallet\')" style="padding:6px 12px;font-size:12px" title="Amazon\'s own pallet label PDF">📄 Amazon\'s pallet labels</button>'
     +'<button class="action amzbeige" onclick="prodPaper(\'bol\')" style="padding:6px 12px;font-size:12px">📄 BILL OF LADING</button>'
     +'<button class="action" onclick="prodSettings()" style="padding:6px 12px;font-size:12px;background:#5a6472">⚙ Pallet limits</button>'
     +'<button class="action" onclick="_prod=null;prodOpen()" style="padding:6px 12px;font-size:12px;background:#5a6472">Switch shipment</button>'
@@ -2194,17 +2202,37 @@ function prodMixClose(n){
 //                    Mixed boxes list the first two FNSKUs in text (as Wizard
 //                    Industries did); the barcode carries every product.
 //   box ID Code 128 / PDF417  2 dots.
-function prodPrint(nums){
+// pallets: print PALLET labels instead (owner 10/21: "match Source Correct's
+// format … pallet 1/1 … center bottom"): their layout, the shipment ID as
+// Code 128 and sideways PDF417 (what both Amazon's and Source Correct's carry),
+// the SHIPMENT-FC bar with the date, and PALLET: n/N big at the bottom center.
+// Four copies a pallet, one per side, as Amazon and Source Correct print.
+function prodPrint(nums, pallets){
   const v=_prod.v, sh=v.shipment;
   if(!sh.dest_confirmed_at){ toast('Confirm the destination first',true); return; }
-  const boxes=v.boxes.filter(b=>b.status==='closed'&&b.items.length&&(!nums||nums.includes(b.box_no))).sort((a,b)=>a.box_no-b.box_no);
-  if(!boxes.length){ toast('No labels to print',true); return; }
+  const boxes=pallets?[]:v.boxes.filter(b=>b.status==='closed'&&b.items.length&&(!nums||nums.includes(b.box_no))).sort((a,b)=>a.box_no-b.box_no);
+  if(!pallets&&!boxes.length){ toast('No labels to print',true); return; }
   const w=window.open('','_blank','width=460,height=720'); if(!w){ toast('Popup blocked — allow popups to print',true); return; }
   const A=(a,fc)=>(fc?[fc]:[]).concat(a?[a.name||'', a.line1||''].concat(a.line2?[a.line2]:[]).concat([(a.city||'')+', '+(a.state||'')+', '+(a.zip||''), a.country||'US']):[]).map(esc);
   const expTxt=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'-'+e.slice(4,6)+'-20'+e.slice(0,2):'';
   // Text positions are Source Correct's glyph tops; +0.035 in puts the browser's text box on them.
   const at=(x,y,html,cls,extra)=>'<div class="'+(cls||'')+'" style="left:'+x+'in;top:'+(y+0.035).toFixed(3)+'in;'+(extra||'')+'">'+html+'</div>';
-  const pages=boxes.map(b=>{
+  const palletPage=(n)=>{
+    const from=A(sh.ship_from), to=A(sh.ship_to, sh.fc);
+    const when=new Date().toLocaleString('en-GB',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',hour12:true}).replace(',','').replace(/\b(am|pm)\b/,m=>m.toUpperCase());
+    return '<div class="lbl">'+at(0,0.31,'PLEASE LEAVE THIS LABEL UNCOVERED','t10','width:4in;text-align:center')
+      +at(0.43,0.425,'FBA','t14')
+      +'<div class="rule" style="left:0.31in;top:0.685in;width:3.47in"></div>'
+      +at(0.47,0.68,'SHIP FROM:','t8')+from.map((l,i)=>at(0.47,0.80+i*0.115,l,'t8')).join('')
+      +at(2.24,0.68,'SHIP TO:','t8')+to.map((l,i)=>at(2.24,0.80+i*0.115,l,'t8')).join('')
+      +'<div class="blk" style="left:0.31in;top:1.42in;width:3.51in"></div>'+at(0.43,1.37,esc(sh.shipment_id+(sh.fc?'-'+sh.fc:'')),'t6')+at(2.3,1.37,esc(when),'t6','width:1.45in;text-align:right')
+      +'<div class="bc c128" data-t="'+esc(sh.shipment_id)+'" data-fit="2.32" style="left:0.24in;top:1.676in;height:0.718in"></div>'
+      +at(0.24,2.47,esc(sh.shipment_id),'t7','width:2.32in;text-align:center')
+      +'<div class="rule" style="left:0.24in;top:2.60in;width:2.32in"></div>'
+      +'<div class="bc side" data-t="'+esc(sh.shipment_id)+'" style="left:2.948in;top:1.673in"></div>'
+      +at(0,4.85,'PALLET: '+n+'/'+pallets,'t36','width:4in;text-align:center')+'</div>';
+  };
+  const pages=pallets?Array.from({length:pallets},(_,i)=>[1,2,3,4].map(()=>palletPage(i+1)).join('')).join(''):boxes.map(b=>{
     const one=b.items.length===1?b.items[0]:null, exp=one&&(one.exp||b.exp);
     const from=A(sh.ship_from), to=A(sh.ship_to, sh.fc);
     let h=at(0,0.31,'PLEASE LEAVE THIS LABEL UNCOVERED','t10','width:4in;text-align:center')
@@ -2241,17 +2269,18 @@ function prodPrint(nums){
     h+='<div class="bc c2d" data-t="'+esc(b.barcode)+'" data-top="'+top+'"></div>';
     return '<div class="lbl">'+h+'</div>';
   }).join('');
-  w.document.write('<!DOCTYPE html><html><head><title>'+esc(sh.shipment_id)+' labels</title><script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
+  w.document.write('<!DOCTYPE html><html><head><title>'+esc(sh.shipment_id)+(pallets?' pallet':'')+' labels</title><script src="'+location.origin+'/vendor/bwip-js.min.js"><\/script>'
     +'<style>@page{size:4in 6in;margin:0}*{margin:0;padding:0;box-sizing:border-box}body{font-family:"Times New Roman",Times,"Liberation Serif",serif;font-weight:700;color:#000}'
     +'.lbl{position:relative;width:4in;height:6in;page-break-after:always;overflow:hidden}.lbl>div{position:absolute;white-space:nowrap;line-height:1.15}'
-    +'.t6{font-size:6pt;color:#fff;line-height:1}.t7{font-size:7pt}.t8{font-size:8pt}.t10{font-size:10pt}.t14{font-size:14pt}'
+    +'.t6{font-size:6pt;color:#fff;line-height:1}.t7{font-size:7pt}.t8{font-size:8pt}.t10{font-size:10pt}.t14{font-size:14pt}.t36{font-size:36pt}'
     +'@media screen{body::before{content:"Print at 100% / Actual size (no scaling, no fit-to-page) on 4 x 6 labels.";display:block;font:13px Arial;color:#c00;padding:6px}}.rule{height:0;border-top:1pt solid #000}*{-webkit-print-color-adjust:exact;print-color-adjust:exact}.blk{height:0!important;border-top:0.07in solid #000}.bc svg{width:100%;height:100%;display:block}.err{position:static!important;color:#c00;font:10pt Arial}</style></head><body>'+pages
     +'<script>(function(){'
     +'var DOT=1/203, BOTTOM=5.88;'
     +'function draw(el,opts,modIn,fixH){var svg=bwipjs.toSVG(Object.assign({scaleX:1,scaleY:1},opts));el.innerHTML=svg;var s=el.querySelector("svg"),vb=s.viewBox.baseVal;s.removeAttribute("width");s.removeAttribute("height");s.setAttribute("preserveAspectRatio","none");s.setAttribute("shape-rendering","crispEdges");'
     +'var w=vb.width*modIn,h=fixH||vb.height*modIn;s.style.width=w+"in";s.style.height=h+"in";el.style.width=w+"in";el.style.height=h+"in";return {w:w,h:h,vb:vb};}'
     +'try{'
-    +'document.querySelectorAll(".c128").forEach(function(e){var r=draw(e,{bcid:"code128",text:e.dataset.t,height:10},2*DOT,0.718);e.style.left=(1.40-r.w/2)+"in";});'
+    // data-fit: stretch to that width (the pallet label's shipment ID, as wide as Source Correct's, 2.32 in)
+    +'document.querySelectorAll(".c128").forEach(function(e){var o={bcid:"code128",text:e.dataset.t,height:10},r=draw(e,o,2*DOT,0.718);if(e.dataset.fit)r=draw(e,o,+e.dataset.fit/r.vb.width,0.718);e.style.left=(1.40-r.w/2)+"in";});'
     // Sideways box-ID barcode: full length (8 columns) on single-product labels, 5 columns (about 1.5 in) on mixed ones.
     +'document.querySelectorAll(".side").forEach(function(e){var sh=!!e.dataset.short,o={bcid:"pdf417",text:e.dataset.t,eclevel:6,columns:sh?5:8,rowmult:1,rotate:"R"};var r=draw(e,o,2*DOT);var rows=r.vb.width;o.rowmult=Math.max(3,Math.floor(0.9/(rows*2*DOT)));r=draw(e,o,2*DOT);e.style.left=(3.85-r.w)+"in";e.style.top=(sh?1.673:1.673+(2.164-r.h)/2)+"in";});'
     // Contents barcode: Source Correct's settings (see the note above prodPrint).
