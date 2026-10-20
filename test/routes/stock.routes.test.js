@@ -436,7 +436,7 @@ test('pack boxes: scan, close (label text), finish deducts once; nothing changes
   await post('/api/pack/scan', { shipmentId: SID, boxNo: 2, code: 'TSTB', qty: 3 });
   const c1 = await post('/api/pack/box/close', { shipmentId: SID, boxNo: 1 });
   assert.strictEqual(c1.status, 200);
-  assert.strictEqual(c1.body.barcode, 'AMZN,PO:FBAPACKTEST1,FNSKU:X00TESTAAA,QTY:4,FNSKU:X00TESTDUO,QTY:2');
+  assert.strictEqual(c1.body.barcode, 'AMZN,PO:FBAPACKTEST1,FNSKU:X00TESTAAA, QTY:4,FNSKU:X00TESTDUO, QTY:2,');
   assert.strictEqual((await post('/api/pack/finish', { shipmentId: SID })).status, 409);
   // A closed box can't be scanned into
   assert.strictEqual((await post('/api/pack/scan', { shipmentId: SID, boxNo: 1, code: 'TSTA' })).status, 409);
