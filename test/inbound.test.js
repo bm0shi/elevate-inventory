@@ -208,3 +208,27 @@ test('ship-from: company and full name go to Amazon as in Seller Central (to mat
   assert.strictEqual(r.address.phoneNumber, '4084204040');
   assert.strictEqual(ib.sourceAddress({ name: 'X', line1: '1', city: 'c', state: 'AZ', zip: '1' }, { phone: '1' }).address.companyName, undefined);
 });
+
+test('before a plan goes to Amazon: a stranded SKU and a SKU Amazon does not have are stopped, the rest pass', () => {
+  const { planChecks } = require('../lib/inbound');
+  const items = [
+    { asin: 'B0DET', msku: 'NEW Detangler Liter', name: 'Detangler Liter' },
+    { asin: 'B0OK1', msku: 'OK-1', name: 'Fine product' },
+    { asin: 'B0GONE', msku: 'GONE-1', name: 'Deleted listing' },
+  ];
+  const stranded = [{ sku: 'NEW Detangler Liter', asin: 'B0DET', units: 12, reason: 'No offer' }];
+  const p = planChecks(items, stranded, ['GONE-1']);
+  assert.strictEqual(p.length, 2);
+  assert.match(p[0], /Detangler Liter \(NEW Detangler Liter\): STRANDED .*No offer/);
+  assert.match(p[1], /Deleted listing \(GONE-1\): Amazon has no listing/);
+  assert.deepStrictEqual(planChecks(items.slice(1, 2), stranded, []), []);
+});
+
+test('Amazon problems are split: a WARNING (address not verified) does not count as an error', () => {
+  const { opProblems } = require('../lib/inbound');
+  const r = opProblems({ operationProblems: [
+    { severity: 'WARNING', code: 'W', message: 'Address was unable to be verified.' },
+    { severity: 'ERROR', code: 'E', message: 'There is currently no active offer for this listing.', details: "resource 'NEW Detangler Liter'" }] });
+  assert.deepStrictEqual(r.warnings, ['Address was unable to be verified.']);
+  assert.deepStrictEqual(r.errors, ["There is currently no active offer for this listing. (resource 'NEW Detangler Liter')"]);
+});

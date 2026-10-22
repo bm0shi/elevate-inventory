@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, getListingPrice, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'split-total-1090';
+const BUILD_ID = 'plan-checks-1091';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1217,6 +1217,7 @@ async function initDb() {
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS placement_confirmed_at TIMESTAMPTZ;
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS transport_confirmed_at TIMESTAMPTZ;
       ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS confirmed JSONB;
+      ALTER TABLE inv_inbound_plans ADD COLUMN IF NOT EXISTS amz_warnings JSONB;   -- Amazon's WARNING problems on the plan (e.g. address not verified)
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_prep_owner TEXT;    -- prep owner Amazon requires for this product (learned from a refused plan)
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_label_owner TEXT;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS amz_needs_exp BOOLEAN;   -- Amazon requires an expiration date on inbound plans         -- what was bought: fee, freight, total, FBA IDs
@@ -2477,8 +2478,12 @@ async function planPart1(id, step) {
         const r = await amzInbound.createPlan(pb.body);
         await pool.query('UPDATE inv_inbound_plans SET plan_id=$2 WHERE id=$1', [id, r.inboundPlanId]);
         // A plan Amazon refused at creation is dead: forget it so Retry makes a new one.
-        try { await amzInbound.waitOperation(r.operationId, { onProgress: step }); }
+        let op;
+        try { op = await amzInbound.waitOperation(r.operationId, { onProgress: step }); }
         catch (e) { await pool.query('UPDATE inv_inbound_plans SET plan_id=NULL WHERE id=$1', [id]); throw e; }
+        // Warnings don't stop the plan (Amazon couldn't verify the address, …): keep them to show.
+        const warn = inboundLib.opProblems(op).warnings;
+        await pool.query('UPDATE inv_inbound_plans SET amz_warnings=$2 WHERE id=$1', [id, warn.length ? JSON.stringify(warn) : null]);
         p.plan_id = r.inboundPlanId;
         break;
       } catch (e) {
@@ -2706,6 +2711,18 @@ app.post('/api/inbound/plans', auth, async (req, res) => {
       ...(p.amz_prep_owner ? { prepOwner: p.amz_prep_owner } : {}), ...(p.amz_label_owner ? { labelOwner: p.amz_label_owner } : {}) });
   }
   if (problems.length) return res.status(400).json({ ok: false, error: problems.join(' ') });
+  // The checks Source Correct runs before "Submit plan" (inboundLib.planChecks):
+  // a stranded SKU (no active offer) makes Amazon refuse the whole plan, after
+  // a wait. Stranded = Amazon's own list, refreshed each morning; a SKU Amazon
+  // answers 404 for isn't a listing at all. A failed lookup never blocks.
+  const stuck = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='stuck_stock'")).rows[0] || {}).data || {};
+  const missing = [];
+  try {
+    const seller = await ourSellerId();
+    if (seller) for (const i of items) { const l = await getListingPrice(seller, i.msku).catch(() => null); if (l && l.found === false) missing.push(i.msku); }
+  } catch (e) { console.error('[Inbound] listing check skipped:', e.message); }
+  const pre = inboundLib.planChecks(items, stuck.stranded || [], missing);
+  if (pre.length) return res.status(400).json({ ok: false, error: pre.join(' '), problems: pre });
   // Prep owner is worked out per product (Amazon's prep data, planPart1); NONE is only the default.
   const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
   const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner, ship_from) VALUES($1,$2,$3,$4) RETURNING id', [String(b.name || '').trim().slice(0, 40) || null, JSON.stringify(items), prep, JSON.stringify(from)]);
