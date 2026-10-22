@@ -5244,7 +5244,7 @@ function renderOrders(boxId, mode){
       ? [['wh','On hand',1,'Bottles in the warehouse. Tick a row to list it under On Hand → ⭐ Smart Scout selections'],['qty','Order',1,'Order for the share picked in "Plan on" (fair share by default)'],['rec','Rec. Order',1,'Recommended order: a blend of your sales, SmartScout, Keepa and fair share, weighted by how accurate each has been. Click a number for the breakdown.'],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1]]
       : [['wh','Warehouse',1],['amz','At Amazon',1],['way','On the way',1],['cover','Days covered',1],['qty','Order',1]]
     ).concat([['lasts','Lasts',1],['unit','Unit cost',1],['profit','Profit / bottle',1],['cost','Cost',1]]))
-      .map(([k,t,right,tip])=>'<td onclick="ordersSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(isSS&&k==='wh'?'background:#ffe066;color:#0d4450;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(key===k?'color:#0d4450;font-weight:900':t==='US'?'color:#008296;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+(k==='unit'?'<div style="font-size:9px;text-transform:none;font-weight:700;color:#b7791f">non-sale price</div>':'')+(k==='rec'?'<div style="font-size:9px;text-transform:none;font-weight:700;color:#7a4fb5">learns over time</div>':'')+'</td>').join('')+'</tr>'
+      .map(([k,t,right,tip])=>'<td onclick="ordersSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;vertical-align:bottom;line-height:1.25;'+(right?'text-align:right;':'')+(isSS&&k==='wh'?'background:#ffe066;color:#0d4450;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(key===k?'color:#0d4450;font-weight:900':t==='US'?'color:#008296;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+(k==='unit'?'<div style="font-size:9px;text-transform:none;font-weight:700;color:#b7791f">non-sale price</div>':'')+(k==='rec'?'<div style="font-size:9px;text-transform:none;font-weight:700;color:#7a4fb5">learns over time</div>':'')+'</td>').join('')+'</tr>'
     +shown.filter(r=>r.perDay>0).map(r=>{
       const cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const showLines=st.showLines!==false && r.lines.length;
@@ -5257,7 +5257,7 @@ function renderOrders(boxId, mode){
           const oh=isSS?ssPickCell(r.asin,'<b style="font-size:14px">'+r.onhand+'</b>'+(r.free!=null&&r.free<r.onhand?'<span class="hint" style="font-size:11px"> ('+r.free+' free)</span>':''),td):'<td style="'+td+'">'+r.onhand+'</td>';
           const amzWay='<td style="'+td+'">'+r.atAmz+'</td><td style="'+td+';color:#2563a8">'+r.way+'</td>';
           const cov='<td style="'+td+';font-weight:800;color:'+cc+'">'+fmtDays(r.cover)
-            +(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400;white-space:nowrap" title="At the rate you actually sell it now">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>';
+            +(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400" title="At the rate you actually sell it now">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>';
           const ord='<td style="'+td+';font-weight:900;font-size:15px;color:'+(r.qty?'#008296':'#8a97a6')+'">'+(r.qty||'—')+'</td>';
           const rec=isSS?'<td style="'+td+';background:#f7f2fd;font-weight:900;font-size:15px;color:'+(r.recQty?'#5b2d9e':'#8a97a6')+';cursor:pointer" onclick="recBreakdown(\''+esc(r.asin)+'\')" title="Why this number — click">'+(r.recQty==null?'—':r.recQty||'0')+'</td>':'';
           return isSS ? oh+ord+rec+amzWay+cov : oh+amzWay+cov+ord;
@@ -5329,7 +5329,7 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
     [['amz','At Amazon',1],['way','On the way',1],['prep','In prep',1],['cover','Days covered',1]], isSS?[['pie','Pie / mo',1]]:[], [['price','Price',1]]);
   let h='<div class="box" style="overflow-x:auto"><div class="hint" style="margin-bottom:6px">Every listing on its own row, duos included, in <b>listing units</b> (one duo = one sale). Switch back to "By bottle" for the order quantities.</div>'
     +'<table style="width:100%;border-collapse:collapse;font-size:13px;min-width:'+(920+selCols.length*60)+'px"><tr style="font-size:11px;color:#5a6472;text-transform:uppercase">'
-    +cols.map(([k,t,right,tip])=>'<td onclick="listSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;white-space:nowrap;'+(right?'text-align:right;':'')+(k==='oh'?'background:#ffe066;color:#0d4450;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(k==='avg'?'background:#eef2f6;':'')+(key===k?'color:#0d4450;font-weight:900':t==='US'?'color:#008296;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
+    +cols.map(([k,t,right,tip])=>'<td onclick="listSort(\''+k+'\')" title="'+esc(tip||'Sort')+'" style="padding:6px 8px;cursor:pointer;user-select:none;vertical-align:bottom;line-height:1.25;'+(right?'text-align:right;':'')+(k==='oh'?'background:#ffe066;color:#0d4450;font-weight:900;':'')+(k==='rec'?'background:#efe7fb;color:#5b2d9e;font-weight:900;':'')+(k==='avg'?'background:#eef2f6;':'')+(key===k?'color:#0d4450;font-weight:900':t==='US'?'color:#008296;font-weight:800':'')+'">'+esc(t)+(key===k?(dir===1?' ▲':' ▼'):'')+'</td>').join('')+'</tr>'
     +rows.map(r=>{
       const l=r.l, cc=r.cover==null?'#8a97a6':r.cover<lead?'#c0392b':r.cover<horizon?'#b7791f':'#1e8449';
       const top=Math.max(0,...selCols.map(c=>r.sel[c.abbr]||0));
@@ -5341,7 +5341,7 @@ function ordersByListing(d, st, isSS, selCols, pf, lead, horizon){
         +(selCols.some(c=>!c.isUs)?'<td style="'+td+';font-weight:800;color:#0d4450" title="Average of '+r.avgN+' seller'+(r.avgN===1?'':'s')+'">'+(r.avg3==null?'<span class="hint">—</span>':Math.round(r.avg3).toLocaleString()+(r.avgN<selCols.filter(c=>!c.isUs).length?'<span class="hint" style="font-size:10px"> ('+r.avgN+')</span>':''))+'</td>':'')
         +(isSS?ssPickCell(l.asin, ssListingOnhand(l), td)+listingOrderCell(l, st, td)+recCell(l, st, td):'')
         +'<td style="'+td+'">'+l.atAmazon+'</td><td style="'+td+';color:#2563a8">'+l.onTheWay+'</td><td style="'+td+';color:#7a4fb5">'+(l.queued||'')+'</td>'
-        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+fmtDays(r.cover)+(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400;white-space:nowrap">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>'
+        +'<td style="'+td+';font-weight:800;color:'+cc+'">'+fmtDays(r.cover)+(isSS&&st.ssMode!=='current'?'<div class="hint" style="font-weight:400">at your pace: '+(r.pace>0?fmtDays(r.have/r.pace):'no sales')+'</div>':'')+'</td>'
         +(isSS?'<td style="'+td+'">'+(l.ss?Math.round(l.ss.pie).toLocaleString():'—')+'</td>':'')
         +'<td style="'+td+'">'+(l.price!=null?'$'+Number(l.price).toFixed(2):'—')+'</td></tr>';
     }).join('')+'</table></div>';
@@ -5449,7 +5449,7 @@ function ssSplit(l, sellers){
 // to flip. Blanks always sort last. State per table, kept for the session.
 function ssTh(tbl,key,label,al){
   const s=(window._ssSorts||{})[tbl]||{}, on=s.k===key;
-  return '<th onclick="ssSortBy(\''+tbl+'\',\''+key+'\')" title="Sort" style="cursor:pointer;user-select:none;padding:9px 8px;font-weight:900;font-size:11px;letter-spacing:0.3px;color:'+(on?'#008296':'#1f2733')+';background:#eef2f6;position:static;white-space:nowrap;border-bottom:2px solid #1f2733;text-align:'+(al||'right')+'">'+label+(on?(s.d<0?' ▼':' ▲'):' <span style="color:#b6c0cb">↕</span>')+'</th>';
+  return '<th onclick="ssSortBy(\''+tbl+'\',\''+key+'\')" title="Sort" style="cursor:pointer;user-select:none;padding:9px 8px;font-weight:900;font-size:11px;letter-spacing:0.3px;color:'+(on?'#008296':'#1f2733')+';background:#eef2f6;position:static;white-space:normal;vertical-align:bottom;line-height:1.25;border-bottom:2px solid #1f2733;text-align:'+(al||'right')+'">'+label+(on?(s.d<0?'&nbsp;▼':'&nbsp;▲'):'&nbsp;<span style="color:#b6c0cb">↕</span>')+'</th>';
 }
 function ssSortBy(tbl,key){ const S=window._ssSorts=window._ssSorts||{}, s=S[tbl]; S[tbl]=s&&s.k===key?{k:key,d:-s.d}:{k:key,d:-1}; renderSmartScout(); }
 function ssSortRows(tbl,rows,get,def){
