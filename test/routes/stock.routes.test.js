@@ -247,6 +247,7 @@ test('a prep scan counts down its work order, and undo puts both back', { skip }
 
 test('a job over 200 is split in half; both halves finish into one Prepped card; a scan spills into part 2', { skip }, async () => {
   await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTBIG','Test Liter','SKU-BIG','X00TESTBIG') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTBIG', qty: 1000 });   // singles are checked against the shelf now
   const halves = async () => (await pool.query(`SELECT id, qty, split_group, split_part FROM inv_pending_prep WHERE asin='TSTBIG' ORDER BY split_part, id`)).rows;
   // 300 → 150 + 150, linked; the same tap again (same action id) adds nothing
   assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTBIG', qty: 300 }, { idem: 'big-1' })).status, 200);
@@ -284,6 +285,7 @@ test('a job over 200 is split in half; both halves finish into one Prepped card;
 test('a single (not just a duo) takes a crew of up to 3; finishing credits everyone once', { skip }, async () => {
   await pool.query(`INSERT INTO inv_employees(display_name) VALUES ('Ann'),('Ben'),('Cal'),('Dee') ON CONFLICT DO NOTHING`);
   await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTCREW','Test Crew Mask','SKU-CREW','X00TESTCRW') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTCREW', qty: 100 });   // singles are checked against the shelf now
   await post('/api/pending-prep/add', { asin: 'TSTCREW', qty: 60 });
   const id = (await one(`SELECT id FROM inv_pending_prep WHERE asin='TSTCREW'`)).id;
   const onIt = async () => (await pool.query('SELECT employee FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL ORDER BY employee', [id])).rows.map(r => r.employee);
@@ -307,6 +309,7 @@ test('a single (not just a duo) takes a crew of up to 3; finishing credits every
 
 test('next batch: held from the floor (no merge, claim, scan or finish), released once onto the list', { skip }, async () => {
   await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTNXT','Test Next','SKU-NXT','X00TESTNXT') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTNXT', qty: 400 });   // singles are checked against the shelf now
   await pool.query(`INSERT INTO inv_employees(display_name, active) VALUES ('Tester', true) ON CONFLICT DO NOTHING`);
   const rows = async () => (await pool.query(`SELECT id, qty, staged, split_part FROM inv_pending_prep WHERE asin='TSTNXT' ORDER BY staged, split_part NULLS FIRST, id`)).rows;
   assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTNXT', qty: 120 })).status, 200);
@@ -675,4 +678,24 @@ test('a split job counts as one SKU, and ticking one half puts both halves in th
   assert.deepStrictEqual((await pool.query(`SELECT in_plan FROM inv_pending_prep WHERE asin='TSTSKU' ORDER BY split_part`)).rows.map(r => r.in_plan), [true, true]);
   await post('/api/pending-prep/in-plan-many', { ids: [halves[1].id], inPlan: false });
   assert.deepStrictEqual((await pool.query(`SELECT in_plan FROM inv_pending_prep WHERE asin='TSTSKU' ORDER BY split_part`)).rows.map(r => r.in_plan), [false, false]);
+});
+
+test('a single prep job past the free shelf count is refused (Detangler: 60 asked, 36 on the shelf)', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTDET','Test Detangler','SKU-DET','X00TESTDET') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTDET', qty: 36 });
+  const pend = async () => (await one(`SELECT COALESCE(SUM(qty),0)::int AS n FROM inv_pending_prep WHERE asin='TSTDET'`)).n;
+  const over = await post('/api/pending-prep/add', { asin: 'TSTDET', qty: 60 });
+  assert.strictEqual(over.status, 400);
+  assert.strictEqual(over.body.notEnough, true);
+  assert.match(over.body.error, /36 free/);
+  assert.strictEqual(await pend(), 0);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTDET', qty: 30 })).status, 200);
+  // what's already in Pending Prep is spoken for: only 6 more fit
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTDET', qty: 7 })).status, 400);
+  const id = (await one(`SELECT id FROM inv_pending_prep WHERE asin='TSTDET'`)).id;
+  // raising the job counts its own units as free again: 36 is fine, 37 is not; lowering always works
+  assert.strictEqual((await post('/api/pending-prep/set', { id, qty: 37 })).status, 400);
+  assert.strictEqual((await post('/api/pending-prep/set', { id, qty: 36 })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/set', { id, qty: 20 })).status, 200);
+  assert.strictEqual(await pend(), 20);
 });

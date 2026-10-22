@@ -4463,6 +4463,7 @@ function requestPrep(asin, canDuo, pre){
   if(!p) return;
   window._prepPre=!!pre;
   const avail = Math.max(0,(p.onhand||0)-(p.pending_prep||0)-(p.prepped||0));
+  window._prepAvail=avail;
   // One choice per duo this bottle is in (a bottle can be in several), with
   // the partner's stock and how many can be built from free stock now.
   const duoOpts={};
@@ -4535,6 +4536,11 @@ function submitPrepRequest(asin){
   if(duoEl && duoEl.dataset.can!=null && qty>Number(duoEl.dataset.can)){
     const can=Number(duoEl.dataset.can);
     alert('⛔ NOT ENOUGH STOCK\n\n'+qty+' × '+(duoEl.dataset.name||'this duo')+'\n\nOne of its bottles is short: you can build '+can+' at most right now.'+(can>0?'\n\nLower the quantity to '+can+' or less.':''));
+    return;
+  }
+  // Singles can't go past the shelf either (the server checks too)
+  if(!duoEl && window._prepAvail!=null && qty>window._prepAvail){
+    alert('⛔ NOT ENOUGH STOCK\n\nOnly '+window._prepAvail+' free on the shelf (on hand, less what\'s prepped and already in Pending Prep). You asked for '+qty+'.\n\nLower the quantity to '+window._prepAvail+' or less.');
     return;
   }
   const prelabel=!!window._prepPre, staged=!prelabel && prepTargetNext('prepTarget');
