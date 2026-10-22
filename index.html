@@ -2064,13 +2064,13 @@ function prodDestEdit(){
   m.innerHTML='<div style="background:#fff;border-radius:12px;padding:18px;max-width:520px;width:100%"><b style="font-size:16px">Destination &amp; ship-from</b><div class="hint">Copy from Send to Amazon. Saved per warehouse, so next time it fills itself.</div>'
     +inp('dFc','Warehouse code (e.g. MIT2)',sh.fc)+inp('dTn','Ship to — name',t.name||'Amazon.com Services, Inc.')+inp('dT1','Street',t.line1)+inp('dT2','Street 2',t.line2)
     +'<div style="display:flex;gap:6px">'+inp('dTc','City',t.city)+inp('dTs','State',t.state,'80px')+inp('dTz','ZIP',t.zip,'110px')+'</div>'
-    +'<hr style="margin:12px 0">'+inp('dFn','Ship from — name',fr.name)+inp('dF1','Street',fr.line1)+'<div style="display:flex;gap:6px">'+inp('dFc2','City',fr.city)+inp('dFs','State',fr.state,'80px')+inp('dFz','ZIP',fr.zip,'110px')+'</div>'
+    +'<hr style="margin:12px 0">'+inp('dFn','Ship from — name',fr.name)+inp('dF1','Street',fr.line1)+inp('dF2','Street 2 (suite)',fr.line2)+'<div style="display:flex;gap:6px">'+inp('dFc2','City',fr.city)+inp('dFs','State',fr.state,'80px')+inp('dFz','ZIP',fr.zip,'110px')+'</div>'
     +'<div style="display:flex;gap:8px;margin-top:14px"><button class="action" onclick="document.getElementById(\'prodDestModal\').remove()" style="flex:1;background:#e2e8f0;color:#1f2733">Cancel</button><button class="action" onclick="prodDestSave()" style="flex:2;background:#0d4450">Save</button></div></div>';
   document.body.appendChild(m);
 }
 function prodDestSave(){
   const g=id=>(document.getElementById(id).value||'').trim();
-  const body={shipmentId:prodSid(), fc:g('dFc'), shipTo:{name:g('dTn'),line1:g('dT1'),line2:g('dT2'),city:g('dTc'),state:g('dTs'),zip:g('dTz'),country:'US'}, shipFrom:{name:g('dFn'),line1:g('dF1'),city:g('dFc2'),state:g('dFs'),zip:g('dFz'),country:'US'}};
+  const body={shipmentId:prodSid(), fc:g('dFc'), shipTo:{name:g('dTn'),line1:g('dT1'),line2:g('dT2'),city:g('dTc'),state:g('dTs'),zip:g('dTz'),country:'US'}, shipFrom:{name:g('dFn'),line1:g('dF1'),line2:g('dF2'),city:g('dFc2'),state:g('dFs'),zip:g('dFz'),country:'US'}};
   api('/api/pack/destination',{method:'POST',body:JSON.stringify(body)}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'error',true); return; } document.getElementById('prodDestModal').remove(); toast('Saved — now confirm it'); prodLoad(prodSid()); });
 }
 function prodSettings(){
