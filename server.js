@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sku-count-1089';
+const BUILD_ID = 'split-total-1090';
 
 // ---- Postgres ----
 const pool = new Pool({
