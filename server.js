@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'plan-checks-1091';
+const BUILD_ID = 'single-stock-1092';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8746,6 +8746,24 @@ async function duoShortfall(db, duoAsin, duos, exceptJob) {
 const duoShortMsg = (duos, short) => `Not enough bottles to build ${duos} duos. `
   + short.map(x => `${String(x.name || x.asin).slice(0, 50)}: ${x.free} free, needs ${x.need}`).join(' · ')
   + `. You can build ${Math.max(0, Math.min(...short.map(x => x.canBuild)))} at most right now.`;
+// Singles too (owner 10/22: "I added Detangler at 60 but we only had 36"):
+// only duos were checked, so a single could be queued past the shelf. Same
+// free-stock sum as a duo's bottle. Callers hold the bottle's advisory lock.
+async function singleShortfall(db, asin, qty, exceptJob) {
+  const r = await db.query(
+    `SELECT p.name, COALESCE(s.onhand,0) AS onhand,
+       COALESCE((SELECT qty FROM inv_prepped WHERE asin=$1),0)
+       + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=$1),0)
+       + COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=$1 AND is_duo=false AND id<>$2),0)
+       + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=$1 AND pp.is_duo=true AND pp.id<>$2),0)
+       AS used
+     FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin WHERE p.asin=$1`, [asin, exceptJob || 0]);
+  const x = r.rows[0]; if (!x) return [];
+  const free = Math.max(0, Number(x.onhand) - Number(x.used));
+  return qty > free ? [{ asin, name: x.name, free, need: qty }] : [];
+}
+const singleShortMsg = (short) => { const x = short[0];
+  return `Not enough on the shelf: ${String(x.name || x.asin).slice(0, 60)} has ${x.free} free (on hand, less what's prepped and already in Pending Prep). You asked for ${x.need}. You can add ${x.free} at most right now.`; };
 async function lockDuoBottles(db, duoAsin) {
   const c = await db.query('SELECT component_asin FROM inv_bundles WHERE bundle_asin=$1 ORDER BY component_asin', [duoAsin]);
   for (const r of c.rows) await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bottle:' + r.component_asin]);
@@ -8813,6 +8831,10 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
       await lockDuoBottles(c, requestAsin);
       const sh = await duoShortfall(c, requestAsin, q, 0);
       if (sh.length) return sh;
+    } else {
+      await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bottle:' + requestAsin]);
+      const sh = await singleShortfall(c, requestAsin, q, 0);
+      if (sh.length) return Object.assign(sh, { single: true });
     }
     if (staged) {
       // Next batch: one held row per item, never merged into a live job
@@ -8825,7 +8847,7 @@ app.post('/api/pending-prep/add', auth, async (req, res) => {
     await addLivePrep(c, requestAsin, duoFlag, q, prelabel);
     return null;
   });
-  if (short) return res.status(400).json({ ok: false, error: duoShortMsg(q, short), short, notEnough: true });
+  if (short) return res.status(400).json({ ok: false, error: short.single ? singleShortMsg(short) : duoShortMsg(q, short), short, notEnough: true });
   res.json({ ok: true, asin: requestAsin, qty: q, isDuo: duoFlag, staged, prelabel });
 });
 
@@ -9235,11 +9257,15 @@ app.post('/api/pending-prep/set', auth, async (req, res) => {
       await lockDuoBottles(db, job.asin);
       const sh = await duoShortfall(db, job.asin, q, id);
       if (sh.length) return sh;
+    } else if (job && q > job.qty) {
+      await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bottle:' + job.asin]);
+      const sh = await singleShortfall(db, job.asin, q, id);
+      if (sh.length) return Object.assign(sh, { single: true });
     }
     await db.query('UPDATE inv_pending_prep SET qty=$1 WHERE id=$2', [q, id]);
     return null;
   });
-  if (short) return res.status(400).json({ ok: false, error: duoShortMsg(q, short), short, notEnough: true });
+  if (short) return res.status(400).json({ ok: false, error: short.single ? singleShortMsg(short) : duoShortMsg(q, short), short, notEnough: true });
   res.json({ ok: true });
 });
 
