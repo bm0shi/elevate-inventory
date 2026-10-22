@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'shipfrom-suite-1088';
+const BUILD_ID = 'sku-count-1089';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8892,7 +8892,11 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     for (const r of os.rows) (openShipments[r.asin] = openShipments[r.asin] || []).push({ shipmentId: r.shipment_id, name: r.name, fc: r.fc, planned: r.planned, built: r.built });
   } catch (e) { console.error('[Pending prep] open shipments:', e.message); }
 
-  res.json({ items: out, totalRequests: ship.length, totalUnits, totalBottles, duoCount, openShipments, next });
+  // Products, not jobs: a split job is two halves of one product, and the
+  // owner checks this against Source Correct's "Total SKUs" (it read one
+  // higher for every split job, 10/22).
+  const totalRequests = new Set(ship.map(x => x.asin + '|' + (x.is_duo ? 1 : 0))).size;
+  res.json({ items: out, totalRequests, totalUnits, totalBottles, duoCount, openShipments, next });
 });
 
 // Tick / untick many jobs at once (Pending Prep "Select all"). Only the
@@ -8901,16 +8905,21 @@ app.post('/api/pending-prep/in-plan-many', auth, async (req, res) => {
   const ids = (Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map(x => parseInt(x, 10)).filter(x => x > 0).slice(0, 2000);
   if (!ids.length) return res.status(400).json({ ok: false, error: 'Nothing to tick.' });
   const on = !!req.body.inPlan;
-  const r = await pool.query(on ? 'UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE id = ANY($1) AND NOT staged AND NOT prelabel'
-                                : 'UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id = ANY($1)', [ids]);
+  // Both halves of a split job go into a shipment together: ticking only
+  // part 1 sent half the product's units to the plan.
+  const sel = `(id = ANY($1) OR split_group IN (SELECT split_group FROM inv_pending_prep WHERE id = ANY($1) AND split_group IS NOT NULL))`;
+  const r = await pool.query(on ? `UPDATE inv_pending_prep SET in_plan=true, in_plan_at=COALESCE(in_plan_at, now()) WHERE ${sel} AND NOT staged AND NOT prelabel`
+                                : `UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE ${sel}`, [ids]);
   res.json({ ok: true, changed: r.rowCount });
 });
 // Mark / unmark a job as added to the 3rd-party shipment plan software
 app.post('/api/pending-prep/in-plan', auth, async (req, res) => {
   const { id, inPlan } = req.body;
   if (!id) return res.status(400).json({ error: 'id required' });
-  if (inPlan) await pool.query('UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE id=$1 AND NOT staged AND NOT prelabel', [id]);
-  else await pool.query('UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE id=$1', [id]);
+  // The whole split job (both halves) at once, as in in-plan-many.
+  const sel = `(id=$1 OR split_group = (SELECT split_group FROM inv_pending_prep WHERE id=$1 AND split_group IS NOT NULL))`;
+  if (inPlan) await pool.query(`UPDATE inv_pending_prep SET in_plan=true, in_plan_at=now() WHERE ${sel} AND NOT staged AND NOT prelabel`, [id]);
+  else await pool.query(`UPDATE inv_pending_prep SET in_plan=false, in_plan_at=NULL WHERE ${sel}`, [id]);
   res.json({ ok: true });
 });
 
