@@ -6008,7 +6008,7 @@ function renderPendingPrep(){
   // Shipment jobs up top; PRELABELING ONLY jobs in their own section below
   // (owner 10/20), drawn with the same cards / list and the same buttons.
   const part=pre=>{ const items=all.items.filter(x=>!!x.prelabel===pre);
-    return Object.assign({}, all, { items, totalRequests:items.length, totalUnits:items.reduce((n,x)=>n+x.qty,0),
+    return Object.assign({}, all, { items, totalRequests:new Set(items.map(x=>x.asin+'|'+(x.is_duo?1:0))).size, totalUnits:items.reduce((n,x)=>n+x.qty,0),
       totalBottles:items.reduce((n,x)=>n+(x.is_duo?x.qty*2:x.qty),0), duoCount:items.filter(x=>x.is_duo).reduce((n,x)=>n+x.qty,0) }); };
   renderPrepJobs(part(false), document.getElementById('pendingPrepBody'), false);
   renderPrepJobs(part(true), document.getElementById('ppPrelabelBody'), true);
@@ -6018,7 +6018,9 @@ function renderPrepJobs(d, b, pre){
   if(pre && !d.items.length){ b.innerHTML=''; return; }
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:20px;text-align:center">Nothing pending. Add prep requests from the On Hand page (🔧 PREP button).</div>'; return; }
   const claimedCount=d.items.filter(x=>x.claimed_by).length;
-  const inPlanCount=d.items.filter(x=>x.in_plan).length;
+  // Counted by product (a split job's two halves are one SKU), like Source Correct's "Total SKUs"
+  const skuOf=x=>x.asin+'|'+(x.is_duo?1:0), skus=new Set(d.items.map(skuOf));
+  const inPlanCount=new Set(d.items.filter(x=>x.in_plan).map(skuOf)).size;
   // sort + filter
   const ppSort=(document.getElementById('ppSort')||{}).value||'active_first';
   const ppFilter=(document.getElementById('ppFilter')||{}).value||'all';
@@ -6057,7 +6059,7 @@ function renderPrepJobs(d, b, pre){
   items=ppLinkSplits(items);   // the two halves of a split job always sit together
   let h=pre?'<div class="prelabelHead"><div class="t">🏷️ ITEMS NEEDING LABEL (NOT PART OF ANY SHIPMENT)</div>'
       +'<div class="s">'+d.items.length+' job'+(d.items.length===1?'':'s')+' · '+d.totalUnits.toLocaleString()+' '+(d.duoCount?'units ('+d.totalBottles.toLocaleString()+' bottles)':'units')+' · work these when the shipment jobs above are done. Finished ones go to PRE-LABELED SKUS on Prepped &amp; Ready.</div></div>'
-    :'<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">Items To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+d.items.length+'</div><div class="l">In Shipment Plan</div></div></div>';
+    :'<div class="cards"><div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+d.totalRequests+'</div><div class="l">SKUs To Prep</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+d.totalUnits.toLocaleString()+'</div><div class="l">Units to Ship</div>'+(d.duoCount?'<div style="font-size:10px;color:#9db0c9;margin-top:3px">'+d.totalBottles.toLocaleString()+' bottles to handle</div>':'')+'</div><div class="card" style="border-top:3px solid #1e8449"><div class="n">'+claimedCount+'</div><div class="l">In Progress</div></div><div class="card" style="border-top:3px solid #2563a8"><div class="n">'+inPlanCount+' / '+skus.size+'</div><div class="l">SKUs In Shipment Plan</div></div></div>';
   if(ppList()){ b.innerHTML=h+ppListRows(items); updateElapsed(); return; }
   // Default view only: divider after the last in-progress card.
   const showDivider=(ppSort==='active_first') && items.some(x=>x.claimed_by) && items.some(x=>!x.claimed_by);

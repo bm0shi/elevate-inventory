@@ -660,3 +660,19 @@ test('prelabeling only: its own job, never ticked into a shipment; shipment jobs
   await post('/api/prep/set', { asin: 'TSTPRE', qty: 4 });
   assert.deepStrictEqual(await pre(), { qty: 16, pre: 12 });
 });
+
+test('a split job counts as one SKU, and ticking one half puts both halves in the plan', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTSKU','Test SKU count','SKU-SKU','X00TESTSKU') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTSKU', qty: 500 });
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTSKU', qty: 480 })).status, 200);
+  const halves = (await pool.query(`SELECT id, qty FROM inv_pending_prep WHERE asin='TSTSKU' ORDER BY split_part`)).rows;
+  assert.deepStrictEqual(halves.map(h => h.qty), [240, 240]);
+  const list = await fetch(`http://localhost:${PORT}/api/pending-prep/list`, { headers: H() }).then(r => r.json());
+  const rows = list.items.filter(x => x.asin === 'TSTSKU');
+  assert.strictEqual(rows.length, 2);
+  assert.strictEqual(list.totalRequests, new Set(list.items.filter(x => !x.prelabel).map(x => x.asin + '|' + (x.is_duo ? 1 : 0))).size);
+  assert.strictEqual((await post('/api/pending-prep/in-plan', { id: halves[0].id, inPlan: true })).status, 200);
+  assert.deepStrictEqual((await pool.query(`SELECT in_plan FROM inv_pending_prep WHERE asin='TSTSKU' ORDER BY split_part`)).rows.map(r => r.in_plan), [true, true]);
+  await post('/api/pending-prep/in-plan-many', { ids: [halves[1].id], inPlan: false });
+  assert.deepStrictEqual((await pool.query(`SELECT in_plan FROM inv_pending_prep WHERE asin='TSTSKU' ORDER BY split_part`)).rows.map(r => r.in_plan), [false, false]);
+});
