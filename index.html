@@ -2485,6 +2485,25 @@ function loadSsAvg(){
   if(loadSsAvg._busy) return Promise.resolve(); loadSsAvg._busy=true;
   return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
 }
+// Our own real sales, last 30 days (same window as the SmartScout figures).
+// Owner-only: loaded only when Admin is unlocked on this device.
+function loadOurSold(){
+  if(!OWNER_PW && sessionStorage_get('adminUnlocked')==='1') OWNER_PW=sessionStorage_get('adminPw')||'';
+  if(!OWNER_PW || loadOurSold._busy) return; loadOurSold._busy=true;
+  ownerApi('/api/our-sold30').then(d=>{ if(d&&d.ok){ window._ourSold=d.sold||{}; if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadOurSold._busy=false; });
+}
+const ourSoldOf=asin=>window._ourSold?(window._ourSold[asin]||0):null;
+// "You sold" cell: our real units, or a lock when Admin isn't unlocked here.
+function youSoldHtml(asin){
+  if(!window._ourSold){ loadOurSold(); return '<span class="hint" title="Your own sales show when Admin is unlocked on this device">🔒</span>'; }
+  return ourSoldOf(asin).toLocaleString();
+}
+// The other sellers' average, with each seller's own figure under it (owner 10/23).
+function ssAvgHtml(asin){
+  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin]; if(!a) return '—';
+  const by=Object.entries(a.by||{}).sort((x,y)=>y[1]-x[1]);
+  return '~'+Math.round(a.avg).toLocaleString()+(by.length?'<div style="font-size:10.5px;font-weight:600;color:#5a6472;line-height:1.3;margin-top:2px">'+by.map(([k,v])=>esc(k)+' '+v.toLocaleString()).join(' · ')+'</div>':'');
+}
 function loadSsPicks(){
   return api('/api/ss-picks').then(d=>{ if(d&&d.ok){ ssPicks=new Set(d.asins); ssPicksPaint(); } }).catch(()=>{});
 }
@@ -4602,7 +4621,7 @@ function renderNextBatch(){
         daysAll:known&&perDay?(total+(queued[x.asin]||0)+x.qty)/perDay:null, prep:queued[x.asin]||0,
         rank:p.salesRank, sold:p.monthlySold, est:R.est, note:mo>0?'selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':''};
     });
-    const NK={ name:r=>String(r.x.name||r.x.asin).toLowerCase(), qty:r=>r.x.qty, total:r=>r.total, avg:r=>r.avg, days:r=>r.days, daysAll:r=>r.daysAll, rank:r=>r.rank, sold:r=>r.sold };
+    const NK={ name:r=>String(r.x.name||r.x.asin).toLowerCase(), qty:r=>r.x.qty, total:r=>r.total, avg:r=>r.avg, you:r=>ourSoldOf(r.x.asin), days:r=>r.days, daysAll:r=>r.daysAll, rank:r=>r.rank, sold:r=>r.sold };
     let so={}; try{ so=JSON.parse(localStorage_get('nextSort')||'{}'); }catch(e){}
     if(NK[so.key]){ const g=NK[so.key], dir=so.dir||1;
       rowsN.sort((a,c)=>{ const u=g(a), v=g(c); if(u==null&&v==null) return 0; if(u==null) return 1; if(v==null) return -1; return (u<v?-1:u>v?1:0)*dir; }); }
@@ -4611,10 +4630,11 @@ function renderNextBatch(){
     const dColor=v=>v==null?'#8a97a6':v<21?'#c0392b':v<45?'#b7791f':'#1e8449';
     const days=(v,est)=>v==null?'—':Math.round(v)+'d'+(est?'*':'');
     h+='<div class="hint" style="text-align:center;margin:6px 0 8px">Don\'t start these yet. They open on the list above once the batch is released.</div>'
-      +'<div style="overflow-x:auto"><table style="width:100%;min-width:1100px;table-layout:fixed;border-collapse:collapse;font-size:13px;color:#1f2733"><thead><tr style="font-size:11px;color:#5a6472">'
+      +'<div style="overflow-x:auto"><table style="width:100%;min-width:1180px;table-layout:fixed;border-collapse:collapse;font-size:13px;color:#1f2733"><thead><tr style="font-size:11px;color:#5a6472">'
       +th('name','Product',0,'',1)+th('qty','Qty',62)+'<th style="width:70px;padding:6px">Location</th>'
       +th('total','At Amazon + transit',96,'At Amazon (in stock) plus on the way to Amazon, for this listing')
-      +th('avg','Avg (Smart Scout)',90,'SmartScout: average sales per month of the other sellers on this listing (not you)')
+      +th('you','You sold (30d)',74,'Your real units sold on this listing, last 30 days (Amazon orders), the same 30 days as the SmartScout figures')
+      +th('avg','3P avg (Smart Scout)',118,'SmartScout: average sales per month of the other sellers on this listing (not you), each seller\'s own figure under it')
       +th('days','Days covered',82,'At Amazon + transit ÷ daily sales (best estimate, same as Send Next). * = rough fallback')
       +th('daysAll','Days covered + pending prep + this batch',118,'At Amazon + transit + what is in Pending Prep now + this next-batch job, ÷ daily sales')
       +th('rank','Keepa rank',84,'Keepa sales rank for the listing')
@@ -4624,7 +4644,8 @@ function renderNextBatch(){
         return '<tr><td style="'+td+';text-align:left;line-height:1.3">'+(x.is_duo?'<b style="color:#c0392b;font-size:11px">DUO</b> ':'')+esc(x.name||x.asin)+'</td>'
         +'<td style="'+td+';font-weight:800">'+x.qty+'<div style="font-size:11px;font-weight:700;color:#0d4450">'+casesText(x.qty, caseQtyOf(x))+(x.is_duo?' of each':'')+'</div></td><td style="'+td+'">'+esc(x.location||'—')+'</td>'
         +'<td style="'+td+';font-weight:700;color:#2563a8">'+(r.total==null?'—':r.total.toLocaleString())+'</td>'
-        +'<td style="'+td+';font-weight:700;color:#7a4fb5">'+(r.avg==null?'—':'~'+Math.round(r.avg).toLocaleString())+'</td>'
+        +'<td style="'+td+';font-weight:800;color:#008296">'+youSoldHtml(x.asin)+'</td>'
+        +'<td style="'+td+';font-weight:700;color:#7a4fb5">'+ssAvgHtml(x.asin)+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+dColor(r.days)+'" title="'+esc(r.note)+'">'+days(r.days,r.est)+'</td>'
         +'<td style="'+td+';font-weight:800;color:'+dColor(r.daysAll)+'" title="'+esc((r.total!=null?r.total+' at Amazon + transit + '+r.prep+' in pending prep + '+x.qty+' this batch · ':'')+r.note)+'">'+days(r.daysAll,r.est)+'</td>'
         +'<td style="'+td+'">'+(r.rank==null?'—':'#'+Number(r.rank).toLocaleString())+'</td>'
@@ -4635,7 +4656,7 @@ function renderNextBatch(){
       +(()=>{ const units=n.items.reduce((t,x)=>t+x.qty,0), skus=new Set(n.items.map(x=>x.asin)).size, duos=n.items.filter(x=>x.is_duo).reduce((t,x)=>t+x.qty,0);
           const tt=td+';border-top:2px solid #1f2733;font-weight:900';
           return '<tr style="background:#eef2f6"><td style="'+tt+';text-align:left">TOTAL · '+skus+' SKU'+(skus===1?'':'s')+(duos?' <span class="hint" style="font-weight:600">('+duos.toLocaleString()+' of the units are duos, counted as one each)</span>':'')+'</td>'
-            +'<td style="'+tt+';font-size:15px">'+units.toLocaleString()+'</td><td colspan="8" style="'+tt+';text-align:left" class="hint">units to ship · duo = 1 unit</td></tr>'; })()
+            +'<td style="'+tt+';font-size:15px">'+units.toLocaleString()+'</td><td colspan="9" style="'+tt+';text-align:left" class="hint">units to ship · duo = 1 unit</td></tr>'; })()
       +'</tbody></table></div>'
       +'<div style="text-align:center;margin-top:12px"><button class="action" onclick="releaseNextBatch()" style="background:#7a4fb5;min-width:260px">▶ Release next batch to the floor</button></div>';
   }
@@ -6201,7 +6222,7 @@ function ppListRows(items){
     return { total:a.known?a.total:null, avg:av, days:a.known&&mo>0?a.total/(mo/30):null, daysPrep:a.known&&mo>0?(a.total+(queued[x.asin]||0))/(mo/30):null }; };
   // Space this job will take at Amazon (FBA capacity): qty × the listing's cubic feet.
   const space=x=>{ const cf=_cap&&_cap.cuft&&_cap.cuft[x.asin]; return cf?cf*(x.qty||0):null; };
-  const SK={ item:x=>x.is_duo?1:0, qty:x=>x.qty||0, space:x=>space(x), total:x=>mt(x).total, avg:x=>mt(x).avg, days:x=>mt(x).days, daysPrep:x=>mt(x).daysPrep, plan:x=>x.in_plan?1:0, status:x=>x.claimed_by?1:0 };
+  const SK={ item:x=>x.is_duo?1:0, qty:x=>x.qty||0, space:x=>space(x), total:x=>mt(x).total, avg:x=>mt(x).avg, you:x=>ourSoldOf(x.asin), days:x=>mt(x).days, daysPrep:x=>mt(x).daysPrep, plan:x=>x.in_plan?1:0, status:x=>x.claimed_by?1:0 };
   const so=ppListSort();
   if(so.key && SK[so.key]){
     const g=SK[so.key];
@@ -6213,7 +6234,8 @@ function ppListRows(items){
     +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td>'
     +th('item','Item','Duos first, then singles',1)+th('qty','Qty')+th('space','Space (cu ft)','FBA capacity this job will use at Amazon: qty × the listing\'s package size')
     +th('total','Total at Amazon + transit','At Amazon (in stock) plus on the way to Amazon, for this listing')
-    +th('avg','Average (Smart Scout)','SmartScout: average sales per month of the other sellers on this listing (not you)')
+    +th('you','You sold (30d)','Your real units sold on this listing, last 30 days (Amazon orders), the same 30 days as the SmartScout figures')
+    +th('avg','3P average (Smart Scout)','SmartScout: average sales per month of the other sellers on this listing (not you), each seller\'s own figure under it')
     +th('days','Days covered','Total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
     +th('daysPrep','Days covered (with pending prep)','Same as Days covered, adding everything queued in Pending Prep for this listing')
     +th('plan','Plan','Ticked first')+th('status','Status','In progress first',1)+'</tr>'
@@ -6249,7 +6271,8 @@ function ppListRows(items){
             const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=R.est?'*':'';
             const why=mo>0?' · selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':'';
             return '<td style="'+td+';'+num+';color:#2563a8">'+(a.known?a.total.toLocaleString():'—')+'</td>'
-              +'<td style="'+td+';'+num+';color:#7a4fb5">'+(av!=null?'~'+Math.round(av).toLocaleString():'—')+'</td>'
+              +'<td style="'+td+';'+num+';color:#008296;font-weight:800">'+youSoldHtml(x.asin)+'</td>'
+              +'<td style="'+td+';'+num+';color:#7a4fb5">'+ssAvgHtml(x.asin)+'</td>'
               +'<td style="'+td+';'+num+';color:'+dColor(d)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit'+why:'')+'">'+(d==null?'—':d+' days'+star)+'</td>'
               +'<td style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep'+why:'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
         +'<td style="'+td+';text-align:center">'+(x.prelabel?'<span class="prelabelTag" title="Pre-labeling only: not for any shipment">🏷️</span>':'<input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer">')+'</td>'

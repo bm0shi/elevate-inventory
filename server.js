@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'us-real30-1094';
+const BUILD_ID = 'pp-sellers-1095';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8074,9 +8074,27 @@ app.get('/api/ss-avg', auth, async (req, res) => {
     // discount (FBA Inventory's days covered; owner: "don't underestimate,
     // go off the real average"). avg keeps a 0-seller in, for older screens.
     const sa = sellerAverage(v);
-    avg[a] = { avg: v.reduce((t, x) => t + x, 0) / v.length, n: v.length, sold: sa.avg, nSold: sa.n };
+    // by: each other seller's own figure (SB 89 · SD 74 under the average on
+    // Pending Prep, owner 10/23). Other sellers only, like the average.
+    const by = {};
+    for (const sl of others) if (sl.by[a]) { const u = smartscout.sellerUnitsOn(ssBrand[a] ? ssBrand[a].units : null, sl.by[a]); if (u != null) by[sl.abbr] = Math.round(u); }
+    avg[a] = { avg: v.reduce((t, x) => t + x, 0) / v.length, n: v.length, sold: sa.avg, nSold: sa.n, by };
   }
   res.json({ ok: true, avg, sellers: others.map(sl => sl.abbr) });
+});
+// Our real units per listing over the same 30 days as the SmartScout figures
+// beside it (ourLast30), for Pending Prep's "You sold" column. Our own sales
+// are owner-only, so this is ownerAuth and the column shows only when Admin
+// is unlocked on that device.
+app.get('/api/our-sold30', ownerAuth, async (req, res) => {
+  const real30 = await ourLast30();
+  if (real30) return res.json({ ok: true, sold: real30, src: 'orders' });
+  // Fewer than 30 saved days: the velocity window, per month.
+  const velC = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'")).rows[0];
+  const days = (velC && velC.data && velC.data.days) || 30, sold = {};
+  for (const v of ((velC && velC.data && velC.data.items) || [])) if (v.asin) sold[v.asin] = (sold[v.asin] || 0) + (v.sold || 0) * 30 / days;
+  for (const a in sold) sold[a] = Math.round(sold[a]);
+  res.json({ ok: true, sold, src: 'velocity' });
 });
 app.get('/api/ss-picks', auth, async (req, res) => {
   const r = await pool.query('SELECT asin FROM inv_ss_picks ORDER BY picked_at');
