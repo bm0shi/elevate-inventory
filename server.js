@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ss-fit-1093';
+const BUILD_ID = 'us-real30-1094';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7773,6 +7773,23 @@ app.post('/api/capacity/limit', auth, async (req, res) => {
 //   bottles:  every physical bottle with warehouse stock, what's free, its
 //             cost and its Cosmoprof item number(s).
 // ============================================================
+// Our real units per listing over 30 Pacific days, from the order pulls
+// (inv_sales_asin_daily, counted like Seller Central). SmartScout's figures
+// are "estimated 30 day" as of the export, so ours covers the same 30 days:
+// ending on the day the latest SmartScout seller file was uploaded (today
+// when there is none). Owner 10/23: never SmartScout's guess for our own
+// sales, and ours updates with every new upload. null when the saved days
+// don't reach back that far yet: callers fall back to velocity.
+async function ourLast30() {
+  const r = await pool.query(`WITH t AS (SELECT COALESCE((SELECT MAX(uploaded_at) FROM inv_ss_uploads WHERE kind='seller'), now()) AS at),
+      e AS (SELECT LEAST((t.at AT TIME ZONE 'America/Los_Angeles')::date, (now() AT TIME ZONE 'America/Los_Angeles')::date) AS end_day FROM t)
+    SELECT e.end_day, (SELECT MIN(day) FROM inv_sales_asin_daily) <= e.end_day - 29 AS ok,
+      (SELECT json_object_agg(asin, units) FROM (SELECT s.asin, SUM(s.units)::int AS units FROM inv_sales_asin_daily s
+        WHERE s.day > e.end_day - 30 AND s.day <= e.end_day GROUP BY s.asin) x) AS by
+    FROM e`);
+  const x = r.rows[0];
+  return x && x.ok ? (x.by || {}) : null;
+}
 app.get('/api/plan/data', ownerAuth, async (req, res) => { res.json(await buildPlanData()); });
 async function buildPlanData() {
   const cache = async (k) => { const r = await pool.query('SELECT data, updated_at FROM inv_cache WHERE cache_key=$1', [k]); return r.rows[0] || null; };
@@ -7807,6 +7824,7 @@ async function buildPlanData() {
       FROM inv_fba_daily WHERE day > CURRENT_DATE - $1::int GROUP BY asin`, [velDays])).rows) snap[r.asin] = { known: r.known, inStock: r.in_stock };
   const ssBrand = await ssBrandRows();
   const ssSellers = await ssSellerFiles();
+  const real30 = await ourLast30();
   // Live Amazon prices from the last Inventory Value pull (SP-API). SmartScout
   // prices aren't used for profit: they're often captured during a sale.
   const amzPrice = {};
@@ -7845,6 +7863,9 @@ async function buildPlanData() {
       // Amazon's restock recommendation for this listing (daily sync), for comparison only.
       amazonRestock: (p.sku && restock.bySku[p.sku]) || restock.byAsin[p.asin] || null,
       ssSellers: ssSellers.reduce((o, sl) => {
+        // US is always our real sales (last 30 days, as SmartScout's window);
+        // SmartScout's file for us left out listings we sell (owner 10/23).
+        if (sl.isUs) { const m = real30 ? (real30[p.asin] || 0) : (ourSold != null ? ourSold * 30 / velDays : null); if (m != null) o[sl.abbr] = m; return o; }
         const r = sl.by[p.asin];
         if (r) o[sl.abbr] = smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, r);
         return o;
@@ -7854,14 +7875,11 @@ async function buildPlanData() {
     // for OUR sales of this listing; null = no data for that signal.
     {
       const L = listings[listings.length - 1];
-      const us = ssSellers.find(sl => sl.isUs);
-      const usRow = us && us.by[p.asin];
       const share = L.shareMeasured != null ? L.shareMeasured : L.shareEst;
       L.snap = snap[p.asin] || { known: 0, inStock: 0 };
       L.signals = {
         instock: forecast.inStockMonthly(ourSold, velDays, L.snap),
         ours: ourSold != null ? ourSold * 30 / velDays : null,
-        ssus: us ? (usRow ? smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, usRow) : 0) : null,
         keepa: m.monthlySold != null && share != null ? m.monthlySold * share : null,
         fair: L.ss ? L.ss.fair : null,
       };
@@ -7997,7 +8015,11 @@ app.post('/api/smartscout/upload', ownerAuth, upload.array('file', 20), async (r
       results.push({ file: f.originalname, ok: false, error: e.message });
     }
   }
-  res.json({ ok: results.every(r => r.ok), results });
+  // Our side of the comparison is our real sales for the same 30 days, so
+  // pull today's orders now (the morning sync may be hours old).
+  let salesUpdate = false;
+  if (results.some(r => r.ok && r.kind === 'seller') && !salesJob.running) { startSalesPull(false); salesUpdate = true; }
+  res.json({ ok: results.every(r => r.ok), results, salesUpdate });
 });
 
 // Latest seller file per seller (names compared loosely), us first, each
@@ -8110,10 +8132,11 @@ app.get('/api/smartscout/data', ownerAuth, async (req, res) => {
     if (v.asin) velByAsin[v.asin] = (velByAsin[v.asin] || 0) + (v.sold || 0);
   }
   const prods = (await pool.query('SELECT asin, sku, name, image FROM inv_products')).rows;
-  const ours = {};
+  const ours = {}, real30 = await ourLast30();
   for (const p of prods) {
     const sold = (p.sku && velBySku[p.sku] ? velBySku[p.sku].sold : null) ?? (velByAsin[p.asin] ?? null);
-    ours[p.asin] = { name: p.name, image: p.image, monthly: sold != null ? sold * 30 / velDays : null };
+    // Last 30 days, the same window as SmartScout's estimates beside it.
+    ours[p.asin] = { name: p.name, image: p.image, monthly: real30 ? (real30[p.asin] || 0) : (sold != null ? sold * 30 / velDays : null) };
   }
   const brand = await ssBrandRows();
   const sellerFiles = await ssSellerFiles();
