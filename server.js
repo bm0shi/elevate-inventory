@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ss-fit-1093';
+const BUILD_ID = 'us-real-1094';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7847,9 +7847,14 @@ async function buildPlanData() {
       ssSellers: ssSellers.reduce((o, sl) => {
         const r = sl.by[p.asin];
         if (r) o[sl.abbr] = smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, r);
+        // Our own file leaves out listings we do sell (owner 10/23: Tea Tree
+        // Leave-In 33.8 showed — in US while Amazon had 25 sold in 30 days).
+        // Then the US column shows our real sales instead (usReal marks it).
+        else if (sl.isUs && ourSold > 0) o[sl.abbr] = ourSold * 30 / velDays;
         return o;
       }, {}),
     });
+    { const us = ssSellers.find(sl => sl.isUs); if (us && !us.by[p.asin] && ourSold > 0) listings[listings.length - 1].usReal = true; }
     // The four demand signals for Rec. Order (lib/forecast.js), monthly units
     // for OUR sales of this listing; null = no data for that signal.
     {
@@ -7861,7 +7866,9 @@ async function buildPlanData() {
       L.signals = {
         instock: forecast.inStockMonthly(ourSold, velDays, L.snap),
         ours: ourSold != null ? ourSold * 30 / velDays : null,
-        ssus: us ? (usRow ? smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, usRow) : 0) : null,
+        // Not in our SmartScout file: 0 only if we really sell none; when we do
+        // sell it, SmartScout missed us, so it's no data rather than zero.
+        ssus: us ? (usRow ? smartscout.sellerUnitsOn(ssBrand[p.asin] ? ssBrand[p.asin].units : null, usRow) : (ourSold > 0 ? null : 0)) : null,
         keepa: m.monthlySold != null && share != null ? m.monthlySold * share : null,
         fair: L.ss ? L.ss.fair : null,
       };
