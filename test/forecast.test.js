@@ -30,7 +30,18 @@ test('a signal that keeps landing close gains weight over one that keeps missing
   assert.ok(r.weights.ours > r.weights.keepa * 10);
   // The two learned signals share what their priors had together; the others keep theirs.
   near(r.weights.ours + r.weights.keepa, PRIOR_WEIGHTS.ours + PRIOR_WEIGHTS.keepa);
-  near(r.weights.ssus, PRIOR_WEIGHTS.ssus);
+  near(r.weights.fair, PRIOR_WEIGHTS.fair);
+});
+
+test('SmartScout\'s estimate of our own sales is not a signal any more (owner 10/23)', () => {
+  // Old log rows for it are skipped, and a value passed in is ignored.
+  const samples = [];
+  for (let i = 0; i < MIN_SAMPLES; i++) samples.push({ signal: 'ssus', pred: 0, actual: 100 });
+  const r = learnWeights(samples);
+  assert.strictEqual(r.learned, false);
+  assert.strictEqual(r.weights.ssus, undefined);
+  near(Object.values(PRIOR_WEIGHTS).reduce((a, b) => a + b, 0), 1);
+  assert.strictEqual(blend({ ours: 25, ssus: 0 }).monthly, 25);
 });
 
 test('too few scored predictions: the signal keeps its prior', () => {
