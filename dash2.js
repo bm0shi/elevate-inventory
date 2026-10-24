@@ -61,7 +61,7 @@
   .d2-btn{all:unset;cursor:pointer;font-size:15px;font-weight:750;color:#fff;background:${C.brand};border-radius:999px;padding:8px 15px;box-shadow:0 4px 14px -4px rgba(13,68,80,.6);transition:transform .2s,box-shadow .2s}
   .d2-btn:hover{transform:translateY(-1px);box-shadow:0 8px 18px -6px rgba(13,68,80,.6)}
   .d2-btn.ghost{background:#fff;color:${C.brand};border:1px solid #d5e0e6;box-shadow:none}
-  .d2-card{position:relative;background:#fff;border:1px solid #e6ecf0;border-radius:18px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px -18px rgba(16,24,40,.18);min-width:0;opacity:0;transform:translateY(14px);animation:d2in .7s cubic-bezier(.2,.7,.2,1) forwards;animation-delay:var(--d,0ms);scroll-margin-top:calc(var(--d2top,12px) + 4px)}
+  .d2-card{position:relative;background:#fff;border:1px solid #e6ecf0;border-radius:18px;padding:18px 20px;box-shadow:0 1px 2px rgba(16,24,40,.04),0 12px 32px -18px rgba(16,24,40,.18);min-width:0;animation:d2in .7s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:var(--d,0ms);scroll-margin-top:calc(var(--d2top,12px) + 4px)}
   .d2-card h3{margin:0;font-size:17px;font-weight:800;letter-spacing:-.1px}
   .d2-card .d2-sub{font-size:14px;color:${C.muted};margin-top:2px}
   .d2-ch{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}
@@ -72,7 +72,7 @@
   .d2-eyebrow{font-size:13px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:${C.muted}}
   .d2-hsub{font-size:16px;color:${C.ink2}}
   .d2-pipe{display:flex;height:16px;border-radius:999px;overflow:hidden;gap:2px;background:#fff;margin:6px 0 16px}
-  .d2-pipe i{display:block;height:100%;transform-origin:left;transform:scaleX(0);animation:d2grow 1.1s cubic-bezier(.2,.7,.2,1) forwards;animation-delay:var(--d,0ms)}
+  .d2-pipe i{display:block;height:100%;transform-origin:left;animation:d2grow 1.1s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:var(--d,0ms)}
   .d2-pipe i:first-child{border-radius:999px 0 0 999px}.d2-pipe i:last-child{border-radius:0 999px 999px 0}
   .d2-legend{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
   .d2-lg{min-width:0}.d2-lg .k{display:flex;align-items:center;gap:6px;font-size:14px;color:${C.ink2};font-weight:700;white-space:nowrap}
@@ -96,11 +96,11 @@
   .d2-keys span{display:inline-flex;align-items:center;gap:6px}.d2-keys i{width:10px;height:3px;border-radius:2px;display:inline-block}
   .d2-keys i.sq{height:10px;width:10px;border-radius:3px}
   .d2-line{fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-  .d2-draw{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:d2draw 1.4s cubic-bezier(.3,.6,.2,1) forwards;animation-delay:var(--d,150ms)}
-  .d2-area{opacity:0;animation:d2fade 1s ease forwards;animation-delay:.5s}
-  .d2-bar{transform-box:fill-box;transform-origin:50% 100%;transform:scaleY(0);animation:d2rise .9s cubic-bezier(.2,.7,.2,1) forwards;animation-delay:var(--d,0ms)}
+  .d2-draw{stroke-dasharray:var(--len);animation:d2draw 1.4s cubic-bezier(.3,.6,.2,1) backwards;animation-delay:var(--d,150ms)}
+  .d2-area{animation:d2fade 1s ease backwards;animation-delay:.5s}
+  .d2-bar{transform-box:fill-box;transform-origin:50% 100%;animation:d2rise .9s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:var(--d,0ms)}
   .d2-bar.neg{transform-origin:50% 0%}
-  .d2-hb{transform-box:fill-box;transform-origin:0 50%;transform:scaleX(0);animation:d2growx .9s cubic-bezier(.2,.7,.2,1) forwards;animation-delay:var(--d,0ms)}
+  .d2-hb{transform-box:fill-box;transform-origin:0 50%;animation:d2growx .9s cubic-bezier(.2,.7,.2,1) backwards;animation-delay:var(--d,0ms)}
   .d2-rows{display:flex;flex-direction:column}
   .d2-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 2px;border-top:1px solid #f0f3f6;font-size:16px}
   .d2-row:first-child{border-top:0}
@@ -147,12 +147,15 @@
   .d2-tile[data-goto]:hover .go{opacity:1;transform:none}
   .d2-sk{background:linear-gradient(90deg,#eef2f5 25%,#f8fafb 37%,#eef2f5 63%);background-size:400% 100%;animation:d2sh 1.4s ease infinite;border-radius:10px}
   @keyframes d2sh{0%{background-position:100% 50%}100%{background-position:0 50%}}
-  @keyframes d2in{to{opacity:1;transform:none}}
-  @keyframes d2grow{to{transform:scaleX(1)}}
-  @keyframes d2growx{to{transform:scaleX(1)}}
-  @keyframes d2rise{to{transform:scaleY(1)}}
-  @keyframes d2draw{to{stroke-dashoffset:0}}
-  @keyframes d2fade{to{opacity:1}}
+  /* Everything is visible at rest and only animates FROM hidden (fill: backwards).
+     The cards used to rest at opacity 0 and rely on the animation to show them:
+     on the owner's iPhone it never ran, so the dashboard was blank (10/24). */
+  @keyframes d2in{from{opacity:0;transform:translateY(14px)}}
+  @keyframes d2grow{from{transform:scaleX(0)}}
+  @keyframes d2growx{from{transform:scaleX(0)}}
+  @keyframes d2rise{from{transform:scaleY(0)}}
+  @keyframes d2draw{from{stroke-dashoffset:var(--len)}}
+  @keyframes d2fade{from{opacity:0}}
   @keyframes d2pulse{0%{box-shadow:0 0 0 0 rgba(12,163,12,.45)}70%{box-shadow:0 0 0 8px rgba(12,163,12,0)}100%{box-shadow:0 0 0 0 rgba(12,163,12,0)}}
   @media (max-width:1180px){.s8,.s7{grid-column:span 12}.s4,.s5{grid-column:span 12}.d2-hero{grid-template-columns:1fr}.d2-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}}
   @media (max-width:1180px) and (min-width:760px){.s6{grid-column:span 6}}
