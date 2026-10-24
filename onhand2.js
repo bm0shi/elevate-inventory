@@ -109,7 +109,10 @@
   .oh2-stock{display:flex;height:8px;border-radius:999px;overflow:hidden;gap:2px;background:#fff}
   .oh2-stock i{display:block;height:100%}
   .oh2-stock.empty{background:#eef2f5}
-  .oh2-stats{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));border:1px solid ${K.line2};border-radius:12px;background:#f8fafb;overflow:hidden}
+  .oh2-gt{background:#eef4f6}
+  .oh2-gt .v{color:${K.brand}}
+  .oh2-st.oh2-gt .x{font-size:10px;font-weight:700;letter-spacing:0;overflow:visible;text-overflow:clip}
+  .oh2-stats{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border:1px solid ${K.line2};border-radius:12px;background:#f8fafb;overflow:hidden}
   .oh2-st{padding:9px 6px 8px;text-align:center;border-left:1px solid ${K.line2};min-width:0}
   .oh2-st:first-child{border-left:0}
   .oh2-st .k{display:flex;align-items:center;justify-content:center;gap:5px;font-size:13px;font-weight:750;color:${K.muted};white-space:nowrap}
@@ -294,6 +297,14 @@
   }
 
   // ---------- one product ----------
+  // GRAND TOTAL (owner 10/24): everything we own of it, in bottles: on the
+  // shelf (pending prep and prepped included) + on the way + at Amazon. The
+  // same five parts the stock bar adds up.
+  function grandTotal(p) {
+    const o = p.onhand || 0, pend = p.pending_prep || 0, prep = p.prepped || 0;
+    const lt = typeof listingTotals === 'function' ? listingTotals(p) : { at: p.fba_total || 0 };
+    return Math.max(0, o - pend - prep) + pend + prep + (p.transit || 0) + (lt.at || 0);
+  }
   function stockBar(p, available) {
     const lt = typeof listingTotals === 'function' ? listingTotals(p) : { at: p.fba_total || 0, way: 0 };
     const seg = [[available, K.shelf, 'On the shelf, available'], [p.pending_prep || 0, K.pend, 'Pending prep'], [p.prepped || 0, K.prep, 'Prepped'], [p.transit || 0, K.way, 'On the way to Amazon'], [lt.at || 0, K.fba, 'At Amazon (bottles)']];
@@ -319,6 +330,7 @@
       cell('Prepped', K.prep, n0(p.prepped), split(p.prepped_single, p.prepped_duo)) +
       cell('On the way', K.way, n0(t), waySub, 'Left the warehouse, not checked in at Amazon yet') +
       cell('At Amazon', K.fba, n0(lt.at), lt.way ? lt.way + ' inbound' : '', 'Bottles at Amazon across this product’s listings (single + duos)') +
+      '<div class="oh2-st oh2-gt" title="On hand (pending prep and prepped included) + on the way + at Amazon"><div class="k">Total</div><div class="v">' + n0(grandTotal(p)) + '</div><div class="x">(GRAND TOTAL)</div></div>' +
       '<div class="oh2-st" title="Days the stock at Amazon plus on the way lasts at the best-estimate sales rate"><div class="k">FBA cover</div><div class="v">' + coverBadge(cover) + '</div></div>' +
       cell('3P avg / mo', null, av && av.avg != null ? '~' + n0(av.avg) : '—', av ? av.n + ' seller' + (av.n === 1 ? '' : 's') : '', 'Other sellers’ average monthly sales on this listing (SmartScout)') +
       '</div>';
@@ -380,6 +392,7 @@
       '<td class="big" style="color:' + (available <= 0 ? K.crit : K.ink) + '">' + n0(available) + '</td>' +
       '<td>' + (p.is_bundle ? '—' : E(typeof casesText === 'function' ? casesText(available, caseQtyOf(p)) : '')) + '</td>' +
       '<td>' + n0(pend) + '</td><td>' + n0(prep) + '</td><td>' + n0(p.transit) + '</td><td>' + n0(lt.at) + '</td>' +
+      '<td title="On hand (pending prep and prepped included) + on the way + at Amazon"><div class="big" style="color:' + K.brand + '">' + n0(grandTotal(p)) + '</div><div style="font-size:11px;font-weight:700;color:' + K.muted + ';letter-spacing:.3px">(GRAND TOTAL)</div></td>' +
       '<td>' + coverBadge(cover) + '</td><td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
       '<td><div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Prelabeling only: label now, not part of any shipment">Prelabel</button><button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')">Fix</button></div></td></tr>';
   }
@@ -417,8 +430,8 @@
     const pre = ctx.pickBar || '';
     if (!list.length) { body.innerHTML = pre + '<div class="oh2-grid">' + emptyState(filter, q) + '</div>'; return; }
     if (lay === 'table') {
-      body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl"><colgroup><col style="width:27%"><col style="width:7%"><col style="width:10%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:7%"><col style="width:16%"></colgroup>' +
-        '<thead><tr><th>Product</th><th>Available</th><th>Cases</th><th>Pending</th><th>Prepped</th><th>On the way</th><th>At Amazon</th><th>FBA cover</th><th>3P avg / mo</th><th></th></tr></thead><tbody>' +
+      body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl"><colgroup><col style="width:23%"><col style="width:7%"><col style="width:9%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:13%"></colgroup>' +
+        '<thead><tr><th>Product</th><th>Available</th><th>Cases</th><th>Pending</th><th>Prepped</th><th>On the way</th><th>At Amazon</th><th>Grand total</th><th>FBA cover</th><th>3P avg / mo</th><th></th></tr></thead><tbody>' +
         list.map(row).join('') + '</tbody></table></div>';
       return;
     }
