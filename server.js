@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'oh-grand-1098';
+const BUILD_ID = 'sold30-all-1099';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8083,10 +8083,10 @@ app.get('/api/ss-avg', auth, async (req, res) => {
   res.json({ ok: true, avg, sellers: others.map(sl => sl.abbr) });
 });
 // Our real units per listing over the same 30 days as the SmartScout figures
-// beside it (ourLast30), for Pending Prep's "You sold" column. Our own sales
-// are owner-only, so this is ownerAuth and the column shows only when Admin
-// is unlocked on that device.
-app.get('/api/our-sold30', ownerAuth, async (req, res) => {
+// beside it (ourLast30), for Pending Prep's "You sold" column. Owner-approved
+// exception (10/24, "show to everyone"): warehouse login, like /api/ss-avg,
+// units only, no money.
+app.get('/api/our-sold30', auth, async (req, res) => {
   const real30 = await ourLast30();
   if (real30) return res.json({ ok: true, sold: real30, src: 'orders' });
   // Fewer than 30 saved days: the velocity window, per month.

@@ -2486,16 +2486,15 @@ function loadSsAvg(){
   return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
 }
 // Our own real sales, last 30 days (same window as the SmartScout figures).
-// Owner-only: loaded only when Admin is unlocked on this device.
+// Units only; the owner opened it to the warehouse login (10/24).
 function loadOurSold(){
-  if(!OWNER_PW && sessionStorage_get('adminUnlocked')==='1') OWNER_PW=sessionStorage_get('adminPw')||'';
-  if(!OWNER_PW || loadOurSold._busy) return; loadOurSold._busy=true;
-  ownerApi('/api/our-sold30').then(d=>{ if(d&&d.ok){ window._ourSold=d.sold||{}; if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadOurSold._busy=false; });
+  if(loadOurSold._busy || loadOurSold._at>Date.now()-60000) return; loadOurSold._busy=true; loadOurSold._at=Date.now();
+  api('/api/our-sold30').then(d=>{ if(d&&d.ok){ window._ourSold=d.sold||{}; if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadOurSold._busy=false; });
 }
 const ourSoldOf=asin=>window._ourSold?(window._ourSold[asin]||0):null;
-// "You sold" cell: our real units, or a lock when Admin isn't unlocked here.
+// "You sold" cell: our real units (… while they load).
 function youSoldHtml(asin){
-  if(!window._ourSold){ loadOurSold(); return '<span class="hint" title="Your own sales show when Admin is unlocked on this device">🔒</span>'; }
+  if(!window._ourSold){ loadOurSold(); return '<span class="hint">…</span>'; }
   return ourSoldOf(asin).toLocaleString();
 }
 // The other sellers' average, with each seller's own figure under it (owner 10/23).
