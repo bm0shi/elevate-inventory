@@ -469,7 +469,8 @@
     const sp = document.getElementById('d2spark'); sparkline(sp, rows.map(r => r.onhand + r.inbound), C.blue);
   }
   function paintTop(x) {
-    const box = document.getElementById('d2top'); if (!box) return;
+    // Fallback only: the card follows the chosen period once that loads (paintTopCard).
+    const box = document.getElementById('d2top'); if (!box || state.topCardLive) return;
     const items = (x && x.topSellers) || [];
     if (!items.length) { box.innerHTML = empty('chart', 'No sales pulled yet', 'Load Velocity once and your best sellers line up here, by units sold.', { go: 'velocity', label: 'Open Velocity' }); return; }
     document.getElementById('d2topsub').textContent = 'Units sold' + (x.topSellersDays ? ' · last ' + x.topSellersDays + ' days' : '');
@@ -717,6 +718,19 @@
   // kept per range for this visit; the table sorts by any column (owner's
   // standing ask).
   const topCache = {};
+  // The "Top sellers" card follows the period picked above (owner 10/26: on
+  // the phone it stayed on the last 60 days and looked like a broken Top 50).
+  // Its best 8 by units, and a button that opens the full Top 50 below.
+  function paintTopCard(p, d, from, to) {
+    const box = document.getElementById('d2top'), sub = document.getElementById('d2topsub');
+    if (!box || !d || d.loading || d.error) return;
+    state.topCardLive = true;
+    if (sub) sub.textContent = 'Units sold · ' + p.label + ' · ' + dShort(from) + (from !== to ? ' – ' + dShort(to) : '');
+    const items = (d.items || []).filter(i => i.units > 0).sort((a, b) => b.units - a.units).slice(0, 8);
+    if (!items.length) { box.innerHTML = '<div class="d2-sub" style="padding:6px 0">No sales saved for this period yet.</div>'; return; }
+    hBars(box, items.map(i => ({ label: shortName(i.name || i.asin), html: sized(i.asin, i.name), title: i.name, value: i.units })), {});
+    box.insertAdjacentHTML('beforeend', '<button class="d2-btn ghost" data-top="' + E(p.k) + '" style="margin-top:12px;width:100%;box-sizing:border-box">See all ' + n0((d.items || []).length) + ' · ' + E(p.label) + ' ▾</button>');
+  }
   function topRange(p) { return p.k === 'today' ? [p.D.T, p.D.T] : [p.curDays[0], p.curDays[p.curDays.length - 1]]; }
   function paintTop10(p) {
     const box = document.getElementById('d2top10'); if (!box) return;
@@ -804,7 +818,9 @@
     }
     box.innerHTML = '<details class="d2-top10" id="d2top10d"' + (open ? ' open' : '') + '><summary>🏆 Top 50 sellers <span class="sub">· ' + E(p.label) + ' · ' + E(dShort(from)) + (from !== to ? ' – ' + E(dShort(to)) : '') + (d && d.items && d.items.length ? ' · ' + n0(d.total.units) + ' units in all' : '') + '</span><span style="flex:1"></span><svg class="chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg></summary><div class="body">' + body + '</div></details>';
     box.querySelector('details').addEventListener('toggle', e => { store.set('d2TopOpen', e.target.open ? '1' : '0'); if (e.target.open && !topCache[key]) paintTop10(p); });
-    if (!d && open) {
+    paintTopCard(p, d, from, to);
+    // Loaded even while the drop-down is shut: the Top sellers card uses it too.
+    if (!d) {
       topCache[key] = { loading: true };
       ownerApi('/api/finance/top-sellers?limit=50&from=' + from + '&to=' + to).then(r => { topCache[key] = (r && r.ok) ? r : { error: (r && r.error) || 'no reply' }; })
         .catch(e => { topCache[key] = { error: e.message }; })
