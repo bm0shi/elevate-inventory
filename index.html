@@ -3107,7 +3107,10 @@ function saveStockCost(asin){
   if(st) st.innerHTML='<span class="hint">saving…</span>';
   ownerApi('/api/finance/manual-cost',{method:'POST',body:JSON.stringify({asin, unit_cost:v})}).then(d=>{
     if(!d || !d.ok){ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">'+esc((d&&d.error)||'Not saved')+'</span>'; return; }
-    toast('Cost saved: $'+v.toFixed(2)); window._scOpen=true; window._stockCosts=null; loadStockCosts();
+    window._scOpen=true; window._stockCosts=null;
+    // Say so if the saved cost still doesn't count, rather than an empty box coming back silently.
+    loadStockCosts().then(()=>{ const ok=window._stockCosts&&window._stockCosts[asin]!=null;
+      toast(ok?'Cost saved: $'+v.toFixed(2):'Saved $'+v.toFixed(2)+', but it still isn\'t counted for '+asin+' — tell Claude which listing', !ok); });
   }).catch(e=>{ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">Not saved: '+esc(e.message)+'</span>'; });
 }
 // ---- FBA Inventory ----
