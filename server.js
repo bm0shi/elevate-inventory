@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'stock-cost-1101';
+const BUILD_ID = 'stock-cost-fix-1102';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7341,11 +7341,15 @@ app.get('/api/stock-costs', ownerAuth, async (req, res) => {
   const comps = {};
   for (const b of (await pool.query('SELECT bundle_asin, component_asin, COALESCE(qty,1)::int AS qty FROM inv_bundles')).rows)
     (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push(b);
+  // missingBottles: a duo with no cost → the bottles that need one (a duo is
+  // costed from its bottles, so that's where the cost gets typed).
+  const missingBottles = {};
   for (const [duo, cs] of Object.entries(comps)) {
     if (cost[duo] != null) continue;
     if (cs.every(c => cost[c.component_asin] != null)) cost[duo] = cs.reduce((t, c) => t + cost[c.component_asin] * c.qty, 0);
+    else missingBottles[duo] = cs.filter(c => cost[c.component_asin] == null).map(c => c.component_asin);
   }
-  res.json({ ok: true, cost });
+  res.json({ ok: true, cost, missingBottles });
 });
 
 // Direct pull (may time out on large catalogs — prefer the background job)

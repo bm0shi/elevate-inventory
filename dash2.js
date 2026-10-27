@@ -367,7 +367,7 @@
       window._fbaPrices ? Promise.resolve(null) : ownerApi('/api/cache/inventory_value').catch(() => null),
       window._stockCosts ? Promise.resolve(null) : ownerApi('/api/stock-costs').catch(() => null)
     ]);
-    if (sc && sc.ok) window._stockCosts = sc.cost;   // what each unit cost us, for "at cost" (owner 10/27)
+    if (sc && sc.ok) { window._stockCosts = sc.cost; window._stockCostBottles = sc.missingBottles || {}; }   // what each unit cost us, for "at cost" (owner 10/27)
     if (Array.isArray(prods)) products = prods;   // the page's live product list (fresh counts)
     if (fc && fc.cached && fc.data) {
       window._fbaData = Array.isArray(fc.data) ? fc.data : (fc.data.items || []);
@@ -436,7 +436,7 @@
     hv.textContent = '$0'; countUp(hv, hasV ? V.grandTotal : t.g, v => hasV ? '$' + n0(v) : n0(v));
     hs.innerHTML = '<b>' + n0(t.g) + '</b> units across the shelf, prep, transit and Amazon' + (hasV ? '' : ' · <span style="color:' + C.serious + '">no prices yet — values hidden</span>')
       // what the same units cost us (owner 10/27)
-      + (V.haveCosts ? '<div style="margin-top:6px">At cost: <b style="font-size:20px;color:' + C.ink + '">$' + n0(V.costTotal) + '</b> · what you paid for them' + (V.costMissing ? ' · <span style="color:' + C.serious + '">' + V.costMissing + ' listing' + (V.costMissing === 1 ? '' : 's') + ' with no cost yet left out</span>' : '') + '</div>' : '');
+      + (V.haveCosts ? '<div style="margin-top:6px">At cost: <b style="font-size:20px;color:' + C.ink + '">$' + n0(V.costTotal) + '</b> · what you paid for them' + '</div>' + (V.costMissing && typeof stockCostMissingHtml === 'function' ? '<div style="margin-top:4px;font-size:14px;max-height:340px;overflow:auto">' + stockCostMissingHtml(V) + '</div>' : '') : '');
     const segs = [['Available', t.w, V.availValue, C.blue, V.availCost], ['Pending prep', t.pp, V.pendingValue, C.orange, V.pendingCost], ['Prepped', t.pr, V.preppedValue, C.aqua, V.preppedCost], ['In transit', t.t, V.transitValue, C.yellow, V.transitCost], ['At FBA', t.f, V.fbaValue, C.magenta, V.fbaCost]];
     const tot = Math.max(1, t.g);
     document.getElementById('d2pipeat').textContent = inv.at ? 'Amazon counts ' + dShort(inv.at.toISOString().slice(0, 10)) : '';
@@ -1044,6 +1044,8 @@
 
   window.Dash2 = {
     render,
+    // a cost typed in the "no cost yet" list: redraw the value card with it
+    repaintStock() { inventory().then(paintInventory).catch(() => {}); },
     isOn() { return store.get('dashView') !== 'classic'; },
     setOn(on) { store.set('dashView', on ? 'new' : 'classic'); if (typeof loadDashboard === 'function') loadDashboard(); }
   };

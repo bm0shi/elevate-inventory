@@ -3080,8 +3080,35 @@ function loadFbaPrices(){
 // beside the retail values.
 function loadStockCosts(){
   if(window._stockCostsLoading) return Promise.resolve(); window._stockCostsLoading=true;
-  return ownerApi('/api/stock-costs').then(d=>{ window._stockCosts=(d&&d.ok)?d.cost:{}; })
-    .catch(()=>{ window._stockCosts={}; }).finally(()=>{ window._stockCostsLoading=false; if(window._fbaData){ renderFbaInv(); renderDashFba(); } });
+  return ownerApi('/api/stock-costs').then(d=>{ window._stockCosts=(d&&d.ok)?d.cost:{}; window._stockCostBottles=(d&&d.missingBottles)||{}; })
+    .catch(()=>{ window._stockCosts={}; }).finally(()=>{ window._stockCostsLoading=false; if(window._fbaData){ renderFbaInv(); renderDashFba(); if(window.Dash2&&Dash2.repaintStock) Dash2.repaintStock(); } });
+}
+// The listings left out of "at cost", each with a box to type what one unit
+// cost (owner 10/27: "where can i edit this at"). Saved through the same
+// manual cost as Admin → Data Sources → Enter missing costs (an invoice
+// replaces it when one arrives). A duo is costed from its bottles, so a duo
+// shows a box per bottle that has no cost.
+function stockCostMissingHtml(V){
+  const rows=(V.costMissingRows||[]).slice().sort((a,b)=>b.units-a.units);
+  const nm=a=>{ const p=(products||[]).find(x=>x.asin===a); return p?p.name:a; };
+  const box=(a,label)=>'<span style="display:inline-flex;gap:6px;align-items:center;margin:3px 10px 3px 0">'+(label?'<span class="hint">'+label+'</span>':'')
+    +'$<input id="sc_'+esc(a)+'" type="number" step="0.01" min="0.01" placeholder="per unit" style="width:96px;padding:5px 7px;border:1.5px solid #cfd8e3;border-radius:6px">'
+    +'<button class="mini" onclick="saveStockCost(\''+esc(a)+'\')">Save</button><span id="scs_'+esc(a)+'"></span></span>';
+  return '<details'+(window._scOpen?' open':'')+' ontoggle="window._scOpen=this.open"><summary style="cursor:pointer;color:#b7791f;font-weight:700">'+rows.length+' listing'+(rows.length===1?' with no cost yet is':'s with no cost yet are')+' left out · tap to add '+(rows.length===1?'its cost':'their costs')+'</summary>'
+    +'<div style="margin-top:6px">'+rows.map(r=>'<div style="padding:6px 0;border-top:1px solid #eef2f6;text-align:left"><div style="font-weight:700">'+amzLinkSized(r.asin, r.name||nm(r.asin))+' <span class="hint">· '+r.units.toLocaleString()+' units</span></div>'
+      +(r.bottles&&r.bottles.length?'<div class="hint">Duo: costed from its bottles. Add the bottle'+(r.bottles.length===1?'':'s')+':</div>'+r.bottles.map(b=>box(b, amzLinkSized(b, nm(b)))).join(''):box(r.asin,''))
+      +'</div>').join('')
+    +'<div class="hint" style="margin-top:6px">Same as Admin → Data Sources → Enter missing costs. A Cosmoprof invoice replaces your number when it comes in.</div></div></details>';
+}
+function saveStockCost(asin){
+  const el=document.getElementById('sc_'+asin), st=document.getElementById('scs_'+asin); if(!el) return;
+  const v=Number(el.value);
+  if(!(v>0 && v<=1000)){ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">enter $0.01–$1,000</span>'; return; }
+  if(st) st.innerHTML='<span class="hint">saving…</span>';
+  ownerApi('/api/finance/manual-cost',{method:'POST',body:JSON.stringify({asin, unit_cost:v})}).then(d=>{
+    if(!d || !d.ok){ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">'+esc((d&&d.error)||'Not saved')+'</span>'; return; }
+    toast('Cost saved: $'+v.toFixed(2)); window._scOpen=true; window._stockCosts=null; loadStockCosts();
+  }).catch(e=>{ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">Not saved: '+esc(e.message)+'</span>'; });
 }
 // ---- FBA Inventory ----
 function loadFbaCache(){
@@ -3297,11 +3324,11 @@ function fbaRowValues(rows){
   const cost=window._stockCosts;
   V.haveCosts=!!cost;
   if(cost){
-    V.availCost=0; V.pendingCost=0; V.preppedCost=0; V.transitCost=0; V.fbaCost=0; V.costMissing=0;
+    V.availCost=0; V.pendingCost=0; V.preppedCost=0; V.transitCost=0; V.fbaCost=0; V.costMissing=0; V.costMissingRows=[];
     for(const r of rows){
       const units=(r.warehouse||0)+(r.pending_prep||0)+(r.prepped||0)+(r.transit||0)+(r.fba_total||0);
       const c=cost[r.asin];
-      if(c==null){ if(units>0) V.costMissing++; continue; }
+      if(c==null){ if(units>0){ V.costMissing++; V.costMissingRows.push({asin:r.asin, name:r.name, units, bottles:(window._stockCostBottles||{})[r.asin]||null}); } continue; }
       V.availCost+=(r.warehouse||0)*c; V.pendingCost+=(r.pending_prep||0)*c; V.preppedCost+=(r.prepped||0)*c;
       V.transitCost+=(r.transit||0)*c; V.fbaCost+=(r.fba_total||0)*c;
     }
@@ -3328,7 +3355,7 @@ function fbaTotals(){
     '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div>'+$v(V&&V.transitValue, V&&V.transitCost)+'</div>'+
     '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div>'+$v(V&&V.fbaValue, V&&V.fbaCost)+'</div>'+
     '<div class="card" style="border-top:3px solid #002f36;background:#f9fafb"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL UNITS</div>'+$v(V&&V.grandTotal, V&&V.costTotal)+'</div></div>'
-    +(V&&V.haveCosts&&V.costMissing?'<div class="hint" style="margin-top:4px">At cost leaves out '+V.costMissing+' listing'+(V.costMissing===1?'':'s')+' with no product cost yet (set them in Product Profit).</div>':'');
+    +(V&&V.haveCosts&&V.costMissing?'<div style="margin-top:6px">'+stockCostMissingHtml(V)+'</div>':'');
   return { cards, V, hasV };
 }
 function renderFbaInv(){
