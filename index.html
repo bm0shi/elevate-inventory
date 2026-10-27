@@ -3076,6 +3076,13 @@ function loadFbaPrices(){
     window._fbaPrices=m;
   }).catch(()=>{ window._fbaPrices={}; }).finally(()=>{ window._fbaPricesLoading=false; if(window._fbaData){ renderFbaInv(); renderDashFba(); } });
 }
+// What each unit cost us (owner, /api/stock-costs), for the at-cost totals
+// beside the retail values.
+function loadStockCosts(){
+  if(window._stockCostsLoading) return Promise.resolve(); window._stockCostsLoading=true;
+  return ownerApi('/api/stock-costs').then(d=>{ window._stockCosts=(d&&d.ok)?d.cost:{}; })
+    .catch(()=>{ window._stockCosts={}; }).finally(()=>{ window._stockCostsLoading=false; if(window._fbaData){ renderFbaInv(); renderDashFba(); } });
+}
 // ---- FBA Inventory ----
 function loadFbaCache(){
   document.getElementById('fbaInvBody').innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading last saved data...</div>';
@@ -3285,24 +3292,43 @@ function fbaRowValues(rows){
     V.transitValue+=(r.transit||0)*pr; V.fbaValue+=(r.fba_total||0)*pr;
   }
   V.grandTotal=V.availValue+V.pendingValue+V.preppedValue+V.transitValue+V.fbaValue;
+  // The same units at what they cost us (owner 10/27). A row with units but
+  // no cost yet is counted in costMissing, never as $0.
+  const cost=window._stockCosts;
+  V.haveCosts=!!cost;
+  if(cost){
+    V.availCost=0; V.pendingCost=0; V.preppedCost=0; V.transitCost=0; V.fbaCost=0; V.costMissing=0;
+    for(const r of rows){
+      const units=(r.warehouse||0)+(r.pending_prep||0)+(r.prepped||0)+(r.transit||0)+(r.fba_total||0);
+      const c=cost[r.asin];
+      if(c==null){ if(units>0) V.costMissing++; continue; }
+      V.availCost+=(r.warehouse||0)*c; V.pendingCost+=(r.pending_prep||0)*c; V.preppedCost+=(r.prepped||0)*c;
+      V.transitCost+=(r.transit||0)*c; V.fbaCost+=(r.fba_total||0)*c;
+    }
+    V.costTotal=V.availCost+V.pendingCost+V.preppedCost+V.transitCost+V.fbaCost;
+  }
   return V;
 }
 function fbaTotals(){
   // units: a duo is one unit (owner's rule, as on Next batch)
   let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=(x.warehouse||0);tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=(x.transit||0);tot.f+=(x.fba_total||0);tot.g+=(x.grand_total||0);});
   if(!window._fbaPrices && !window._fbaPricesLoading) loadFbaPrices();
+  if(!window._stockCosts && !window._stockCostsLoading) loadStockCosts();
   // Retail value under each total (owner's ask): units × Amazon price, duo
   // pairs at the duo price (computeFbaValuation).
   const V = fbaRowValues(window._fbaData||[]);
   const hasV = V && V.havePrices!==0;
-  const $v = n => hasV ? '<div style="font-size:16px;font-weight:900;color:#1e8449;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">RETAIL VALUE</div>' : '';
+  // …and what the same units cost us, under it (owner 10/27).
+  const $c = n => V&&V.haveCosts ? '<div style="font-size:14px;font-weight:900;color:#0d4450;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">AT COST</div>' : '';
+  const $v = (n, c) => (hasV ? '<div style="font-size:16px;font-weight:900;color:#1e8449;margin-top:4px">$'+Math.round(n||0).toLocaleString()+'</div><div style="font-size:10px;color:#8a97a6;font-weight:700">RETAIL VALUE</div>' : '')+$c(c);
   const cards='<div class="cards" style="flex-wrap:wrap">'+
-    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div>'+$v(V&&V.availValue)+'</div>'+
-    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div>'+$v(V&&V.pendingValue)+'</div>':'')+
-    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div>'+$v(V&&V.preppedValue)+'</div>':'')+
-    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div>'+$v(V&&V.transitValue)+'</div>'+
-    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div>'+$v(V&&V.fbaValue)+'</div>'+
-    '<div class="card" style="border-top:3px solid #002f36;background:#f9fafb"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL UNITS</div>'+$v(V&&V.grandTotal)+'</div></div>';
+    '<div class="card" style="border-top:3px solid #1e8449"><div class="n">'+tot.w.toLocaleString()+'</div><div class="l">Available</div>'+$v(V&&V.availValue, V&&V.availCost)+'</div>'+
+    (tot.pp?'<div class="card" style="border-top:3px solid #7a4fb5"><div class="n">'+tot.pp.toLocaleString()+'</div><div class="l">Pending Prep</div>'+$v(V&&V.pendingValue, V&&V.pendingCost)+'</div>':'')+
+    (tot.pr?'<div class="card" style="border-top:3px solid #b7791f"><div class="n">'+tot.pr.toLocaleString()+'</div><div class="l">Prepped</div>'+$v(V&&V.preppedValue, V&&V.preppedCost)+'</div>':'')+
+    '<div class="card" style="border-top:3px solid #2563a8"><div class="n">'+tot.t.toLocaleString()+'</div><div class="l">In Transit</div>'+$v(V&&V.transitValue, V&&V.transitCost)+'</div>'+
+    '<div class="card"><div class="n">'+tot.f.toLocaleString()+'</div><div class="l">At FBA</div>'+$v(V&&V.fbaValue, V&&V.fbaCost)+'</div>'+
+    '<div class="card" style="border-top:3px solid #002f36;background:#f9fafb"><div class="n">'+tot.g.toLocaleString()+'</div><div class="l" style="font-weight:800">TOTAL UNITS</div>'+$v(V&&V.grandTotal, V&&V.costTotal)+'</div></div>'
+    +(V&&V.haveCosts&&V.costMissing?'<div class="hint" style="margin-top:4px">At cost leaves out '+V.costMissing+' listing'+(V.costMissing===1?'':'s')+' with no product cost yet (set them in Product Profit).</div>':'');
   return { cards, V, hasV };
 }
 function renderFbaInv(){

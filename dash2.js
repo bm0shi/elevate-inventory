@@ -361,11 +361,13 @@
 
   // ---------- data ----------
   async function inventory() {
-    const [prods, fc, iv] = await Promise.all([
+    const [prods, fc, iv, sc] = await Promise.all([
       api('/api/products').catch(() => null),
       window._fbaData ? Promise.resolve(null) : api('/api/cache/fba_inventory').catch(() => null),
-      window._fbaPrices ? Promise.resolve(null) : ownerApi('/api/cache/inventory_value').catch(() => null)
+      window._fbaPrices ? Promise.resolve(null) : ownerApi('/api/cache/inventory_value').catch(() => null),
+      window._stockCosts ? Promise.resolve(null) : ownerApi('/api/stock-costs').catch(() => null)
     ]);
+    if (sc && sc.ok) window._stockCosts = sc.cost;   // what each unit cost us, for "at cost" (owner 10/27)
     if (Array.isArray(prods)) products = prods;   // the page's live product list (fresh counts)
     if (fc && fc.cached && fc.data) {
       window._fbaData = Array.isArray(fc.data) ? fc.data : (fc.data.items || []);
@@ -432,12 +434,14 @@
     }
     const { t, V } = inv, hasV = V && V.havePrices;
     hv.textContent = '$0'; countUp(hv, hasV ? V.grandTotal : t.g, v => hasV ? '$' + n0(v) : n0(v));
-    hs.innerHTML = '<b>' + n0(t.g) + '</b> units across the shelf, prep, transit and Amazon' + (hasV ? '' : ' · <span style="color:' + C.serious + '">no prices yet — values hidden</span>');
-    const segs = [['Available', t.w, V.availValue, C.blue], ['Pending prep', t.pp, V.pendingValue, C.orange], ['Prepped', t.pr, V.preppedValue, C.aqua], ['In transit', t.t, V.transitValue, C.yellow], ['At FBA', t.f, V.fbaValue, C.magenta]];
+    hs.innerHTML = '<b>' + n0(t.g) + '</b> units across the shelf, prep, transit and Amazon' + (hasV ? '' : ' · <span style="color:' + C.serious + '">no prices yet — values hidden</span>')
+      // what the same units cost us (owner 10/27)
+      + (V.haveCosts ? '<div style="margin-top:6px">At cost: <b style="font-size:20px;color:' + C.ink + '">$' + n0(V.costTotal) + '</b> · what you paid for them' + (V.costMissing ? ' · <span style="color:' + C.serious + '">' + V.costMissing + ' listing' + (V.costMissing === 1 ? '' : 's') + ' with no cost yet left out</span>' : '') + '</div>' : '');
+    const segs = [['Available', t.w, V.availValue, C.blue, V.availCost], ['Pending prep', t.pp, V.pendingValue, C.orange, V.pendingCost], ['Prepped', t.pr, V.preppedValue, C.aqua, V.preppedCost], ['In transit', t.t, V.transitValue, C.yellow, V.transitCost], ['At FBA', t.f, V.fbaValue, C.magenta, V.fbaCost]];
     const tot = Math.max(1, t.g);
     document.getElementById('d2pipeat').textContent = inv.at ? 'Amazon counts ' + dShort(inv.at.toISOString().slice(0, 10)) : '';
     pipe.innerHTML = '<div class="d2-pipe">' + segs.filter(s => s[1] > 0).map((s, i) => '<i title="' + E(s[0] + ': ' + n0(s[1]) + ' units') + '" style="flex:' + s[1] / tot + ';background:' + s[3] + ';--d:' + (200 + i * 120) + 'ms"></i>').join('') + '</div>' +
-      '<div class="d2-legend">' + segs.map(s => '<div class="d2-lg"><div class="k"><i style="background:' + s[3] + '"></i>' + s[0] + '</div><div class="v" data-c="' + s[1] + '">0</div><div class="m">' + (hasV ? money(s[2]) + ' retail' : Math.round(100 * s[1] / tot) + '% of units') + '</div></div>').join('') + '</div>';
+      '<div class="d2-legend">' + segs.map(s => '<div class="d2-lg"><div class="k"><i style="background:' + s[3] + '"></i>' + s[0] + '</div><div class="v" data-c="' + s[1] + '">0</div><div class="m">' + (hasV ? money(s[2]) + ' retail' : Math.round(100 * s[1] / tot) + '% of units') + (V.haveCosts ? '<br>' + money(s[4]) + ' cost' : '') + '</div></div>').join('') + '</div>';
     pipe.querySelectorAll('.v[data-c]').forEach(el => countUp(el, +el.dataset.c, n0));
   }
   function paintTiles(d) {
