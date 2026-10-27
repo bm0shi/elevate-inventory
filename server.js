@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'top-card-1100';
+const BUILD_ID = 'stock-cost-1101';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7328,6 +7328,25 @@ async function runInventoryValuePull(onProgress) {
   await saveCache('inventory_value', out);
   return out;
 }
+
+// What one unit cost us, per listing, for the stock-at-cost totals beside
+// the retail values (owner 10/27: "our actual total cost for everything in
+// stock, in transit and at FBA"). The same product cost as Product Profit
+// (avg_cost, blended from Cosmoprof invoices); a duo with no cost of its own
+// is its bottles added up, and stays unknown if a bottle has none.
+app.get('/api/stock-costs', ownerAuth, async (req, res) => {
+  const p = await pool.query('SELECT asin, COALESCE(avg_cost, unit_cost) AS c FROM inv_products');
+  const cost = {};
+  for (const r of p.rows) if (r.c != null && Number(r.c) > 0) cost[r.asin] = Number(r.c);
+  const comps = {};
+  for (const b of (await pool.query('SELECT bundle_asin, component_asin, COALESCE(qty,1)::int AS qty FROM inv_bundles')).rows)
+    (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push(b);
+  for (const [duo, cs] of Object.entries(comps)) {
+    if (cost[duo] != null) continue;
+    if (cs.every(c => cost[c.component_asin] != null)) cost[duo] = cs.reduce((t, c) => t + cost[c.component_asin] * c.qty, 0);
+  }
+  res.json({ ok: true, cost });
+});
 
 // Direct pull (may time out on large catalogs — prefer the background job)
 app.get('/api/inventory-value', ownerAuth, async (req, res) => {
