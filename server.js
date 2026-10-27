@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'stock-cost-fix-1102';
+const BUILD_ID = 'stock-cost-fix2-1103';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7338,6 +7338,18 @@ app.get('/api/stock-costs', ownerAuth, async (req, res) => {
   const p = await pool.query('SELECT asin, COALESCE(avg_cost, unit_cost) AS c FROM inv_products');
   const cost = {};
   for (const r of p.rows) if (r.c != null && Number(r.c) > 0) cost[r.asin] = Number(r.c);
+  // A listing Amazon holds that isn't in our catalog has no inv_products row,
+  // so a cost typed for it (saved in inv_cost_history) never reached avg_cost
+  // and the box came back empty (owner 10/27). Read its lots directly, the
+  // same way recomputeCosts blends them (a MANUAL cost only until an invoice).
+  const lots = {};
+  for (const r of (await pool.query('SELECT asin, order_number, invoice_date, unit_cost, qty FROM inv_cost_history WHERE qty > 0')).rows)
+    if (cost[r.asin] == null) (lots[r.asin] = lots[r.asin] || []).push(r);
+  for (const [a, ls] of Object.entries(lots)) {
+    const real = ls.filter(l => l.order_number !== 'MANUAL');
+    const b = blendCosts(real.length ? real : ls);
+    if (b && b.avg > 0) cost[a] = b.avg;
+  }
   const comps = {};
   for (const b of (await pool.query('SELECT bundle_asin, component_asin, COALESCE(qty,1)::int AS qty FROM inv_bundles')).rows)
     (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push(b);
