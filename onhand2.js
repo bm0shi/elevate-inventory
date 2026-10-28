@@ -358,7 +358,7 @@
     const img = p.image ? '<img src="' + E(p.image) + '" alt="" loading="lazy" onerror="this.parentNode.innerHTML=\'<span>📦</span>\'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()">' : '<span>📦</span>';
     const name = typeof amzLinkSized === 'function' ? amzLinkSized(p.asin, p.name) : E(p.name || p.asin);
     const tag = (cls, label, val, onclick, title) => '<span class="oh2-tag ' + cls + '" onclick="' + onclick + '" title="' + E(title) + '">' + label + ' <b>' + E(val) + '</b></span>';
-    const cases = p.is_bundle ? '' : '<span class="c" onclick="setCaseQty(\'' + q1(p.asin) + '\')" title="Tap to change the case size">' + E(typeof casesText === 'function' ? casesText(available, caseQtyOf(p)) : '') + '<small>' + caseQtyOf(p) + ' per case ✎</small></span>';
+    const cases = p.is_bundle ? '' : '<span class="c" onclick="setCaseQty(\'' + q1(p.asin) + '\')" title="Tap to change the case size">' + E(typeof casesParts === 'function' ? casesParts(available, caseQtyOf(p)).main : '') + '<small>' + caseQtyOf(p) + ' per case ✎</small></span>';
     const shr = typeof shrinkNote === 'function' ? shrinkNote(p) : '';
     const alerts = (shr ? '<div class="oh2-alert crit"><b>⚠</b><div class="shr">' + shr + '</div></div>' : '') +
       (p.fba_amazon_asin ? '<div class="oh2-alert warn"><b>ⓘ</b><div>Amazon files this SKU under ASIN <b>' + E(p.fba_amazon_asin) + '</b>, not ' + E(p.asin) + ' — matched by SKU.</div></div>' : '');
@@ -390,7 +390,7 @@
     return '<tr><td><div class="nm">' + img + '<div class="t">' + (typeof amzLinkSized === 'function' ? amzLinkSized(p.asin, p.name) : E(p.name)) +
       '<div style="font-size:14px;color:' + K.muted + ';margin-top:2px">📍 ' + E(p.location || '—') + ' · <span class="oh2-mono" onclick="copyText(\'' + q1(p.asin) + '\',this)">' + E(p.asin) + '</span></div></div></div></td>' +
       '<td class="big" style="color:' + (available <= 0 ? K.crit : K.ink) + '">' + n0(available) + '</td>' +
-      '<td>' + (p.is_bundle ? '—' : E(typeof casesText === 'function' ? casesText(available, caseQtyOf(p)) : '')) + '</td>' +
+      '<td>' + (p.is_bundle ? '—' : E(typeof casesParts === 'function' ? casesParts(available, caseQtyOf(p)).main : '')) + '</td>' +
       '<td>' + n0(pend) + '</td><td>' + n0(prep) + '</td><td>' + n0(p.transit) + '</td><td>' + n0(lt.at) + '</td>' +
       '<td title="On hand (pending prep and prepped included) + on the way + at Amazon"><div class="big" style="color:' + K.brand + '">' + n0(grandTotal(p)) + '</div><div style="font-size:11px;font-weight:700;color:' + K.muted + ';letter-spacing:.3px">(GRAND TOTAL)</div></td>' +
       '<td>' + coverBadge(cover) + '</td><td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
