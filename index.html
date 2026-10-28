@@ -4492,7 +4492,10 @@ function sdSplit(single, duo){
   const b=[]; if(single) b.push(single+' single'); if(duo) b.push(duo+' in duos');
   return b.join(' · ');
 }
-function caseQtyOf(p){ return (p && p.case_qty>0) ? p.case_qty : 12; }
+// Bottles come 12 to a case; a duo case holds 6 duos (owner 10/28: "DUOS ARE
+// ALWAYS 6 PER CASE"). Either can be changed per product (case_qty).
+function isDuoP(p){ return !!(p && (p.is_bundle || p.is_duo)); }
+function caseQtyOf(p){ return (p && p.case_qty>0) ? p.case_qty : (isDuoP(p) ? 6 : 12); }
 // Cases to grab, said in words (owner 10/28: "21 CASES + 9 · 11/CASE" was
 // confusing): main = "21 full cases + 9 loose", sub = "11 per case". The case
 // size is always named, so two bottles that read differently for the same
@@ -4505,15 +4508,17 @@ function casesParts(n, per){
   return { main, sub: per+' per case' };
 }
 function casesText(n, per){ const x=casesParts(n, per); return x.main+' · '+x.sub; }
-function setCaseQty(asin){
-  const p=(products||[]).find(x=>x.asin===asin)||{};
-  const v=prompt('Bottles per case for:\n'+String(p.name||asin).slice(0,70)+'\n\n(Usually 12.)', String(caseQtyOf(p)));
+// duo: true when asin is a duo and it isn't in the product list yet
+function setCaseQty(asin, duo){
+  const p=(products||[]).find(x=>x.asin===asin)||{asin, is_bundle:!!duo};
+  const d=isDuoP(p);
+  const v=prompt((d?'Duos per case for:':'Bottles per case for:')+'\n'+String(p.name||asin).slice(0,70)+'\n\n(Usually '+(d?6:12)+'.)', String(caseQtyOf(p)));
   if(v===null) return;
   const n=parseInt(v,10);
   if(!(n>=1 && n<=500)){ toast('Enter 1–500',true); return; }
   api('/api/products/'+encodeURIComponent(asin)+'/case-qty',{method:'POST',body:JSON.stringify({caseQty:n})}).then(d=>{
     if(!d || d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
-    toast(n+' per case saved'); loadProducts();
+    toast(n+' per case saved'); loadProducts(); if(typeof loadPendingPrep==='function' && document.getElementById('pendingprep')) loadPendingPrep();
   }).catch(()=>toast('Not saved — connection problem',true));
 }
 // Prep window: cases ↔ quantity, kept in step.
@@ -4702,7 +4707,7 @@ function renderNextBatch(){
       +'<th style="width:190px"></th></tr></thead><tbody>'
       +rowsN.map(r=>{ const x=r.x;
         return '<tr><td style="'+td+';text-align:left;line-height:1.3">'+(x.is_duo?'<b style="color:#c0392b;font-size:11px">DUO</b> ':'')+esc(x.name||x.asin)+'</td>'
-        +'<td style="'+td+';font-weight:800">'+x.qty+'<div style="font-size:11px;font-weight:700;color:#0d4450">'+casesParts(x.qty, caseQtyOf(x)).main+(x.is_duo?' of each':'')+'<div style="font-weight:600;color:#5a6472">'+casesParts(x.qty, caseQtyOf(x)).sub+'</div></div></td><td style="'+td+'">'+esc(x.location||'—')+'</td>'
+        +'<td style="'+td+';font-weight:800">'+x.qty+'<div style="font-size:11px;font-weight:700;color:#0d4450">'+casesParts(x.qty, caseQtyOf(x)).main+'<div style="font-weight:600;color:#5a6472">'+caseQtyOf(x)+(x.is_duo?' duos':'')+' per case</div></div></td><td style="'+td+'">'+esc(x.location||'—')+'</td>'
         +'<td style="'+td+';font-weight:700;color:#2563a8">'+(r.total==null?'—':r.total.toLocaleString())+'</td>'
         +'<td style="'+td+';font-weight:800;color:#008296">'+youSoldHtml(x.asin)+'</td>'
         +'<td style="'+td+';font-weight:700;color:#7a4fb5">'+ssAvgHtml(x.asin)+'</td>'
@@ -6223,7 +6228,7 @@ function renderPrepJobs(d, b, pre){
           <span style="font-size:10px;font-weight:800;letter-spacing:0.3px;color:${inPlan?'#1e8449':'#8a97a6'};text-transform:uppercase">${inPlan?'✓ In Plan':'In Plan?'}</span>
         </label></div>`;
     const divider='';   // placed between groups by the loop below, never inside a split pair
-    return `${divider}<div class="pcard ppcard${x.prelabel?' ppPre':''}" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#0d4450':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div>${x.is_duo?((x.components||[]).length?`<div style="margin-top:6px;font-size:13px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;line-height:1.3">${(()=>{ const u=[...new Set(x.components.map(c=>casesText(x.qty*(c.per||1), caseQtyOf(c))))]; const cp=casesParts(x.qty*(x.components[0].per||1), caseQtyOf(x.components[0])); return u.length===1?'📦 '+cp.main.toUpperCase()+'<div style="font-size:10px;font-weight:700;color:#cfe3e6">OF EACH BOTTLE · '+cp.sub.toUpperCase()+'</div>':'📦 CASES<div style="font-size:10px;font-weight:700;color:#cfe3e6">DIFFERENT FOR EACH BOTTLE ↓</div>'; })()}</div>`:''):`<div style="margin-top:6px;font-size:14px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;white-space:nowrap;line-height:1.3">📦 ${casesParts(x.qty, caseQtyOf(x)).main.toUpperCase()}<div style="font-size:10px;font-weight:700;color:#cfe3e6">${casesParts(x.qty, caseQtyOf(x)).sub.toUpperCase()}</div></div>`}<button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
+    return `${divider}<div class="pcard ppcard${x.prelabel?' ppPre':''}" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#0d4450':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div>${x.is_duo?((x.components||[]).length?`<div style="margin-top:6px;font-size:13px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;line-height:1.3">${(()=>{ const cp=casesParts(x.qty, caseQtyOf(x)); return '<span onclick="setCaseQty(\''+esc(x.asin)+'\',true)" title="Tap to change duos per case" style="cursor:pointer">📦 '+cp.main.toUpperCase()+'<div style="font-size:10px;font-weight:700;color:#cfe3e6">'+caseQtyOf(x)+' DUOS PER CASE ✎</div></span>'; })()}</div>`:''):`<div style="margin-top:6px;font-size:14px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;white-space:nowrap;line-height:1.3;cursor:pointer" onclick="setCaseQty('${esc(x.asin)}')" title="Tap to change bottles per case">📦 ${casesParts(x.qty, caseQtyOf(x)).main.toUpperCase()}<div style="font-size:10px;font-weight:700;color:#cfe3e6">${casesParts(x.qty, caseQtyOf(x)).sub.toUpperCase()} ✎</div></div>`}<button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   };
   // "Not started" divider: after the card (or split pair) holding the last
   // job in progress. It used to be inserted before that card, and inside a

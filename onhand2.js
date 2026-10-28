@@ -347,10 +347,11 @@
         '<td><a href="https://www.amazon.com/dp/' + encodeURIComponent(pt.bundle_asin) + '" target="_blank" rel="noopener" class="oh2-mono" style="text-decoration:none">' + E(pt.bundle_asin) + '</a></td>' +
         '<td>' + (d.fnsku ? '<span class="oh2-mono" style="color:' + K.ink + '" onclick="copyText(\'' + q1(d.fnsku) + '\',this)" title="Copy FNSKU">' + E(d.fnsku) + '</span>' : '<span style="color:#a8b4be">—</span>') + '</td>' +
         '<td>' + (d.monthlySold != null ? '~' + n0(d.monthlySold) : '—') + '</td>' +
-        '<td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td></tr>';
+        '<td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
+        '<td><span onclick="setCaseQty(\'' + q1(pt.bundle_asin) + '\',true)" title="Tap to change duos per case" style="cursor:pointer;font-weight:800;color:' + K.brand + '">' + (typeof caseQtyOf === 'function' ? caseQtyOf(Object.assign({ is_bundle: true }, d)) : 6) + ' ✎</span></td></tr>';
     }).join('');
     return '<details class="oh2-more" open data-k="duo-' + E(p.asin) + '"><summary>Pairs into duos <span class="cnt">· ' + p.partners.length + ' duo' + (p.partners.length === 1 ? '' : 's') + '</span></summary>' +
-      '<table class="oh2-duo"><thead><tr><th>Partner bottle</th><th>Partner on hand</th><th>Duo ASIN</th><th>Duo FNSKU</th><th>Sold / mo</th><th>3P avg / mo</th></tr></thead><tbody>' + rows + '</tbody></table></details>';
+      '<table class="oh2-duo"><thead><tr><th>Partner bottle</th><th>Partner on hand</th><th>Duo ASIN</th><th>Duo FNSKU</th><th>Sold / mo</th><th>3P avg / mo</th><th>Duos / case</th></tr></thead><tbody>' + rows + '</tbody></table></details>';
   }
   function card(p, i) {
     const o = p.onhand || 0, t = p.transit || 0, pend = p.pending_prep || 0, prep = p.prepped || 0;
