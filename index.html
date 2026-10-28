@@ -1918,7 +1918,7 @@ function prodRender(){
         +'<span style="margin-left:auto;font-weight:800;font-size:14px">'+bx.length+' boxes · '+bx.reduce((t,b)=>t+b.units,0)+' units · '+f1(p.weight)+' lb · ~'+f1(p.height)+' in</span></div>';
       if(!open) continue;
       h+='<table style="width:100%;border-collapse:collapse;font-size:13.5px;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('BOX #')+prodTh('PRODUCT','left')+prodTh('FNSKU','left')+prodTh('UNITS')+prodTh('PRODUCT WEIGHT')+prodTh('BOX SIZE (IN)')+prodTh('REPRINT BOX')+'</tr>'
-        +bx.sort((x,y)=>x.box_no-y.box_no).map(b=>'<tr>'+prodTd(b.box_no,'center','font-weight:900;font-size:16px')
+        +bx.sort((x,y)=>x.box_no-y.box_no).map(b=>'<tr data-bx-asins="'+esc(b.items.map(i=>i.asin).join(' '))+'"'+(_prod.hilite&&b.items.some(i=>i.asin===_prod.hilite)?' style="background:#e9f7ec;outline:2px solid #1e8449"':'')+'>'+prodTd(b.box_no,'center','font-weight:900;font-size:16px')
           +prodTd(b.items.map(i=>esc(String(i.name||i.asin))).join('<br>'),'left','min-width:240px;line-height:1.3')
           +prodTd(b.items.map(i=>esc(i.fnsku||'')).join('<br>'),'left','font-family:monospace;font-weight:700;white-space:nowrap')
           +prodTd(b.items.map(i=>i.qty).join('<br>'),'center','font-weight:800')
@@ -1948,6 +1948,19 @@ function prodRender(){
   if(_prod.sel) prodPreview();
   const sc=document.getElementById('prodScan'); if(sc&&!_prod.sel) sc.focus();
 }
+// [1,2,3,5,7,8] → "1–3, 5, 7–8"
+function prodRanges(nums){
+  const a=[...new Set(nums)].sort((x,y)=>x-y), out=[];
+  for(let i=0;i<a.length;i++){ let j=i; while(j+1<a.length&&a[j+1]===a[j]+1) j++; out.push(j>i?a[i]+'–'+a[j]:String(a[i])); i=j; }
+  return out.join(', ');
+}
+// Open the pallets holding this product's boxes, light its rows and scroll to the first.
+function prodShowBoxes(asin){
+  const v=_prod.v; if(!v) return;
+  const pals=[...new Set(v.boxes.filter(b=>b.status==='closed'&&b.items.some(i=>i.asin===asin)).map(b=>b.pallet_no||1))];
+  _prod.openPallets=[...new Set((_prod.openPallets||[]).concat(pals))]; _prod.hilite=asin; prodRender();
+  setTimeout(()=>{ const r=document.querySelector('tr[data-bx-asins~="'+asin+'"]'); if(r) r.scrollIntoView({behavior:'smooth',block:'center'}); },50);
+}
 function prodTogglePallet(n){ const o=_prod.openPallets||[]; _prod.openPallets=o.includes(n)?o.filter(x=>x!==n):o.concat([n]); prodRender(); }
 // Amazon's date for this product on this shipment always wins (the box
 // info is refused otherwise). Remembered per shipment AND product: it used
@@ -1969,14 +1982,14 @@ function prodBoxSplit(left, per){
     sub: full ? (full+' box'+(full===1?'':'es')+' of '+per+(last?' + 1 box of '+last:'')) : '1 box of '+last };
 }
 function prodScan(code){
-  code=String(code||'').trim(); if(!code) return;
+  code=String(code||'').trim(); if(!code) return; _prod.hilite=null;
   api('/api/pack/product/'+encodeURIComponent(code)).then(d=>{
     if(!d||d.ok===false){ scanError(); toast((d&&d.error)||'Unknown barcode',true); const sc=document.getElementById('prodScan'); if(sc){ sc.value=''; sc.focus(); } return; }
     scanFeedback(); _prod.sel=d.product; prodRender();
     const f=document.getElementById(d.product.case_qty?'prodCount':'prodPer'); if(f){ f.focus(); f.select(); }
   }).catch(e=>{ scanError(); toast('Lookup failed: '+e.message,true); });
 }
-function prodPick(asin, count){ api('/api/pack/product/'+encodeURIComponent(asin)).then(d=>{ if(d&&d.ok){ _prod.sel=Object.assign(d.product,{_count:count||1}); prodRender(); window.scrollTo({top:document.getElementById('prodScan').getBoundingClientRect().top+window.scrollY-80,behavior:'smooth'}); } }); }
+function prodPick(asin, count){ _prod.hilite=null; api('/api/pack/product/'+encodeURIComponent(asin)).then(d=>{ if(d&&d.ok){ _prod.sel=Object.assign(d.product,{_count:count||1}); prodRender(); window.scrollTo({top:document.getElementById('prodScan').getBoundingClientRect().top+window.scrollY-80,behavior:'smooth'}); } }); }
 function prodForm(){
   const g=id=>Number(document.getElementById(id).value);
   return {per:parseInt(document.getElementById('prodPer').value)||0, count:parseInt(document.getElementById('prodCount').value)||0, w:g('prodW'), L:g('prodL'), W:g('prodWd'), H:g('prodH'), exp:(document.getElementById('prodExp').value||'').trim()};
@@ -1986,10 +1999,23 @@ function prodPreview(){
   const f=prodForm(), v=_prod.v, S=v.settings, st=v.pallets[v.currentPallet], P=_prod.sel;
   { const r0=v.plan.find(r=>r.asin===P.asin), bl=document.getElementById('prodBxLeft'), bs=document.getElementById('prodBxLeftSub');
     if(r0&&r0.left&&bl&&f.per>0){ const s=prodBoxSplit(r0.left,f.per); bl.textContent=s.big; if(bs) bs.textContent=s.sub; } }
+  const row=v.plan.find(r=>r.asin===P.asin);
+  // Fully packed (owner 10/28): a green "done" with where its boxes are, not the red "more than the shipment needs".
+  const full=row&&row.planned>0&&!row.left;
+  if(full){
+    const mine=v.boxes.filter(b=>b.status==='closed'&&b.items.some(i=>i.asin===P.asin)), byPal={};
+    for(const b of mine) (byPal[b.pallet_no||1]=byPal[b.pallet_no||1]||[]).push(b.box_no);
+    const where=Object.keys(byPal).map(Number).sort((a,b)=>a-b).map(n=>'<b>Pallet '+n+'</b>: box'+(byPal[n].length===1?' ':'es ')+prodRanges(byPal[n])).join(' · ');
+    el.innerHTML='<div style="margin-top:8px;padding:14px 16px;border-radius:10px;background:#e9f7ec;border:2px solid #1e8449;color:#14532d">'
+      +'<div style="font-size:20px;font-weight:900">✅ FULLY PACKED · all '+row.planned.toLocaleString()+' built</div>'
+      +(where?'<div style="margin-top:6px;font-size:14px">'+where+'</div>':'')
+      +(mine.length?'<button class="action" onclick="prodShowBoxes(\''+esc(P.asin)+'\')" style="margin-top:10px;background:#1e8449">📦 Show its boxes below (to reprint a label) ↓</button>':'')+'</div>';
+    const b0=document.getElementById('prodMakeBtn'); if(b0){ b0.textContent='Build an extra box anyway (more than the shipment needs)'; b0.style.background='#8a97a6'; }
+    return;
+  }
   if(!(f.per>0&&f.count>0&&f.w>0&&f.L>0&&f.W>0&&f.H>0)){ el.innerHTML='<span class="hint">Fill in units per box, boxes, unit weight and box size — they\'re saved for next time.</span>'; return; }
   const bw=Math.round(f.w*f.per*100)/100, fit=prodFit(st,{weight_lb:bw,units:f.per,len:f.L,wid:f.W,hgt:f.H},S);
   const wAfter=(st.boxes?st.weight:S.palletLb)+fit.packed*f.count, hAfter=fit.hAfter(f.count);
-  const row=v.plan.find(r=>r.asin===P.asin);
   let t='<b>'+f.count+' box'+(f.count===1?'':'es')+' × '+f.per+' = '+(f.count*f.per)+' units</b> · '+bw+' lb of product per box · pallet '+v.currentPallet+' after: <b>'+f1(wAfter)+' / '+S.limitLb+' lb</b>, ~<b>'+f1(hAfter)+' / '+S.maxHeightIn+' in</b>';
   if(f.count>fit.n) t+=prodWarn('⛔ ONLY '+fit.n+' FIT ON PALLET '+v.currentPallet+' ('+fit.limitedBy+' limit). You\'ll be asked where the rest go.',true);
   else if(wAfter/S.limitLb*100>=S.warnPct||hAfter/S.maxHeightIn*100>=S.warnPct) t+=prodWarn('⚠️ PALLET '+v.currentPallet+' WILL BE NEAR ITS LIMIT after these.');
