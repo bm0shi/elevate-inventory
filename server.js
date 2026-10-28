@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'cases-words-1105';
+const BUILD_ID = 'case-qty-fix-1106';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -892,6 +892,26 @@ async function initDb() {
       }
     } catch (e) { console.error('[Costs] regular cost re-blend failed (non-fatal):', e.message); }
   } catch(e) { console.error('cost history migration skipped:', e.message); }
+
+  // One-time repair (owner 10/28): put back case sizes an odd box overwrote,
+  // using the size most of the product's built boxes had (pack.usualCaseQty).
+  try {
+    const done = await pool.query("SELECT 1 FROM inv_cache WHERE cache_key='case_qty_repair_1028'");
+    if (!done.rows.length) {
+      const qtys = {};
+      for (const r of (await pool.query('SELECT items FROM inv_pack_boxes')).rows) {
+        const it = Array.isArray(r.items) ? r.items : [];
+        if (it.length === 1 && it[0] && it[0].asin) (qtys[it[0].asin] = qtys[it[0].asin] || []).push(Number(it[0].qty) || 0);
+      }
+      const changed = [];
+      for (const p of (await pool.query('SELECT asin, case_qty FROM inv_products WHERE asin = ANY($1)', [Object.keys(qtys)])).rows) {
+        const fix = pack.usualCaseQty(qtys[p.asin], p.case_qty);
+        if (fix) { await pool.query('UPDATE inv_products SET case_qty=$2 WHERE asin=$1', [p.asin, fix]); changed.push({ asin: p.asin, from: p.case_qty, to: fix }); }
+      }
+      await pool.query("INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('case_qty_repair_1028', $1, now()) ON CONFLICT (cache_key) DO NOTHING", [JSON.stringify(changed)]);
+      console.log('[Pack] case sizes put back from built boxes:', JSON.stringify(changed));
+    }
+  } catch (e) { console.error('[Pack] case size repair failed (non-fatal):', e.message); }
 
   // ---- Per-shipment inbound costs (idempotent) ----
   // Amazon shows freight and placement fees when you BUILD a shipment, then
@@ -2115,9 +2135,12 @@ app.post('/api/pack/boxes', auth, async (req, res) => {
     }
     return { status: 200, body: { ok: true, boxes: made, units: per * count, weight: boxW } };
   });
-  // Remember this product's case qty, size and weight for next time.
+  // Remember this product's case qty, size and weight for next time. The case
+  // qty and box size only fill a blank: one odd box (11 in a 12-case) used to
+  // overwrite them, and every card then read "11 per case" (owner 10/28).
+  // Change a case size on purpose with On Hand's "per case ✎".
   if (out.status === 200 && b.remember !== false) {
-    await pool.query(`UPDATE inv_products SET case_qty=$2, case_len=$3, case_wid=$4, case_hgt=$5,
+    await pool.query(`UPDATE inv_products SET case_qty=COALESCE(case_qty,$2), case_len=COALESCE(case_len,$3), case_wid=COALESCE(case_wid,$4), case_hgt=COALESCE(case_hgt,$5),
         unit_weight_src = CASE WHEN unit_weight_lb IS DISTINCT FROM $6::numeric THEN 'manual' ELSE unit_weight_src END, unit_weight_lb=$6 WHERE asin=$1`,
       [p.asin, per, L, W, H, w]);
   }
