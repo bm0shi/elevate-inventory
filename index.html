@@ -1838,7 +1838,7 @@ function prodRender(){
       const fi='box-sizing:border-box;height:48px;font-size:20px;font-weight:800;padding:6px 4px;margin:0;text-align:center';
       const fld=(label,input)=>'<div style="display:flex;flex-direction:column;align-items:center;justify-content:flex-end">'+'<span style="'+fl+'">'+label+'</span>'+input+'</div>';
       const num=(id,val,step,w)=>'<input id="'+id+'" type="number" min="0" step="'+step+'" value="'+val+'" oninput="prodPreview()" style="'+fi+';width:'+w+'px">';
-      const per0=P.case_qty||(row&&row.caseQty)||0, pct=row&&row.planned?Math.min(100,Math.round(row.produced/row.planned*100)):0;
+      const per0=P.case_qty||(row?prodPerBox(row):0), pct=row&&row.planned?Math.min(100,Math.round(row.produced/row.planned*100)):0;
       const tile=(label,val,color,sub,id)=>'<div style="background:#fff;border:1px solid #dfe7ef;border-radius:12px;padding:10px 12px;text-align:center;box-shadow:0 1px 2px rgba(15,27,45,0.06)"><div style="font-size:11px;font-weight:900;letter-spacing:0.4px;color:#5a6472">'+label+'</div><div'+(id?' id="'+id+'"':'')+' style="font-size:30px;font-weight:900;line-height:1.15;color:'+(color||'#1f2733')+'">'+val+'</div>'+(sub?'<div'+(id?' id="'+id+'Sub"':'')+' style="font-size:11px;color:#5a6472;font-weight:700">'+sub+'</div>':'')+'</div>';
       h+='<div style="display:flex;gap:20px;margin-top:16px;padding:16px;border-radius:16px;background:linear-gradient(135deg,#f2fafa 0%,#eef3fb 100%);border:1px solid #d3e4e4;align-items:stretch;flex-wrap:wrap">'
         +(P.image?'<div style="background:#fff;border-radius:14px;padding:8px;box-shadow:0 2px 8px rgba(15,27,45,0.10);align-self:flex-start"><img src="'+esc(P.image)+'" onerror="this.parentNode.style.display=\'none\'" onmouseenter="picZoom(this,520)" onmouseleave="picZoomOff()" style="width:170px!important;height:170px!important;object-fit:contain;display:block;cursor:zoom-in"></div>':'')
@@ -1849,12 +1849,12 @@ function prodRender(){
           +'<span style="background:#fff;color:#002f36;border:2px solid #002f36;border-radius:8px;padding:4px 12px;font-size:13px;font-weight:800">ASIN <span style="font-family:monospace;font-size:18px;margin-left:4px">'+esc(P.asin)+'</span></span></div>'
         +(row?'<div style="display:grid;grid-template-columns:repeat(4,minmax(110px,1fr));gap:10px">'
             +tile('SHIPMENT QTY',row.planned)+tile('✅ BUILT',row.produced,'#1e8449')+tile('QTY LEFT',row.left||'✓',row.left?'#c0392b':'#1e8449')
-            +tile('BOXES LEFT',!row.left?'✓':per0?Math.ceil(row.left/per0):'—',row.left?'#c0392b':'#1e8449',!row.left?'done':per0?per0+' per box'+(row.left%per0?' · last box '+(row.left%per0):''):'enter units per box','prodBxLeft')+'</div>'
+            +tile('BOXES LEFT',!row.left?'✓':per0?prodBoxSplit(row.left,per0).big:'—',row.left?'#c0392b':'#1e8449',!row.left?'done':per0?prodBoxSplit(row.left,per0).sub:'enter units per box','prodBxLeft')+'</div>'
           +'<div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:800;color:#5a6472;margin-bottom:4px"><span>BUILT</span><span>'+pct+'%</span></div><div style="height:12px;background:#dfe7ef;border-radius:6px;overflow:hidden"><div style="height:100%;width:'+pct+'%;background:linear-gradient(90deg,#1e8449,#27ae60)"></div></div></div>'
           :(v.plan.length?prodWarn('⛔ NOT IN THIS AMAZON SHIPMENT — Amazon may refuse it.',true):''))
         +'</div></div>'
         +'<div style="display:flex;gap:28px;margin-top:18px;align-items:flex-end;justify-content:center;flex-wrap:wrap;padding:14px 10px;border-radius:14px;background:#f7f9fb;border:1px solid #e2e8f0">'
-        +fld('UNITS PER BOX',num('prodPer',P.case_qty||'',1,100))
+        +fld('UNITS PER BOX',num('prodPer',P.case_qty||per0||'',1,100))
         +fld('TOTAL BOXES',num('prodCount',P._count||1,1,100))
         +fld('UNIT WEIGHT (LB)<br><span style="font-weight:600;color:#5a6472">'+(P.unit_weight_src==='manual'?'typed in':P.unit_weight_src==='amazon'?'from Amazon':'not on file yet')+'</span>',num('prodW',P.unit_weight_lb||'',0.01,120))
         +fld('BOX SIZE (IN)<div style="display:flex;gap:6px;margin-top:4px">'+['L','W','H'].map(x=>'<span style="width:74px;text-align:center">'+x+'</span>').join('')+'</div>','<div style="display:flex;gap:6px">'+num('prodL',P.case_len||'',0.1,74)+num('prodWd',P.case_wid||'',0.1,74)+num('prodH',P.case_hgt||'',0.1,74)+'</div>')
@@ -1867,10 +1867,11 @@ function prodRender(){
   // Plan
   if(v.plan.length){
     // Boxes left: from the units per box saved for the product; the last box may be a partial.
-    const bxN=r=>r.left&&r.caseQty>0?Math.ceil(r.left/r.caseQty):0;
-    const bxLeft=r=>!r.left?'✓':!(r.caseQty>0)?'<span class="hint" title="Build a box of it once and its units per box are saved">—</span>':bxN(r)+(r.left%r.caseQty?'<div class="hint" style="font-size:11px">last box '+(r.left%r.caseQty)+'</div>':'');
+    const bxN=r=>r.left?Math.ceil(r.left/prodPerBox(r)):0;
+    const bxLeft=r=>{ if(!r.left) return '✓';
+      const per=prodPerBox(r), s=prodBoxSplit(r.left, per); return (s.full?'<div style="white-space:nowrap">'+s.full+' box'+(s.full===1?'':'es')+' of '+per+'</div>':'')+(s.last?'<div style="white-space:nowrap;font-size:12.5px;color:#b45309">'+(s.full?'+ ':'')+'1 box of '+s.last+'</div>':''); };
     const tot=k=>v.plan.reduce((n,r)=>n+(r[k]||0),0), totP=tot('planned'), totB=tot('produced'), totL=tot('left');
-    const unknownBx=v.plan.some(r=>r.left&&!(r.caseQty>0)), totBx=v.plan.reduce((n,r)=>n+bxN(r),0);
+    const totBx=v.plan.reduce((n,r)=>n+bxN(r),0);
     const selA=_prod.sel&&_prod.sel.asin;
     // The row picked for Build Boxes gets a heavy outline so it's obvious which product is up.
     const selTd=(i,last)=>'border-top:3px solid #008296;border-bottom:3px solid #008296;'+(i===0?'border-left:3px solid #008296;':'')+(last?'border-right:3px solid #008296;':'');
@@ -1887,12 +1888,12 @@ function prodRender(){
         +cell(r,3,r.produced,'center','font-weight:800;color:'+(r.produced?'#1e8449':'#1f2733'))
         +cell(r,4,(r.left||'✓')+(r.over?' <span style="color:#c0392b">+'+r.over+' over</span>':''),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
         +cell(r,5,bxLeft(r),'center','font-weight:800;color:'+(r.left?'#c0392b':'#1e8449'))
-        +cell(r,6,r.caseQty||'—')+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
+        +cell(r,6,r.caseQty>0?r.caseQty:'<span style="color:#8a97a6" title="Not saved yet: the usual '+(r.isDuo?'6 duos':'12 bottles')+' per case. Building its first box saves the real count.">'+prodPerBox(r)+'</span>')+cell(r,7,r.len?r.len+'×'+r.wid+'×'+r.hgt:'—','center','white-space:nowrap')+cell(r,8,r.unitWeight||'—')+'</tr>').join('')
       +'<tr style="background:#f6f8fa">'+prodTd('<b style="font-size:15px">TOTAL</b>','left','border-top:2px solid #1f2733')+prodTd('','left','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px">'+totP.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px;color:#1e8449">'+totB.toLocaleString()+'</b>','center','border-top:2px solid #1f2733')
         +prodTd('<b style="font-size:16px;color:'+(totL?'#c0392b':'#1e8449')+'">'+(totL?totL.toLocaleString():'✓')+'</b>','center','border-top:2px solid #1f2733')
-        +prodTd('<b style="font-size:16px;color:'+(totL?'#c0392b':'#1e8449')+'">'+(totL?totBx+(unknownBx?'+':''):'✓')+'</b>'+(unknownBx?'<div class="hint" style="font-size:11px">+ products without units per box</div>':''),'center','border-top:2px solid #1f2733')
+        +prodTd('<b style="font-size:16px;color:'+(totL?'#c0392b':'#1e8449')+'">'+(totL?totBx.toLocaleString()+' box'+(totBx===1?'':'es'):'✓')+'</b>','center','border-top:2px solid #1f2733')
         +prodTd('','center','border-top:2px solid #1f2733')+prodTd('','center','border-top:2px solid #1f2733')+prodTd('','center','border-top:2px solid #1f2733')+'</tr>'
       +'</table></div>';
   }
@@ -1955,6 +1956,18 @@ function prodExpDefault(row){
   if(row&&row.expiration){ const d=String(row.expiration).slice(0,10).split('-'); if(d.length===3) return d[1]+'/'+d[2]+'/'+d[0]; }
   try{ const m=JSON.parse(localStorage_get('prodExp2')||'{}'); return (row&&m[prodSid()+'|'+row.asin])||''; }catch(e){ return ''; }
 }
+// Boxes still to build, said plainly (owner 10/28: "61 boxes left · last
+// box 4" confused the floor): full boxes at the usual count, then the one
+// short box. big/sub feed the Build Boxes tile: "60 × 12" / "+ 1 box of 4".
+// Units per box: the product's saved size, else the usual one (a duo case
+// holds 6, bottles 12, owner 10/28), so no product shows "—" boxes left.
+function prodPerBox(r){ return r&&r.caseQty>0 ? r.caseQty : (r&&r.isDuo ? 6 : 12); }
+function prodBoxSplit(left, per){
+  const full=Math.floor(left/per), last=left%per;
+  return { full, last,
+    big: full ? full+' × '+per : '1 × '+last,
+    sub: full ? (full+' box'+(full===1?'':'es')+' of '+per+(last?' + 1 box of '+last:'')) : '1 box of '+last };
+}
 function prodScan(code){
   code=String(code||'').trim(); if(!code) return;
   api('/api/pack/product/'+encodeURIComponent(code)).then(d=>{
@@ -1972,7 +1985,7 @@ function prodPreview(){
   const el=document.getElementById('prodPrev'); if(!el) return;
   const f=prodForm(), v=_prod.v, S=v.settings, st=v.pallets[v.currentPallet], P=_prod.sel;
   { const r0=v.plan.find(r=>r.asin===P.asin), bl=document.getElementById('prodBxLeft'), bs=document.getElementById('prodBxLeftSub');
-    if(r0&&r0.left&&bl&&f.per>0){ bl.textContent=Math.ceil(r0.left/f.per); if(bs) bs.textContent=f.per+' per box'+(r0.left%f.per?' · last box '+(r0.left%f.per):''); } }
+    if(r0&&r0.left&&bl&&f.per>0){ const s=prodBoxSplit(r0.left,f.per); bl.textContent=s.big; if(bs) bs.textContent=s.sub; } }
   if(!(f.per>0&&f.count>0&&f.w>0&&f.L>0&&f.W>0&&f.H>0)){ el.innerHTML='<span class="hint">Fill in units per box, boxes, unit weight and box size — they\'re saved for next time.</span>'; return; }
   const bw=Math.round(f.w*f.per*100)/100, fit=prodFit(st,{weight_lb:bw,units:f.per,len:f.L,wid:f.W,hgt:f.H},S);
   const wAfter=(st.boxes?st.weight:S.palletLb)+fit.packed*f.count, hAfter=fit.hAfter(f.count);
