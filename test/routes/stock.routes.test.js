@@ -575,6 +575,10 @@ test('2D production: N identical boxes, pallet limit refused unless overridden, 
   // Remembered for next time
   const p = await one(`SELECT case_qty, case_len::float AS l, unit_weight_lb::float AS w, unit_weight_src FROM inv_products WHERE asin='TSTDUO'`);
   assert.deepStrictEqual(p, { case_qty: 6, l: 12, w: 5, unit_weight_src: 'manual' });
+  // One odd box of 5 (owner 10/28: a box of 11 turned a 12-case into 11 per case) leaves the case size alone
+  assert.strictEqual((await mk(1, { qtyPerBox: 5 })).status, 200);
+  assert.strictEqual((await one(`SELECT case_qty FROM inv_products WHERE asin='TSTDUO'`)).case_qty, 6);
+  assert.strictEqual((await post('/api/pack/box/void', { shipmentId: SID, boxNo: 11 })).status, 200);
   // Pallet 1: 100 lb allowance + 10 × 30 = 400 lb. 60 more boxes (1,800 lb) won't fit.
   const big = await mk(60);
   assert.strictEqual(big.status, 409);

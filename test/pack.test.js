@@ -59,3 +59,13 @@ test('unit weight from Amazon catalog data, in pounds', () => {
   assert.strictEqual(unitWeightLb({ package: {} }), null);
 });
 
+
+test('one odd box never sets the case size (owner 10/28: one box of 11 made a 12-case read 11 per case)', () => {
+  const { usualCaseQty } = require('../lib/pack');
+  assert.strictEqual(usualCaseQty([12, 12, 12, 11], 11), 12);   // overwritten by the odd box → put back
+  assert.strictEqual(usualCaseQty([12, 12, 11], 12), null);      // already right
+  assert.strictEqual(usualCaseQty([11], 11), null);              // only one box: nothing to go on
+  assert.strictEqual(usualCaseQty([6, 6, 12], null), 6);         // never set: the usual one
+  assert.strictEqual(usualCaseQty([12, 11], 11), 12);            // a tie goes to the bigger size
+  assert.strictEqual(usualCaseQty([], 12), null);
+});
