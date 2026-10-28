@@ -367,7 +367,16 @@
       window._fbaPrices ? Promise.resolve(null) : ownerApi('/api/cache/inventory_value').catch(() => null),
       window._stockCosts ? Promise.resolve(null) : ownerApi('/api/stock-costs').catch(() => null)
     ]);
-    if (sc && sc.ok) { window._stockCosts = sc.cost; window._stockCostBottles = sc.missingBottles || {}; }   // what each unit cost us, for "at cost" (owner 10/27)
+    if (sc && sc.ok) { window._stockCosts = sc.cost; window._stockCostBottles = sc.missingBottles || {}; state.costErr = null; }
+    else if (!window._stockCosts) {
+      // One failed request (a redeploy's 502, a dropped phone connection) used
+      // to hide "At cost" and its list until a full reload (owner 10/28:
+      // "now its not letting me add the missing costs"). Try once more, then
+      // say why, with a Try again button.
+      const again = await ownerApi('/api/stock-costs').catch(e => ({ error: e.message || String(e) }));
+      if (again && again.ok) { window._stockCosts = again.cost; window._stockCostBottles = again.missingBottles || {}; state.costErr = null; }
+      else state.costErr = (again && again.error) || (sc && sc.error) || 'no reply';
+    }   // what each unit cost us, for "at cost" (owner 10/27)
     if (Array.isArray(prods)) products = prods;   // the page's live product list (fresh counts)
     if (fc && fc.cached && fc.data) {
       window._fbaData = Array.isArray(fc.data) ? fc.data : (fc.data.items || []);
@@ -436,7 +445,8 @@
     hv.textContent = '$0'; countUp(hv, hasV ? V.grandTotal : t.g, v => hasV ? '$' + n0(v) : n0(v));
     hs.innerHTML = '<b>' + n0(t.g) + '</b> units across the shelf, prep, transit and Amazon' + (hasV ? '' : ' · <span style="color:' + C.serious + '">no prices yet — values hidden</span>')
       // what the same units cost us (owner 10/27)
-      + (V.haveCosts ? '<div style="margin-top:6px">At cost: <b style="font-size:20px;color:' + C.ink + '">$' + n0(V.costTotal) + '</b> · what you paid for them' + '</div>' + (V.costMissing && typeof stockCostMissingHtml === 'function' ? '<div style="margin-top:4px;font-size:14px;max-height:340px;overflow:auto">' + stockCostMissingHtml(V) + '</div>' : '') : '');
+      + (V.haveCosts ? '<div style="margin-top:6px">At cost: <b style="font-size:20px;color:' + C.ink + '">$' + n0(V.costTotal) + '</b> · what you paid for them' + '</div>' + (V.costMissing && typeof stockCostMissingHtml === 'function' ? '<div style="margin-top:4px;font-size:14px;max-height:340px;overflow:auto">' + stockCostMissingHtml(V) + '</div>' : '')
+        : state.costErr ? '<div style="margin-top:6px;color:' + C.serious + '">At cost couldn’t load (' + E(state.costErr) + ') <button class="d2-btn ghost" data-act="cost-retry" style="margin-left:6px">Try again</button></div>' : '');
     const segs = [['Available', t.w, V.availValue, C.blue, V.availCost], ['Pending prep', t.pp, V.pendingValue, C.orange, V.pendingCost], ['Prepped', t.pr, V.preppedValue, C.aqua, V.preppedCost], ['In transit', t.t, V.transitValue, C.yellow, V.transitCost], ['At FBA', t.f, V.fbaValue, C.magenta, V.fbaCost]];
     const tot = Math.max(1, t.g);
     document.getElementById('d2pipeat').textContent = inv.at ? 'Amazon counts ' + dShort(inv.at.toISOString().slice(0, 10)) : '';
@@ -1004,6 +1014,7 @@
         setTimeout(redraw, 480);
       } else if (b.dataset.act === 'classic') { window.Dash2.setOn(false); }
       else if (b.dataset.act === 'refresh') { window._fbaData = null; render(state.el); }
+      else if (b.dataset.act === 'cost-retry') { window._stockCosts = null; window.Dash2.repaintStock(); }
       else if (b.dataset.go && typeof showSubTab === 'function') showSubTab(b.dataset.go);
     });
     root.addEventListener('keydown', e => { const t = e.target.closest && e.target.closest('[data-goto]'); if (t && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); goTo(t.dataset.goto); } });

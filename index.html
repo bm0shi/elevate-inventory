@@ -3079,9 +3079,11 @@ function loadFbaPrices(){
 // What each unit cost us (owner, /api/stock-costs), for the at-cost totals
 // beside the retail values.
 function loadStockCosts(){
-  if(window._stockCostsLoading) return Promise.resolve(); window._stockCostsLoading=true;
-  return ownerApi('/api/stock-costs').then(d=>{ window._stockCosts=(d&&d.ok)?d.cost:{}; window._stockCostBottles=(d&&d.missingBottles)||{}; })
-    .catch(()=>{ window._stockCosts={}; }).finally(()=>{ window._stockCostsLoading=false; if(window._fbaData){ renderFbaInv(); renderDashFba(); if(window.Dash2&&Dash2.repaintStock) Dash2.repaintStock(); } });
+  // A load already running is shared, so a save never reads a stale or missing list.
+  if(window._stockCostsLoading) return window._stockCostsLoading;
+  // A failed load keeps the last good costs (never {} — that showed every listing as missing).
+  return window._stockCostsLoading = ownerApi('/api/stock-costs').then(d=>{ if(d&&d.ok){ window._stockCosts=d.cost; window._stockCostBottles=d.missingBottles||{}; window._stockCostsFailAt=0; } else window._stockCostsFailAt=Date.now(); })
+    .catch(()=>{ window._stockCostsFailAt=Date.now(); }).finally(()=>{ window._stockCostsLoading=null; if(window._fbaData){ renderFbaInv(); renderDashFba(); if(window.Dash2&&Dash2.repaintStock) Dash2.repaintStock(); } });
 }
 // The listings left out of "at cost", each with a box to type what one unit
 // cost (owner 10/27: "where can i edit this at"). Saved through the same
@@ -3107,9 +3109,9 @@ function saveStockCost(asin){
   if(st) st.innerHTML='<span class="hint">saving…</span>';
   ownerApi('/api/finance/manual-cost',{method:'POST',body:JSON.stringify({asin, unit_cost:v})}).then(d=>{
     if(!d || !d.ok){ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">'+esc((d&&d.error)||'Not saved')+'</span>'; return; }
-    window._scOpen=true; window._stockCosts=null;
-    // Say so if the saved cost still doesn't count, rather than an empty box coming back silently.
-    loadStockCosts().then(()=>{ const ok=window._stockCosts&&window._stockCosts[asin]!=null;
+    window._scOpen=true;
+    // Reload the costs (the old list stays on screen until the new one arrives). Say so if the saved cost still doesn't count, rather than an empty box coming back silently.
+    (window._stockCostsLoading||Promise.resolve()).then(()=>loadStockCosts()).then(()=>{ const ok=window._stockCosts&&window._stockCosts[asin]!=null;
       toast(ok?'Cost saved: $'+v.toFixed(2):'Saved $'+v.toFixed(2)+', but it still isn\'t counted for '+asin+' — tell Claude which listing', !ok); });
   }).catch(e=>{ if(st) st.innerHTML='<span style="color:#c0392b;font-size:12px">Not saved: '+esc(e.message)+'</span>'; });
 }
@@ -3343,7 +3345,8 @@ function fbaTotals(){
   // units: a duo is one unit (owner's rule, as on Next batch)
   let tot={w:0,pp:0,pr:0,t:0,f:0,g:0}; (window._fbaData||[]).forEach(x=>{tot.w+=(x.warehouse||0);tot.pp+=(x.pending_prep||0);tot.pr+=(x.prepped||0);tot.t+=(x.transit||0);tot.f+=(x.fba_total||0);tot.g+=(x.grand_total||0);});
   if(!window._fbaPrices && !window._fbaPricesLoading) loadFbaPrices();
-  if(!window._stockCosts && !window._stockCostsLoading) loadStockCosts();
+  // a failed load waits a minute before the next try (each try redraws this table)
+  if(!window._stockCosts && !window._stockCostsLoading && !(window._stockCostsFailAt>Date.now()-60000)) loadStockCosts();
   // Retail value under each total (owner's ask): units × Amazon price, duo
   // pairs at the duo price (computeFbaValuation).
   const V = fbaRowValues(window._fbaData||[]);
