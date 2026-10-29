@@ -657,7 +657,16 @@ module.exports = function registerFinance(app, deps) {
     const isCurrent = m === monthKey(new Date());
     const partial = !!firstDay && (firstDay.getUTCDate() > 3 ||
                     (lastDay && (endOfMonth - lastDay) / 86400000 > 3 && !isCurrent) || isCurrent);
-    const estimate = E.lines ? { from: E.from, to: E.to, settledTo: d10(cov.b),
+    // which days the saved money events reach back to: a gap after the last
+    // settled day means part of the month isn't in the estimate yet
+    let ev = {};
+    try { ev = (await pool.query(`SELECT to_char(MIN(day),'YYYY-MM-DD') AS a, to_char(MAX(day),'YYYY-MM-DD') AS b FROM inv_fin_event_lines`)).rows[0] || {}; } catch (e) {}
+    const shift = (d, n) => new Date(Date.parse(d + 'T12:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+    const settledTo = d10(cov.b), mEnd = d10(endOfMonth), today = new Date().toISOString().slice(0, 10);
+    const needFrom = settledTo ? shift(settledTo, 1) : d10(from), lastNeeded = mEnd < today ? mEnd : today;
+    const gapTo = ev.a ? [shift(ev.a, -1), lastNeeded].sort()[0] : lastNeeded;
+    const gap = needFrom <= lastNeeded && (!ev.a || ev.a > needFrom) ? { from: needFrom, to: gapTo } : null;
+    const estimate = (E.lines || gap) ? { from: E.from, to: E.to, settledTo, eventsFrom: ev.a || null, gap,
       netSales: E.sales + E.refunds + E.promotions, sales: E.sales, refunds: E.refunds, promotions: E.promotions, fees: E.fees, other: E.other } : null;
     const coverage = firstDay ? { from: firstDay.toISOString().slice(0, 10), to: lastDay.toISOString().slice(0, 10),
                                   days: Math.round((lastDay - firstDay) / 86400000) + 1, partial, isCurrent,

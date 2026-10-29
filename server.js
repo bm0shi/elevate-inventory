@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pnl-estimate-1112';
+const BUILD_ID = 'pnl-estimate-fill-1113';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8493,6 +8493,9 @@ async function pullFinEvents(fromDay, onProgress) {
     for (const q of ['SELECT sku, asin FROM inv_products WHERE sku IS NOT NULL', 'SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL'])
       for (const x of (await pool.query(q)).rows) skuMap[String(x.sku).toLowerCase()] = x.asin;
     await withTx(async (db) => {
+      // one writer at a time: Update today (dashboard, on load) and a 60-day
+      // pull at once would each delete then insert, leaving the overlap twice
+      await db.query("SELECT pg_advisory_xact_lock(hashtext('inv_fin_event_lines'))");
       await db.query('DELETE FROM inv_fin_event_lines WHERE posted >= $1', [new Date(bound).toISOString()]);
       await db.query("DELETE FROM inv_fin_event_lines WHERE posted < now() - interval '120 days'");
       const col = k => lines.map(x => x[k]);
@@ -9885,6 +9888,20 @@ initDb().then(() => {
     setTimeout(() => { getFbaInventory().then(checkFnskuListings)
       .then(r => console.log(`[FBA] Listing check at start: ${r.autoSwitch.length} switched, ${r.conflicts.length} to pick.`))
       .catch(e => console.error('[FBA] listing check at start failed:', e.message)); }, 60 * 1000);
+  // The P&L's estimate needs the money events back to the last settlement.
+  // The table started empty (10/29) and the dashboard's Update today only
+  // reads two days, so October's estimate had just 10/28–10/29 until the next
+  // morning sync. Fill the last 60 days at start whenever they're missing.
+  if ((process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN) && (process.env.AMAZON_CLIENT_ID_FM || process.env.AMAZON_CLIENT_ID))
+    setTimeout(async () => {
+      try {
+        const r = (await pool.query(`SELECT MIN(day) < CURRENT_DATE - 30 AS ok FROM inv_fin_event_lines`)).rows[0];
+        if (r && r.ok) return;
+        console.log('[FinEvents] money events missing for the P&L estimate — reading the last 60 days…');
+        const f = await pullFinEvents(salesDay(Date.now() - 60 * 86400000));
+        console.log(`[FinEvents] backfill done: ${f.days} day(s) from ${f.from}${f.failed ? ', ' + f.failed + ' window(s) failed' : ''}.`);
+      } catch (e) { console.error('[FinEvents] backfill at start failed:', e.message); }
+    }, 2 * 60 * 1000);
 }).catch(err => {
   console.error('[Inventory] DB init failed:', err.message);
   app.use(errorHandler);
