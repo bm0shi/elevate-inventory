@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pnl-estimate-fill-1113';
+const BUILD_ID = 'pnl-check-1114';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8504,7 +8504,12 @@ async function pullFinEvents(fromDay, onProgress) {
         [col('day'), col('posted'), col('kind'), col('transaction_type'), col('order_id'), col('sku'),
          lines.map(x => x.sku ? (skuMap[x.sku.toLowerCase()] || null) : null), col('amount_type'), col('amount_description'), col('amount'), col('quantity')]);
     });
-  } catch (e) { console.error('[FinEvents] event lines:', e.message); }
+    await saveCache('fin_event_lines', { at: new Date().toISOString(), from: new Date(bound).toISOString().slice(0, 10), lines: lines.length, pages: r.pages.length });
+  } catch (e) {
+    console.error('[FinEvents] event lines:', e.message);
+    // shown on the P&L's day-by-day check, so a failure isn't only in the log
+    try { await saveCache('fin_event_lines', { at: new Date().toISOString(), error: e.message }); } catch (e2) {}
+  }
   const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fin_events'")).rows[0];
   const was = prev && prev.data && prev.data.from;
   await saveCache('fin_events', { from: (!was || from < was) ? from : was, asOf: new Date().toISOString() });
