@@ -7894,6 +7894,27 @@ function loadFinPnl() {
   }).catch(() => { b.innerHTML = '<div class="box hint" style="color:#c0392b">Could not load the P&amp;L.</div>'; });
 }
 
+// Day by day after the last settlement: the dashboard's ordered sales, the
+// settled sales, what Amazon's money events hold and what the estimate took,
+// so a short estimate shows where it falls short (owner 10/29, "still says 121").
+function finEstCheckHtml(c) {
+  if (!c) return '';
+  if (c.error) return '<div class="hint" style="color:#c0392b">Day-by-day check failed: ' + esc(c.error) + '</div>';
+  const r = c.read || {}, n = v => v == null ? '—' : fin$(v), td = 'style="text-align:center;padding:3px 8px"';
+  const when = iso => { try { return new Date(iso).toLocaleString([], { month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit' }); } catch (e) { return iso; } };
+  const read = r.error ? '<span style="color:#c0392b">last read FAILED ' + esc(when(r.at)) + ': ' + esc(r.error) + '</span>'
+    : r.at ? 'last read ' + esc(when(r.at)) + ' · ' + Number(r.lines || 0).toLocaleString() + ' lines from ' + esc(String(r.from || '').slice(5).replace('-', '/')) + ' · ' + (r.pages || 0) + ' page(s) from Amazon'
+    : '<span style="color:#c0392b">not read yet since this update</span>';
+  return '<details style="margin-top:6px"><summary style="cursor:pointer;color:#2563a8;font-weight:700">Day-by-day check</summary>'
+    + '<div class="hint" style="margin:4px 0">Amazon\'s money events: ' + read + '</div>'
+    + '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:12px;table-layout:fixed;min-width:620px"><thead><tr>'
+    + ['Day', 'Ordered (dashboard)', 'Settled', 'In money events', 'Orders', 'Not settled → estimate'].map(h => '<th ' + td + '>' + h + '</th>').join('')
+    + '</tr></thead><tbody>'
+    + c.days.map(d => '<tr><td ' + td + '>' + d.day.slice(5).replace('-', '/') + '</td><td ' + td + '>' + n(d.ordered) + '</td><td ' + td + '>' + n(d.settled)
+      + '</td><td ' + td + '>' + n(d.events) + '</td><td ' + td + '>' + (d.eventOrders || 0) + '</td><td ' + td + '><b>' + n(d.open) + '</b></td></tr>').join('')
+    + '</tbody></table></div><div class="hint">Item sales before refunds and promotions, tax left out. Settled and money events are by the day Amazon posted them (UTC), the dashboard by order day (Pacific).</div></details>';
+}
+
 function renderFinPnl() {
   const d = window._finPnl, b = document.getElementById('fpnlBody'); if (!d || !b) return;
   const all = d.months;
@@ -7938,7 +7959,7 @@ function renderFinPnl() {
         + ' and ' + fin$(Math.abs(m.estimate.fees)) + ' of Amazon fees on them, from its daily money events.'
         + (m.estimate.gap ? ' <b style="color:#c0392b">' + md(m.estimate.gap.from) + (m.estimate.gap.to !== m.estimate.gap.from ? '–' + md(m.estimate.gap.to) : '')
           + ' isn\'t in it yet</b> <span class="hint">— Amazon\'s money events for those days haven\'t been read in. They fill in on their own (a few minutes after a restart, and every morning), or press ↻ Sync with Amazon on On Hand.</span>' : '')
-        + '</div>').join('')
+        + finEstCheckHtml(m.estimate.check) + '</div>').join('')
       + '<div class="hint" style="margin-top:4px">Each order switches to its real settlement line automatically once Amazon settles it (checked every morning), so the month moves up or down to the exact number within a day of each payout. Storage and other monthly fees only arrive with the settlement.</div></div>';
   }
   if (months.some(m => m.marginWithheld)) {

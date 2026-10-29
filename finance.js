@@ -666,7 +666,36 @@ module.exports = function registerFinance(app, deps) {
     const needFrom = settledTo ? shift(settledTo, 1) : d10(from), lastNeeded = mEnd < today ? mEnd : today;
     const gapTo = ev.a ? [shift(ev.a, -1), lastNeeded].sort()[0] : lastNeeded;
     const gap = needFrom <= lastNeeded && (!ev.a || ev.a > needFrom) ? { from: needFrom, to: gapTo } : null;
-    const estimate = (E.lines || gap) ? { from: E.from, to: E.to, settledTo, eventsFrom: ev.a || null, gap,
+    // Day by day after the last settlement (owner 10/29: still $121k after
+    // the fill): what the dashboard counted as ordered, what Amazon's money
+    // events hold as item sales, and what the estimate took (not settled yet).
+    // Days are UTC here like the settlement; the dashboard's are Pacific.
+    let check = null;
+    if (E.lines || gap) {
+      try {
+        const a0 = settledTo ? shift(settledTo, -6) : d10(from), b0 = lastNeeded;
+        const ord = (await pool.query(`SELECT to_char(day,'YYYY-MM-DD') AS d, sales::float AS s FROM inv_sales_daily WHERE day BETWEEN $1 AND $2`, [a0, b0])).rows;
+        const evd = (await pool.query(`
+          WITH cut AS (SELECT MAX(posted_date) AS d FROM inv_settlement_lines)
+          SELECT to_char(e.day,'YYYY-MM-DD') AS d,
+                 SUM(e.amount) FILTER (WHERE e.amount_type='ItemPrice' AND e.kind='order' AND e.amount_description !~* 'tax')::float AS ev,
+                 COUNT(DISTINCT e.order_id) FILTER (WHERE e.kind='order')::int AS orders,
+                 SUM(e.amount) FILTER (WHERE e.amount_type='ItemPrice' AND e.kind='order' AND e.amount_description !~* 'tax'
+                   AND NOT EXISTS (SELECT 1 FROM inv_settlement_lines s WHERE s.order_id = e.order_id AND COALESCE(s.transaction_type,'') !~* 'refund|chargeback|guarantee'))::float AS open
+          FROM inv_fin_event_lines e, cut WHERE e.day BETWEEN $1 AND $2 GROUP BY 1`, [a0, b0])).rows;
+        const stl = (await pool.query(`SELECT to_char(posted_date,'YYYY-MM-DD') AS d, SUM(amount)::float AS s FROM inv_settlement_lines
+          WHERE posted_date BETWEEN $1 AND $2 AND amount_type='ItemPrice' AND COALESCE(transaction_type,'') !~* 'refund|chargeback|guarantee' AND amount_description !~* 'tax' GROUP BY 1`, [a0, b0])).rows;
+        const days = [];
+        for (let d = a0; d <= b0; d = shift(d, 1)) {
+          const o = ord.find(x => x.d === d), e = evd.find(x => x.d === d), st = stl.find(x => x.d === d);
+          days.push({ day: d, ordered: o ? o.s : null, settled: st ? st.s : 0, events: e ? e.ev || 0 : 0, eventOrders: e ? e.orders : 0, open: e ? e.open || 0 : 0 });
+        }
+        const c = (await pool.query("SELECT cache_key, data FROM inv_cache WHERE cache_key IN ('fin_event_lines','fin_events')")).rows;
+        const cd = k => (c.find(x => x.cache_key === k) || {}).data || null;
+        check = { days, read: cd('fin_event_lines'), events: cd('fin_events') };
+      } catch (e) { check = { error: e.message }; }
+    }
+    const estimate = (E.lines || gap) ? { from: E.from, to: E.to, settledTo, eventsFrom: ev.a || null, gap, check,
       netSales: E.sales + E.refunds + E.promotions, sales: E.sales, refunds: E.refunds, promotions: E.promotions, fees: E.fees, other: E.other } : null;
     const coverage = firstDay ? { from: firstDay.toISOString().slice(0, 10), to: lastDay.toISOString().slice(0, 10),
                                   days: Math.round((lastDay - firstDay) / 86400000) + 1, partial, isCurrent,
