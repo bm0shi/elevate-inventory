@@ -732,6 +732,21 @@
   // kept per range for this visit; the table sorts by any column (owner's
   // standing ask).
   const topCache = {};
+  // A cost typed on a Top 50 row: saved as the manual cost (Data Sources →
+  // Enter missing costs), then every period's list is drawn again with it.
+  function addTopCost(asin) {
+    const v = prompt('What does one unit of ' + asin + ' cost you? ($)\n(A Cosmoprof invoice replaces this when one arrives.)');
+    if (v == null) return;
+    const c = Number(String(v).replace(/[$,\s]/g, ''));
+    if (!(c > 0 && c <= 1000)) { alert('Enter a cost between $0.01 and $1,000.'); return; }
+    ownerApi('/api/finance/manual-cost', { method: 'POST', body: JSON.stringify({ asin, unit_cost: c }) }).then(r => {
+      if (!r || r.ok === false || r.error) { alert('Not saved: ' + ((r && r.error) || 'error')); return; }
+      if (typeof toast === 'function') toast(r.cost != null ? 'Cost saved: $' + c.toFixed(2) : 'Saved, but it isn\'t counted yet for ' + asin, r.cost == null);
+      for (const k of Object.keys(topCache)) delete topCache[k];
+      window._stockCosts = null;
+      if (state.topP) paintTop10(state.topP);
+    }).catch(e => alert('Not saved: ' + e.message));
+  }
   // The "Top sellers" card follows the period picked above (owner 10/26: on
   // the phone it stayed on the last 60 days and looked like a broken Top 50).
   // Its best 8 by units, and a button that opens the full Top 50 below.
@@ -813,7 +828,10 @@
       body = '<table class="d2-t10"><colgroup><col class="crk" style="width:46px"><col>' + (wide ? '<col style="width:64px"><col style="width:84px"><col style="width:96px"><col style="width:72px"><col style="width:92px">' + (showTr ? '<col style="width:104px">' : '') + '<col style="width:76px">' : '<col style="width:118px">') + '</colgroup><tr>' +
         th('score', '#') + th('name', 'Product') + (wide ? th('units', 'Units') + th('sales', 'Sales') + th('profit', 'Net profit') + th('margin', 'Margin') + th('perday', 'Profit/day') + (showTr ? th('trend', 'vs before') : '') + th('roi', 'ROI on cost')
           : '<th class="' + (['units', 'sales', 'profit', 'margin', 'perday', 'roi', 'trend'].includes(st.col) ? 'on' : '') + '"><span data-tsort="units">Units' + arrow('units') + '</span> · <span data-tsort="sales">$' + arrow('sales') + '</span><br><span data-tsort="profit">Profit' + arrow('profit') + '</span> · <span data-tsort="margin">%' + arrow('margin') + '</span><br><span data-tsort="perday">/day' + arrow('perday') + '</span> · <span data-tsort="roi">ROI' + arrow('roi') + '</span>' + (showTr ? '<br><span data-tsort="trend">vs before' + arrow('trend') + '</span>' : '') + '</th>') + '</tr>' +
-        rows.map(r => '<tr data-bd="' + E(r.asin) + '" style="cursor:pointer" title="Tap for the numbers behind the profit"><td><span class="rk">' + (r.scoreRank == null ? '—' : r.scoreRank) + '</span></td><td>' + sized(r.asin, r.name) + asinCopy(r.asin) + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
+        rows.map(r => '<tr data-bd="' + E(r.asin) + '" style="cursor:pointer" title="Tap for the numbers behind the profit"><td><span class="rk">' + (r.scoreRank == null ? '—' : r.scoreRank) + '</span></td><td>' + sized(r.asin, r.name) + asinCopy(r.asin)
+          // no product cost: type it here, in any period (owner 10/29: "it's not letting me see which ones")
+          + (r.profitMissing === 'product cost' ? ' <button class="d2-btn ghost" data-addcost="' + E(r.asin) + '" style="padding:2px 9px;font-size:12px;color:' + C.crit + '">+ add cost</button>' : '')
+          + '<div class="bar"><i style="width:' + (100 * r.units / maxU).toFixed(1) + '%"></i></div></td>' +
           (wide ? '<td class="n">' + n0(r.units) + '</td><td class="n">$' + n0(r.sales) + '</td><td class="n">' + pf(r) + '</td><td class="n">' + mg(r) + '</td><td class="n">' + pd(r) + '</td>' + (showTr ? '<td class="n">' + tr(r) + '</td>' : '') + '<td class="n">' + ri(r) + '</td>'
             : '<td class="n">' + n0(r.units) + ' <span style="font-size:12.5px;font-weight:600;color:' + C.muted + '">· $' + n0(r.sales) + '</span><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pf(r) + ' · ' + mg(r) + '</div><div style="font-size:12px;font-weight:700;white-space:nowrap">' + pd(r) + '/d · ' + ri(r) + '</div>' + (showTr ? '<div style="font-size:12px;font-weight:700;white-space:nowrap">' + tr(r, true) + ' vs before</div>' : '') + '</td>') + '</tr>'
           + (openBd[r.asin] ? '<tr><td></td><td colspan="' + (wide ? (showTr ? 8 : 7) : 2) + '" style="font-size:13px;line-height:1.6;text-align:left;background:#f7f9fb;padding:8px 10px">' + bdHtml(r) + '</td></tr>' : '')).join('') + '</table>'
@@ -988,6 +1006,8 @@
   function wire(root) {
     root.addEventListener('click', e => {
       const t = e.target.closest('[data-goto]'); if (t && !e.target.closest('a')) { goTo(t.dataset.goto); return; }
+      const ac = e.target.closest('[data-addcost]');
+      if (ac) { e.stopPropagation(); addTopCost(ac.dataset.addcost); return; }
       const t10 = e.target.closest('[data-top]');
       if (t10) { store.set('d2Per', t10.dataset.top); store.set('d2TopOpen', '1'); if (state && state.sales) paintSales(state.sales);
         const dt = document.getElementById('d2top10'); if (dt) dt.scrollIntoView({ behavior: REDUCED ? 'auto' : 'smooth', block: 'nearest' }); return; }
