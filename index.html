@@ -7928,6 +7928,15 @@ function renderFinPnl() {
       + partials.map(m => finMonthLabel(m.month)).join(', ') + (partials.length > 1 ? ' are' : ' is') + ' only partly covered</b>'
       + ' <span class="hint">— Amazon only provides about 90 days of settlements, so the oldest month starts mid-way. Compare full months only.</span></div>';
   }
+  // Not yet settled: estimated from Amazon's daily money events (owner 10/29)
+  const estM = months.filter(m => m.estimate && Math.abs(m.estimate.netSales) >= 0.5);
+  if (estM.length) {
+    h += '<div class="box" style="border:2px solid #2563a8;background:#f7fafd;padding:10px 14px"><b style="color:#2563a8">Includes an estimate for what Amazon hasn\'t settled yet</b>'
+      + estM.map(m => '<div style="margin-top:4px"><b>' + finMonthLabel(m.month) + ':</b> ' + fin$(m.estimate.netSales) + ' of sales'
+        + (m.estimate.settledTo ? ' (orders after the last settlement, ' + m.estimate.settledTo.slice(5).replace('-', '/') + ')' : '')
+        + ' and ' + fin$(Math.abs(m.estimate.fees)) + ' of Amazon fees on them, from its daily money events.</div>').join('')
+      + '<div class="hint" style="margin-top:4px">Each order switches to its real settlement line automatically once Amazon settles it (checked every morning), so the month moves up or down to the exact number within a day of each payout. Storage and other monthly fees only arrive with the settlement.</div></div>';
+  }
   if (months.some(m => m.marginWithheld)) {
     h += '<div class="box" style="border:2px solid #c0392b;background:#fdf5f4;padding:10px 14px"><b style="color:#c0392b">Profit is badly overstated until more products have a cost</b>'
       + ' <span class="hint">— sales without a cost are counted as if the goods were free. Margin is hidden until at least 90% of sales are costed. <a href="#" onclick="showSubTab(\'fsrc\');return false">Import invoice costs →</a></span></div>';
@@ -7990,8 +7999,11 @@ function renderFinPnl() {
     + '<thead><tr><th style="text-align:left;position:sticky;left:0;background:#1a2a3a;min-width:200px">&nbsp;</th>'
     + months.map(m => {
         const c = m.coverage;
-        const sub = c && c.partial ? '<div style="font-size:9px;font-weight:600;color:#f6c667;text-transform:none">'
-          + (c.isCurrent ? 'to date · ' : 'partial · ') + c.from.slice(5).replace('-', '/') + '–' + c.to.slice(5).replace('-', '/') + '</div>' : '';
+        const md = d => d.slice(5).replace('-', '/');
+        const sub = (c && c.partial ? '<div style="font-size:9px;font-weight:600;color:#f6c667;text-transform:none">'
+          + (c.isCurrent ? 'to date · ' : 'partial · ') + md(c.from) + '–' + md(c.to) + '</div>' : '')
+          + (m.estimate ? '<div style="font-size:9px;font-weight:600;color:#9fd3ff;text-transform:none" title="Orders Amazon hasn\'t settled yet, from its daily money events">'
+            + (m.estimate.settledTo ? 'settled to ' + md(m.estimate.settledTo) + ' · rest est.' : 'estimate') + '</div>' : '');
         return '<th style="text-align:right;cursor:pointer;vertical-align:bottom" onclick="finDrillMonth(\'' + m.month + '\')" title="See products for ' + finMonthLabel(m.month) + '">'
           + finMonthLabel(m.month) + sub + '</th>';
       }).join('')
@@ -8016,6 +8028,8 @@ function renderFinPnl() {
         const lineNote = key === 'carrier' ? m.carrierNote : (key === 'placement' ? m.placementNote : null);
         if (lineNote)
           cell += '<div style="font-size:10px;color:#2563a8;white-space:normal;max-width:150px;margin-left:auto">' + lineNote + '</div>';
+        if (key === 'netSales' && m.estimate && Math.abs(m.estimate.netSales) >= 0.5)
+          cell += '<div style="font-size:10px;color:#2563a8">incl. ' + fin$(m.estimate.netSales) + ' est.</div>';
         if (key === 'cogs' && m.costCoverage != null && m.costCoverage < 0.98)
           cell += '<div style="font-size:10px"><a href="#" onclick="finShowUncosted(\'' + m.month + '\');return false" style="color:#b7791f;text-decoration:underline dotted">'
             + Math.round(m.costCoverage * 100) + '% of sales costed — what\'s missing?</a></div>';

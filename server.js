@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'costs-everywhere-1111';
+const BUILD_ID = 'pnl-estimate-1112';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1322,6 +1322,15 @@ async function initDb() {
     await pool.query(`CREATE TABLE IF NOT EXISTS inv_fin_daily (
       day DATE PRIMARY KEY, refunds NUMERIC NOT NULL DEFAULT 0, refund_units INTEGER NOT NULL DEFAULT 0,
       fees NUMERIC NOT NULL DEFAULT 0, updated_at TIMESTAMPTZ DEFAULT now())`);
+    // The same events line by line, settlement-style (lib/finevents.js
+    // eventLines), so the P&L fills what Amazon hasn't settled yet. Only the
+    // last ~90 days are kept: once an order settles its lines stop counting.
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_fin_event_lines (
+      id BIGSERIAL PRIMARY KEY, day DATE NOT NULL, posted TIMESTAMPTZ NOT NULL, kind TEXT NOT NULL, transaction_type TEXT,
+      order_id TEXT, sku TEXT, asin TEXT, amount_type TEXT, amount_description TEXT, amount NUMERIC NOT NULL, quantity INTEGER NOT NULL DEFAULT 0)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_fin_event_lines_day ON inv_fin_event_lines(day)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_fin_event_lines_posted ON inv_fin_event_lines(posted)`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS idx_settle_order ON inv_settlement_lines(order_id)`);
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
@@ -4431,17 +4440,23 @@ app.get('/api/cost-analysis', ownerAuth, async (req, res) => {
 let settleJob = { running:false, done:false, error:null, progress:'', reports:0, imported:0, lines:0 };
 
 app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
-  if (settleJob.running) return res.json({ ok:true, already:true });
-  const sinceDays = Number(req.body && req.body.sinceDays) || 180;
+  const r = startSettlementSync({ sinceDays: req.body && req.body.sinceDays, maxReports: req.body && req.body.maxReports,
+                                  force: !!(req.body && req.body.force) });
+  res.json(r.already ? { ok:true, already:true } : { ok:true });
+});
+// Also started by the morning sync, so a new settlement replaces the P&L's
+// estimate within a day of Amazon posting it (owner 10/29), not on Sunday.
+function startSettlementSync(opts) {
+  if (settleJob.running) return { already: true };
+  const sinceDays = Number(opts.sinceDays) || 180;
   // Amazon throttles getReportDocument to roughly one call per minute and the
   // bucket stays drained after a burst. Fetch a few per run; re-run to continue.
-  const maxReports = Math.max(1, Math.min(20, Number(req.body && req.body.maxReports) || 3));
+  const maxReports = Math.max(1, Math.min(20, Number(opts.maxReports) || 3));
   // force: re-download and re-parse settlements already marked imported. Needed
   // when a parser fix means the stored lines were wrong (or absent).
-  const force = !!(req.body && req.body.force);
+  const force = !!opts.force;
   settleJob = { running:true, done:false, error:null, progress:'listing reports…', reports:0, imported:0, lines:0, attempts:[], skipped:0 };
   console.log(`[Settlement] SYNC STARTED — window ${sinceDays} days, max ${maxReports} report(s) this run.`);
-  res.json({ ok:true });
 
   (async () => {
     try {
@@ -4692,7 +4707,8 @@ app.post('/api/settlements/sync', ownerAuth, async (req, res) => {
       console.error('[Settlement] SYNC FAILED:', e.message, e.stack ? e.stack.split('\n')[1] : '');
     }
   })();
-});
+  return { started: true };
+}
 
 // Re-resolve ASINs on settlement lines ALREADY stored. Costing depends on the
 // SKU map, which fills in over time; without this the only way to benefit from
@@ -7696,6 +7712,8 @@ function startAmazonSync(trigger) {
     // Refunds and Amazon fees, on time (financial events), last 60 days.
     try { amazonSync.step = 'Reading refunds and fees…'; await pullFinEvents(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('refunds/fees: ' + e.message); }
+    // New settlements (only ones not stored yet; runs on in the background)
+    try { startSettlementSync({ sinceDays: 45, maxReports: 3 }); } catch (e) { result.errors.push('settlements: ' + e.message); }
     // Package sizes for listings that don't have one yet (new products), for
     // the FBA capacity bar. Only the missing ones: sizes rarely change.
     try {
@@ -8466,6 +8484,24 @@ async function pullFinEvents(fromDay, onProgress) {
       SELECT *, now() FROM unnest($1::date[], $2::numeric[], $3::int[], $4::numeric[])
       ON CONFLICT (day) DO UPDATE SET refunds=EXCLUDED.refunds, refund_units=EXCLUDED.refund_units, fees=EXCLUDED.fees, updated_at=now()`,
     [ks, ks.map(k => days[k].refunds), ks.map(k => days[k].refundUnits), ks.map(k => days[k].fees)]);
+  // line by line for the P&L's not-yet-settled part: the pulled stretch is
+  // replaced whole (only from `from`, past any window that failed)
+  try {
+    const bound = Math.max(Date.parse(from + 'T00:00:00-07:00'), Date.now() - 90 * 86400000);
+    const lines = finEvents.eventLines(r.pages).filter(x => Date.parse(x.posted) >= bound);
+    const skuMap = {};
+    for (const q of ['SELECT sku, asin FROM inv_products WHERE sku IS NOT NULL', 'SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL'])
+      for (const x of (await pool.query(q)).rows) skuMap[String(x.sku).toLowerCase()] = x.asin;
+    await withTx(async (db) => {
+      await db.query('DELETE FROM inv_fin_event_lines WHERE posted >= $1', [new Date(bound).toISOString()]);
+      await db.query("DELETE FROM inv_fin_event_lines WHERE posted < now() - interval '120 days'");
+      const col = k => lines.map(x => x[k]);
+      if (lines.length) await db.query(`INSERT INTO inv_fin_event_lines(day, posted, kind, transaction_type, order_id, sku, asin, amount_type, amount_description, amount, quantity)
+          SELECT * FROM unnest($1::date[], $2::timestamptz[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::numeric[], $11::int[])`,
+        [col('day'), col('posted'), col('kind'), col('transaction_type'), col('order_id'), col('sku'),
+         lines.map(x => x.sku ? (skuMap[x.sku.toLowerCase()] || null) : null), col('amount_type'), col('amount_description'), col('amount'), col('quantity')]);
+    });
+  } catch (e) { console.error('[FinEvents] event lines:', e.message); }
   const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fin_events'")).rows[0];
   const was = prev && prev.data && prev.data.from;
   await saveCache('fin_events', { from: (!was || from < was) ? from : was, asOf: new Date().toISOString() });
