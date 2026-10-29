@@ -13,6 +13,7 @@
 
 const laborSplit = require('./lib/labor-split');
 const topProfit = require('./lib/top-profit');
+const { blendCosts } = require('./lib/costs');
 
 module.exports = function registerFinance(app, deps) {
   const { pool, ownerAuth, INBOUND_FEE_PATTERNS, isPassThroughTax, recomputeCosts } = deps;
@@ -141,10 +142,32 @@ module.exports = function registerFinance(app, deps) {
     };
   }
 
+  // Names Amazon gives listings we hold that aren't in our catalog (FBA
+  // Inventory pull), so they read as products, not bare ASINs.
+  async function amazonNames() {
+    const c = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'")).rows[0];
+    const d = c && c.data, list = Array.isArray(d) ? d : ((d && d.items) || []), m = {};
+    for (const x of list) if (x && x.asin && x.name && !m[x.asin]) m[x.asin] = x.name;
+    return m;
+  }
   async function productInfo() {
     const r = await pool.query('SELECT asin, name, image, avg_cost, regular_cost FROM inv_products');
     const m = {};
     for (const p of r.rows) m[p.asin] = { name: p.name, image: p.image, avgCost: num(p.avg_cost), regularCost: num(p.regular_cost), size: sizeKey(p.name) };
+    // Listings sold at Amazon but not in our catalog have no inv_products row,
+    // so a cost typed for them (inv_cost_history) never counted: Top 50 and
+    // the P&L said "no cost" after it was saved (owner 10/29). Blend their
+    // lots the way recomputeCosts does (a MANUAL cost only until an invoice).
+    const lots = {};
+    for (const l of (await pool.query('SELECT asin, order_number, invoice_date, unit_cost, qty FROM inv_cost_history WHERE qty > 0')).rows)
+      if (!m[l.asin]) (lots[l.asin] = lots[l.asin] || []).push(l);
+    if (Object.keys(lots).length) {
+      const names = await amazonNames();
+      for (const [a, ls] of Object.entries(lots)) {
+        const real = ls.filter(l => l.order_number !== 'MANUAL'), b = blendCosts(real.length ? real : ls);
+        if (b && b.avg > 0) m[a] = { name: names[a] || a, image: null, avgCost: b.avg, regularCost: b.regular, size: sizeKey(names[a] || ''), notInCatalog: true };
+      }
+    }
     return m;
   }
 
@@ -674,7 +697,7 @@ module.exports = function registerFinance(app, deps) {
       marginWithheld: !!netSales && (costCoverage == null || costCoverage < 0.9),
       coverage,
       taxPassThrough: t.tax, reserveMovement: t.reserve,
-      costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length
+      costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length, freightMissingUnits: a.freightMissingUnits || 0
     };
   }
 
@@ -724,6 +747,8 @@ module.exports = function registerFinance(app, deps) {
           to_char((SELECT MIN(day) FROM inv_sales_asin_daily),'YYYY-MM-DD') AS since
           FROM inv_sales_asin_daily WHERE day BETWEEN $1 AND $2`, [from, to]);
       const ctx = await context();
+      for (const x of r.rows) if (!x.name && ctx.products[x.asin]) x.name = ctx.products[x.asin].name;
+      if (r.rows.some(x => !x.name)) { const nm = await amazonNames(); for (const x of r.rows) if (!x.name && nm[x.asin]) x.name = nm[x.asin]; }
       const back = new Date(Date.now() - 182 * 86400000).toISOString().slice(0, 10);
       const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
       const settled = await aggregate(back, tomorrow, ctx);
@@ -991,6 +1016,22 @@ module.exports = function registerFinance(app, deps) {
           FROM inv_products p WHERE p.asin = ANY($1)`, [need]);
         for (const x of extra.rows) if (showAll || x.avg_cost == null) { r.rows.push(x); byA[x.asin] = x; }
       }
+      // Sold in the last 90 days but not in the catalog: listed too, so Data
+      // Sources stops saying "all costed" while the P&L counts them as free.
+      {
+        const inCat = new Set((await pool.query('SELECT asin FROM inv_products')).rows.map(x => x.asin));
+        const out = allSold.filter(x => !inCat.has(x.asin) && !bundleOf[x.asin]);
+        if (out.length) {
+          const names = await amazonNames(), info = await productInfo();
+          for (const x of out) {
+            const c = info[x.asin] ? info[x.asin].avgCost : null;
+            if (!showAll && c != null) continue;
+            const man = (await pool.query("SELECT unit_cost FROM inv_cost_history WHERE asin=$1 AND order_number='MANUAL'", [x.asin])).rows[0];
+            r.rows.push({ asin: x.asin, name: (names[x.asin] || x.asin) + ' (not in the catalog)', image: null, avg_cost: c, regular_cost: null,
+              units: x.units, sales: x.sales, manual_cost: man ? man.unit_cost : null, manual_date: null, invoice_lots: 0, cosmo: null });
+          }
+        }
+      }
       r.rows = r.rows.filter(x => !bundleOf[x.asin]);
       const items = r.rows.map(x => ({
         asin: x.asin, name: x.name, image: x.image, cosmo: x.cosmo,
@@ -1059,7 +1100,8 @@ module.exports = function registerFinance(app, deps) {
       const left = await pool.query('SELECT COUNT(*)::int AS n FROM inv_cost_history WHERE asin=$1 AND qty > 0', [asin]);
       if (!left.rows[0].n) await pool.query('UPDATE inv_products SET avg_cost=NULL, regular_cost=NULL, unit_cost=NULL WHERE asin=$1', [asin]);
       const p = await pool.query('SELECT avg_cost FROM inv_products WHERE asin=$1', [asin]);
-      res.json({ ok: true, cost: p.rows[0] && p.rows[0].avg_cost != null ? Number(p.rows[0].avg_cost) : null });
+      const info = (await productInfo())[asin];   // also a listing that isn't in the catalog
+      res.json({ ok: true, cost: p.rows[0] && p.rows[0].avg_cost != null ? Number(p.rows[0].avg_cost) : (info && info.avgCost != null ? info.avgCost : null) });
     } catch (e) { console.error('[Finance] manual-cost:', e.message); res.status(500).json({ error: e.message }); }
   });
 

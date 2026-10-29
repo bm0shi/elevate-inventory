@@ -7933,8 +7933,22 @@ function renderFinPnl() {
       + ' <span class="hint">— sales without a cost are counted as if the goods were free. Margin is hidden until at least 90% of sales are costed. <a href="#" onclick="showSubTab(\'fsrc\');return false">Import invoice costs →</a></span></div>';
   }
   if (incomplete) {
-    h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><b style="color:#b7791f">' + incomplete + ' month(s) are missing cost lines</b>'
-      + ' <span class="hint">— so their profit is <b>higher than the truth</b>. Red and amber dots show which lines. <a href="#" onclick="showSubTab(\'fsrc\');return false">Fix in Data Sources →</a></span></div>';
+    // Say which lines and why, each with its own fix (owner 10/29: the banner
+    // sent everyone to product costs, which were complete, while the amber
+    // lines were freight).
+    const LINE = { sales: ['Sales', 'settlements'], fees: ['Amazon fees', 'settlements'], cogs: ['Product cost', 'costs'], royalty: ['Royalty', 'royalty'],
+      supplies: ['Supplies', 'supplies'], labor: ['Labor', 'labor'], freight: ['Inbound freight / placement', 'freight'], overhead: ['Overhead', 'overhead'] };
+    const why = (m, k) => k === 'cogs' ? (m.uncostedCount ? m.uncostedCount + ' listing' + (m.uncostedCount === 1 ? '' : 's') + ' sold with no cost: '
+          + (m.uncosted || []).slice(0, 4).map(u => esc(String(u.name || u.asin).slice(0, 48))).join(', ') + (m.uncostedCount > 4 ? '…' : '') : 'no product costs')
+      : k === 'freight' ? (m.freightMissingUnits ? m.freightMissingUnits.toLocaleString() + ' unit' + (m.freightMissingUnits === 1 ? '' : 's') + ' sold from shipments with no freight / placement fee on file' : 'fees still waiting on shipments not yet received')
+      : k === 'overhead' ? 'none entered for the month' : k === 'labor' ? 'no timesheets for the month'
+      : k === 'supplies' ? 'some sizes have no supply cost' : k === 'royalty' ? 'no Cosmoprof purchases on file for the month' : 'no settlement for the month';
+    h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><b style="color:#b7791f">' + incomplete + ' month(s) have lines that aren\'t complete</b>'
+      + ' <span class="hint">— amber = partly there, red = missing; their profit may read a little high.</span>'
+      + months.filter(m => m.hasData && !m.complete).map(m => '<div style="margin-top:6px"><b>' + finMonthLabel(m.month) + ':</b> '
+        + Object.keys(m.lineStatus || {}).filter(k => m.lineStatus[k] !== 'ok').map(k => '<span style="display:inline-block;margin:2px 10px 2px 0">' + finDot(m.lineStatus[k]) + ' <b>' + (LINE[k] ? LINE[k][0] : k) + '</b> <span class="hint">' + why(m, k) + '</span>'
+          + (LINE[k] && FIN_SRC_ACTIONS[LINE[k][1]] ? ' <a href="#" onclick="finGoFix(\'' + LINE[k][1] + '\');return false">' + FIN_SRC_ACTIONS[LINE[k][1]][0] + ' →</a>' : '') + '</span>').join('') + '</div>').join('')
+      + '</div>';
   }
 
   // trend chart
@@ -8443,6 +8457,8 @@ const FIN_SRC_ACTIONS = {
   cash:        ['Enter balances', "showSubTab('fcash')"],
   buy:         ['Set next buy', "showSubTab('fcash')"]
 };
+// A P&L line's fix: open Data Sources, then the editor for that line.
+function finGoFix(key){ const a=FIN_SRC_ACTIONS[key]; showSubTab('fsrc'); if(a) setTimeout(()=>{ try{ new Function(a[1])(); }catch(e){} },300); }
 // Backups: download one now, email one now, and when the last weekly one went.
 function loadBackupBox(){
   const el=document.getElementById('backupBox'); if(!el) return;
