@@ -316,7 +316,32 @@ module.exports = function registerFinance(app, deps) {
   }
 
   // ---------- core: aggregate settlements over a window ----------
-  async function aggregate(from, to, ctx) {
+  // What Amazon hasn't settled yet, from the daily money events
+  // (inv_fin_event_lines), so the P&L is current instead of stopping at the
+  // last payout (owner 10/29: "keep it up to date as an estimate … adjust it
+  // automatically after settlement"). An order's lines count only until a
+  // settlement carries that order (an order and its refund are told apart);
+  // lines with no order (reimbursements, ads) only after the last settled day.
+  // Orders more than 30 days before that day that never settled are left out.
+  async function unsettled(from, to) {
+    try {
+      return (await pool.query(`
+        WITH cut AS (SELECT MAX(posted_date) AS d FROM inv_settlement_lines)
+        SELECT e.asin, e.sku, e.amount_type, e.amount_description, e.transaction_type,
+               SUM(e.amount)::numeric AS total, SUM(e.quantity)::int AS units,
+               to_char(MIN(e.day),'YYYY-MM-DD') AS a, to_char(MAX(e.day),'YYYY-MM-DD') AS b
+        FROM inv_fin_event_lines e, cut
+        WHERE e.day >= $1 AND e.day < $2
+          AND (cut.d IS NULL
+            OR (e.order_id IS NULL AND e.day > cut.d)
+            OR (e.order_id IS NOT NULL AND e.day > cut.d - 30 AND NOT EXISTS (
+                  SELECT 1 FROM inv_settlement_lines s WHERE s.order_id = e.order_id
+                     AND (COALESCE(s.transaction_type,'') ~* 'refund|chargeback|guarantee') = (e.kind = 'refund'))))
+        GROUP BY e.asin, e.sku, e.amount_type, e.amount_description, e.transaction_type`, [from, to])).rows;
+    } catch (e) { console.error('[Finance] unsettled events:', e.message); return []; }
+  }
+
+  async function aggregate(from, to, ctx, opts = {}) {
     const { products, supplies, inbound, laborRate } = ctx;
     const lines = await pool.query(`
       SELECT asin, sku, amount_type, amount_description, transaction_type,
@@ -324,6 +349,13 @@ module.exports = function registerFinance(app, deps) {
       FROM inv_settlement_lines
       WHERE posted_date >= $1 AND posted_date < $2
       GROUP BY asin, sku, amount_type, amount_description, transaction_type`, [from, to]);
+    const est = opts.settledOnly ? [] : await unsettled(from, to);
+    for (const r of est) r.est = true;
+    const estimate = { lines: est.length, from: null, to: null, sales: 0, refunds: 0, promotions: 0, fees: 0, other: 0 };
+    for (const r of est) {
+      if (!estimate.from || r.a < estimate.from) estimate.from = r.a;
+      if (!estimate.to || r.b > estimate.to) estimate.to = r.b;
+    }
 
     const isRefund = t => /refund/i.test(t || '');
     const isReserve = d => /reserve/i.test(d || '');
@@ -335,11 +367,16 @@ module.exports = function registerFinance(app, deps) {
     const P = a => by[a] = by[a] || { asin: a, units: 0, unitsRefunded: 0, sales: 0, refunds: 0, promotions: 0,
                                       fees: 0, feeDetail: {} };
 
-    for (const r of lines.rows) {
+    for (const r of lines.rows.concat(est)) {
       const amt = Number(r.total) || 0;
       const d = r.amount_description || 'Other';
       const key = r.asin || (r.sku ? 'sku:' + r.sku : null);
       if (isPassThroughTax(r.amount_type, d)) { t.tax += amt; continue; }
+      if (r.est && !isReserve(d) && !INBOUND_FEE_PATTERNS.test(d) && !INBOUND_FEE_PATTERNS.test(r.transaction_type || '')) {
+        const k = r.amount_type === 'ItemPrice' ? (isRefund(r.transaction_type) ? 'refunds' : 'sales')
+          : r.amount_type === 'Promotion' ? 'promotions' : r.amount_type === 'ItemFees' ? 'fees' : 'other';
+        estimate[k] += amt;
+      }
       if (isReserve(d)) { t.reserve += amt; continue; }
       // allocated per unit instead. Same test as settledInbound(), which also
       // matches on transaction_type — testing only the description here
@@ -435,7 +472,7 @@ module.exports = function registerFinance(app, deps) {
     items.sort((a, b) => (b.profit ?? -1e12) - (a.profit ?? -1e12));
 
     return { totals: t, cogs, supplies: supp, freight, freightOnly, placement, laborAllocated: labor, items,
-             costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0,
+             costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0 || est.length > 0, estimate,
              uncosted: uncosted.sort((a, b) => b.sales - a.sales) };
   }
 
@@ -612,12 +649,19 @@ module.exports = function registerFinance(app, deps) {
       `SELECT MIN(posted_date) AS a, MAX(posted_date) AS b FROM inv_settlement_lines
        WHERE posted_date >= $1 AND posted_date < $2`, [from, to])).rows[0] || {};
     const endOfMonth = new Date(new Date(to).getTime() - 86400000);
-    const firstDay = cov.a ? new Date(cov.a) : null, lastDay = cov.b ? new Date(cov.b) : null;
+    // the estimate (not yet settled) carries the month on past the last payout
+    const E = a.estimate || {};
+    const d10 = x => x ? (x instanceof Date ? x.toISOString() : String(x)).slice(0, 10) : null;
+    const lo = [d10(cov.a), E.from].filter(Boolean).sort()[0], hi = [d10(cov.b), E.to].filter(Boolean).sort().pop();
+    const firstDay = lo ? new Date(lo) : null, lastDay = hi ? new Date(hi) : null;
     const isCurrent = m === monthKey(new Date());
     const partial = !!firstDay && (firstDay.getUTCDate() > 3 ||
                     (lastDay && (endOfMonth - lastDay) / 86400000 > 3 && !isCurrent) || isCurrent);
+    const estimate = E.lines ? { from: E.from, to: E.to, settledTo: d10(cov.b),
+      netSales: E.sales + E.refunds + E.promotions, sales: E.sales, refunds: E.refunds, promotions: E.promotions, fees: E.fees, other: E.other } : null;
     const coverage = firstDay ? { from: firstDay.toISOString().slice(0, 10), to: lastDay.toISOString().slice(0, 10),
-                                  days: Math.round((lastDay - firstDay) / 86400000) + 1, partial, isCurrent } : null;
+                                  days: Math.round((lastDay - firstDay) / 86400000) + 1, partial, isCurrent,
+                                  settledTo: d10(cov.b), estimated: !!estimate } : null;
 
     // Royalty is 15% of (Amazon deposits − Cosmoprof spend) for the month —
     // a cash formula, worked out separately in royaltySeries().
@@ -695,7 +739,7 @@ module.exports = function registerFinance(app, deps) {
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
       marginWithheld: !!netSales && (costCoverage == null || costCoverage < 0.9),
-      coverage,
+      coverage, estimate,
       taxPassThrough: t.tax, reserveMovement: t.reserve,
       costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length, freightMissingUnits: a.freightMissingUnits || 0
     };
@@ -751,9 +795,9 @@ module.exports = function registerFinance(app, deps) {
       if (r.rows.some(x => !x.name)) { const nm = await amazonNames(); for (const x of r.rows) if (!x.name && nm[x.asin]) x.name = nm[x.asin]; }
       const back = new Date(Date.now() - 182 * 86400000).toISOString().slice(0, 10);
       const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 10);
-      const settled = await aggregate(back, tomorrow, ctx);
+      const settled = await aggregate(back, tomorrow, ctx, { settledOnly: true });
       // the per-unit fees (FBA) from the last 60 days, since Amazon changes them
-      const recent = await aggregate(new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10), tomorrow, ctx);
+      const recent = await aggregate(new Date(Date.now() - 60 * 86400000).toISOString().slice(0, 10), tomorrow, ctx, { settledOnly: true });
       const rates = topProfit.amazonRates(settled.items, recent.items);
       // landed cost per unit, as Product Profit adds it up, in its parts so the
       // dashboard can show where a margin comes from (owner checks duos by hand)
