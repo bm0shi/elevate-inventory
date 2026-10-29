@@ -7929,12 +7929,16 @@ function renderFinPnl() {
       + ' <span class="hint">— Amazon only provides about 90 days of settlements, so the oldest month starts mid-way. Compare full months only.</span></div>';
   }
   // Not yet settled: estimated from Amazon's daily money events (owner 10/29)
-  const estM = months.filter(m => m.estimate && Math.abs(m.estimate.netSales) >= 0.5);
+  const estM = months.filter(m => m.estimate && (Math.abs(m.estimate.netSales) >= 0.5 || m.estimate.gap));
   if (estM.length) {
+    const md = d => d.slice(5).replace('-', '/');
     h += '<div class="box" style="border:2px solid #2563a8;background:#f7fafd;padding:10px 14px"><b style="color:#2563a8">Includes an estimate for what Amazon hasn\'t settled yet</b>'
       + estM.map(m => '<div style="margin-top:4px"><b>' + finMonthLabel(m.month) + ':</b> ' + fin$(m.estimate.netSales) + ' of sales'
         + (m.estimate.settledTo ? ' (orders after the last settlement, ' + m.estimate.settledTo.slice(5).replace('-', '/') + ')' : '')
-        + ' and ' + fin$(Math.abs(m.estimate.fees)) + ' of Amazon fees on them, from its daily money events.</div>').join('')
+        + ' and ' + fin$(Math.abs(m.estimate.fees)) + ' of Amazon fees on them, from its daily money events.'
+        + (m.estimate.gap ? ' <b style="color:#c0392b">' + md(m.estimate.gap.from) + (m.estimate.gap.to !== m.estimate.gap.from ? '–' + md(m.estimate.gap.to) : '')
+          + ' isn\'t in it yet</b> <span class="hint">— Amazon\'s money events for those days haven\'t been read in. They fill in on their own (a few minutes after a restart, and every morning), or press ↻ Sync with Amazon on On Hand.</span>' : '')
+        + '</div>').join('')
       + '<div class="hint" style="margin-top:4px">Each order switches to its real settlement line automatically once Amazon settles it (checked every morning), so the month moves up or down to the exact number within a day of each payout. Storage and other monthly fees only arrive with the settlement.</div></div>';
   }
   if (months.some(m => m.marginWithheld)) {
@@ -8003,7 +8007,7 @@ function renderFinPnl() {
         const sub = (c && c.partial ? '<div style="font-size:9px;font-weight:600;color:#f6c667;text-transform:none">'
           + (c.isCurrent ? 'to date · ' : 'partial · ') + md(c.from) + '–' + md(c.to) + '</div>' : '')
           + (m.estimate ? '<div style="font-size:9px;font-weight:600;color:#9fd3ff;text-transform:none" title="Orders Amazon hasn\'t settled yet, from its daily money events">'
-            + (m.estimate.settledTo ? 'settled to ' + md(m.estimate.settledTo) + ' · rest est.' : 'estimate') + '</div>' : '');
+            + (m.estimate.settledTo ? 'settled to ' + md(m.estimate.settledTo) + ' · ' : '') + (m.estimate.to ? 'est. to ' + md(m.estimate.to) : 'estimate') + '</div>' : '');
         return '<th style="text-align:right;cursor:pointer;vertical-align:bottom" onclick="finDrillMonth(\'' + m.month + '\')" title="See products for ' + finMonthLabel(m.month) + '">'
           + finMonthLabel(m.month) + sub + '</th>';
       }).join('')
