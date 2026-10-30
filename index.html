@@ -4849,15 +4849,34 @@ function renderCapBar(){
     +'<button class="action" onclick="capSizes()" style="padding:6px 12px;font-size:12px;background:#5a6472" title="Look up each listing\'s package size on Amazon">'+(c.sizeJob&&c.sizeJob.running?'Getting sizes… '+esc(c.sizeJob.step||''):'Get sizes from Amazon')+'</button></div></div>'
     +line('Standard', 'standard', L.standard)
     +line('Dangerous goods', 'hazmat', L.hazmat);
-  if(c.missing&&c.missing.length) h+='<div class="hint" style="margin-top:6px;color:#b7791f">⚠ No package size yet for '+c.missing.length+' listing'+(c.missing.length===1?'':'s')+', not counted: '+c.missing.slice(0,6).map(m=>esc(String(m.name||m.asin).slice(0,40))).join(' · ')+(c.missing.length>6?' …':'')+'. Tap “Get sizes from Amazon”.</div>';
+  // Each listing with its reason and a ✎ to type a measured size, since the
+  // button can't clear one Amazon has no size for (owner 10/30).
+  if(c.missing&&c.missing.length) h+='<details style="margin-top:6px"><summary class="hint" style="color:#b7791f;cursor:pointer">⚠ No package size for '+c.missing.length+' listing'+(c.missing.length===1?'':'s')+', not counted — tap to see why and type a size</summary>'
+    +'<div class="hint" style="margin:4px 0">“Get sizes from Amazon” asks Amazon again. Where Amazon has no size (often a duo or bundle you made), measure the box and type it with ✎.</div>'
+    +c.missing.map(m=>'<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:3px 0;border-top:1px solid #eef2f6;font-size:12px">'
+      +'<span style="font-family:monospace">'+esc(m.asin)+'</span><span style="flex:1;min-width:160px">'+(m.name&&m.name!==m.asin?amzLinkSized(m.asin,m.name):'')+'</span>'
+      +'<span class="hint">'+esc(m.why||'not looked up yet')+'</span>'
+      +'<button class="mini" onclick="capSizeManual(\''+esc(m.asin)+'\')">✎ size</button></div>').join('')+'</details>';
   h+='<div class="hint" style="margin-top:4px">Room left = Seller Central\'s <b>Maximum shipment</b>'+(L.setAt?' (entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+(L.standardRoom!=null?': '+f(L.standardRoom)+' cu ft':'')+')':'')+', less anything sent to Amazon since. Prepped and pending prep are what you\'re about to send.</div></div>';
   el.innerHTML=h;
+}
+function capSizeManual(asin){
+  const v=prompt('Package size for '+asin+' in inches: length × width × height (e.g. 9.5 x 3 x 3)');
+  if(!v) return;
+  const n=(String(v).match(/\d+(\.\d+)?/g)||[]).map(Number);
+  if(n.length!==3){ toast('Type three numbers: length, width, height',true); return; }
+  api('/api/capacity/size',{method:'POST',body:JSON.stringify({asin,l:n[0],w:n[1],h:n[2]})}).then(d=>{
+    if(!d||d.ok===false||d.error){ toast((d&&d.error)||'Could not save the size',true); return; }
+    toast('Saved: '+d.cuft.toFixed(3)+' cu ft per unit'); loadCapacity();
+  }).catch(()=>toast('Could not save — connection problem',true));
 }
 function capSizes(){
   api('/api/capacity/sizes/start',{method:'POST',body:'{}'}).then(d=>{
     if(!d||d.ok===false){ toast('Could not start: '+((d&&d.error)||'error'),true); return; }
     toast('Looking up package sizes — about a minute');
-    let n=0; const t=setInterval(()=>{ n++; loadCapacity().then(()=>{ if((_cap&&_cap.sizeJob&&!_cap.sizeJob.running)||n>60){ clearInterval(t); if(_cap&&_cap.sizeJob&&_cap.sizeJob.error) toast('Sizes: '+_cap.sizeJob.error,true); } }); }, 4000);
+    let n=0; const t=setInterval(()=>{ n++; loadCapacity().then(()=>{ if((_cap&&_cap.sizeJob&&!_cap.sizeJob.running)||n>60){ clearInterval(t); const sj=_cap&&_cap.sizeJob;
+      if(sj&&sj.error) toast('Sizes: '+sj.error,true);
+      else if(sj&&sj.result) toast('Sizes: '+sj.result.found+' found'+(sj.result.failed?', '+sj.result.failed+' Amazon has no size for — type those with ✎':''), !!sj.result.failed); } }); }, 4000);
   }).catch(()=>toast('Could not start — connection problem',true));
 }
 function capLimitModal(){

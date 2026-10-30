@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'loan-line-1116';
+const BUILD_ID = 'sizes-all-1117';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1191,6 +1191,10 @@ async function initDb() {
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft NUMERIC;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_at TIMESTAMPTZ;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_error TEXT;
+      -- listings at Amazon with no catalog row (owner 10/30: four of them sat
+      -- under "no package size" for good, since the lookup only read the catalog)
+      CREATE TABLE IF NOT EXISTS inv_asin_sizes (asin TEXT PRIMARY KEY, cuft NUMERIC, error TEXT,
+        manual BOOLEAN NOT NULL DEFAULT false, at TIMESTAMPTZ DEFAULT now());
     `);
   } catch(e) { console.error('cuft migration skipped:', e.message); }
 
@@ -7756,9 +7760,24 @@ let sizeJob = { running: false, step: '', done: false, result: null };
 async function pullItemSizes(all, onStep) {
   const q = all ? 'SELECT asin FROM inv_products' : 'SELECT asin FROM inv_products WHERE cuft IS NULL OR unit_weight_lb IS NULL';
   const asins = (await pool.query(q)).rows.map(r => r.asin);
-  if (!asins.length) return { looked: 0, found: 0, failed: 0 };
-  const dims = await getItemDimensions(asins, onStep);
+  // listings at Amazon that aren't in the catalog: sizes kept in inv_asin_sizes
+  // (a size typed by hand is never looked up again)
+  const fba = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'")).rows[0] || {}).data || [];
+  const inCat = new Set((await pool.query('SELECT asin FROM inv_products')).rows.map(r => r.asin));
+  const have = {}; for (const r of (await pool.query('SELECT asin, cuft, manual FROM inv_asin_sizes')).rows) have[r.asin] = r;
+  const extra = [...new Set(fba.map(f => f.asin).filter(a => a && !inCat.has(a)))]
+    .filter(a => !(have[a] && (have[a].manual || (!all && Number(have[a].cuft) > 0))));
+  if (!asins.length && !extra.length) return { looked: 0, found: 0, failed: 0 };
+  const dims = await getItemDimensions(asins.concat(extra), onStep);
   let found = 0, failed = 0;
+  for (const a of extra) {
+    const r = dims[a] || {};
+    const cf = r.error ? null : capacity.cubicFeet(r.dimensions);
+    if (cf) found++; else failed++;
+    await pool.query(`INSERT INTO inv_asin_sizes(asin, cuft, error, at) VALUES($1,$2,$3,now())
+      ON CONFLICT (asin) DO UPDATE SET cuft=COALESCE(EXCLUDED.cuft, inv_asin_sizes.cuft), error=EXCLUDED.error, at=now() WHERE NOT inv_asin_sizes.manual`,
+      [a, cf, cf ? null : (r.error || 'Amazon has no size for this listing')]);
+  }
   for (const a of asins) {
     const r = dims[a] || {};
     const cf = r.error ? null : capacity.cubicFeet(r.dimensions);
@@ -7788,6 +7807,21 @@ async function capacityNow() {
   const lim = (limR.rows[0] && limR.rows[0].data) || {};
   const prods = (await pool.query('SELECT asin, name, cuft::float AS cuft, hazmat, cuft_error FROM inv_products')).rows;
   const P = {}; for (const p of prods) P[p.asin] = p;
+  // Not in the catalog: the size from inv_asin_sizes, the name from Amazon's list.
+  const xs = {}; for (const r of (await pool.query('SELECT asin, cuft::float AS cuft, error FROM inv_asin_sizes')).rows) xs[r.asin] = r;
+  for (const f of fba) if (f.asin && !P[f.asin]) {
+    const x = xs[f.asin] || {};
+    P[f.asin] = { asin: f.asin, name: f.name || f.asin, cuft: x.cuft > 0 ? x.cuft : null, hazmat: false, cuft_error: x.error || 'not in the catalog — tap Get sizes from Amazon', outside: true };
+    prods.push(P[f.asin]);
+  }
+  // A duo Amazon has no size for (seller-made bundles often have none) is its
+  // bottles side by side: their sizes added up.
+  const comps = {}; for (const b of (await pool.query('SELECT bundle_asin, component_asin, qty FROM inv_bundles')).rows) (comps[b.bundle_asin] = comps[b.bundle_asin] || []).push(b);
+  for (const p of prods) if (!(p.cuft > 0) && comps[p.asin]) {
+    const cs = comps[p.asin]; let cf = 0;
+    for (const c of cs) { const b = P[c.component_asin]; if (!b || !(b.cuft > 0)) { cf = 0; break; } cf += b.cuft * (Number(c.qty) || 1); }
+    if (cf > 0) { p.cuft = cf; p.fromBottles = true; }
+  }
   // Pre-labelled stock isn't headed to Amazon yet, so it takes no room there.
   const prepped = {}; for (const r of (await pool.query('SELECT asin, qty - prelabel_qty AS qty FROM inv_prepped WHERE qty - prelabel_qty > 0')).rows) prepped[r.asin] = r.qty;
   const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep WHERE NOT prelabel GROUP BY asin')).rows) pending[r.asin] = r.q;
@@ -7798,7 +7832,7 @@ async function capacityNow() {
   const pendRows = Object.entries(pending).map(([a, q]) => row(a, q));
   const used = capacity.volumeOf(nowRows), prep = capacity.volumeOf(prepRows), pend = capacity.volumeOf(pendRows);
   const missing = [...new Set(nowRows.concat(prepRows, pendRows).filter(r => r.units > 0 && !(r.cuft > 0)).map(r => r.asin))]
-    .map(a => ({ asin: a, name: P[a] ? P[a].name : a, why: P[a] ? P[a].cuft_error : 'not in the catalog' }));
+    .map(a => ({ asin: a, name: P[a] ? P[a].name : a, why: P[a] ? P[a].cuft_error : 'not in the catalog', outside: !!(P[a] && P[a].outside) }));
   // Scale by how far off we were the last time the owner read Seller Central.
   const cal = lim.amazonUsed && lim.ourUsedThen ? capacity.calibration(lim.ourUsedThen, lim.amazonUsed) : 1;
   const cuft = {}; for (const p of prods) if (p.cuft > 0) cuft[p.asin] = p.cuft * cal;
@@ -7808,6 +7842,18 @@ async function capacityNow() {
     sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
 }
 app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow()); });
+// A package size typed by hand, when Amazon has none (inches; a measured box).
+app.post('/api/capacity/size', auth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim().toUpperCase();
+  const d = ['l', 'w', 'h'].map(k => Number(req.body && req.body[k]));
+  if (!/^B0[A-Z0-9]{8}$/.test(asin)) return res.status(400).json({ ok: false, error: 'Not an ASIN.' });
+  if (d.some(x => !(x > 0 && x <= 120))) return res.status(400).json({ ok: false, error: 'Length, width and height in inches, each between 0 and 120.' });
+  const cuft = (d[0] * d[1] * d[2]) / 1728;
+  const r = await pool.query('UPDATE inv_products SET cuft=$2, cuft_at=now(), cuft_error=NULL WHERE asin=$1', [asin, cuft]);
+  if (!r.rowCount) await pool.query(`INSERT INTO inv_asin_sizes(asin, cuft, error, manual, at) VALUES($1,$2,NULL,true,now())
+    ON CONFLICT (asin) DO UPDATE SET cuft=EXCLUDED.cuft, error=NULL, manual=true, at=now()`, [asin, cuft]);
+  res.json({ ok: true, cuft });
+});
 // Dangerous-goods storage request (Admin → Checks → Hazmat storage; owner
 // 10/30, Seller Support asked for "volume per unit (Cu Ft) × units = total"
 // per ASIN). Each ASIN's size is asked from Amazon now (the same Catalog
