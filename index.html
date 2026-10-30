@@ -8003,7 +8003,8 @@ function renderFinPnl() {
       supplies: ['Supplies', 'supplies'], labor: ['Labor', 'labor'], freight: ['Inbound freight / placement', 'freight'], overhead: ['Overhead', 'overhead'] };
     const why = (m, k) => k === 'cogs' ? (m.uncostedCount ? m.uncostedCount + ' listing' + (m.uncostedCount === 1 ? '' : 's') + ' sold with no cost: '
           + (m.uncosted || []).slice(0, 4).map(u => esc(String(u.name || u.asin).slice(0, 48))).join(', ') + (m.uncostedCount > 4 ? '…' : '') : 'no product costs')
-      : k === 'freight' ? (m.freightMissingUnits ? m.freightMissingUnits.toLocaleString() + ' unit' + (m.freightMissingUnits === 1 ? '' : 's') + ' sold from shipments with no freight / placement fee on file' : 'fees still waiting on shipments not yet received')
+      : k === 'freight' ? (m.freightNoFeeUnits ? m.freightNoFeeUnits.toLocaleString() + ' unit' + (m.freightNoFeeUnits === 1 ? '' : 's') + ' sold from ' + m.noFeeShipCount + ' shipment' + (m.noFeeShipCount === 1 ? '' : 's') + ' with no freight / placement fee on file: '
+          + (m.noFeeShips || []).slice(0, 6).map(esc).join(', ') + (m.noFeeShipCount > 6 ? '…' : '') + ' (pull from Amazon, then Apply; or type them)' : 'fees still waiting on shipments not yet received')
       : k === 'overhead' ? 'none entered for the month' : k === 'labor' ? 'no timesheets for the month'
       : k === 'supplies' ? 'some sizes have no supply cost' : k === 'royalty' ? 'no Cosmoprof purchases on file for the month' : 'no settlement for the month';
     h += '<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:10px 14px"><b style="color:#b7791f">' + incomplete + ' month(s) have lines that aren\'t complete</b>'
