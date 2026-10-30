@@ -668,7 +668,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
           <div class="subcard"><div class="subgroup-label">🚚 Shipments</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button></div></div>
           <div class="subcard"><div class="subgroup-label">🏷️ Prices</div><div class="subgroup-btns"><button class="subtab amz" title="Night price drop: lower prices in time slots, put them back after" data-sub="reprice" onclick="showSubTab('reprice',event)">Repricer</button></div></div>
           <div class="subcard"><div class="subgroup-label">🧭 Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button></div></div>
-          <div class="subcard"><div class="subgroup-label">✅ Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="status" onclick="showSubTab('status',event)">App status<span id="statusDot" class="fresh-tag" style="display:none"></span></button><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button></div></div>
+          <div class="subcard"><div class="subgroup-label">✅ Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="status" onclick="showSubTab('status',event)">App status<span id="statusDot" class="fresh-tag" style="display:none"></span></button><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button><button class="subtab" data-sub="hzstore" onclick="showSubTab('hzstore',event)" title="Cubic feet per ASIN for a dangerous-goods storage increase request">Hazmat storage</button></div></div>
           <div class="subcard"><div class="subgroup-label">📍 Item locations</div><div class="subgroup-btns"><button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button></div></div>
           <div class="subcard"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button><button class="subtab" data-sub="count" onclick="showSubTab('count',event)">Cycle Count</button></span></div></div>
         </div>
@@ -822,6 +822,15 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <div id="costImportOut"></div>
     </div>
     <div id="costsBody"><div class="hint" style="padding:16px">Load to see cost and margin per product.</div></div>
+  </div>
+<div id="sub-hzstore" class="subpanel">
+    <div class="box">
+      <h3 style="margin-bottom:4px">Hazmat storage request</h3>
+      <div class="hint">For a dangerous-goods (flammable) storage increase case: paste ASINs with quantities, in any layout (an ASIN, then its quantity on the same line or the next ones). Each ASIN's package size is read from Amazon now, and you get the lines Seller Support asks for, <b>ASIN — volume per unit (Cu Ft) × units = total cubic feet</b>, ready to paste, plus a spreadsheet. Seller Support also wants a screenshot of Seller Central → Inventory → FBA Inventory → Capacity Monitor (the Flammable storage part).</div>
+      <textarea id="hzIn" rows="8" style="width:100%;margin-top:10px;padding:8px;border:2px solid #e2e8f0;border-radius:6px;font-family:inherit" placeholder="B08N9L6C93 - 352&#10;B08NBF9NCN - 210"></textarea>
+      <button class="action full" id="hzBtn" onclick="hzCalc()" style="margin-top:8px">Work out cubic feet</button>
+      <div id="hzOut"></div>
+    </div>
   </div>
 <div id="sub-maphealth" class="subpanel">
     <div class="box">
@@ -4412,6 +4421,7 @@ function showSubTab(name, ev){
   if(name==='status') loadStatus();
   if(name==='claims') loadClaims();
   if(name==='stuck') loadStuck();
+  if(name==='hzstore'){ const el=document.getElementById('hzIn'); if(el) try{ if(!el.value) el.value=localStorage.getItem('hzIn')||''; }catch(e){} if(window._hz) hzRender(); }
   if(name==='reprice'){ _rpEdit=null; loadReprice(); }
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.remove('active'));
   document.querySelectorAll('.subtab').forEach(b=>b.classList.remove('active'));
@@ -9893,6 +9903,76 @@ function rpRestoreNow(){
 // ---- STUCK AT AMAZON (Admin → Money): stock that can't sell, fees coming ----
 // Parsers in lib/stuck.js; uses the Reimbursements screen's styles (CL_CSS).
 let _stuck=null, _stuckPoll=null;
+// Hazmat storage request (owner 10/30): cubic feet per ASIN from Amazon's
+// package sizes, in the exact lines Seller Support asked for. hzParse is the
+// same rule as lib/capacity.js parseAsinQty (tested there).
+function hzParse(text){
+  const words=String(text||'').split(/[\s,;|=:\u2013\u2014-]+/).filter(Boolean), out=[], by={};
+  const isA=w=>/^B0[A-Z0-9]{8}$/i.test(w);
+  for(let i=0;i<words.length;i++){
+    if(!isA(words[i])) continue;
+    const a=words[i].toUpperCase(); let q=null;
+    for(let j=i+1;j<words.length&&!isA(words[j]);j++) if(/^\d{1,6}$/.test(words[j])){ q=Number(words[j]); break; }
+    if(!q) continue;
+    if(!by[a]){ by[a]={asin:a,units:0,parts:[]}; out.push(by[a]); }
+    by[a].units+=q; by[a].parts.push(q);
+  }
+  return out;
+}
+function hzCalc(){
+  const text=(document.getElementById('hzIn')||{}).value||'';
+  try{ localStorage.setItem('hzIn', text); }catch(e){}
+  const lines=hzParse(text), out=document.getElementById('hzOut'), btn=document.getElementById('hzBtn');
+  if(!lines.length){ out.innerHTML='<div class="hint" style="color:#c0392b;margin-top:8px">No ASIN with a quantity found. Put each ASIN (B0…) with its number of units after it.</div>'; return; }
+  btn.disabled=true; btn.textContent='Asking Amazon for '+lines.length+' package size'+(lines.length===1?'':'s')+'…';
+  out.innerHTML='<div class="hint" style="margin-top:8px">About '+Math.ceil(lines.length*0.7)+' seconds…</div>';
+  ownerApi('/api/hazmat-storage/calc',{method:'POST',body:JSON.stringify({lines:lines.map(l=>({asin:l.asin,units:l.units}))})}).then(d=>{
+    btn.disabled=false; btn.textContent='Work out cubic feet';
+    if(!d||d.ok===false||d.error){ out.innerHTML='<div class="hint" style="color:#c0392b;margin-top:8px">'+esc((d&&d.error)||'Could not work it out.')+'</div>'; return; }
+    const parts={}; lines.forEach(l=>{ if(l.parts.length>1) parts[l.asin]=l.parts; });
+    d.rows.forEach(r=>{ r.parts=parts[r.asin]||null; });
+    window._hz=d; hzRender();
+  }).catch(()=>{ btn.disabled=false; btn.textContent='Work out cubic feet'; out.innerHTML='<div class="hint" style="color:#c0392b;margin-top:8px">Connection problem — try again.</div>'; });
+}
+const hzF=(v,n)=>v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:n,maximumFractionDigits:n});
+function hzText(d){
+  return d.rows.filter(r=>r.cuft).map(r=>r.asin+' — '+hzF(r.cuft,4)+' Cu Ft × '+r.units.toLocaleString()+' units = '+hzF(r.total,2)+' Cu Ft').join('\n')
+    +'\n\nTotal: '+d.rows.filter(r=>r.cuft).reduce((n,r)=>n+r.units,0).toLocaleString()+' units = '+hzF(d.total,2)+' Cu Ft';
+}
+function hzCopy(el){
+  const t=hzText(window._hz);
+  navigator.clipboard.writeText(t).then(()=>{ toast('Copied — paste it into the case'); if(el){ el.textContent='✅ Copied'; setTimeout(()=>{ el.textContent='📋 Copy for the case'; },1200); } })
+    .catch(()=>{ toast('Copy failed — select the text below and copy it',true); });
+}
+function hzCsv(){
+  const d=window._hz, q=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+  const rows=[['ASIN','Product','Length (in)','Width (in)','Height (in)','Volume per unit (Cu Ft)','Number of units','Total (Cu Ft)']]
+    .concat(d.rows.map(r=>[r.asin,r.name||'',r.size?r.size.l:'',r.size?r.size.w:'',r.size?r.size.h:'',r.cuft?r.cuft.toFixed(4):'',r.units,r.total?r.total.toFixed(2):'']));
+  rows.push(['Total','','','','','',d.rows.filter(r=>r.cuft).reduce((n,r)=>n+r.units,0),d.total.toFixed(2)]);
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([rows.map(r=>r.map(q).join(',')).join('\n')],{type:'text/csv'}));
+  a.download='hazmat-storage-cubic-feet.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
+function hzRender(){
+  const d=window._hz, out=document.getElementById('hzOut'); if(!d||!out) return;
+  sortState('hz');
+  const rows=sortRows('hz', d.rows, { asin:r=>r.asin, name:r=>(r.name||r.asin).toLowerCase(), cuft:r=>r.cuft, units:r=>r.units, total:r=>r.total });
+  const td='style="text-align:center"';
+  const warn=d.rows.filter(r=>r.parts).map(r=>'<b>'+esc(r.asin)+'</b> was in the list '+r.parts.length+' times ('+r.parts.join(' + ')+'), counted as '+r.units.toLocaleString())
+    .concat(d.rows.filter(r=>r.hazmat===false).map(r=>'<b>'+esc(r.asin)+'</b> isn\'t marked hazmat in the app — check it belongs in a dangerous-goods request'));
+  out.innerHTML='<div class="cards" style="margin-top:10px"><div class="card"><div class="n">'+hzF(d.total,2)+'</div><div class="l">Total cubic feet</div></div>'
+    +'<div class="card"><div class="n">'+d.rows.filter(r=>r.cuft).reduce((n,r)=>n+r.units,0).toLocaleString()+'</div><div class="l">Units · '+(d.missing?(d.rows.length-d.missing)+' of ':'')+d.rows.length+' ASINs</div></div></div>'
+    +(warn.length?'<div class="box" style="border:2px solid #b7791f;background:#fffdf7;padding:8px 12px">'+warn.map(w=>'<div>⚠ '+w+'</div>').join('')+'</div>':'')
+    +(d.missing?'<div class="box" style="border:2px solid #c0392b;background:#fdf5f4;padding:8px 12px"><b style="color:#c0392b">'+d.missing+' ASIN'+(d.missing===1?' has':'s have')+' no size from Amazon</b> — left out of the total; measure the package and add it to the case by hand.</div>':'')
+    +'<div style="overflow-x:auto"><table style="table-layout:fixed;min-width:760px"><thead><tr>'+sortTh('hz','asin','ASIN','hzRender','')+sortTh('hz','name','Product','hzRender','')
+    +'<th '+td+'>Package (in)</th>'+sortTh('hz','cuft','Cu Ft / unit','hzRender','')+sortTh('hz','units','Units','hzRender','')+sortTh('hz','total','Total Cu Ft','hzRender','')+'</tr></thead><tbody>'
+    +rows.map(r=>'<tr><td style="font-family:monospace">'+esc(r.asin)+'</td><td style="text-align:left">'+(r.name?amzLinkSized(r.asin,r.name):'<span class="hint">not in the catalog</span>')+'</td>'
+      +'<td '+td+'>'+(r.size?r.size.l+' × '+r.size.w+' × '+r.size.h+(r.size.which==='item'?' <span class="hint" title="Amazon has no package size, so this is the item size">item</span>':''):(r.src==='saved'?'<span class="hint">saved size</span>':'—'))+'</td>'
+      +'<td '+td+'>'+(r.cuft?hzF(r.cuft,4):'<span style="color:#c0392b" title="'+esc(r.error||'')+'">no size</span>')+'</td><td '+td+'>'+r.units.toLocaleString()+'</td><td '+td+'><b>'+hzF(r.total,2)+'</b></td></tr>').join('')
+    +'</tbody></table></div>'
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="action" onclick="hzCopy(this)">📋 Copy for the case</button><button class="action" style="background:#5a6472" onclick="hzCsv()">⬇ Spreadsheet (ASIN calculator)</button></div>'
+    +'<pre style="white-space:pre-wrap;background:#f7f9fb;border:1px solid #e2e8f0;border-radius:6px;padding:10px;margin-top:8px;font-size:12px;user-select:all">'+esc(hzText(d))+'</pre>';
+}
+
 function loadStuck(){
   if(!document.getElementById('clxCss')){ const st=document.createElement('style'); st.id='clxCss'; st.textContent=CL_CSS.replace(/#sub-claims/g,'#sub-stuck'); document.head.appendChild(st); }
   const el=document.getElementById('stuckBody'); if(!el) return;
