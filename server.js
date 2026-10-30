@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pnl-check-1114';
+const BUILD_ID = 'hazmat-storage-1115';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7808,6 +7808,42 @@ async function capacityNow() {
     sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
 }
 app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow()); });
+// Dangerous-goods storage request (Admin → Checks → Hazmat storage; owner
+// 10/30, Seller Support asked for "volume per unit (Cu Ft) × units = total"
+// per ASIN). Each ASIN's size is asked from Amazon now (the same Catalog
+// Items package size the capacity bar uses), falling back to the saved one;
+// a fresh size is also saved on the product. Raw Amazon sizes, not scaled
+// by the capacity bar's calibration: this goes to Amazon.
+app.post('/api/hazmat-storage/calc', ownerAuth, async (req, res) => {
+  const lines = (Array.isArray(req.body && req.body.lines) ? req.body.lines : [])
+    .map(l => ({ asin: String(l.asin || '').trim().toUpperCase(), units: Number(l.units) }))
+    .filter(l => /^B0[A-Z0-9]{8}$/.test(l.asin));
+  if (!lines.length) return res.status(400).json({ ok: false, error: 'No ASINs with a quantity found.' });
+  if (lines.length > 60) return res.status(400).json({ ok: false, error: 'Up to 60 ASINs at a time.' });
+  const bad = lines.find(l => badQty(l.units));
+  if (bad) return res.status(400).json({ ok: false, error: `${bad.asin}: quantity ${bad.units} doesn't look right.` });
+  const asins = lines.map(l => l.asin);
+  const saved = {}; for (const r of (await pool.query('SELECT asin, name, cuft::float AS cuft, hazmat FROM inv_products WHERE asin = ANY($1)', [asins])).rows) saved[r.asin] = r;
+  let dims = {};
+  try { dims = await getItemDimensions(asins); } catch (e) { dims = {}; }
+  const names = {};
+  try {
+    const fba = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'")).rows[0] || {}).data || [];
+    for (const f of fba) if (f.asin && f.name) names[f.asin] = f.name;
+  } catch (e) {}
+  const rows = [];
+  for (const l of lines) {
+    const d = dims[l.asin] || {};
+    const size = d.error ? null : capacity.sizeInches(d.dimensions);
+    let cuft = size ? (size.l * size.w * size.h) / 1728 : null, src = size ? 'amazon-' + size.which : null;
+    if (cuft && saved[l.asin]) await pool.query('UPDATE inv_products SET cuft=$2, cuft_at=now(), cuft_error=NULL WHERE asin=$1', [l.asin, cuft]);
+    if (!cuft && saved[l.asin] && saved[l.asin].cuft > 0) { cuft = saved[l.asin].cuft; src = 'saved'; }
+    rows.push({ asin: l.asin, name: (saved[l.asin] && saved[l.asin].name) || names[l.asin] || null, hazmat: saved[l.asin] ? !!saved[l.asin].hazmat : null,
+      units: l.units, size: size ? { l: +size.l.toFixed(2), w: +size.w.toFixed(2), h: +size.h.toFixed(2), which: size.which } : null,
+      cuft, total: cuft ? cuft * l.units : null, src, error: cuft ? null : (d.error || 'Amazon has no size for this listing') });
+  }
+  res.json({ ok: true, rows, total: rows.reduce((n, r) => n + (r.total || 0), 0), units: rows.reduce((n, r) => n + r.units, 0), missing: rows.filter(r => !r.cuft).length });
+});
 // Owner sets the month's limits (from Seller Central → Capacity Monitor), and
 // optionally what Seller Central says is used right now, to calibrate.
 // Warehouse login is enough (owner's choice): it's cubic feet, no money.
