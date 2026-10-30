@@ -7948,7 +7948,7 @@ function renderFinPnl() {
 
   let h = hiddenNote + '<div class="cards" style="flex-wrap:wrap">'
     + '<div class="card" style="border-top:3px solid #2563a8"><div class="n">' + (last.paidToBank == null ? '—' : fin$(last.paidToBank)) + '</div><div class="l">Amazon paid you · ' + finMonthLabel(last.month) + '</div></div>'
-    + '<div class="card" style="border-top:3px solid ' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '"><div class="n" style="color:' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '">' + fin$(last.net) + '</div><div class="l">Net profit · ' + finMonthLabel(last.month) + '</div></div>'
+    + '<div class="card" style="border-top:3px solid ' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '"><div class="n" style="color:' + (last.net >= 0 ? '#1e8449' : '#c0392b') + '">' + fin$(last.net) + '</div><div class="l">' + (last.loan ? 'Left over after loan' : 'Net profit') + ' · ' + finMonthLabel(last.month) + '</div></div>'
     + '<div class="card" style="border-top:3px solid #008296"><div class="n">' + (last.marginPct == null ? (last.marginWithheld ? '<span style="font-size:14px;color:#b7791f">needs costs</span>' : '—') : last.marginPct.toFixed(1) + '%') + '</div><div class="l">Net margin</div></div>'
     + '<div class="card" style="border-top:3px solid #7d3c98"><div class="n">' + (avgNet == null ? '—' : fin$(avgNet)) + '</div><div class="l">Avg net profit · last ' + avg3.length + ' mo</div></div>'
     + '</div>';
@@ -8027,7 +8027,8 @@ function renderFinPnl() {
     ['CONTRIBUTION', 'contribution', null, { total: true }],
     ['Rent & overhead', 'overhead', 'overhead', { neg: true }],
     ['Royalty', 'royalty', 'royalty', { neg: true, note: '% of (deposits − Cosmoprof spend) · see worksheet below' }],
-    ['NET PROFIT', 'net', null, { total: true, big: true }],
+    ['Amazon loan payment', 'loan', null, { neg: true, hideZero: true, note: 'the monthly repayment from the bank · set in Rent & overhead (category Loan payment)' }],
+    [months.some(m => m.loan) ? 'NET (WHAT\'S LEFT OVER)' : 'NET PROFIT', 'net', null, { total: true, big: true, note: months.some(m => m.loan) ? 'after loan payments' : '' }],
     ['Net margin', 'marginPct', null, { pct: true }]
   ];
   let t = '<div class="box" style="overflow-x:auto;padding:0"><table style="min-width:' + (220 + months.length * 96) + 'px;border-collapse:collapse">'
@@ -8647,9 +8648,9 @@ function finOpenEditor(which) {
   }
   if (which === 'overhead') {
     ownerApi('/api/finance/overhead').then(d => {
-      const cats = ['Rent', 'Utilities', 'Insurance', 'Software', 'Payroll (non-prep)', 'Vehicle', 'Professional fees', 'Other'];
+      const cats = ['Rent', 'Utilities', 'Insurance', 'Software', 'Payroll (non-prep)', 'Vehicle', 'Professional fees', 'Loan payment', 'Other'];
       let h = '<div class="box" style="border:2px solid #7d3c98"><b style="font-size:15px">Rent &amp; overhead</b>'
-        + '<div class="hint">Fixed monthly costs that don\'t depend on how much you sell. Set a start month so moving warehouses doesn\'t rewrite history — end the old rent, add the new one.</div>'
+        + '<div class="hint">Fixed monthly costs that don\'t depend on how much you sell. Set a start month so moving warehouses doesn\'t rewrite history — end the old rent, add the new one. Category <b>Loan payment</b> goes on its own line (Amazon loan payment) under Royalty, not in overhead; set Until to the last payment month.</div>'
         + '<table style="margin-top:8px"><thead><tr><th>Item</th><th>Category</th><th style="text-align:right">Per month</th><th>From</th><th>Until</th><th></th></tr></thead><tbody>';
       h += d.items.map(x => '<tr style="' + (x.active ? '' : 'opacity:.5') + '"><td>' + esc(x.name) + '</td><td>' + (x.category || '') + '</td>'
         + '<td style="text-align:right;font-weight:700">' + fin$(Number(x.monthly_amount), 2) + '</td>'

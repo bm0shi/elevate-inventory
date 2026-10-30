@@ -312,7 +312,14 @@ module.exports = function registerFinance(app, deps) {
     const r = await pool.query(`
       SELECT id, name, category, monthly_amount FROM fin_overhead
       WHERE active AND (start_month IS NULL OR start_month <= $1) AND (end_month IS NULL OR end_month >= $1)`, [month]);
-    return { total: r.rows.reduce((n, x) => n + Number(x.monthly_amount || 0), 0), items: r.rows, any: r.rows.length > 0 };
+    // Loan repayments (owner 10/30: the Amazon loan, $11,757.62 a month from
+    // the bank) are their own line under Royalty, taken off net so net is
+    // what's left over. Not an expense in the accounting sense (only the
+    // interest is) — the owner chose to see the whole payment.
+    const isLoan = x => /loan/i.test(x.category || '');
+    const oh = r.rows.filter(x => !isLoan(x)), loans = r.rows.filter(isLoan);
+    const sum = a => a.reduce((n, x) => n + Number(x.monthly_amount || 0), 0);
+    return { total: sum(oh), items: oh, any: oh.length > 0, loan: sum(loans), loanItems: loans };
   }
 
   // ---------- core: aggregate settlements over a window ----------
@@ -753,7 +760,8 @@ module.exports = function registerFinance(app, deps) {
     const contribution = deposited
                          - (cogs || 0) - (supplies || 0) - (labor || 0) - (freight || 0);
     const overhead = oh.any ? oh.total : null;
-    const net = contribution - (overhead || 0) - (royalty || 0);
+    const loan = oh.loan || 0;
+    const net = contribution - (overhead || 0) - (royalty || 0) - loan;
     const costCoverage = (a.costedSales + a.uncostedSales) ? a.costedSales / (a.costedSales + a.uncostedSales) : null;
 
     const lineStatus = {
@@ -772,7 +780,7 @@ module.exports = function registerFinance(app, deps) {
       month: m, hasData: a.hasLines, units: t.units,
       sales: t.sales, refunds: t.refunds, promotions: t.promotions, netSales,
       amazonFees, reimbursements: t.reimbursements, deposited, paidToBank, payouts, feeDetail: t.feeDetail,
-      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, freightNote, carrierNote, placementNote, contribution, overhead, overheadItems: oh.items, net,
+      cogs, royalty, royaltyPct, royaltyCalc: roy, supplies, labor, freight, carrier, placement, freightNote, carrierNote, placementNote, contribution, overhead, overheadItems: oh.items, loan, loanItems: oh.loanItems, net,
       // A margin with most of COGS missing is fiction. Withhold it until at
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
@@ -931,7 +939,7 @@ module.exports = function registerFinance(app, deps) {
       let liquid = null, reserve = null, safe = null, why = [];
       if (latest) {
         liquid = (num(latest.bank_cash) || 0) + (num(latest.amazon_balance) || 0);
-        reserve = (settings.nextBuyTarget || 0) + settings.bufferMonths * (oh.total || 0);
+        reserve = (settings.nextBuyTarget || 0) + settings.bufferMonths * ((oh.total || 0) + (oh.loan || 0));
         safe = Math.max(0, Math.min(liquid - reserve, trailing));
         if (!settings.nextBuyTarget) why.push('No next-buy target set, so nothing is reserved for your next Cosmoprof order.');
         if (!oh.any) why.push('No overhead entered, so no operating buffer is reserved.');
