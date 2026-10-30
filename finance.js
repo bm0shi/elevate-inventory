@@ -414,7 +414,15 @@ module.exports = function registerFinance(app, deps) {
     // matched costs per product
     let cogs = 0, supp = 0, freight = 0, labor = 0, freightOnly = 0, placement = 0;
     const uncosted = [];
-    let costedSales = 0, uncostedSales = 0, suppMissing = 0, freightMissingUnits = 0;
+    let costedSales = 0, uncostedSales = 0, suppMissing = 0, freightMissingUnits = 0, freightNoFeeUnits = 0;
+    const noFeeShips = new Set();
+    // the shipments with no fees that this listing's units came from (a duo: its bottles')
+    const noFeeOf = asin => {
+      if (!asin || !ctx.noFee) return [];
+      const ids = new Set(ctx.noFee[asin] || []);
+      for (const c of (ctx.bundles && ctx.bundles[asin]) || []) for (const x of ctx.noFee[c.component_asin] || []) ids.add(x);
+      return [...ids];
+    };
     const items = [];
     for (const key of Object.keys(by)) {
       const p = by[key];
@@ -451,7 +459,12 @@ module.exports = function registerFinance(app, deps) {
                         units: net, sales: p.sales, reason, fix, missingParts });
       }
       if (pSupp != null) supp += pSupp; else if (net) suppMissing += net;
-      if (pFreight != null) { freight += pFreight; freightOnly += pFreightOnly; placement += pPlacement; } else if (net) freightMissingUnits += net;
+      if (pFreight != null) { freight += pFreight; freightOnly += pFreightOnly; placement += pPlacement; }
+      else if (net) {
+        freightMissingUnits += net;
+        const ids = noFeeOf(asin);
+        if (ids.length) { freightNoFeeUnits += net; ids.forEach(x => noFeeShips.add(x)); }
+      }
       if (pLabor != null) labor += pLabor;
 
       const netSales = p.sales + p.refunds + p.promotions;
@@ -479,7 +492,7 @@ module.exports = function registerFinance(app, deps) {
     items.sort((a, b) => (b.profit ?? -1e12) - (a.profit ?? -1e12));
 
     return { totals: t, cogs, supplies: supp, freight, freightOnly, placement, laborAllocated: labor, items,
-             costedSales, uncostedSales, suppMissing, freightMissingUnits, hasLines: lines.rows.length > 0 || est.length > 0, estimate,
+             costedSales, uncostedSales, suppMissing, freightMissingUnits, freightNoFeeUnits, noFeeShips: [...noFeeShips].sort(), hasLines: lines.rows.length > 0 || est.length > 0, estimate,
              uncosted: uncosted.sort((a, b) => b.sales - a.sales) };
   }
 
@@ -633,7 +646,26 @@ module.exports = function registerFinance(app, deps) {
       }
       if (ok) inbound[b] = { freight: f, placement: p, total: f + p, fromBottles: true };
     }
-    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles, waiting, settled };
+    // Received app shipments with no freight or placement on file (none
+    // entered or pulled, none billed in a settlement), per ASIN: the only
+    // units the "Pull fees from Amazon" fix can reach (owner 10/30: units
+    // from stock sent before the app tracked shipments kept the freight line
+    // amber for good, though Amazon's charges for those are on the P&L as billed).
+    const noFee = {}, inApp = new Set();
+    try {
+      for (const r of (await pool.query('SELECT DISTINCT asin FROM inv_shipment_items WHERE asin IS NOT NULL')).rows) inApp.add(r.asin);
+      const nf = await pool.query(`
+        SELECT s.shipment_id, i.asin FROM inv_shipments s JOIN inv_shipment_items i ON i.shipment_id = s.shipment_id
+        WHERE i.asin IS NOT NULL AND i.qty > 0
+          AND (s.status = 'received' OR s.received_at IS NOT NULL OR s.created_at < now() - interval '60 days')
+          AND NOT EXISTS (SELECT 1 FROM inv_shipment_costs c WHERE c.shipment_id = s.shipment_id AND c.amount <> 0)
+        GROUP BY s.shipment_id, i.asin`);
+      for (const r of nf.rows) {
+        if (settled.byShip[r.shipment_id]) continue;
+        (noFee[r.asin] = noFee[r.asin] || new Set()).add(r.shipment_id);
+      }
+    } catch (e) { console.error('[Finance] shipments without fees:', e.message); }
+    return { products, supplies, inbound, laborRate: lab.rate, laborInfo: lab, settings, royalty, bundles, waiting, settled, noFee, inApp };
   }
 
   // One month of P&L.
@@ -750,8 +782,10 @@ module.exports = function registerFinance(app, deps) {
       if (billed && spread) n.push(money(spread) + ' spread over units sold · ' + money(billed) + ' billed this month for shipments not in the app');
       else if (billed) n.push('billed by Amazon this month — shipments not in the app');
       if (!a.freight && anyWaiting && !anyRates && !billedUnmatched) n.push('waiting — fees are on shipments not yet received');
-      // Units with no rate are only a gap if nothing was billed to cover them.
-      if (a.freightMissingUnits && !billedUnmatched) n.push(a.freightMissingUnits + ' unit(s) sold with no fees on file');
+      // Units from app shipments with no fees on file are a gap the pull can
+      // fix; units from stock the app never shipped are covered by what
+      // Amazon billed for those shipments (charged as billed, above).
+      if (a.freightNoFeeUnits) n.push(a.freightNoFeeUnits + ' unit(s) sold from shipments with no fees on file');
       return n.length ? n.join(' · ') : null;
     };
     const carrierNote = noteFor(um.freight || 0, a.freight ? a.freightOnly : 0);
@@ -771,7 +805,7 @@ module.exports = function registerFinance(app, deps) {
       royalty: royalty == null ? 'missing' : (roy && roy.purchasesSource === 'none' ? 'partial' : 'ok'),
       supplies: supplies == null ? 'missing' : (a.suppMissing ? 'partial' : 'ok'),
       labor: labor == null ? 'missing' : 'ok',
-      freight: freight == null ? 'missing' : ((a.freightMissingUnits || (!a.freight && anyWaiting)) ? 'partial' : 'ok'),
+      freight: freight == null ? 'missing' : ((a.freightNoFeeUnits || (!a.freight && anyWaiting)) ? 'partial' : 'ok'),
       overhead: overhead == null ? 'missing' : 'ok'
     };
     const complete = Object.values(lineStatus).every(s => s === 'ok');
@@ -787,7 +821,8 @@ module.exports = function registerFinance(app, deps) {
       marginWithheld: !!netSales && (costCoverage == null || costCoverage < 0.9),
       coverage, estimate,
       taxPassThrough: t.tax, reserveMovement: t.reserve,
-      costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length, freightMissingUnits: a.freightMissingUnits || 0
+      costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length, freightMissingUnits: a.freightMissingUnits || 0,
+      freightNoFeeUnits: a.freightNoFeeUnits || 0, noFeeShips: (a.noFeeShips || []).slice(0, 20), noFeeShipCount: (a.noFeeShips || []).length
     };
   }
 
