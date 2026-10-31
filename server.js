@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'freight-gap-1118';
+const BUILD_ID = 'activity-search-1119';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3200,8 +3200,14 @@ app.post('/api/clear-transit', auth, async (req, res) => {
 });
 
 // recent activity
+// ?q= an ASIN or part of a name: that product's whole history (owner 10/31:
+// both Tea Tree 33.8 bottles showed 999 on hand and the log, last 100 rows
+// with no notes, couldn't say who set it or how).
 app.get('/api/activity', auth, async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM inv_activity ORDER BY ts DESC LIMIT 100');
+  const q = String(req.query.q || '').trim().slice(0, 80);
+  const { rows } = q
+    ? await pool.query(`SELECT * FROM inv_activity WHERE asin ILIKE $1 OR name ILIKE $2 OR note ILIKE $2 ORDER BY ts DESC LIMIT 300`, [q, '%' + q + '%'])
+    : await pool.query('SELECT * FROM inv_activity ORDER BY ts DESC LIMIT 100');
   res.json(rows);
 });
 

@@ -1094,7 +1094,10 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       </div>
     </div>
     <div id="perfBody"></div>
-    <div class="box" style="margin-top:16px"><div style="font-weight:800;font-size:17px">📋 Activity Log</div></div>
+    <div class="box" style="margin-top:16px"><div style="font-weight:800;font-size:17px">📋 Activity Log</div>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input id="logQ" placeholder="ASIN or product name — see its whole history" style="flex:1;min-width:220px;padding:9px;border:2px solid #e2e8f0;border-radius:6px" onkeydown="if(event.key==='Enter')renderLog()">
+        <button class="action" onclick="renderLog()" style="padding:8px 16px">Search</button><button class="mini" onclick="document.getElementById('logQ').value='';renderLog()">Clear</button></div>
+      <div class="hint" style="margin-top:4px">Without a search: the last 100 moves. Cycle counts and Missing / Found corrections show who and the before → after.</div></div>
     <div id="logBody"></div>
   </div>
 </div>
@@ -11576,9 +11579,13 @@ function pollSync(){
     }
   }).catch(()=>{ _syncPoll=setTimeout(pollSync,5000); });
 }
-function renderLog(){ api('/api/activity').then(rows=>{ const b=document.getElementById('logBody');
-  if(!rows.length){b.innerHTML='<div class="hint">No activity yet.</div>';return;}
-  b.innerHTML=rows.map(a=>`<div class="log-entry ${a.direction==='out'?'out':''}"><span class="pill ${a.direction}">${a.direction==='in'?'+ IN':(a.direction==='checkin'?'✓ FBA':'– OUT')}</span> <b>${a.qty}</b> ${esc(a.name)} <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span></div>`).join('');
+function renderLog(){ const qEl=document.getElementById('logQ'), q=qEl?qEl.value.trim():'';
+  api('/api/activity'+(q?'?q='+encodeURIComponent(q):'')).then(rows=>{ const b=document.getElementById('logBody');
+  if(!rows||!rows.length){b.innerHTML='<div class="hint">'+(q?'Nothing found for “'+esc(q)+'”.':'No activity yet.')+'</div>';return;}
+  // a correction (cycle count, Missing / Found) is its own kind, with its note
+  const pill=a=>a.direction==='in'?'+ IN':a.direction==='checkin'?'✓ FBA':a.direction==='adjust'?'± FIX':a.direction==='out'?'– OUT':esc(String(a.direction||'').toUpperCase());
+  b.innerHTML=(q?'<div class="hint" style="margin:6px 0">'+rows.length+(rows.length===300?'+':'')+' entries for “'+esc(q)+'”, newest first</div>':'')
+    +rows.map(a=>`<div class="log-entry ${a.direction==='out'?'out':''}"${a.direction==='adjust'?' style="border-left:4px solid #b7791f"':''}><span class="pill ${esc(a.direction||'')}">${pill(a)}</span> <b>${a.direction==='adjust'&&a.qty>0?'+':''}${a.qty}</b> ${esc(a.name)} <span style="font-family:monospace;font-size:11px;color:#5a6472">${esc(a.asin||'')}</span> <span style="color:#9db0c9;font-size:11px">${new Date(a.ts).toLocaleString()}</span>${a.note?`<div style="font-size:12px;color:#5a6472;margin-top:2px">${esc(a.note)}</div>`:''}</div>`).join('');
 });}
 
 // ---- SCAN FEEDBACK: vibrate + beep + flash ----
