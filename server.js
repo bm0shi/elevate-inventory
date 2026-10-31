@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'activity-search-1119';
+const BUILD_ID = 'pp-available-1120';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -9118,11 +9118,19 @@ app.get('/api/pending-prep/list', auth, async (req, res) => {
     let components = [];
     if (r.is_duo) {
       const c = await pool.query(
-        `SELECT b.component_asin AS asin, p.name, p.location, p.case_qty, COALESCE(s.onhand,0) AS onhand, COALESCE(b.qty,1) AS per
+        `SELECT b.component_asin AS asin, p.name, p.location, p.case_qty, COALESCE(s.onhand,0) AS onhand, COALESCE(b.qty,1) AS per,
+           (COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=b.component_asin AND is_duo=false),0)
+            + COALESCE((SELECT SUM(pp.qty*bb.qty) FROM inv_pending_prep pp JOIN inv_bundles bb ON bb.bundle_asin=pp.asin WHERE bb.component_asin=b.component_asin),0))::int AS pending,
+           (COALESCE((SELECT qty FROM inv_prepped WHERE asin=b.component_asin),0)
+            + COALESCE((SELECT SUM(pr.qty*bc.qty) FROM inv_prepped pr JOIN inv_bundles bc ON bc.bundle_asin=pr.asin WHERE bc.component_asin=b.component_asin),0))::int AS prepped
          FROM inv_bundles b JOIN inv_products p ON p.asin=b.component_asin
          LEFT JOIN inv_stock s ON s.asin=b.component_asin
          WHERE b.bundle_asin=$1`, [r.asin]);
-      components = c.rows;
+      // Available as On Hand counts it (on hand less pending prep and prepped):
+      // the card showed the raw total, 999 for each Tea Tree Lavender Mint
+      // bottle while On Hand said 0, because the job's own bottles and the
+      // built boxes were still in it (owner 10/31).
+      components = c.rows.map(x => ({ ...x, available: Math.max(0, Number(x.onhand) - x.pending - x.prepped) }));
     }
     out.push({ ...r, components });
   }
