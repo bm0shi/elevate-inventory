@@ -1544,7 +1544,7 @@ function nsPlan(id){
           +'</table><button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].push({weight:500,height:40});nsPlan('+p.id+')" style="margin-top:6px;cursor:pointer;border:1px solid #008296;color:#008296;background:#fff;border-radius:6px;padding:4px 10px;font-weight:800">+ Add pallet</button></div>').join('')
         +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:13px;font-weight:900;color:#0f1111;padding:10px 12px;border:3px solid #ff9900;border-radius:10px;background:#fff8ec">🚚 FREIGHT READY FOR PICKUP ON<input id="nsReady" type="date" min="'+today+'" value="'+ready+'" style="display:block;margin-top:4px;padding:8px;font-size:18px;font-weight:800"><span style="display:block;font-size:11px;font-weight:700;color:#5f6675;margin-top:3px">Carriers pick up this day or after</span></label>'
         +'<label style="font-size:14px;font-weight:700;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0"><input id="nsStack" type="checkbox"'+(p.freight&&p.freight.stackable?' checked':'')+' style="width:20px;height:20px"> Pallets can be stacked</label>'
-        +'<span style="font-size:14px;font-weight:700;color:#5f6675;align-self:center">Freight class 85</span>'
+        +'<span style="font-size:14px;font-weight:700;color:#5f6675;align-self:center">Freight class 70</span>'
         +'<button class="action" onclick="nsQuote('+p.id+')" style="background:#008296;font-size:16px;padding:12px 20px">'+(p.freight?'↻ Get new quotes':'Get freight quotes →')+'</button></div></div>';
     }
     // 6. Freight options + book
@@ -1603,7 +1603,17 @@ function nsLiftOk(planId, inProd){
     if(inProd) prodLoad(prodSid()); else nsPlan(planId); });
 }
 // Carrier pickup window in Arizona time: "Thu, Oct 2, 8 AM–4 PM"
-function nsPickup(w){ const o={timeZone:'America/Phoenix'}, s=new Date(w.start);
+// Amazon gives the pickup DAY as midnight UTC to 11 PM UTC. Shown in Arizona
+// time that read as the evening before ("Sun, Nov 1, 5 PM–4 PM" for a Monday
+// Nov 2 pickup; owner 10/31: picked a Monday, the truck and the BOL said
+// Tuesday). A window starting at midnight UTC is that UTC calendar day, all
+// day; any other window is shown in Arizona time.
+function nsPickup(w){
+  const st=String(w.start||''), s=new Date(st);
+  if(/T00:00(:00(\.0+)?)?(Z|\+00:?00)$/.test(st)){
+    return new Date(st.slice(0,10)+'T12:00:00Z').toLocaleDateString('en-US',{timeZone:'UTC',weekday:'short',month:'short',day:'numeric'});
+  }
+  const o={timeZone:'America/Phoenix'};
   return s.toLocaleDateString('en-US',{...o,weekday:'short',month:'short',day:'numeric'})+', '+s.toLocaleTimeString('en-US',{...o,hour:'numeric'})+(w.end?'–'+new Date(w.end).toLocaleTimeString('en-US',{...o,hour:'numeric'}):''); }
 const expText=e=>/^\d{6}$/.test(e||'')?e.slice(2,4)+'/'+e.slice(4,6)+'/20'+e.slice(0,2):(e||'');
 function nsPlace(id, optId, fee, where){
