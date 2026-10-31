@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pickup-day-1121';
+const BUILD_ID = 'freight-by-day-1122';
 
 // ---- Postgres ----
 const pool = new Pool({

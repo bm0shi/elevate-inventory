@@ -1551,17 +1551,32 @@ function nsPlan(id){
     if(p.status==='quotes'&&p.freight){
       const S=window._nsSel=window._nsSel&&window._nsSel.id===p.id?window._nsSel:{id:p.id, sel:{}};
       if((p.ship_from||{}).liftgate!==false) h+='<div class="box" style="border:2px solid #c0392b;background:#fdecea;font-size:14px;line-height:1.5"><b style="color:#c0392b">🚚 This pickup needs a LIFTGATE truck.</b> Amazon doesn\'t let the app ask for one, so after booking you\'ll call the carrier. Carriers often run liftgate trucks only some days, so the pickup may come a day later — set the ready date a day earlier if you can.</div>';
-      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">Amazon partnered carriers first, soonest pickup first, then cheapest. Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
+      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">By pickup day, soonest first: the first 4 days with the best 5 each (Amazon partnered first, then cheapest). Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
       let freight=0, all=true;
       for(const sh of SH){
         const q=(p.freight.quotes[sh.shipmentId]||[]).filter(o=>o.cost!=null&&!o.preconditions.length);
         if(!S.sel[sh.shipmentId]&&q[0]) S.sel[sh.shipmentId]=q[0].transportationOptionId;
         const pick=q.find(o=>o.transportationOptionId===S.sel[sh.shipmentId]); if(pick) freight+=pick.cost; else all=false;
-        h+='<div style="margin-top:12px"><b>'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b>'+(q.length?'':' <span style="color:#c0392b;font-weight:800">no quote came back — change the pallets or date and get new quotes</span>')
-          +q.map(o=>'<label style="display:flex;gap:10px;align-items:center;margin-top:6px;padding:10px 12px;border-radius:10px;cursor:pointer;text-transform:none;letter-spacing:0;border:2px solid '+(S.sel[sh.shipmentId]===o.transportationOptionId?'#008296':'#e2e8f0')+'">'
+        // By pickup day (owner 10/31: "11/2 and the top 5, 11/3 and the top 5,
+        // 4 days' worth"): the first 4 days, each with its 5 best (Amazon
+        // partnered first, then cheapest). The picked option always shows.
+        const row=o=>'<label style="display:flex;gap:10px;align-items:center;margin-top:6px;padding:10px 12px;border-radius:10px;cursor:pointer;text-transform:none;letter-spacing:0;border:2px solid '+(S.sel[sh.shipmentId]===o.transportationOptionId?'#008296':'#e2e8f0')+'">'
             +'<input type="radio" name="nsq_'+esc(sh.shipmentId)+'"'+(S.sel[sh.shipmentId]===o.transportationOptionId?' checked':'')+' onchange="_nsSel.sel[\''+sh.shipmentId+'\']=\''+o.transportationOptionId+'\';nsPlan('+p.id+')" style="width:18px;height:18px">'
-            +'<div style="flex:1"><b style="font-size:15px">'+esc(o.carrier||'Carrier')+'</b>'+(o.pickup?' <span class="nsPk" style="margin-left:6px;padding:3px 10px;border-radius:999px;background:#fff3d6;color:#0f1111;font-weight:900;font-size:14px">🚚 Pickup '+nsPickup(o.pickup)+'</span>':'')+' <span class="hint">'+esc(o.mode.replace('FREIGHT_','').replace(/_/g,' '))+(o.partnered?' · Amazon partnered':' · your own carrier')+(o.expiration?' · quote good until '+new Date(o.expiration).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'')+'</span></div>'
-            +'<b style="font-size:18px">'+$$(o.cost)+'</b></label>').join('')+'</div>';
+            +'<div style="flex:1"><b style="font-size:15px">'+esc(o.carrier||'Carrier')+'</b>'+(o.pickup&&nsPickupDay(o.pickup).hours?' <span class="nsPk" style="margin-left:6px;padding:3px 10px;border-radius:999px;background:#fff3d6;color:#0f1111;font-weight:900;font-size:14px">🚚 '+nsPickup(o.pickup)+'</span>':'')+' <span class="hint">'+esc(o.mode.replace('FREIGHT_','').replace(/_/g,' '))+(o.partnered?' · Amazon partnered':' · your own carrier')+(o.expiration?' · quote good until '+new Date(o.expiration).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'')+'</span></div>'
+            +'<b style="font-size:18px">'+$$(o.cost)+'</b></label>';
+        const days={}; for(const o of q){ const d=o.pickup?nsPickupDay(o.pickup):{key:'~',label:'Pickup day not given'}; (days[d.key]=days[d.key]||{label:d.label,list:[]}).list.push(o); }
+        const keys=Object.keys(days).sort(), showAll=window._nsAllDays===p.id, shownKeys=showAll?keys:keys.slice(0,4);
+        h+='<div style="margin-top:12px"><b>'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b>'+(q.length?'':' <span style="color:#c0392b;font-weight:800">no quote came back — change the pallets or date and get new quotes</span>');
+        for(const k of shownKeys){
+          const list=days[k].list.slice().sort((a,b)=>(b.partnered-a.partnered)||((a.cost??1e9)-(b.cost??1e9)));
+          let top=showAll?list:list.slice(0,5);
+          const picked=list.find(o=>o.transportationOptionId===S.sel[sh.shipmentId]); if(picked&&!top.includes(picked)) top=top.concat(picked);
+          h+='<div style="margin-top:14px;padding:6px 12px;border-radius:8px;background:#fff3d6;font-weight:900;font-size:16px;display:flex;justify-content:space-between;gap:10px"><span>🚚 Pickup '+esc(days[k].label)+'</span><span class="hint" style="font-weight:700">'+(list.length>top.length?'best '+top.length+' of '+list.length:list.length+' option'+(list.length===1?'':'s'))+' · from '+$$(Math.min(...list.map(o=>o.cost??1e9)))+'</span></div>'
+            +top.map(row).join('');
+        }
+        const hidden=keys.length-shownKeys.length, more=q.length>shownKeys.reduce((n,k)=>n+Math.min(5,days[k].list.length),0);
+        if(hidden||(showAll&&keys.length)||more) h+='<div style="margin-top:8px"><a href="#" onclick="window._nsAllDays='+(showAll?'null':p.id)+';nsPlan('+p.id+');return false">'+(showAll?'Show 4 days, best 5 each':'Show every option ('+q.length+(hidden?', '+hidden+' more day'+(hidden===1?'':'s'):'')+')')+'</a></div>';
+        h+='</div>';
       }
       const total=Math.round(freight*100)/100;
       h+='<div style="margin-top:16px;padding:16px;border-radius:12px;background:#002f36;color:#fff;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center">'
@@ -1608,6 +1623,15 @@ function nsLiftOk(planId, inProd){
 // Nov 2 pickup; owner 10/31: picked a Monday, the truck and the BOL said
 // Tuesday). A window starting at midnight UTC is that UTC calendar day, all
 // day; any other window is shown in Arizona time.
+// The pickup's calendar day as a sort key + label (Amazon's all-day window is
+// that UTC day; one with hours is read in Arizona time), and whether it has hours.
+function nsPickupDay(w){
+  const st=String(w.start||'');
+  if(/T00:00(:00(\.0+)?)?(Z|\+00:?00)$/.test(st)) return {key:st.slice(0,10), label:nsPickup(w), hours:false};
+  const s=new Date(st), o={timeZone:'America/Phoenix'};
+  const key=s.toLocaleDateString('en-CA',o);
+  return {key, label:s.toLocaleDateString('en-US',{...o,weekday:'short',month:'short',day:'numeric'}), hours:true};
+}
 function nsPickup(w){
   const st=String(w.start||''), s=new Date(st);
   if(/T00:00(:00(\.0+)?)?(Z|\+00:?00)$/.test(st)){
