@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'freight-by-day-1123';
+const BUILD_ID = 'booked-costs-1124';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2863,6 +2863,56 @@ async function planPlace(id, args, step) {
     ships.push({ shipmentId: shId, fba, fc: dst.warehouseId || null, units: items.reduce((t, i) => t + i.qty, 0) });
   }
   await pool.query("UPDATE inv_inbound_plans SET shipments=$2, status='building', step=NULL, updated_at=now() WHERE id=$1", [id, JSON.stringify(ships)]);
+  await saveBookedCost(ships, 'placement', splitByUnits(ships, opt.fee || 0), 'Placement fee confirmed in the app');
+}
+// The fees the app itself confirmed with Amazon, saved on the shipment's
+// inbound cost (owner 11/1: the last two app shipments showed blank freight
+// and placement until "Pull fees" or a settlement filled them, though the app
+// knew both). Source 'amazon': a typed figure or a settlement ('actual') is
+// never overwritten, and the settlement's charge replaces this when it posts.
+function splitByUnits(ships, total) {
+  const all = ships.reduce((t, s) => t + (Number(s.units) || 0), 0), out = {};
+  ships.forEach(s => { out[s.fba] = all ? Math.round(total * (Number(s.units) || 0) / all * 100) / 100 : Math.round(total / ships.length * 100) / 100; });
+  return out;
+}
+async function saveBookedCost(ships, kind, byFba, note) {
+  for (const sh of ships || []) {
+    const amt = byFba[sh.fba];
+    if (!sh.fba || !(amt > 0)) continue;
+    await pool.query(`INSERT INTO inv_shipment_costs(shipment_id, kind, amount, source, note, updated_at) VALUES($1,$2,$3,'amazon',$4,now())
+      ON CONFLICT (shipment_id, kind) DO UPDATE SET amount=$3, source='amazon', note=$4, updated_at=now()
+      WHERE inv_shipment_costs.source IN ('amazon','estimate')`, [sh.fba, kind, amt, note]);
+  }
+}
+// Once at start: plans confirmed before the fees were saved this way.
+async function backfillBookedCosts() {
+  try {
+    const plans = (await pool.query("SELECT * FROM inv_inbound_plans WHERE placement_confirmed_at IS NOT NULL AND jsonb_typeof(shipments) = 'array'")).rows;
+    let n = 0;
+    for (const p of plans) {
+      const ships = (p.shipments || []).filter(s => s.fba);
+      if (!ships.length) continue;
+      const have = new Set((await pool.query('SELECT shipment_id, kind FROM inv_shipment_costs WHERE shipment_id = ANY($1)', [ships.map(s => s.fba)])).rows.map(r => r.shipment_id + '|' + r.kind));
+      const fee = ((p.placement || []).find(o => o.placementOptionId === p.placement_id) || {}).fee || 0;
+      const pl = splitByUnits(ships, fee), fr = p.status === 'confirmed' ? bookedFreightByFba(p, ships) : {};
+      for (const sh of ships) {
+        if (!have.has(sh.fba + '|placement') && pl[sh.fba] > 0) { await saveBookedCost([sh], 'placement', pl, 'Placement fee confirmed in the app'); n++; }
+        if (!have.has(sh.fba + '|freight') && fr[sh.fba] > 0) { await saveBookedCost([sh], 'freight', fr, 'Freight booked in the app'); n++; }
+      }
+    }
+    if (n) console.log(`[Inbound] saved ${n} placement/freight cost(s) from plans confirmed in the app.`);
+  } catch (e) { console.error('[Inbound] booked-cost backfill:', e.message); }
+}
+// Freight per shipment from the booked selections (the quote picked for each);
+// without them, the booked total split by units.
+function bookedFreightByFba(p, ships, selections) {
+  const sel = selections || ((p.confirmed || {}).selections) || null, out = {};
+  if (sel) for (const sh of ships) {
+    const o = (((p.freight || {}).quotes || {})[sh.shipmentId] || []).find(q => q.transportationOptionId === sel[sh.shipmentId]);
+    if (o && o.cost > 0) out[sh.fba] = o.cost;
+  }
+  if (!Object.keys(out).length && p.confirmed && p.confirmed.freight > 0) return splitByUnits(ships, Number(p.confirmed.freight));
+  return out;
 }
 // The floor's boxes for one app shipment, in Amazon's terms (seller SKUs).
 // Amazon's expiration per product on a shipment (YYMMDD), from its items.
@@ -2967,7 +3017,10 @@ async function planConfirm(id, args, step) {
       pickup: Object.entries(args.selections || {}).map(([sid, oid]) => (((p.freight || {}).quotes || {})[sid] || []).find(o => o.transportationOptionId === oid))
         .map(o => o && o.pickup).filter(Boolean).sort((x, y) => x.start < y.start ? -1 : 1)[0] || null,
       carriers: (p.shipments || []).map(sh => ({ fba: sh.fba, carrier: ((((p.freight || {}).quotes || {})[sh.shipmentId] || []).find(o => o.transportationOptionId === (args.selections || {})[sh.shipmentId]) || {}).carrier || '' })),
+      selections: args.selections || null,
       liftgate: (p.ship_from || {}).liftgate !== false })]);
+  const ships = (p.shipments || []).filter(s => s.fba);
+  await saveBookedCost(ships, 'freight', bookedFreightByFba({ ...p, confirmed: { freight: args.freight } }, ships, args.selections), 'Freight booked in the app');
 }
 // Confirm a destination. The owner saw its fee; it must still be the fee on file.
 app.post('/api/inbound/plans/:id/place', auth, async (req, res) => {
@@ -9989,6 +10042,8 @@ initDb().then(() => {
     setTimeout(() => { getFbaInventory().then(checkFnskuListings)
       .then(r => console.log(`[FBA] Listing check at start: ${r.autoSwitch.length} switched, ${r.conflicts.length} to pick.`))
       .catch(e => console.error('[FBA] listing check at start failed:', e.message)); }, 60 * 1000);
+  // Fees of shipments booked in the app before they were saved on the shipment.
+  setTimeout(backfillBookedCosts, 30 * 1000);
   // The P&L's estimate needs the money events back to the last settlement.
   // The table started empty (10/29) and the dashboard's Update today only
   // reads two days, so October's estimate had just 10/28–10/29 until the next
