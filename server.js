@@ -464,7 +464,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'booked-costs-1124';
+const BUILD_ID = 'pwa-1125';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -10018,6 +10018,17 @@ app.get('/vendor/bwip-js.min.js', (req, res) => {
   res.set('Cache-Control', 'public, max-age=86400');
   res.sendFile(path.join(__dirname, 'node_modules', 'bwip-js', 'dist', 'bwip-js-min.js'));
 });
+
+// Install to the home screen (PWA, owner 11/3): the app's manifest, icons and
+// service worker. The worker carries the build number so each deploy replaces
+// it; it never touches /api (see sw.js).
+app.get('/manifest.webmanifest', (req, res) => { res.set('Cache-Control', 'no-cache'); res.type('application/manifest+json'); res.sendFile(path.join(__dirname, 'manifest.webmanifest')); });
+let _swText = null;
+app.get('/sw.js', (req, res) => {
+  if (_swText == null) _swText = fs.readFileSync(path.join(__dirname, 'sw.js'), 'utf8').replace('__BUILD__', BUILD_ID);
+  res.set('Cache-Control', 'no-cache'); res.set('Service-Worker-Allowed', '/'); res.type('application/javascript'); res.send(_swText);
+});
+app.use('/icons', express.static(path.join(__dirname, 'icons'), { maxAge: '1d' }));
 
 const PORT = process.env.PORT || 3000;
 initDb().then(() => {
