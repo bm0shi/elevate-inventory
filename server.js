@@ -469,7 +469,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sell-strip-1131';
+const BUILD_ID = 'sell-strip-1132';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8460,6 +8460,21 @@ app.get('/api/ss-avg', auth, async (req, res) => {
 // exception (10/24, "show to everyone"): warehouse login, like /api/ss-avg,
 // units only, no money.
 app.get('/api/our-sold30', auth, async (req, res) => {
+  // ?to=today: the real last 30 days, plus how many of them each listing had
+  // stock at Amazon (owner 11/4 on Prepped & Ready: "sold and 3P avg are
+  // mostly zero". The default window ends on the last Smart Scout upload, to
+  // line up with their figures, so it could be weeks old; and a listing with
+  // nothing at Amazon can't sell, which "In stock" makes plain).
+  if (req.query.to === 'today') {
+    const r = (await pool.query(`WITH e AS (SELECT (now() AT TIME ZONE 'America/Los_Angeles')::date AS d)
+      SELECT to_char(e.d,'YYYY-MM-DD') AS end_day,
+        (SELECT json_object_agg(asin, u) FROM (SELECT asin, SUM(units)::int AS u FROM inv_sales_asin_daily, e WHERE day > e.d - 30 AND day <= e.d GROUP BY asin) x) AS sold,
+        (SELECT MIN(day) <= e.d - 29 FROM inv_sales_asin_daily) AS full,
+        (SELECT COUNT(DISTINCT day)::int FROM inv_fba_daily, e WHERE day > e.d - 30 AND day <= e.d) AS snap_days,
+        (SELECT json_object_agg(asin, n) FROM (SELECT asin, COUNT(*)::int AS n FROM inv_fba_daily, e WHERE day > e.d - 30 AND day <= e.d AND COALESCE(fulfillable,0) > 0 GROUP BY asin) y) AS in_stock
+      FROM e`)).rows[0];
+    return res.json({ ok: true, sold: r.sold || {}, endDay: r.end_day, full: !!r.full, snapDays: r.snap_days || 0, inStock: r.in_stock || {} });
+  }
   const real30 = await ourLast30();
   if (real30) return res.json({ ok: true, sold: real30, src: 'orders' });
   // Fewer than 30 saved days: the velocity window, per month.
