@@ -372,6 +372,7 @@
         (p.sku ? tag('', 'SKU', p.sku, 'copyText(\'' + q1(p.sku) + '\',this)', 'Tap to copy') : '') +
         (p.fnsku ? tag('', 'FNSKU', p.fnsku, 'copyText(\'' + q1(p.fnsku) + '\',this)', 'Tap to copy') : '') +
         (p.is_bundle ? '<span class="oh2-tag duo">This is a duo</span>' : '') +
+        (typeof fbmMark === 'function' ? fbmMark(p.asin) : '') +
       '</div></div>' +
       '<div class="oh2-av"><div class="n' + (available <= 0 ? ' zero' : '') + '">' + n0(available) + '</div><div class="l">Available</div>' + cases + '</div></div>' +
       stockBar(p, available) + stats(p, t) + alerts + duoTable(p) +
@@ -389,7 +390,7 @@
     const av = ssAvg && ssAvg.avg && ssAvg.avg[p.asin];
     const img = p.image ? '<img src="' + E(p.image) + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">' : '<span class="ph"></span>';
     return '<tr><td><div class="nm">' + img + '<div class="t">' + (typeof amzLinkSized === 'function' ? amzLinkSized(p.asin, p.name) : E(p.name)) +
-      '<div style="font-size:14px;color:' + K.muted + ';margin-top:2px">📍 ' + E(p.location || '—') + ' · <span class="oh2-mono" onclick="copyText(\'' + q1(p.asin) + '\',this)">' + E(p.asin) + '</span></div></div></div></td>' +
+      '<div style="font-size:14px;color:' + K.muted + ';margin-top:2px">📍 ' + E(p.location || '—') + ' · <span class="oh2-mono" onclick="copyText(\'' + q1(p.asin) + '\',this)">' + E(p.asin) + '</span>' + (typeof fbmMark === 'function' ? ' ' + fbmMark(p.asin) : '') + '</div></div></div></td>' +
       '<td class="big" style="color:' + (available <= 0 ? K.crit : K.ink) + '">' + n0(available) + '</td>' +
       '<td>' + (p.is_bundle ? '—' : E(typeof casesParts === 'function' ? casesParts(available, caseQtyOf(p)).main : '')) + '</td>' +
       '<td>' + n0(pend) + '</td><td>' + n0(prep) + '</td><td>' + n0(p.transit) + '</td><td>' + n0(lt.at) + '</td>' +
