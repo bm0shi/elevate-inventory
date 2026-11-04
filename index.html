@@ -2690,7 +2690,7 @@ function ssAvgHtml(asin){
 // The real last 30 days (to today) and days in stock at Amazon, for the strip.
 function loadSoldNow(){
   if(loadSoldNow._busy || loadSoldNow._at>Date.now()-60000) return; loadSoldNow._busy=true; loadSoldNow._at=Date.now();
-  api('/api/our-sold30?to=today').then(d=>{ if(d&&d.ok){ window._soldNow=d; renderPendingPrep(); sellRepaint(); } }).catch(()=>{}).finally(()=>{ loadSoldNow._busy=false; });
+  api('/api/our-sold30?to=today').then(d=>{ if(d&&d.ok){ window._soldNow=d; renderPendingPrep(); sellRepaint(); if(document.getElementById('onhandBody')&&document.getElementById('onhand').classList.contains('active')) renderOnhand(); } }).catch(()=>{}).finally(()=>{ loadSoldNow._busy=false; });
 }
 function sellNums(asin){
   if(!window._soldNow) loadSoldNow();
