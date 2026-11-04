@@ -8165,7 +8165,13 @@ function renderFinPnl() {
 
   // the statement
   const rows = [
-    ['Sales', 'netSales', 'sales', { bold: true, note: 'what customers paid, less refunds · tax excluded' }],
+    // Gross, refunds and promotions on their own lines (owner 11/4: Amazon
+    // said $161,745 for October and the P&L one line of $150,594 "already
+    // less refunds", so the difference had nowhere to be seen).
+    ['Gross sales', 'sales', null, { note: 'item price + shipping Amazon charged, before refunds & promotions · tax excluded' }],
+    ['Refunds', 'refunds', null, { hideZero: true, note: 'money returned to customers' }],
+    ['Promotions & coupons', 'promotions', null, { hideZero: true, note: 'discounts taken off the price (coupons, deals, promotions)' }],
+    ['Net sales', 'netSales', 'sales', { total: true, note: 'what you keep from sales' }],
     ['Amazon fees', 'amazonFees', 'fees', { note: 'referral, FBA, storage — as Amazon billed' }],
     ['Reimbursements', 'reimbursements', 'fees', { hideZero: true, note: 'lost / damaged inventory paid back' }],
     ['NET AFTER AMAZON FEES', 'deposited', null, { total: true, note: 'earned on this month\'s sales — Amazon pays it out on its own schedule' }],
