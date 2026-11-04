@@ -232,3 +232,15 @@ test('Amazon problems are split: a WARNING (address not verified) does not count
   assert.deepStrictEqual(r.warnings, ['Address was unable to be verified.']);
   assert.deepStrictEqual(r.errors, ["There is currently no active offer for this listing. (resource 'NEW Detangler Liter')"]);
 });
+
+test('prep owners: a prep category of its own needs SELLER even with no prep steps (HAZ plan, owner 11/5)', () => {
+  const o = ib.ownersFromPrepDetails([
+    { msku: 'Freeze and Shine 8.5', prepCategory: 'LIQUID', prepTypes: ['ITEM_NO_PREP'] },
+    { msku: 'Plain', prepCategory: 'NONE', prepTypes: ['ITEM_NO_PREP'] },
+    { msku: 'Only none', prepCategory: 'LIQUID', prepTypes: [], prepOwnerConstraint: 'NONE_ONLY' }]);
+  assert.deepStrictEqual(o, { 'Freeze and Shine 8.5': { prepOwner: 'SELLER' }, Plain: { prepOwner: 'NONE' }, 'Only none': { prepOwner: 'NONE' } });
+  // the HAZ plan's refusal, read as Amazon sent it
+  const msg = 'Amazon 400 on POST /inboundPlans: {"errors":[{"code":"BadRequest","message":"ERROR: Freeze and Shine 8.5 requires prepOwner but NONE was assigned. Accepted values: [AMAZON, SELLER]","details":""},{"code":"BadRequest","message":"ERROR: PM Sculpt Foam - 16.9 oz requires prepOwner but NONE was assigned. Accepted values: [AMAZON, SELLER]","details":""}]}';
+  assert.deepStrictEqual(ib.ownerFixes(msg, ['Freeze and Shine 8.5', 'PM Sculpt Foam - 16.9 oz', 'Freeze and Shine Liters']),
+    { 'Freeze and Shine 8.5': { prepOwner: 'SELLER' }, 'PM Sculpt Foam - 16.9 oz': { prepOwner: 'SELLER' } });
+});
