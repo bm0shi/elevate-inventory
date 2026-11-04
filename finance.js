@@ -368,7 +368,7 @@ module.exports = function registerFinance(app, deps) {
     const isReserve = d => /reserve/i.test(d || '');
     const isReimb = d => /reimburs|safe-?t|warehouse ?(lost|damage)|compensat/i.test(d || '');
 
-    const t = { sales: 0, refunds: 0, promotions: 0, fees: 0, reimbursements: 0, otherFees: 0,
+    const t = { sales: 0, principal: 0, refunds: 0, promotions: 0, fees: 0, reimbursements: 0, otherFees: 0,
                 tax: 0, reserve: 0, inboundSettled: 0, units: 0, feeDetail: {} };
     const by = {};
     const P = a => by[a] = by[a] || { asin: a, units: 0, unitsRefunded: 0, sales: 0, refunds: 0, promotions: 0,
@@ -397,6 +397,7 @@ module.exports = function registerFinance(app, deps) {
           if (key) { const p = P(key); p.refunds += amt; if (principal) p.unitsRefunded += Math.abs(r.units || 0); }
         } else {
           t.sales += amt;
+          if (principal) t.principal += amt;
           if (key) { const p = P(key); p.sales += amt; if (principal) { p.units += (r.units || 0); t.units += (r.units || 0); } }
         }
       } else if (r.amount_type === 'Promotion') {
@@ -734,6 +735,20 @@ module.exports = function registerFinance(app, deps) {
         check = { days, read: cd('fin_event_lines'), events: cd('fin_events') };
       } catch (e) { check = { error: e.message }; }
     }
+    // From the dashboard's number to this one (owner 11/4: "my P&L for October
+    // is 150k but Amazon and the dashboard say more"). The dashboard counts
+    // item price when ORDERED (Seller Central's Ordered product sales, Pacific
+    // days); the P&L counts what Amazon CHARGED when it shipped, less refunds
+    // and promotions. The difference is orders not charged in the month
+    // (shipped later, cancelled, not yet in Amazon's money data) less last
+    // month's orders charged in this one.
+    let bridge = null;
+    try {
+      const o = (await pool.query(`SELECT COALESCE(SUM(sales),0)::float AS s, COUNT(*)::int AS n, to_char(MAX(day),'YYYY-MM-DD') AS last
+        FROM inv_sales_daily WHERE day >= $1 AND day < $2`, [from, to])).rows[0];
+      if (o && o.n) bridge = { ordered: o.s, orderedDays: o.n, orderedTo: o.last, principal: t.principal, otherCharges: t.sales - t.principal,
+        refunds: t.refunds, promotions: t.promotions, netSales, timing: o.s - t.principal };
+    } catch (e) { bridge = null; }
     const estimate = (E.lines || gap) ? { from: E.from, to: E.to, settledTo, eventsFrom: ev.a || null, gap, check,
       netSales: E.sales + E.refunds + E.promotions, sales: E.sales, refunds: E.refunds, promotions: E.promotions, fees: E.fees, other: E.other } : null;
     const coverage = firstDay ? { from: firstDay.toISOString().slice(0, 10), to: lastDay.toISOString().slice(0, 10),
@@ -819,7 +834,7 @@ module.exports = function registerFinance(app, deps) {
       // least 90% of sales carry a real product cost.
       marginPct: netSales && costCoverage != null && costCoverage >= 0.9 ? (net / netSales) * 100 : null,
       marginWithheld: !!netSales && (costCoverage == null || costCoverage < 0.9),
-      coverage, estimate,
+      coverage, estimate, bridge,
       taxPassThrough: t.tax, reserveMovement: t.reserve,
       costCoverage, lineStatus, complete, uncosted: a.uncosted.slice(0, 40), uncostedCount: a.uncosted.length, freightMissingUnits: a.freightMissingUnits || 0,
       freightNoFeeUnits: a.freightNoFeeUnits || 0, noFeeShips: (a.noFeeShips || []).slice(0, 20), noFeeShipCount: (a.noFeeShips || []).length

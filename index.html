@@ -8235,6 +8235,29 @@ function renderFinPnl() {
       }).join('') + '</tr>';
   t += '</tbody></table></div>';
   h += t;
+  // From the dashboard's sales to the P&L's, line by line (owner 11/4:
+  // "P&L for October is 150k but Amazon and the dashboard say more").
+  const brM = months.filter(m => m.bridge);
+  if (brM.length) {
+    const md = d => d ? d.slice(5).replace('-', '/') : '';
+    const BR = [
+      ['Ordered (dashboard)', m => m.bridge.ordered, 'item price when the customer ORDERED, like Seller Central\'s “Ordered product sales”, through ' , true],
+      ['− Not charged this month', m => -m.bridge.timing, 'ordered but shipped / charged later, cancelled, or not in Amazon\'s money data yet, less last month\'s orders charged this month'],
+      ['= Item sales Amazon charged', m => m.bridge.principal, 'when the order SHIPPED', true],
+      ['+ Shipping & gift wrap charged', m => m.bridge.otherCharges, ''],
+      ['− Refunds', m => m.bridge.refunds, ''],
+      ['− Promotions & coupons', m => m.bridge.promotions, 'discounts Amazon took off the price'],
+      ['= Sales on this P&L', m => m.bridge.netSales, '', true]
+    ];
+    h += '<div class="box" style="overflow-x:auto;padding:0"><div style="padding:12px 14px 4px"><b style="font-size:15px">Why Sales here differ from the dashboard</b>'
+      + '<div class="hint">The dashboard (and Seller Central\'s Business Reports) count an order the day it\'s placed, at full price. The P&L counts what Amazon actually charged when it shipped, less refunds and promotions.</div></div>'
+      + '<table style="min-width:' + (220 + brM.length * 120) + 'px;border-collapse:collapse;table-layout:fixed"><thead><tr><th style="text-align:left;min-width:260px">&nbsp;</th>'
+      + brM.map(m => '<th style="text-align:center">' + finMonthLabel(m.month) + '<div style="font-size:9px;font-weight:600;text-transform:none">ordered to ' + md(m.bridge.orderedTo) + '</div></th>').join('') + '</tr></thead><tbody>'
+      + BR.map(([label, f, note, bold]) => '<tr style="' + (bold ? 'background:#f7f9fb;font-weight:800;' : '') + '"><td style="padding:8px 12px">' + esc(label)
+          + (note ? '<div style="font-size:10px;color:#9db0c9;font-weight:400">' + esc(note) + (label.startsWith('Ordered') ? 'the dates under each month' : '') + '</div>' : '') + '</td>'
+          + brM.map(m => { const v = f(m); return '<td style="text-align:center;padding:8px 12px;' + (v < 0 ? 'color:#c0392b;' : '') + '">' + fin$(v) + '</td>'; }).join('') + '</tr>').join('')
+      + '</tbody></table></div>';
+  }
   // payout detail, so a missing settlement is obvious
   const paidMonths = months.filter(m => (m.payouts || []).length);
   if (paidMonths.length) {
