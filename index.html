@@ -18,6 +18,21 @@
 <script>
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js').catch(function () {}); });
+  // A deploy's new worker took over: the screen still shows the old version.
+  // Reload at once if nobody is looking, else offer a tap (never mid-scan
+  // without asking), and reload by itself the next time the app is hidden.
+  var hadSw = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (!hadSw) { hadSw = true; return; }
+    if (document.visibilityState === 'hidden') return location.reload();
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') location.reload(); });
+    if (document.getElementById('swUpdate')) return;
+    var b = document.createElement('div'); b.id = 'swUpdate';
+    b.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:100000;background:#002f36;color:#fff;padding:12px 18px;border-radius:12px;font:700 15px -apple-system,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.3);cursor:pointer';
+    b.textContent = '✨ New version ready — tap to update';
+    b.onclick = function () { location.reload(); };
+    document.body.appendChild(b);
+  });
 }
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -663,14 +678,22 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <div style="font-size:40px;margin-bottom:6px">🔒</div>
       <div style="font-weight:800;font-size:19px;margin-bottom:4px">Admin Only</div>
       <div class="hint" style="margin-bottom:14px">Business analytics, market data and planning tools.</div>
-      <input type="password" id="adminPw" placeholder="Admin password" onkeydown="if(event.key==='Enter')adminUnlock()" style="text-align:center;font-size:16px">
-      <div style="height:10px"></div>
-      <button class="action full" onclick="adminUnlock()" style="background:#7a4fb5">Unlock Admin</button>
+      <!-- A real form so the phone offers to save the password (Keychain) -->
+      <form onsubmit="adminUnlock();return false" autocomplete="on">
+        <input type="text" name="username" value="owner" autocomplete="username" style="display:none" readonly>
+        <input type="password" id="adminPw" name="password" autocomplete="current-password" placeholder="Admin password" style="text-align:center;font-size:16px">
+        <label style="display:flex;gap:8px;align-items:center;justify-content:center;margin-top:10px;font-size:14px;text-transform:none;letter-spacing:0;cursor:pointer">
+          <input type="checkbox" id="adminRemember" checked style="width:18px;height:18px"> Remember me on this device</label>
+        <div class="hint" style="margin-top:2px">Untick on a shared computer. 🔒 Lock signs this device out.</div>
+        <div style="height:10px"></div>
+        <button class="action full" type="submit" style="background:#7a4fb5">Unlock Admin</button>
+      </form>
+      <button class="action full" id="adminFaceBtn" onclick="adminFaceUnlock()" style="display:none;margin-top:10px;background:#0d4450">🙂 Unlock with Face ID</button>
     </div>
     <div id="adminContent" style="display:none">
       <div class="subtabs">
         <!-- Lock sits top right (owner: it was "in a weird random spot" at the end of the Dashboard row). -->
-        <div class="subtop"><span>Owner admin</span><button class="subtab sublock" onclick="adminLock()">🔒 Lock</button></div>
+        <div class="subtop"><span>Owner admin</span><span><button class="subtab" id="adminFaceSetup" onclick="adminFaceSetup()" style="display:none" title="Unlock Admin with Face ID / Touch ID on this device">🙂 Set up Face ID</button><button class="subtab sublock" onclick="adminLock()">🔒 Lock</button></span></div>
         <!-- One card per group, all the same size, in a grid (owner: the two columns of rows "weren't aligned"). -->
         <div class="subgrid">
           <div class="subcard"><div class="subgroup-label">📊 Dashboard</div><div class="subgroup-btns"><button class="subtab active" data-sub="dashboard" onclick="showSubTab('dashboard',event)">Dashboard</button></div></div>
@@ -2728,7 +2751,7 @@ function loadProducts(){ loadSsPicks(); return api('/api/products').then(d=>{
   if(!Array.isArray(d)){ toast('Could not refresh products: '+((d&&(d.error||d.message))||'server error'),true); return; }
   products=d; renderOnhand(); }); }
 
-function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='prod'){ prodOpen(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; showSubTab('dashboard'); } }
+function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='prod'){ prodOpen(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; adminFaceButtons(); showSubTab('dashboard'); } else adminTryRemembered(); }
   if(t==='pendingprep'){loadPendingPrep();loadFnskuWarn();} if(t==='prep'){loadPrepList();loadFnskuWarn();} if(t==='reconcile'){loadInvoiceList(); refreshShortBadge();}
   if(t==='log'){ try{ renderLog(); }catch(e){ console.error(e); } try{ loadPrepPerformance(); }catch(e){ console.error(e); } }
   if(t==='receive')setTimeout(()=>{const s=document.getElementById('scanIn'); if(s)s.focus();},100);
@@ -4425,20 +4448,75 @@ function loadPrepPerformance(){
 }
 
 // ==================== ADMIN AREA ====================
+// Remember me / Face ID (owner 11/4). A remembered device keeps a key from
+// the server (localStorage ownerKey), never the password; Face ID is a passkey
+// on this device (localStorage ownerPasskey) that gets a 12-hour key per unlock.
+function adminOpen(key, msg){
+  OWNER_PW=key;
+  document.getElementById('adminGate').style.display='none';
+  document.getElementById('adminContent').style.display='block';
+  sessionStorage_set('adminUnlocked','1'); sessionStorage_set('adminPw',key);
+  adminFaceButtons();
+  showSubTab('dashboard');
+  loadFreshness();
+  if(msg) toast(msg);
+}
+const pkOk=()=>!!(window.PublicKeyCredential&&navigator.credentials&&window.isSecureContext);
+function adminFaceButtons(){
+  const has=!!localStorage_get('ownerPasskey');
+  const b=document.getElementById('adminFaceBtn'); if(b) b.style.display=pkOk()&&has?'block':'none';
+  const s=document.getElementById('adminFaceSetup'); if(s){ s.style.display=pkOk()?'':'none'; s.textContent=has?'🙂 Face ID on':'🙂 Set up Face ID'; }
+}
 function adminUnlock(){
   const pw=(document.getElementById('adminPw')||{}).value||'';
+  const remember=!!(document.getElementById('adminRemember')||{}).checked;
   fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
     .then(r=>r.json()).then(d=>{
-      if(d.ok){
-        OWNER_PW=pw;
-        document.getElementById('adminGate').style.display='none';
-        document.getElementById('adminContent').style.display='block';
-        sessionStorage_set('adminUnlocked','1'); sessionStorage_set('adminPw',pw);
-        showSubTab('dashboard');
-        loadFreshness();
-        toast('Admin unlocked');
-      } else toast('Wrong admin password',true);
+      if(!d.ok){ toast('Wrong admin password',true); return; }
+      if(!remember){ adminOpen(pw,'Admin unlocked'); return; }
+      fetch('/api/owner-device/remember',{method:'POST',headers:{'Content-Type':'application/json','x-owner-password':pw},body:JSON.stringify({label:navigator.userAgent})})
+        .then(r=>r.json()).then(k=>{
+          if(k&&k.ok&&k.key){ localStorage_set('ownerKey',k.key); adminOpen(k.key,'Admin unlocked — remembered on this device'); }
+          else adminOpen(pw,'Admin unlocked (couldn\'t remember this device)');
+        }).catch(()=>adminOpen(pw,'Admin unlocked (couldn\'t remember this device)'));
     }).catch(()=>toast('Login failed',true));
+}
+// Opening Admin on a remembered device: check the key, then straight in.
+function adminTryRemembered(){
+  adminFaceButtons();
+  const key=localStorage_get('ownerKey');
+  if(!key) return;
+  fetch('/api/owner-device/check',{headers:{'x-owner-password':key}}).then(r=>{
+    if(r.ok){ adminOpen(key); return; }
+    if(r.status===403){ localStorage_set('ownerKey',''); toast('This device was signed out — type the password once more',true); }
+  }).catch(()=>{});   // offline: leave the key, try next time
+}
+function adminFaceSetup(){
+  if(localStorage_get('ownerPasskey')&&!confirm('Face ID is already on for this device. Set it up again?')) return;
+  ownerApi('/api/owner-passkey/register-options',{method:'POST',body:'{}'}).then(o=>{
+    if(!o||!o.ok) throw new Error((o&&o.error)||'Could not start');
+    const b64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+    return navigator.credentials.create({publicKey:{challenge:b64(o.challenge), rp:o.rp, user:{id:b64(o.user.id), name:o.user.name, displayName:o.user.displayName},
+      pubKeyCredParams:[{type:'public-key',alg:-7}], authenticatorSelection:{authenticatorAttachment:'platform', userVerification:'required', residentKey:'preferred'},
+      excludeCredentials:(o.exclude||[]).map(id=>({type:'public-key',id:b64(id)})), timeout:60000, attestation:'none'}});
+  }).then(c=>{
+    const u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    const pub=c.response.getPublicKey&&c.response.getPublicKey();
+    if(!pub) throw new Error('This browser can\'t do Face ID for the app — update iOS / the browser.');
+    return ownerApi('/api/owner-passkey/register',{method:'POST',body:JSON.stringify({id:c.id, clientDataJSON:u(c.response.clientDataJSON), publicKey:u(pub), alg:c.response.getPublicKeyAlgorithm?c.response.getPublicKeyAlgorithm():-7})})
+      .then(d=>{ if(!d||!d.ok) throw new Error((d&&d.error)||'Not saved'); localStorage_set('ownerPasskey',c.id); adminFaceButtons(); toast('Face ID is on — next time tap "Unlock with Face ID"'); });
+  }).catch(e=>{ if(e&&e.name==='NotAllowedError') toast('Face ID setup cancelled',true); else toast('Face ID: '+((e&&e.message)||'failed'),true); });
+}
+function adminFaceUnlock(){
+  const b64=s=>Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));
+  const u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  fetch('/api/owner-passkey/login-options',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json()).then(o=>{
+    if(!o||!o.ok) throw new Error((o&&o.error)||'Face ID isn\'t set up');
+    return navigator.credentials.get({publicKey:{challenge:b64(o.challenge), rpId:o.rpId, allowCredentials:o.allow.map(id=>({type:'public-key',id:b64(id)})), userVerification:'required', timeout:60000}});
+  }).then(c=>fetch('/api/owner-passkey/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({id:c.id, clientDataJSON:u(c.response.clientDataJSON), authenticatorData:u(c.response.authenticatorData), signature:u(c.response.signature)})}).then(r=>r.json()))
+    .then(d=>{ if(!d||!d.ok||!d.key) throw new Error((d&&d.error)||'Face ID check failed'); adminOpen(d.key,'Admin unlocked with Face ID'); })
+    .catch(e=>{ if(e&&e.name==='NotAllowedError') toast('Face ID cancelled',true); else toast((e&&e.message)||'Face ID failed',true); });
 }
 function adminLock(){
   document.getElementById('adminGate').style.display='block';
@@ -4447,9 +4525,13 @@ function adminLock(){
   sessionStorage_set('adminUnlocked','');
   // Forget the owner password too. Lock used to only hide the screen, so the
   // next person at a shared PC could still use it from the browser console.
+  // A remembered device or Face ID key stops working on the server too.
+  if(String(OWNER_PW).startsWith('ot_')) fetch('/api/owner-device/forget',{method:'POST',headers:{'x-owner-password':OWNER_PW}}).catch(()=>{});
+  localStorage_set('ownerKey','');
   OWNER_PW='';
   sessionStorage_set('adminPw','');
-  toast('Admin locked');
+  adminFaceButtons();
+  toast('Admin locked'+(localStorage_get('ownerPasskey')?' — Face ID still unlocks it':''));
 }
 function sessionStorage_get(k){ try { return window.sessionStorage.getItem(k); } catch(e){ return window['_ss_'+k]||''; } }
 function sessionStorage_set(k,v){ try { window.sessionStorage.setItem(k,v); } catch(e){ window['_ss_'+k]=v; } }

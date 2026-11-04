@@ -7,9 +7,13 @@
 //  - /api/* is never touched: stock counts, money and everything else from the
 //    server always come live (a cached On Hand would be yesterday's numbers).
 //    Scans made offline are already kept by the page's own offline queue.
-//  - The app's own files (the page, its scripts, styles, icons) are NETWORK
-//    FIRST: a deploy shows up on the next load; the saved copy is only used
-//    when the network is down or takes more than a few seconds for the page.
+//  - The app's own files (the page, its scripts, styles, icons) open from the
+//    copy saved for THIS build, at once (owner 11/4: network-first made the
+//    home-screen app feel slower than Chrome; iOS restarts a home-screen app
+//    often, and each start waited on the ~1 MB page). A deploy changes this
+//    file (the build number), so the browser installs the new worker, which
+//    saves the new files; the page then offers "New version — tap to update"
+//    (index.html) and reloads by itself when it's next hidden.
 const BUILD = '__BUILD__';
 const CACHE = 'elevate-' + BUILD;
 const SHELL = ['/', '/look2.css', '/dash2.js', '/onhand2.js', '/palette.js', '/tablet.js', '/vendor/bwip-js.min.js',
@@ -28,6 +32,10 @@ self.addEventListener('activate', (e) => {
     .then(() => self.clients.claim()));
 });
 
+// The saved copy at once; the network only when this build has none yet.
+function fromCache(req, key) {
+  return caches.open(CACHE).then(c => c.match(key || req, { ignoreSearch: !!key }).then(hit => hit || fromNetwork(req, key)));
+}
 function fromNetwork(req, key, waitMs) {
   const net = fetch(req).then(res => {
     if (res && (res.ok || res.type === 'opaque')) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(key || req, copy)); }
@@ -50,9 +58,10 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.origin === self.location.origin) {
     if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js') return;
-    if (req.mode === 'navigate') return e.respondWith(fromNetwork(req, '/', 4000));
-    if (SHELL.includes(url.pathname)) return e.respondWith(fromNetwork(req));
+    if (req.mode === 'navigate') return e.respondWith(fromCache(req, '/'));
+    if (SHELL.includes(url.pathname)) return e.respondWith(fromCache(req, url.pathname));
     return;
   }
-  if (OUTSIDE.test(req.url)) e.respondWith(fromNetwork(req));
+  // Barcode library and fonts: fixed versions, so the saved copy is right.
+  if (OUTSIDE.test(req.url)) e.respondWith(caches.match(req).then(hit => hit || fromNetwork(req)));
 });
