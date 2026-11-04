@@ -22,17 +22,49 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   // Reload at once if nobody is looking, else offer a tap (never mid-scan
   // without asking), and reload by itself the next time the app is hidden.
   var hadSw = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.addEventListener('controllerchange', function () {
-    if (!hadSw) { hadSw = true; return; }
-    if (document.visibilityState === 'hidden') return location.reload();
-    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') location.reload(); });
+  // A fresh load: drop the saved copies first, so the page comes from the
+  // server and not from the old build's cache.
+  var swFresh = function () {
+    var go = function () { location.reload(); };
+    if (!window.caches) return go();
+    caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k.indexOf('elevate-') === 0; }).map(function (k) { return caches.delete(k); })); })
+      .then(go, go);
+  };
+  var swOffer = function () {
+    if (document.visibilityState === 'hidden') return swFresh();
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') swFresh(); });
     if (document.getElementById('swUpdate')) return;
     var b = document.createElement('div'); b.id = 'swUpdate';
     b.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:100000;background:#002f36;color:#fff;padding:12px 18px;border-radius:12px;font:700 15px -apple-system,Segoe UI,sans-serif;box-shadow:0 8px 24px rgba(0,0,0,.3);cursor:pointer';
     b.textContent = '✨ New version ready — tap to update';
-    b.onclick = function () { location.reload(); };
-    document.body.appendChild(b);
+    b.onclick = function () { b.textContent = 'Updating…'; swFresh(); };
+    (document.body || document.documentElement).appendChild(b);
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (!hadSw) { hadSw = true; return; }
+    swOffer();
   });
+  // The page also asks the server which build is live (owner 11/4: "new
+  // version never popped up but I tried to refresh"): the browser only looks
+  // for a new worker now and then, and a home-screen app resumed from the
+  // background never reloads, so the saved old page kept opening. The page
+  // knows its own build (server.js stamps it in); a different one on
+  // /api/ping means a deploy went out: fetch the new worker and offer the
+  // update. Checked a few seconds after opening, on coming back to the app,
+  // and every 5 minutes.
+  var PAGE_BUILD = '__PAGE_BUILD__', swChecked = 0;
+  var swCheck = function () {
+    if (PAGE_BUILD.indexOf('__') === 0 || Date.now() - swChecked < 30000) return;
+    swChecked = Date.now();
+    fetch('/api/ping', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
+      if (!d || !d.build || d.build === PAGE_BUILD) return;
+      navigator.serviceWorker.getRegistration().then(function (g) { if (g) g.update().catch(function () {}); }).catch(function () {});
+      swOffer();
+    }).catch(function () {});
+  };
+  window.addEventListener('load', function () { setTimeout(swCheck, 4000); });
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') swCheck(); });
+  setInterval(swCheck, 5 * 60 * 1000);
 }
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -612,6 +644,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <button class="action" onclick="prepTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every line showing">Clear</button>
       <button class="action" onclick="sendTickedToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment with everything ticked here AND on Pending Prep, added together. No stock changes until Finish.">🏷️ Send ticked to production →</button>
     </div>
+    <div id="prepCapBar"></div>
     <div id="prepListBox"></div>
     <div id="prepPrelabelBox"></div>
     <button class="action full" onclick="loadPrepList()" style="margin-top:10px;background:#5a6472">↻ Refresh Prepped List</button>
@@ -2617,11 +2650,24 @@ function youSoldHtml(asin){
   if(!window._ourSold){ loadOurSold(); return '<span class="hint">…</span>'; }
   return ourSoldOf(asin).toLocaleString();
 }
-// The other sellers' average, with each seller's own figure under it (owner 10/23).
+// 3P avg = what one third-party seller sells a month on the listing, counting
+// EVERY 3P seller on it (owner 11/4: "this is the 3P avg for all 3P sellers"):
+// the pie ÷ the 3P seller count, from /api/ss-avg `all`. The average of the
+// seller files we have (3 sellers) left most listings at — and showed ~0 when
+// a file listed an offer that doesn't move, so it's only the fallback, and
+// only from sellers that actually sell it.
+function ss3p(asin){
+  const all=ssAvg&&ssAvg.all&&ssAvg.all[asin];
+  if(all&&all.avg>0) return {v:all.avg, t:'~'+Math.round(all.pie).toLocaleString()+'/mo for third-party sellers on this listing (after Amazon\'s share) ÷ '+all.sellers+' seller'+(all.sellers===1?'':'s')+' ('+(all.src==='keepa'?'Keepa':'Smart Scout')+')'};
+  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
+  if(a&&a.sold>0) return {v:a.sold, t:'Average of the '+a.nSold+' other seller'+(a.nSold===1?'':'s')+' with a Smart Scout file that sell it'};
+  return null;
+}
+// The 3P average, with each seller's own figure under it (owner 10/23).
 function ssAvgHtml(asin){
-  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin]; if(!a) return '—';
-  const by=Object.entries(a.by||{}).sort((x,y)=>y[1]-x[1]);
-  return '~'+Math.round(a.avg).toLocaleString()+(by.length?'<div style="font-size:10.5px;font-weight:600;color:#5a6472;line-height:1.3;margin-top:2px">'+by.map(([k,v])=>esc(k)+' '+v.toLocaleString()).join(' · ')+'</div>':'');
+  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin], s3=ss3p(asin); if(!s3) return '—';
+  const by=Object.entries((a&&a.by)||{}).sort((x,y)=>y[1]-x[1]);
+  return '<span title="'+esc(s3.t)+'">~'+Math.round(s3.v).toLocaleString()+'</span>'+(by.length?'<div style="font-size:10.5px;font-weight:600;color:#5a6472;line-height:1.3;margin-top:2px">'+by.map(([k,v])=>esc(k)+' '+v.toLocaleString()).join(' · ')+'</div>':'');
 }
 // How a listing sells, in one short line (owner 11/4: "on Pending Prep and
 // Prepped & Ready I need to see how well the items sell, days in stock,
@@ -2640,9 +2686,9 @@ function sellNums(asin){
   const p=(products||[]).find(y=>y.asin===asin)||{};
   const fba=p.fba_as_of?Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0):null;
   const mo=demandRate(asin, p.monthlySold).mo||null;
-  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
+  const a=ss3p(asin);
   const N=window._soldNow;
-  return { sold:N?(N.sold[asin]||0):null, avg:a?a.avg:null, fba, days:fba!=null&&mo>0?fba/(mo/30):null, rank:p.salesRank!=null?p.salesRank:null,
+  return { sold:N?(N.sold[asin]||0):null, avg:a?a.v:null, avgT:a?a.t:'', fba, days:fba!=null&&mo>0?fba/(mo/30):null, rank:p.salesRank!=null?p.salesRank:null,
     inStock:N&&N.snapDays?(N.inStock[asin]||0):null, snapDays:N?N.snapDays:0 };
 }
 const sellDayColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
@@ -2652,7 +2698,7 @@ function sellStrip(asin){
   return '<div class="sellStrip" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">'
     +it('Sold 30d', n.sold==null?'…':f(n.sold), 'Our own units sold, the last 30 days to today')
     +it('In stock', n.inStock==null?'—':n.inStock+'/'+n.snapDays+'d', 'Days with stock available at Amazon, of the last '+(n.snapDays||30)+' days checked: an item that was out can\'t sell', n.inStock==null?null:n.inStock>=n.snapDays*0.9?'#1e8449':n.inStock>=n.snapDays*0.5?'#b7791f':'#c0392b')
-    +it('3P avg', n.avg==null?'—':'~'+f(n.avg), 'Other sellers\' average units a month (Smart Scout)')
+    +it('3P avg', n.avg==null?'—':'~'+f(n.avg), esc('Average units a month per third-party seller, all of them on the listing'+(n.avgT?': '+n.avgT:'')))
     +it('At Amazon', f(n.fba), 'At Amazon + on the way in')
     +it('Days', n.days==null?'—':f(n.days), 'How many days that stock lasts at the best estimate of demand', sellDayColor(n.days))
     +it('Rank', n.rank==null?'—':'#'+f(n.rank), 'Amazon sales rank (Keepa)')
@@ -4898,7 +4944,7 @@ function renderNextBatch(){
       const p=(products||[]).find(y=>y.asin===x.asin)||{}, known=!!p.fba_as_of;
       const total=Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0);
       const R=demandRate(x.asin, p.monthlySold), mo=R.mo||null, perDay=mo>0?mo/30:null;
-      const av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null;
+      const av=ss3p(x.asin)?ss3p(x.asin).v:null;
       return {x, total:known?total:null, avg:av, days:known&&perDay?total/perDay:null,
         daysAll:known&&perDay?(total+(queued[x.asin]||0)+x.qty)/perDay:null, prep:queued[x.asin]||0,
         rank:p.salesRank, sold:p.monthlySold, est:R.est, note:mo>0?'selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':''};
@@ -4916,7 +4962,7 @@ function renderNextBatch(){
       +th('name','Product',0,'',1)+th('qty','Qty',62)+'<th style="width:70px;padding:6px">Location</th>'
       +th('total','At Amazon + transit',96,'At Amazon (in stock) plus on the way to Amazon, for this listing')
       +th('you','You sold (30d)',74,'Your real units sold on this listing, last 30 days (Amazon orders), the same 30 days as the SmartScout figures')
-      +th('avg','3P avg (Smart Scout)',118,'SmartScout: average sales per month of the other sellers on this listing (not you), each seller\'s own figure under it')
+      +th('avg','3P avg (Smart Scout)',118,'Average sales a month per third-party seller, counting all of them on the listing (its 3P sales ÷ the 3P sellers); the sellers we have Smart Scout files for under it')
       +th('days','Days covered',82,'At Amazon + transit ÷ daily sales (best estimate, same as Send Next). * = rough fallback')
       +th('daysAll','Days covered + pending prep + this batch',118,'At Amazon + transit + what is in Pending Prep now + this next-batch job, ÷ daily sales')
       +th('rank','Keepa rank',84,'Keepa sales rank for the listing')
@@ -4992,7 +5038,49 @@ function loadPendingPrep(){
 // Monitor (Amazon doesn't expose it). /api/capacity, lib/capacity.js.
 let _cap=null;
 function loadCapacity(){
-  return api('/api/capacity').then(d=>{ if(d&&d.ok){ _cap=d; renderCapBar(); if(ppList()) renderPendingPrep(); } }).catch(()=>{});
+  return api('/api/capacity').then(d=>{ if(d&&d.ok){ _cap=d; renderCapBar(); renderPrepCap(); if(ppList()) renderPendingPrep(); } }).catch(()=>{});
+}
+// FBA capacity on Prepped & Ready (owner 11/4: "pre-labeled items don't go to
+// Pending Prep, so I need to see how big of a shipment I can build from
+// Prepped & Ready"). Room left (the limit less what's at Amazon + on the way)
+// less what's already headed out (Prepped & Ready + Pending Prep) = what's
+// free for pre-labeled stock, in cu ft and as units at the pre-labeled
+// items' own average size. Sizes as /api/capacity counts them (calibrated);
+// a line with no size isn't counted and is said.
+function renderPrepCap(){
+  const el=document.getElementById('prepCapBar'), c=_cap, d=window._prepData; if(!el) return;
+  if(!c||!d){ el.innerHTML=''; return; }
+  const f=v=>Math.round(v).toLocaleString(), haz=new Set(c.hazmat||[]), L=c.limit||{};
+  const sum=(rows, kind, pick)=>{ let cf=0, units=0, noSize=0; for(const x of rows){ if(haz.has(x.asin)!==(kind==='hazmat')||!pick(x)) continue; const q=pick(x), z=c.cuft&&c.cuft[x.asin]; if(z>0){ cf+=z*q; units+=q; } else noSize++; } return {cf, units, noSize}; };
+  const line=(label, kind, limit)=>{
+    const now=c.used[kind]||0, pend=(c.pending&&c.pending[kind])||0;
+    const ready=sum(d.items||[], kind, x=>x.prepped), tick=sum(d.items||[], kind, x=>x.in_plan?x.prepped:0), pre=sum(d.prelabeled||[], kind, x=>x.prepped);
+    if(!limit && !ready.cf && !pre.cf && !pend) return '';
+    if(!limit) return '<div style="margin-top:8px;font-size:13px"><b>'+label+'</b> · <span class="hint">no limit set — tap Set room left on Pending Prep</span></div>';
+    const room=Math.max(0, limit-now), out=ready.cf+pend, free=room-out;
+    const per=pre.units?pre.cf/pre.units:null, fitUnits=per&&free>0?Math.floor(free/per):0;
+    const w=v=>Math.max(0,Math.min(100, v/limit*100));
+    const col=free<0?'#c0392b':free<room*0.1?'#b7791f':'#1e8449';
+    const bar='<div style="position:relative;height:18px;background:#eef2f6;border-radius:9px;overflow:hidden;margin-top:6px">'
+      +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+w(now)+'%;background:#2563a8" title="At Amazon + on the way: '+f(now)+' cu ft"></div>'
+      +'<div style="position:absolute;left:'+w(now)+'%;top:0;bottom:0;width:'+(w(now+out)-w(now))+'%;background:#1e8449" title="Prepped & Ready + Pending Prep: '+f(out)+' cu ft"></div>'
+      +'<div style="position:absolute;left:'+w(now+out)+'%;top:0;bottom:0;width:'+(w(now+out+pre.cf)-w(now+out))+'%;background:repeating-linear-gradient(45deg,#7a4fb5,#7a4fb5 5px,#9b78cc 5px,#9b78cc 10px)" title="Pre-labeled: '+f(pre.cf)+' cu ft"></div></div>';
+    const noSize=ready.noSize+pre.noSize;
+    return '<div style="margin-top:10px">'
+      +'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline">'
+      +'<span style="font-size:13px"><b>'+label+'</b> · '+f(room)+' cu ft room left at Amazon</span>'
+      +'<b style="font-size:16px;color:'+col+'">'+(free<0?'OVER by '+f(-free)+' cu ft':f(free)+' cu ft free'+(per?' ≈ '+fitUnits.toLocaleString()+' pre-labeled units':''))+'</b></div>'
+      +bar
+      +'<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-top:4px;color:#5a6472">'
+      +'<span><b style="color:#2563a8">■</b> At Amazon + on the way '+f(now)+'</span>'
+      +'<span><b style="color:#1e8449">■</b> Ready + pending prep '+f(out)+(tick.cf?' (ticked '+f(tick.cf)+')':'')+'</span>'
+      +'<span><b style="color:#7a4fb5">■</b> Pre-labeled '+f(pre.cf)+(pre.cf>0&&free>0?(pre.cf<=free?' — all of it fits':' — '+f(free)+' of it fits'):'')+'</span>'
+      +(noSize?'<span style="color:#b7791f">⚠ '+noSize+' line'+(noSize===1?'':'s')+' with no size, not counted</span>':'')
+      +'</div></div>';
+  };
+  const h=line('Standard','standard',L.standard)+line('Dangerous goods','hazmat',L.hazmat);
+  el.innerHTML=h?'<div class="box" style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b>📦 FBA capacity — how much you can send</b>'
+    +'<span class="hint">'+(L.setAt?'room left entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+', less what\'s gone to Amazon since':'set room left on Pending Prep')+'</span></div>'+h+'</div>':'';
 }
 function renderCapBar(){
   const el=document.getElementById('capBar'), c=_cap; if(!el||!c) return;
@@ -6519,7 +6607,7 @@ function ppListRows(items){
   const dColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
   // Click a header to sort (per device). Item: duos first, then singles;
   // numbers: biggest first. Clicking the same header again flips it.
-  const mt=x=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null, mo=demandRate(x.asin, a.p.monthlySold).mo||null;
+  const mt=x=>{ const a=amz(x.asin), av=ss3p(x.asin)?ss3p(x.asin).v:null, mo=demandRate(x.asin, a.p.monthlySold).mo||null;
     return { total:a.known?a.total:null, avg:av, days:a.known&&mo>0?a.total/(mo/30):null, daysPrep:a.known&&mo>0?(a.total+(queued[x.asin]||0))/(mo/30):null }; };
   // Space this job will take at Amazon (FBA capacity): qty × the listing's cubic feet.
   const space=x=>{ const cf=_cap&&_cap.cuft&&_cap.cuft[x.asin]; return cf?cf*(x.qty||0):null; };
@@ -6536,7 +6624,7 @@ function ppListRows(items){
     +th('item','Item','Duos first, then singles',1)+th('qty','Qty')+th('space','Space (cu ft)','FBA capacity this job will use at Amazon: qty × the listing\'s package size')
     +th('total','Total at Amazon + transit','At Amazon (in stock) plus on the way to Amazon, for this listing')
     +th('you','You sold (30d)','Your real units sold on this listing, last 30 days (Amazon orders), the same 30 days as the SmartScout figures')
-    +th('avg','3P average (Smart Scout)','SmartScout: average sales per month of the other sellers on this listing (not you), each seller\'s own figure under it')
+    +th('avg','3P average (Smart Scout)','Average sales a month per third-party seller, counting all of them on the listing (its 3P sales ÷ the 3P sellers); the sellers we have Smart Scout files for under it')
     +th('days','Days covered','Total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
     +th('daysPrep','Days covered (with pending prep)','Same as Days covered, adding everything queued in Pending Prep for this listing')
     +th('plan','Plan','Ticked first')+th('status','Status','In progress first',1)+'</tr>'
@@ -6567,7 +6655,7 @@ function ppListRows(items){
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
         +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div>'+(x.is_duo?'':'<div style="font-size:12px;font-weight:900;color:#0d4450">📦 '+casesText(x.qty, caseQtyOf(x))+'</div>')+'</td>'
         +(()=>{ const sp=space(x); return '<td style="'+td+';'+num+';color:#5a6472"'+(sp==null?' title="No package size yet — Get sizes from Amazon (capacity box above)"':'')+'>'+(sp==null?'—':(sp<10?sp.toFixed(1):Math.round(sp).toLocaleString()))+'</td>'; })()
-        +(()=>{ const a=amz(x.asin), av=ssAvg&&ssAvg.avg&&ssAvg.avg[x.asin]?ssAvg.avg[x.asin].avg:null;
+        +(()=>{ const a=amz(x.asin), av=ss3p(x.asin)?ss3p(x.asin).v:null;
             const R=demandRate(x.asin, a.p.monthlySold), mo=R.mo||null, d=a.known&&mo>0?Math.round(a.total/(mo/30)):null;
             const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=R.est?'*':'';
             const why=mo>0?' · selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':'';
@@ -7048,10 +7136,11 @@ function loadPrepList(){
   initPrepScan(); loadFnStatus();
   setTimeout(()=>{ const s=document.getElementById('scanPrep'); if(s) s.focus(); }, 100);
   api('/api/prep/list').then(d=>{ window._prepData=d; renderPrepList(); });
+  loadCapacity();
 }
 function renderPrepList(){
   const d=window._prepData; if(!d)return;
-  renderPrelabelList();
+  renderPrelabelList(); renderPrepCap();
   const b=document.getElementById('prepListBox');
   if(!d.items.length){ b.innerHTML='<div class="hint" style="padding:16px;text-align:center">Nothing prepped yet. Scan labeled items above.</div>'; return; }
   const sort=(document.getElementById('prepSort')||{}).value||'qty_desc';
@@ -11521,7 +11610,6 @@ function amazonSplit(p){
   // the same demand number Send Next plans with (demandRate). Never Keepa's
   // whole-listing sales on their own: Amazon takes most of those, so cover
   // read as a few days. * = a rough fallback (no estimate yet).
-  const avgOf=a=>ssAvg&&ssAvg.avg&&ssAvg.avg[a]?ssAvg.avg[a]:null;
   const rate=r=>demandRate(r.asin, r.sold);
   const coverTd=(units, mo, est, note)=>{
     const d=mo>0 ? Math.round(units/(mo/30)) : null;
@@ -11531,7 +11619,7 @@ function amazonSplit(p){
   // 3P Avg / Mo (every view): the other sellers' average monthly sales on the
   // listing, from their SmartScout seller files — right after Sold / mo.
   const showAvg=true;
-  const avgTd=r=>{ if(!showAvg) return ''; const v=avgOf(r.asin); return '<td style="'+cell+';color:#c0392b;font-weight:900"'+(v?' title="Average of '+v.n+' other seller'+(v.n===1?'':'s')+'"':'')+'>'+(v?'~'+Math.round(v.avg).toLocaleString():'—')+'</td>'; };
+  const avgTd=r=>{ if(!showAvg) return ''; const v=ss3p(r.asin); return '<td style="'+cell+';color:#c0392b;font-weight:900"'+(v?' title="'+esc(v.t)+'"':'')+'>'+(v?'~'+Math.round(v.v).toLocaleString():'—')+'</td>'; };
   const tr=r=>'<tr style="border-top:1px solid #eef2f6"><td style="padding:4px 8px"><b style="color:'+(r.label==='Duo'?'#c0392b':'#0d4450')+'">'+r.label+'</b> <a href="https://www.amazon.com/dp/'+encodeURIComponent(r.asin)+'" target="_blank" rel="noopener" title="Open on Amazon" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">'+esc(r.asin)+'</a>'+(r.per>1?' <span class="hint">×'+r.per+' bottles</span>':'')+'</td>'
     +'<td style="'+cell+';color:#5a6472">'+(r.sold!=null?'~'+Number(r.sold).toLocaleString():'—')+'</td>'+avgTd(r)
     +'<td style="'+cell+';color:'+(r.at>0?'#008296':'#c0392b')+'">'+r.at+'</td><td style="'+cell+';color:#2563a8">'+r.way+'</td><td style="'+cell+';color:#0d4450;font-weight:900">'+(r.at+r.way)+'</td>'+coverTd(r.at+r.way, rate(r).mo, rate(r).est, rate(r).note)+'</tr>';

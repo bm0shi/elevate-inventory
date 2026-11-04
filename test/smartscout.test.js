@@ -110,3 +110,20 @@ test('pie: sellers\' Buy Box % caps Amazon\'s share (Tea Tree Lemon Sage)', () =
   // A low Keepa figure isn't raised by the cap.
   assert.strictEqual(pieFor({ units: 100, fbaSellers: 3 }, { amazonBuyBoxPct: 5 }, { bbSum: 50 }).amazonPct, 5);
 });
+
+test('allSellersAvg: the pie split over every 3P seller, not just the ones with files (owner 11/4)', () => {
+  const { allSellersAvg } = require('../lib/smartscout');
+  // SmartScout brand row: 600/mo, 4 FBA sellers incl. Amazon at 50% → 300 pie over 3 sellers.
+  const a = allSellersAvg({ units: 600, fbaSellers: 4, amazonInStock: 0 }, { amazonBuyBoxPct: 50 });
+  assert.equal(a.src, 'smartscout'); assert.equal(a.sellers, 3); assert.equal(Math.round(a.avg), 100);
+  // No brand row: Keepa's monthly sold and 3P Buy Box winners.
+  const k = allSellersAvg(null, { monthlySold: 400, amazonBuyBoxPct: 0, buyBoxWinners3P: 4 });
+  assert.equal(k.src, 'keepa'); assert.equal(k.avg, 100);
+  // Offer count when winners aren't known (Amazon on it takes one off).
+  assert.equal(allSellersAvg(null, { monthlySold: 300, amazonBuyBoxPct: 25, offerCount: 4 }).avg, 75);
+  // Sellers we know of raise the count.
+  assert.equal(allSellersAvg(null, { monthlySold: 300, buyBoxWinners3P: 1 }, { sellersSeen: 3 }).avg, 100);
+  // Nothing known → null, never 0.
+  assert.equal(allSellersAvg(null, { monthlySold: 0, buyBoxWinners3P: 2 }), null);
+  assert.equal(allSellersAvg(null, {}), null);
+});
