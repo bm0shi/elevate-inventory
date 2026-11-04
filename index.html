@@ -150,6 +150,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
   table.prelabelT { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 13px; background: #fff; border-radius: 10px; overflow: hidden; }
   table.prelabelT th { font-size: 10.5px; text-transform: uppercase; color: #5a6472; padding: 8px; text-align: center; }
   table.prelabelT th:nth-child(2), table.prelabelT td:nth-child(2) { text-align: left; }
+  table.prelabelT th:nth-child(2) { width: 30%; }   /* the name keeps its room beside the sales columns */
   table.prelabelT td { padding: 8px; border-top: 1px solid #eef2f6; text-align: center; vertical-align: middle; }
   table.prelabelT img { width: 54px !important; height: 54px !important; object-fit: contain; border-radius: 6px; }
   table.prelabelT .fn-sm { display: none; }
@@ -2586,7 +2587,7 @@ let ssPicks=new Set();
 let _demand=null;
 function loadDemand(){
   if(loadDemand._busy) return Promise.resolve(); loadDemand._busy=true;
-  return api('/api/demand').then(d=>{ if(d&&d.ok){ _demand=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadDemand._busy=false; });
+  return api('/api/demand').then(d=>{ if(d&&d.ok){ _demand=d; if(document.getElementById('onhandBody')) renderOnhand(); renderPendingPrep(); sellRepaint(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadDemand._busy=false; });
 }
 // Monthly units we'll sell of a listing, and where the number came from:
 // best estimate → else the other sellers' SmartScout average → else Keepa's
@@ -2602,13 +2603,13 @@ function demandRate(asin, keepaSold){
 let ssAvg=null;   // {asin:{avg,n}} — other sellers' average sells / mo (On Hand "3P Avg / Mo", Pending Prep)
 function loadSsAvg(){
   if(loadSsAvg._busy) return Promise.resolve(); loadSsAvg._busy=true;
-  return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
+  return api('/api/ss-avg').then(d=>{ if(d&&d.ok){ ssAvg=d; if(document.getElementById('onhandBody')) renderOnhand(); renderPendingPrep(); sellRepaint(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadSsAvg._busy=false; });
 }
 // Our own real sales, last 30 days (same window as the SmartScout figures).
 // Units only; the owner opened it to the warehouse login (10/24).
 function loadOurSold(){
   if(loadOurSold._busy || loadOurSold._at>Date.now()-60000) return; loadOurSold._busy=true; loadOurSold._at=Date.now();
-  api('/api/our-sold30').then(d=>{ if(d&&d.ok){ window._ourSold=d.sold||{}; if(ppList()) renderPendingPrep(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadOurSold._busy=false; });
+  api('/api/our-sold30').then(d=>{ if(d&&d.ok){ window._ourSold=d.sold||{}; renderPendingPrep(); sellRepaint(); if(window._nextOpen) renderNextBatch(); } }).catch(()=>{}).finally(()=>{ loadOurSold._busy=false; });
 }
 const ourSoldOf=asin=>window._ourSold?(window._ourSold[asin]||0):null;
 // "You sold" cell: our real units (… while they load).
@@ -2622,6 +2623,35 @@ function ssAvgHtml(asin){
   const by=Object.entries(a.by||{}).sort((x,y)=>y[1]-x[1]);
   return '~'+Math.round(a.avg).toLocaleString()+(by.length?'<div style="font-size:10.5px;font-weight:600;color:#5a6472;line-height:1.3;margin-top:2px">'+by.map(([k,v])=>esc(k)+' '+v.toLocaleString()).join(' · ')+'</div>':'');
 }
+// How a listing sells, in one short line (owner 11/4: "on Pending Prep and
+// Prepped & Ready I need to see how well the items sell, days in stock,
+// ranking, 3P avg … something condensed"). The same numbers the list views
+// use: our units sold in 30 days, the other sellers' Smart Scout average,
+// what's at Amazon + on the way, how many days that lasts at the best
+// estimate of demand, and Keepa's sales rank.
+function sellNums(asin){
+  if(!window._ourSold) loadOurSold();
+  if(!ssAvg) loadSsAvg();
+  const p=(products||[]).find(y=>y.asin===asin)||{};
+  const fba=p.fba_as_of?Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0):null;
+  const mo=demandRate(asin, p.monthlySold).mo||null;
+  const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
+  return { sold:ourSoldOf(asin), avg:a?a.avg:null, fba, days:fba!=null&&mo>0?fba/(mo/30):null, rank:p.salesRank!=null?p.salesRank:null };
+}
+const sellDayColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
+function sellStrip(asin){
+  const n=sellNums(asin), f=v=>v==null?'—':Math.round(v).toLocaleString();
+  const it=(l,v,t,c)=>'<span title="'+t+'" style="display:inline-flex;flex-direction:column;align-items:center;min-width:54px;padding:3px 6px;border-radius:7px;background:#f4f7f9"><b style="font-size:13.5px;line-height:1.2'+(c?';color:'+c:'')+'">'+v+'</b><span style="font-size:9.5px;font-weight:800;letter-spacing:.3px;color:#8a97a6;text-transform:uppercase">'+l+'</span></span>';
+  return '<div class="sellStrip" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">'
+    +it('Sold 30d', n.sold==null?'…':f(n.sold), 'Our own units sold, last 30 days')
+    +it('3P avg', n.avg==null?'—':'~'+f(n.avg), 'Other sellers\' average units a month (Smart Scout)')
+    +it('At Amazon', f(n.fba), 'At Amazon + on the way in')
+    +it('Days', n.days==null?'—':f(n.days), 'How many days that stock lasts at the best estimate of demand', sellDayColor(n.days))
+    +it('Rank', n.rank==null?'—':'#'+f(n.rank), 'Amazon sales rank (Keepa)')
+    +'</div>';
+}
+// Prepped & Ready repaints when the numbers above arrive.
+function sellRepaint(){ if(window._prepData&&document.getElementById('prepListBox')) try{ renderPrepList(); }catch(e){} }
 function loadSsPicks(){
   return api('/api/ss-picks').then(d=>{ if(d&&d.ok){ ssPicks=new Set(d.asins); ssPicksPaint(); } }).catch(()=>{});
 }
@@ -2749,7 +2779,7 @@ function loadProducts(){ loadSsPicks(); return api('/api/products').then(d=>{
   // An error reply (server restarting, DB down) used to replace the product
   // list and break every screen that reads it. Keep the last good list.
   if(!Array.isArray(d)){ toast('Could not refresh products: '+((d&&(d.error||d.message))||'server error'),true); return; }
-  products=d; renderOnhand(); }); }
+  products=d; renderOnhand(); sellRepaint(); }); }
 
 function showTab(t,ev){ document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active')); document.querySelectorAll('.tab').forEach(p=>p.classList.remove('active')); document.getElementById(t).classList.add('active'); (ev.currentTarget||ev.target).classList.add('active'); if(t==='onhand'){ _bundles=null; loadProducts(); pollSync(); } if(t==='prod'){ prodOpen(); } if(t==='admin'){ if(sessionStorage_get('adminUnlocked')==='1'){ OWNER_PW=sessionStorage_get('adminPw')||''; document.getElementById('adminGate').style.display='none'; document.getElementById('adminContent').style.display='block'; adminFaceButtons(); showSubTab('dashboard'); } else adminTryRemembered(); }
   if(t==='pendingprep'){loadPendingPrep();loadFnskuWarn();} if(t==='prep'){loadPrepList();loadFnskuWarn();} if(t==='reconcile'){loadInvoiceList(); refreshShortBadge();}
@@ -6426,7 +6456,7 @@ function renderPrepJobs(d, b, pre){
           <span style="font-size:10px;font-weight:800;letter-spacing:0.3px;color:${inPlan?'#1e8449':'#8a97a6'};text-transform:uppercase">${inPlan?'✓ In Plan':'In Plan?'}</span>
         </label></div>`;
     const divider='';   // placed between groups by the loop below, never inside a split pair
-    return `${divider}<div class="pcard ppcard${x.prelabel?' ppPre':''}" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#0d4450':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div>${x.is_duo?((x.components||[]).length?`<div style="margin-top:6px;font-size:13px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;line-height:1.3">${(()=>{ const cp=casesParts(x.qty, caseQtyOf(x)); return '<span onclick="setCaseQty(\''+esc(x.asin)+'\',true)" title="Tap to change duos per case" style="cursor:pointer">📦 '+cp.main.toUpperCase()+'<div style="font-size:10px;font-weight:700;color:#cfe3e6">'+caseQtyOf(x)+' DUOS PER CASE ✎</div></span>'; })()}</div>`:''):`<div style="margin-top:6px;font-size:14px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;white-space:nowrap;line-height:1.3;cursor:pointer" onclick="setCaseQty('${esc(x.asin)}')" title="Tap to change bottles per case">📦 ${casesParts(x.qty, caseQtyOf(x)).main.toUpperCase()}<div style="font-size:10px;font-weight:700;color:#cfe3e6">${casesParts(x.qty, caseQtyOf(x)).sub.toUpperCase()} ✎</div></div>`}<button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
+    return `${divider}<div class="pcard ppcard${x.prelabel?' ppPre':''}" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#0d4450':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}${sellStrip(x.asin)}</div><div class="pc-qty" style="min-width:86px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div>${x.is_duo?((x.components||[]).length?`<div style="margin-top:6px;font-size:13px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;line-height:1.3">${(()=>{ const cp=casesParts(x.qty, caseQtyOf(x)); return '<span onclick="setCaseQty(\''+esc(x.asin)+'\',true)" title="Tap to change duos per case" style="cursor:pointer">📦 '+cp.main.toUpperCase()+'<div style="font-size:10px;font-weight:700;color:#cfe3e6">'+caseQtyOf(x)+' DUOS PER CASE ✎</div></span>'; })()}</div>`:''):`<div style="margin-top:6px;font-size:14px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;white-space:nowrap;line-height:1.3;cursor:pointer" onclick="setCaseQty('${esc(x.asin)}')" title="Tap to change bottles per case">📦 ${casesParts(x.qty, caseQtyOf(x)).main.toUpperCase()}<div style="font-size:10px;font-weight:700;color:#cfe3e6">${casesParts(x.qty, caseQtyOf(x)).sub.toUpperCase()} ✎</div></div>`}<button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${claimBanner}</div>`;
   };
   // "Not started" divider: after the card (or split pair) holding the last
   // job in progress. It used to be inserted before that card, and inside a
@@ -7040,7 +7070,7 @@ function renderPrepList(){
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     const border=x.isBundle?'border:1px solid #fdeceb;':'';
     const tick=`<label title="Tick to send to the next shipment (with Pending Prep's ticked jobs)" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:6px;padding:4px 10px;border-radius:999px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;${x.in_plan?'background:#e7f6ec;color:#1e8449;border:1.5px solid #1e8449':'background:#fff;color:#5a6472;border:1.5px solid #d5d9d9'}"><input type="checkbox" ${x.in_plan?'checked':''} onchange="prepTick(['${esc(x.asin)}'],this.checked)" style="width:18px;height:18px;margin:0">${x.in_plan?'✓ FOR SHIPMENT':'For shipment'}</label>`;
-    return `<div class="pcard" style="${border};align-items:stretch${x.in_plan?';outline:2px solid #1e8449':''}">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
+    return `<div class="pcard" style="${border};align-items:stretch${x.in_plan?';outline:2px solid #1e8449':''}">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}${sellStrip(x.asin)}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — matches your shipment plan software. Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
   b.innerHTML=h;
@@ -7053,16 +7083,24 @@ function renderPrelabelList(){
   const L=(d&&d.prelabeled)||[];
   if(!L.length){ el.innerHTML=''; return; }
   sortState('prelabel','qty',-1);
-  const rows=sortRows('prelabel', L, { name:x=>String(x.name||''), qty:x=>x.prepped, fnsku:x=>String(x.fnsku||'') });
+  const rows=sortRows('prelabel', L, { name:x=>String(x.name||''), qty:x=>x.prepped, fnsku:x=>String(x.fnsku||''),
+    sold:x=>sellNums(x.asin).sold, avg:x=>sellNums(x.asin).avg, fba:x=>sellNums(x.asin).fba, days:x=>sellNums(x.asin).days, rank:x=>{ const r=sellNums(x.asin).rank; return r==null?null:-r; } });
+  // how each sells, as sortable columns (owner 11/4); rank sorts best (lowest) first
+  const sc=(x,k)=>{ const n=sellNums(x.asin), v=n[k], f=v==null?'—':Math.round(v).toLocaleString();
+    return '<td style="text-align:center;white-space:nowrap;font-weight:800'+(k==='days'?';color:'+sellDayColor(v):'')+'">'+(k==='sold'&&v==null?'…':k==='avg'&&v!=null?'~'+f:k==='rank'&&v!=null?'#'+f:f)+'</td>'; };
   const nm=x=>String(x.name||x.asin).replace(/'/g,"\\'").replace(/"/g,'');
   el.innerHTML='<div class="prelabelHead"><div class="t">🏷️ PRE-LABELED SKUS</div><div class="s">'+L.length+' product'+(L.length===1?'':'s')+' · '+(d.totalPrelabeled||0).toLocaleString()+' units labeled, not part of any shipment. When a shipment needs them, tap <b>Ready to ship</b>.</div></div>'
     +'<div class="box" style="padding:6px 8px;overflow-x:auto"><table class="prelabelT"><tr><th class="hsm" style="width:70px"></th>'
-    +sortTh('prelabel','name','Product','renderPrelabelList')+sortTh('prelabel','fnsku','FNSKU','renderPrelabelList','hsm')+sortTh('prelabel','qty','Pre-labeled','renderPrelabelList')+'<th style="width:150px"></th></tr>'
+    +sortTh('prelabel','name','Product','renderPrelabelList')+sortTh('prelabel','fnsku','FNSKU','renderPrelabelList','hsm')
+    +sortTh('prelabel','sold','Sold 30d','renderPrelabelList')+sortTh('prelabel','avg','3P avg','renderPrelabelList')+sortTh('prelabel','fba','At Amazon','renderPrelabelList')
+    +sortTh('prelabel','days','Days','renderPrelabelList')+sortTh('prelabel','rank','Rank','renderPrelabelList')
+    +sortTh('prelabel','qty','Pre-labeled','renderPrelabelList')+'<th style="width:150px"></th></tr>'
     +rows.map(x=>'<tr><td class="hsm">'+(x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'">':'📦')+'</td>'
-      +'<td><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
+      +'<td style="min-width:240px"><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
         +'<div style="font-size:11.5px;margin-top:2px"><span onclick="copyText(\''+esc(x.asin)+'\',this)" style="cursor:pointer;font-family:monospace;color:#2563a8">'+esc(x.asin)+'</span></div>'
         +(x.fnsku?'<div class="fn-sm" style="font-size:11.5px;margin-top:2px;font-family:monospace;font-weight:700">FNSKU '+esc(x.fnsku)+'</div>':'')+'</td>'
       +'<td class="hsm" style="width:130px">'+(x.fnsku?'<span onclick="copyText(\''+esc(x.fnsku)+'\',this)" style="cursor:pointer;font-family:monospace;font-weight:700;background:#fdf3e6;border-radius:4px;padding:2px 6px">'+esc(x.fnsku)+'</span>':'—')+'</td>'
+      +sc(x,'sold')+sc(x,'avg')+sc(x,'fba')+sc(x,'days')+sc(x,'rank')
       +'<td style="width:96px"><b style="font-size:20px;color:#7a4fb5">'+x.prepped.toLocaleString()+'</b><div><a href="#" onclick="event.preventDefault();editPrelabel(\''+esc(x.asin)+'\','+x.prepped+')" style="font-size:11px">edit</a></div></td>'
       +'<td><button onclick="prelabelToReady(\''+esc(x.asin)+'\',\''+esc(nm(x))+'\','+x.prepped+')" style="padding:8px 12px;font-size:12.5px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">→ Ready to ship</button></td></tr>').join('')
     +'</table></div>';
