@@ -469,7 +469,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pnl-bridge-1128';
+const BUILD_ID = 'events-light-1129';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8789,19 +8789,31 @@ async function pullFinEvents(fromDay, onProgress) {
     const skuMap = {};
     for (const q of ['SELECT sku, asin FROM inv_products WHERE sku IS NOT NULL', 'SELECT sku, asin FROM inv_sku_map WHERE asin IS NOT NULL'])
       for (const x of (await pool.query(q)).rows) skuMap[String(x.sku).toLowerCase()] = x.asin;
-    await withTx(async (db) => {
+    // Short pulls (Update today) don't wait behind a long one: they skip the
+    // lines if a 60-day pull is writing them (owner 11/4: Update today kept
+    // spinning). Lines go in 2,000 at a time: one 100,000-line statement
+    // built a huge query in memory.
+    const shortPull = Date.now() - Date.parse(from + 'T00:00:00-07:00') < 4 * 86400000;
+    const wrote = await withTx(async (db) => {
       // one writer at a time: Update today (dashboard, on load) and a 60-day
       // pull at once would each delete then insert, leaving the overlap twice
-      await db.query("SELECT pg_advisory_xact_lock(hashtext('inv_fin_event_lines'))");
+      if (shortPull) {
+        const got = (await db.query("SELECT pg_try_advisory_xact_lock(hashtext('inv_fin_event_lines')) AS ok")).rows[0].ok;
+        if (!got) return false;
+      } else await db.query("SELECT pg_advisory_xact_lock(hashtext('inv_fin_event_lines'))");
       await db.query('DELETE FROM inv_fin_event_lines WHERE posted >= $1', [new Date(bound).toISOString()]);
       await db.query("DELETE FROM inv_fin_event_lines WHERE posted < now() - interval '120 days'");
-      const col = k => lines.map(x => x[k]);
-      if (lines.length) await db.query(`INSERT INTO inv_fin_event_lines(day, posted, kind, transaction_type, order_id, sku, asin, amount_type, amount_description, amount, quantity)
-          SELECT * FROM unnest($1::date[], $2::timestamptz[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::numeric[], $11::int[])`,
-        [col('day'), col('posted'), col('kind'), col('transaction_type'), col('order_id'), col('sku'),
-         lines.map(x => x.sku ? (skuMap[x.sku.toLowerCase()] || null) : null), col('amount_type'), col('amount_description'), col('amount'), col('quantity')]);
+      for (let i = 0; i < lines.length; i += 2000) {
+        const part = lines.slice(i, i + 2000), col = k => part.map(x => x[k]);
+        await db.query(`INSERT INTO inv_fin_event_lines(day, posted, kind, transaction_type, order_id, sku, asin, amount_type, amount_description, amount, quantity)
+            SELECT * FROM unnest($1::date[], $2::timestamptz[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::text[], $9::text[], $10::numeric[], $11::int[])`,
+          [col('day'), col('posted'), col('kind'), col('transaction_type'), col('order_id'), col('sku'),
+           part.map(x => x.sku ? (skuMap[x.sku.toLowerCase()] || null) : null), col('amount_type'), col('amount_description'), col('amount'), col('quantity')]);
+      }
+      return true;
     });
-    await saveCache('fin_event_lines', { at: new Date().toISOString(), from: new Date(bound).toISOString().slice(0, 10), lines: lines.length, pages: r.pages.length });
+    if (wrote) await saveCache('fin_event_lines', { at: new Date().toISOString(), from: new Date(bound).toISOString().slice(0, 10), lines: lines.length, pages: r.pages.length });
+    else console.log('[FinEvents] event lines: a longer pull is writing them, skipped for this short one.');
   } catch (e) {
     console.error('[FinEvents] event lines:', e.message);
     // shown on the P&L's day-by-day check, so a failure isn't only in the log
@@ -10221,6 +10233,9 @@ initDb().then(() => {
       try {
         const r = (await pool.query(`SELECT MIN(day) < CURRENT_DATE - 30 AS ok FROM inv_fin_event_lines`)).rows[0];
         if (r && r.ok) return;
+        // not alongside a dashboard update: both asking Amazon's money API at
+        // once got throttled and Update today crawled (owner 11/4)
+        for (let i = 0; i < 20 && salesJob.running; i++) await new Promise(res => setTimeout(res, 30000));
         console.log('[FinEvents] money events missing for the P&L estimate — reading the last 60 days…');
         const f = await pullFinEvents(salesDay(Date.now() - 60 * 86400000));
         console.log(`[FinEvents] backfill done: ${f.days} day(s) from ${f.from}${f.failed ? ', ' + f.failed + ' window(s) failed' : ''}.`);
