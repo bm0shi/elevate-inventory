@@ -97,3 +97,13 @@ test('gross sales match Seller Central: free replacements and orders from outsid
     'X2\t2026-10-08T17:00:00+00:00\tShipped\tS1\tB1\tShipped\t1\t30.00\ttrue'].join('\n');
   assert.strictEqual(orderRecords(withFlag, null).length, 1);
 });
+
+test('order lines say whether we shipped them ourselves (FBM) and whether they have shipped', () => {
+  const H = 'amazon-order-id\tpurchase-date\torder-status\tfulfillment-channel\tsku\tasin\titem-status\tquantity\titem-price';
+  const body = [H,
+    'F1\t2026-11-01T17:00:00+00:00\tShipped\tMerchant\tM-1\tB1\tShipped\t1\t30.00',
+    'F2\t2026-11-01T18:00:00+00:00\tUnshipped\tMerchant\tM-1\tB1\tUnshipped\t1\t30.00',
+    'A1\t2026-11-01T19:00:00+00:00\tShipped\tAmazon\tS1\tB1\tShipped\t2\t60.00'].join('\n');
+  const r = orderRecords(body, null);
+  assert.deepStrictEqual(r.map(x => [x.order, x.fbm, x.shipped]), [['F1', true, true], ['F2', true, false], ['A1', false, true]]);
+});

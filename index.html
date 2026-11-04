@@ -1166,6 +1166,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><input id="logQ" placeholder="ASIN or product name — see its whole history" style="flex:1;min-width:220px;padding:9px;border:2px solid #e2e8f0;border-radius:6px" onkeydown="if(event.key==='Enter')renderLog()">
         <button class="action" onclick="renderLog()" style="padding:8px 16px">Search</button><button class="mini" onclick="document.getElementById('logQ').value='';renderLog()">Clear</button></div>
       <div class="hint" style="margin-top:4px">Without a search: the last 100 moves. Cycle counts and Missing / Found corrections show who and the before → after.</div></div>
+    <div id="fbmBox"></div>
     <div id="logBody"></div>
   </div>
 </div>
@@ -11870,7 +11871,38 @@ function pollSync(){
     }
   }).catch(()=>{ _syncPoll=setTimeout(pollSync,5000); });
 }
-function renderLog(){ const qEl=document.getElementById('logQ'), q=qEl?qEl.value.trim():'';
+// FBM orders taken off warehouse stock (owner 11/4): each shipped FBM line
+// once, from the shelf first, then pre-labeled, Pending Prep, Prepped & Ready.
+// Read on every orders pull; "Check now" reads Amazon right away.
+function renderFbm(){
+  const el=document.getElementById('fbmBox'); if(!el) return;
+  api('/api/fbm/recent').then(d=>{
+    if(!d||d.ok===false){ el.innerHTML=''; return; }
+    const st=d.status||{}, rows=d.rows||[], shorts=rows.filter(r=>r.short>0);
+    const when=t=>t?new Date(t).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'—';
+    el.innerHTML='<div class="box" style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
+      +'<div><b>📦 FBM orders taken off stock</b> <span class="hint">'+(st.at?'checked '+when(st.at)+(st.error?' — <span style="color:#c0392b">failed: '+esc(st.error)+'</span>':''):'not checked yet')+' · counted from '+(st.since?new Date(st.since).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'one week back')+'</span></div>'
+      +'<button class="mini" onclick="fbmCheck(this)"'+(d.running?' disabled':'')+'>'+(d.running?'Checking Amazon…':'↻ Check now')+'</button></div>'
+      +(shorts.length?'<div style="margin-top:6px;color:#c0392b;font-size:13px;font-weight:700">⚠ '+shorts.length+' order line'+(shorts.length===1?'':'s')+' not taken off (more than the warehouse had, or a listing not in the catalog); fix those counts by hand if the stock was here.</div>':'')
+      +(rows.length?'<table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:8px"><tr style="color:#8a97a6;font-size:11px;text-align:left"><th style="padding:3px 6px">Ordered</th><th style="padding:3px 6px">Product</th><th style="padding:3px 6px;text-align:center">Units</th><th style="padding:3px 6px">Taken from</th><th style="padding:3px 6px">Order</th></tr>'
+        +rows.map(r=>'<tr style="border-top:1px solid #eef2f6'+(r.short>0?';background:#fdeceb':'')+'"><td style="padding:4px 6px;white-space:nowrap">'+when(r.ordered_at)+'</td>'
+          +'<td style="padding:4px 6px">'+(r.product_asin?amzLinkSized(r.product_asin, r.name||r.product_asin):esc(r.asin||r.sku))+'</td>'
+          +'<td style="padding:4px 6px;text-align:center;font-weight:800">'+r.qty+'</td>'
+          +'<td style="padding:4px 6px">'+esc(r.where||'')+(r.short>0?' <b style="color:#c0392b">'+r.short+' not found</b>':'')+'</td>'
+          +'<td style="padding:4px 6px;font-family:monospace;font-size:11.5px">'+esc(r.order_id)+'</td></tr>').join('')+'</table>'
+        :'<div class="hint" style="margin-top:6px">No FBM orders taken off in the last 14 days.</div>')
+      +'<div class="hint" style="margin-top:6px">Each shipped FBM order comes off On Hand once, from the shelf first, then pre-labeled, then Pending Prep, then Prepped &amp; Ready. Checked with every sales update.</div></div>';
+    if(d.running) setTimeout(renderFbm, 8000);
+  }).catch(()=>{});
+}
+function fbmCheck(btn){
+  if(btn){ btn.disabled=true; btn.textContent='Checking Amazon…'; }
+  api('/api/fbm/check',{method:'POST',body:'{}'}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not start',true); renderFbm(); return; }
+    toast('Reading FBM orders from Amazon — about a minute'); setTimeout(renderFbm, 8000);
+  }).catch(e=>{ toast('Could not start: '+e.message,true); renderFbm(); });
+}
+function renderLog(){ const qEl=document.getElementById('logQ'), q=qEl?qEl.value.trim():''; renderFbm();
   api('/api/activity'+(q?'?q='+encodeURIComponent(q):'')).then(rows=>{ const b=document.getElementById('logBody');
   if(!rows||!rows.length){b.innerHTML='<div class="hint">'+(q?'Nothing found for “'+esc(q)+'”.':'No activity yet.')+'</div>';return;}
   // a correction (cycle count, Missing / Found) is its own kind, with its note
