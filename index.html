@@ -4869,12 +4869,12 @@ function requestPrep(asin, canDuo, pre){
       <div style="margin-top:16px">
         <div style="font-size:13px;font-weight:700;margin-bottom:8px">Prep as:</div>
         <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:11px;border:2px solid #e2e8f0;border-radius:8px;cursor:pointer;margin-bottom:8px" onclick="document.getElementById('prepModeSingle').checked=true">
-          <input type="radio" name="prepMode" id="prepModeSingle" checked style="width:18px;height:18px">
+          <input type="radio" name="prepMode" id="prepModeSingle" checked onchange="prepDoAllLabel()" style="width:18px;height:18px">
           <span><b>SINGLES</b> <span style="color:#5a6472;font-size:12px">— just this item</span></span>
         </label>
         ${duoList.length ? duoList.map((o,i)=>`
         <label style="text-transform:none;letter-spacing:0;font-weight:400;color:#1f2733;display:flex;align-items:center;gap:9px;padding:9px 11px;border:2px solid #fdeceb;background:#fffafa;border-radius:8px;cursor:pointer;margin-bottom:8px">
-          <input type="radio" name="prepMode" class="prepModeDuo" value="${esc(o.asin)}" data-can="${o.canBuild}" data-name="${esc(String(o.name).slice(0,60))}" style="width:18px;height:18px;flex:none">
+          <input type="radio" name="prepMode" class="prepModeDuo" value="${esc(o.asin)}" data-can="${o.canBuild}" data-name="${esc(String(o.name).slice(0,60))}" onchange="prepDoAllLabel()" style="width:18px;height:18px;flex:none">
           ${o.image?`<img src="${esc(o.image)}" onerror="this.style.display='none'" style="width:42px;height:42px;object-fit:contain;border-radius:6px;background:#fff;border:1px solid #f3d9d6;flex:none">`:''}
           <span style="font-size:12.5px;line-height:1.3"><b style="color:#c0392b">DUO</b> <b>${esc(String(o.name).slice(0,70))}</b><br>
             <span style="font-family:monospace;color:#2563a8">${esc(o.asin)}</span>${o.fnsku?` · <span style="font-family:monospace">${esc(o.fnsku)}</span>`:''}<br>
@@ -4886,7 +4886,8 @@ function requestPrep(asin, canDuo, pre){
         </label>`}
       </div>` : ''}
       ${pre?'':prepTargetHtml('prepTarget')}
-      <div style="display:flex;gap:8px;margin-top:18px">
+      <button id="prepDoAll" onclick="prepDoAll('${asin}',${caseQtyOf(p)})" ${avail>0?'':'disabled'} title="Prep everything available (a duo: every duo you can build) — adds it in one tap" style="width:100%;margin-top:16px;padding:12px;font-size:15px;font-weight:900;letter-spacing:.3px;background:${avail>0?'#1e8449':'#cfd6dd'};color:#fff;border:none;border-radius:8px;cursor:${avail>0?'pointer':'not-allowed'}">✅ DO ALL <span style="font-weight:700;opacity:.9">(${avail.toLocaleString()})</span></button>
+      <div style="display:flex;gap:8px;margin-top:10px">
         <button onclick="closePrepModal()" style="flex:1;padding:12px;font-size:14px;font-weight:700;background:#e2e8f0;color:#1f2733;border:none;border-radius:8px;cursor:pointer">Cancel</button>
         <button onclick="submitPrepRequest('${asin}')" style="flex:2;padding:12px;font-size:14px;font-weight:700;background:${pre?'#7a4fb5':'#0d4450'};color:#fff;border:none;border-radius:8px;cursor:pointer">${pre?'🏷️ Add to prelabeling':'🔧 Add to Pending Prep'}</button>
       </div>
@@ -4895,6 +4896,25 @@ function requestPrep(asin, canDuo, pre){
   setTimeout(()=>{ ['prepCasesInput','prepQtyInput'].forEach(id=>{ const i=document.getElementById(id); if(i) i.addEventListener('keydown',e=>{ if(e.key==='Enter') submitPrepRequest(asin); }); }); const c=document.getElementById('prepCasesInput'); if(c) c.focus(); },50);
 }
 function closePrepModal(){ const m=document.getElementById('prepModal'); if(m) m.remove(); }
+// DO ALL (owner 11/5: "an option that just says DO ALL, so I can click it and
+// it adds the entire qty for prep"): everything free on the shelf, or for a
+// picked duo every duo that can be built, added at once with the choices in
+// the window (current list / next batch). Same add and checks as typing it.
+function prepDoAllLabel(){
+  const b=document.getElementById('prepDoAll'); if(!b) return;
+  const duoEl=document.querySelector('#prepModal .prepModeDuo:checked');
+  const max=duoEl&&duoEl.dataset.can!=null ? Number(duoEl.dataset.can) : (window._prepAvail||0);
+  b.innerHTML='✅ DO ALL <span style="font-weight:700;opacity:.9">('+max.toLocaleString()+(duoEl?' duos':'')+')</span>';
+  b.disabled=!(max>0); b.style.background=max>0?'#1e8449':'#cfd6dd'; b.style.cursor=max>0?'pointer':'not-allowed';
+}
+function prepDoAll(asin, per){
+  const duoEl=document.querySelector('#prepModal .prepModeDuo:checked');
+  const max=duoEl&&duoEl.dataset.can!=null ? Number(duoEl.dataset.can) : (window._prepAvail||0);
+  if(!(max>0)){ toast(duoEl?'No duos can be built right now: a bottle is short':'Nothing free on the shelf to prep',true); return; }
+  const q=document.getElementById('prepQtyInput'); if(!q) return;
+  q.value=max; prepQtyChanged(per);
+  submitPrepRequest(asin);
+}
 function submitPrepRequest(asin){
   const qty=parseInt((document.getElementById('prepQtyInput')||{}).value);
   if(!qty||qty<1){ toast('Enter a valid quantity',true); return; }
