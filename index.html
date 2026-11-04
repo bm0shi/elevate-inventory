@@ -654,6 +654,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <button class="action" onclick="prepTickAll(false)" style="padding:11px 14px;font-size:14px;background:#eef2f6;color:#1f2733" title="Untick every line showing">Clear</button>
       <button class="action" onclick="sendTickedToProduction()" style="padding:11px 14px;font-size:14px;background:#008296" title="Opens New shipment with everything ticked here AND on Pending Prep, added together. No stock changes until Finish.">🏷️ Send ticked to production →</button>
     </div>
+    <div id="prepFbmLine"></div>
     <div id="prepCapBar"></div>
     <div id="prepListBox"></div>
     <div id="prepPrelabelBox"></div>
@@ -7147,7 +7148,28 @@ function loadPrepList(){
   initPrepScan(); loadFnStatus();
   setTimeout(()=>{ const s=document.getElementById('scanPrep'); if(s) s.focus(); }, 100);
   api('/api/prep/list').then(d=>{ window._prepData=d; renderPrepList(); });
-  loadCapacity();
+  loadCapacity(); renderPrepFbm();
+}
+// One line on Prepped & Ready: FBM orders taken off stock in the last 7 days,
+// how many came off pre-labeled / Prepped & Ready, and when Amazon was last
+// read (owner 11/4: "I don't see FBM stock removal anywhere here"). Details
+// in Activity; each product taken from carries the "−N FBM 7d" marker.
+function renderPrepFbm(){
+  const el=document.getElementById('prepFbmLine'); if(!el) return;
+  api('/api/fbm/recent').then(d=>{
+    if(!d||d.ok===false){ el.innerHTML=''; return; }
+    const wk=Date.now()-7*86400000, rows=(d.rows||[]).filter(r=>Date.parse(r.applied_at)>wk), st=d.status||{};
+    const units=rows.reduce((n,r)=>n+(r.qty-(r.short||0)),0), pre=rows.reduce((n,r)=>n+((r.taken&&r.taken.prelabel)||0),0), ready=rows.reduce((n,r)=>n+((r.taken&&r.taken.ready)||0),0), short=rows.filter(r=>r.short>0).length;
+    const when=st.at?new Date(st.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):null;
+    el.innerHTML='<div class="box" style="margin-bottom:10px;padding:10px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:13.5px">'
+      +'<b>📦 FBM orders</b>'
+      +(units?'<span><b>'+units.toLocaleString()+'</b> unit'+(units===1?'':'s')+' taken off stock in the last 7 days ('+rows.length+' order line'+(rows.length===1?'':'s')+')'+(pre||ready?' — <b style="color:#7a4fb5">'+pre+' pre-labeled</b>, <b>'+ready+' Prepped &amp; Ready</b>':'')+'</span>':'<span class="hint">none taken off in the last 7 days</span>')
+      +(short?'<span style="color:#c0392b;font-weight:700">⚠ '+short+' not found — see Activity</span>':'')
+      +'<span class="hint">'+(st.error?'<span style="color:#c0392b">last check failed: '+esc(st.error)+'</span>':when?'Amazon checked '+when:'not checked with Amazon yet')+'</span>'
+      +'<span style="flex:1"></span><button class="mini" onclick="fbmCheck(this);setTimeout(renderPrepFbm,70000)"'+(d.running?' disabled':'')+'>'+(d.running?'Checking…':'↻ Check now')+'</button>'
+      +'<button class="mini" onclick="fbmGo()">See all in Activity</button></div>';
+    if(d.running) setTimeout(renderPrepFbm, 10000);
+  }).catch(()=>{});
 }
 function renderPrepList(){
   const d=window._prepData; if(!d)return;
@@ -7178,7 +7200,7 @@ function renderPrepList(){
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     const border=x.isBundle?'border:1px solid #fdeceb;':'';
     const tick=`<label title="Tick to send to the next shipment (with Pending Prep's ticked jobs)" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:6px;padding:4px 10px;border-radius:999px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;${x.in_plan?'background:#e7f6ec;color:#1e8449;border:1.5px solid #1e8449':'background:#fff;color:#5a6472;border:1.5px solid #d5d9d9'}"><input type="checkbox" ${x.in_plan?'checked':''} onchange="prepTick(['${esc(x.asin)}'],this.checked)" style="width:18px;height:18px;margin:0">${x.in_plan?'✓ FOR SHIPMENT':'For shipment'}</label>`;
-    return `<div class="pcard" style="${border};align-items:stretch${x.in_plan?';outline:2px solid #1e8449':''}">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}${sellStrip(x.asin)}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
+    return `<div class="pcard" style="${border};align-items:stretch${x.in_plan?';outline:2px solid #1e8449':''}">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge} ${fbmMark(x.asin)}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}${sellStrip(x.asin)}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — matches your shipment plan software. Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
   b.innerHTML=h;
@@ -7205,7 +7227,7 @@ function renderPrelabelList(){
     +sortTh('prelabel','days','Days','renderPrelabelList')+sortTh('prelabel','rank','Rank','renderPrelabelList')
     +sortTh('prelabel','qty','Pre-labeled','renderPrelabelList')+'<th style="width:150px"></th></tr>'
     +rows.map(x=>'<tr><td class="hsm">'+(x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'">':'📦')+'</td>'
-      +'<td style="min-width:240px"><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
+      +'<td style="min-width:240px"><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+' '+fbmMark(x.asin)+'</div>'
         +'<div style="font-size:11.5px;margin-top:2px"><span onclick="copyText(\''+esc(x.asin)+'\',this)" style="cursor:pointer;font-family:monospace;color:#2563a8">'+esc(x.asin)+'</span></div>'
         +(x.fnsku?'<div class="fn-sm" style="font-size:11.5px;margin-top:2px;font-family:monospace;font-weight:700">FNSKU '+esc(x.fnsku)+'</div>':'')+'</td>'
       +'<td class="hsm" style="width:130px">'+(x.fnsku?'<span onclick="copyText(\''+esc(x.fnsku)+'\',this)" style="cursor:pointer;font-family:monospace;font-weight:700;background:#fdf3e6;border-radius:4px;padding:2px 6px">'+esc(x.fnsku)+'</span>':'—')+'</td>'
@@ -11910,7 +11932,7 @@ function renderFbm(){
 // when it arrives.
 function loadFbmMarks(){
   if(loadFbmMarks._busy || loadFbmMarks._at>Date.now()-60000) return; loadFbmMarks._busy=true; loadFbmMarks._at=Date.now();
-  api('/api/fbm/marks').then(d=>{ if(d&&d.ok){ const was=JSON.stringify(window._fbmMarks||null); window._fbmMarks=d.marks||{}; if(was!==JSON.stringify(window._fbmMarks)&&document.getElementById('onhandBody')) renderOnhand(); } }).catch(()=>{}).finally(()=>{ loadFbmMarks._busy=false; });
+  api('/api/fbm/marks').then(d=>{ if(d&&d.ok){ const was=JSON.stringify(window._fbmMarks||null); window._fbmMarks=d.marks||{}; if(was!==JSON.stringify(window._fbmMarks)){ if(document.getElementById('onhandBody')) renderOnhand(); sellRepaint(); } } }).catch(()=>{}).finally(()=>{ loadFbmMarks._busy=false; });
 }
 function fbmMark(asin){
   loadFbmMarks();
