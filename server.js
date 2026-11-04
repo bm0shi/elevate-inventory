@@ -469,7 +469,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sell-strip-1132';
+const BUILD_ID = '3p-all-1133';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8053,7 +8053,7 @@ async function capacityNow() {
   const cuft = {}; for (const p of prods) if (p.cuft > 0) cuft[p.asin] = p.cuft * cal;
   const sc = (v) => ({ standard: v.standard * cal, hazmat: v.hazmat * cal, missing: v.missing });
   return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, setAt: lim.setAt || null, standardRoom: lim.standardRoom ?? null, hazmatRoom: lim.hazmatRoom ?? null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
-    cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
+    cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, hazmat: prods.filter(p => p.hazmat).map(p => p.asin), stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
     sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
 }
 app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow()); });
@@ -8453,7 +8453,29 @@ app.get('/api/ss-avg', auth, async (req, res) => {
     for (const sl of others) if (sl.by[a]) { const u = smartscout.sellerUnitsOn(ssBrand[a] ? ssBrand[a].units : null, sl.by[a]); if (u != null) by[sl.abbr] = Math.round(u); }
     avg[a] = { avg: v.reduce((t, x) => t + x, 0) / v.length, n: v.length, sold: sa.avg, nSold: sa.n, by };
   }
-  res.json({ ok: true, avg, sellers: others.map(sl => sl.abbr) });
+  // all: per listing, what one third-party seller sells a month counting
+  // EVERY 3P seller on it (owner 11/4: "this is the 3P avg for all 3P
+  // sellers"): the pie ÷ the 3P seller count (lib/smartscout allSellersAvg).
+  // avg above only covers the sellers we have files for (3 of them), so most
+  // listings showed — and an offer that doesn't move made it ~0. Shown as
+  // "3P avg" on Pending Prep and Prepped & Ready; avg stays for the screens
+  // and forecasts that read it.
+  const all = {};
+  try {
+    const mktC = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'")).rows[0];
+    const mkt = {}; for (const m of ((mktC && mktC.data) || [])) mkt[m.asin] = m;
+    const sellerFiles = await ssSellerFiles();
+    const carried = new Set((await pool.query('SELECT asin FROM inv_products')).rows.map(r => r.asin));
+    for (const a of new Set([...Object.keys(ssBrand), ...Object.keys(mkt)])) {
+      const ss = ssBrand[a];
+      let seen = 0, usSeen = false, bbSum = 0;
+      for (const sl of sellerFiles) { const r = sl.by[a]; if (!r) continue; seen++; if (sl.isUs) usSeen = true; if (r.buyBoxPct != null) bbSum += r.buyBoxPct; }
+      if (carried.has(a) && !usSeen && seen) seen++;   // as ssListing counts us
+      const r = smartscout.allSellersAvg(ss, mkt[a], { bbSum, sellersSeen: seen });
+      if (r && r.avg > 0) all[a] = { avg: Math.round(r.avg * 10) / 10, sellers: r.sellers, pie: Math.round(r.pie), src: r.src };
+    }
+  } catch (e) { console.error('[ss-avg] all-sellers average failed:', e.message); }
+  res.json({ ok: true, avg, all, sellers: others.map(sl => sl.abbr) });
 });
 // Our real units per listing over the same 30 days as the SmartScout figures
 // beside it (ourLast30), for Pending Prep's "You sold" column. Owner-approved
@@ -10183,7 +10205,14 @@ app.post('/api/prep/clear', ownerAuth, async (req, res) => {
 });
 
 // serve the UI
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+// The page carries the build it belongs to, so it can tell when a newer one
+// is live (index.html's head checks /api/ping; owner 11/4, the update offer
+// never showed). Read once per start, like sw.js.
+let _pageText = null;
+app.get('/', (req, res) => {
+  if (_pageText == null) _pageText = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8').replace("'__PAGE_BUILD__'", JSON.stringify(BUILD_ID).replace(/"/g, "'"));
+  res.set('Cache-Control', 'no-cache'); res.type('html'); res.send(_pageText);
+});
 // The premium dashboard (Admin → Dashboard → "New look"). Its own file so the
 // classic dashboard stays untouched and the trial can be dropped cleanly.
 // No-cache: it changes with deploys and is small.
