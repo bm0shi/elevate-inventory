@@ -39,6 +39,7 @@ const claimsLib = require('./lib/claims');
 const stuckLib = require('./lib/stuck');
 const { normCode, LOC_ROWS, LOCATION_SLOTS, normLoc, setRackLayout, slotKey, MAX_QTY, badQty } = require('./lib/codes');
 const { planLocations } = require('./lib/locations');
+const fbmLib = require('./lib/fbm');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
 
 // Parse + persist.
@@ -469,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = '3p-all-1133';
+const BUILD_ID = 'fbm-off-stock-1134';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1355,6 +1356,18 @@ async function initDb() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_fin_event_lines_posted ON inv_fin_event_lines(posted)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settle_order ON inv_settlement_lines(order_id)`);
   } catch(e) { console.error('hazmat table migration skipped:', e.message); }
+  // FBM orders taken off warehouse stock (lib/fbm.js, applyFbmLine): one row
+  // per order line, written in the same transaction as the deduction, so a
+  // line comes off once however many pulls see it. fbm_since: the first order
+  // date counted (owner 11/4: "go back one week"), set once.
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS inv_fbm_orders (
+      order_id TEXT NOT NULL, sku TEXT NOT NULL DEFAULT '', asin TEXT NOT NULL DEFAULT '', qty INTEGER NOT NULL,
+      ordered_at TIMESTAMPTZ, applied_at TIMESTAMPTZ DEFAULT now(), product_asin TEXT, taken JSONB, short INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (order_id, sku, asin))`);
+    await pool.query(`INSERT INTO inv_cache(cache_key, data, updated_at) VALUES('fbm_since', $1, now()) ON CONFLICT (cache_key) DO NOTHING`,
+      [JSON.stringify({ since: new Date(Date.now() - 7 * 86400000).toISOString() })]);
+  } catch (e) { console.error('[FBM] table migration skipped:', e.message); }
 
   // ---- Cosmo-map verification columns (idempotent) ----
   // A mapping is only TRUSTED once a physical barcode scan has confirmed it.
@@ -9093,6 +9106,127 @@ let salesJob = { running: false };
 // and then starts. It used to get "already running" and never ran, so the
 // owner's "Pull full history" looked like it did nothing.
 let salesFullQueued = false;
+// ============================================================
+// FBM ORDERS OFF WAREHOUSE STOCK (owner 11/4). Orders we ship ourselves
+// (fulfillment-channel Merchant) leave our shelf, so each shipped FBM line
+// comes off On Hand once, taken where it disturbs the least (lib/fbm.js): free
+// stock, then pre-labeled, then Pending Prep, then Prepped & Ready. A unit
+// found nowhere is not taken (no count below zero) and is logged for a hand
+// fix. Runs on every orders pull (morning sync, Update today, the full pull),
+// from fbm_since on. Shipped only: an Unshipped order can still be cancelled.
+// ============================================================
+async function bottleFree(db, asin) {
+  const r = await db.query(
+    `SELECT COALESCE((SELECT onhand FROM inv_stock WHERE asin=$1),0) AS onhand,
+       COALESCE((SELECT qty FROM inv_prepped WHERE asin=$1),0)
+       + COALESCE((SELECT SUM(pr.qty * b.qty) FROM inv_prepped pr JOIN inv_bundles b ON b.bundle_asin=pr.asin WHERE b.component_asin=$1),0)
+       + COALESCE((SELECT SUM(qty) FROM inv_pending_prep WHERE asin=$1 AND is_duo=false),0)
+       + COALESCE((SELECT SUM(pp.qty * b.qty) FROM inv_pending_prep pp JOIN inv_bundles b ON b.bundle_asin=pp.asin WHERE b.component_asin=$1 AND pp.is_duo=true),0)
+       AS used`, [asin]);
+  return Math.max(0, Number(r.rows[0].onhand) - Number(r.rows[0].used));
+}
+async function applyFbmLine(db, r) {
+  const key = [r.order, r.sku || '', r.asin || ''];
+  const ins = await db.query(`INSERT INTO inv_fbm_orders(order_id, sku, asin, qty, ordered_at) VALUES($1,$2,$3,$4,to_timestamp($5/1000.0))
+      ON CONFLICT DO NOTHING RETURNING order_id`, [...key, r.qty, r.ts]);
+  if (!ins.rows.length) return null;   // already taken off
+  const p = (await db.query(`SELECT asin, name FROM inv_products WHERE asin=$1 OR ($2<>'' AND UPPER(sku)=UPPER($2)) ORDER BY (asin=$1) DESC LIMIT 1`, [r.asin || '', r.sku || ''])).rows[0];
+  const done = async (taken, short, asin) => db.query('UPDATE inv_fbm_orders SET taken=$4, short=$5, product_asin=$6 WHERE order_id=$1 AND sku=$2 AND asin=$3', [...key, JSON.stringify(taken), short, asin || null]);
+  if (!p) {
+    await done({ why: 'not in the catalog' }, r.qty, null);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['note', r.asin || r.sku || '', r.sku || '', 0, `FBM order ${r.order}: ${r.qty} sold of a listing not in the catalog (${r.asin || r.sku}) — nothing taken off`]);
+    return { short: r.qty, taken: 0 };
+  }
+  const A = p.asin;
+  const comps = (await db.query('SELECT b.component_asin AS asin, COALESCE(b.qty,1) AS per, cp.name FROM inv_bundles b JOIN inv_products cp ON cp.asin=b.component_asin WHERE b.bundle_asin=$1 ORDER BY b.component_asin', [A])).rows;
+  const bottles = comps.length ? comps.map(c => ({ asin: c.asin, per: Number(c.per) || 1, name: c.name })) : [{ asin: A, per: 1, name: p.name }];
+  // Same per-bottle locks as Pending Prep, in the same (ASIN) order.
+  for (const b of [...bottles].sort((x, y) => x.asin.localeCompare(y.asin))) await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bottle:' + b.asin]);
+  for (const b of bottles) await db.query('SELECT 1 FROM inv_stock WHERE asin=$1 FOR UPDATE', [b.asin]);
+  let free = Infinity;
+  for (const b of bottles) free = Math.min(free, Math.floor((await bottleFree(db, b.asin)) / b.per));
+  const pr = (await db.query('SELECT qty, prelabel_qty FROM inv_prepped WHERE asin=$1 FOR UPDATE', [A])).rows[0] || { qty: 0, prelabel_qty: 0 };
+  const jobs = (await db.query(`SELECT id, qty FROM inv_pending_prep WHERE asin=$1
+      ORDER BY prelabel DESC, staged DESC, (claimed_by IS NULL) DESC, split_part DESC NULLS LAST, id DESC FOR UPDATE`, [A])).rows;
+  const plan = fbmLib.planTake(r.qty, { free, prelabel: pr.prelabel_qty, pending: jobs, ready: pr.qty - pr.prelabel_qty });
+  const fromPrepped = plan.prelabel + plan.ready;
+  if (fromPrepped > 0) {
+    await db.query('UPDATE inv_prepped SET qty=qty-$2, prelabel_qty=prelabel_qty-$3, updated_at=now() WHERE asin=$1', [A, fromPrepped, plan.prelabel]);
+    await db.query('DELETE FROM inv_prepped WHERE asin=$1 AND qty<=0', [A]);
+  }
+  for (const j of plan.pending) {
+    const was = jobs.find(x => x.id === j.id).qty;
+    if (j.take >= was) await db.query('DELETE FROM inv_pending_prep WHERE id=$1', [j.id]);
+    else await db.query('UPDATE inv_pending_prep SET qty=qty-$2 WHERE id=$1', [j.id, j.take]);
+  }
+  const where = fbmLib.takenText(plan);
+  if (plan.taken > 0) for (const b of bottles) {
+    await db.query('UPDATE inv_stock SET onhand=onhand-$2 WHERE asin=$1', [b.asin, plan.taken * b.per]);
+    await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['out', b.asin, b.name || '', plan.taken * b.per, `FBM order ${r.order}${comps.length ? ' (' + String(p.name || A).slice(0, 30) + ' duo)' : ''}: ${where}`]);
+  }
+  if (plan.short > 0) await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+    ['note', A, p.name || '', 0, `FBM order ${r.order}: ${plan.short} sold but not found in the warehouse — nothing taken off for ${plan.short === 1 ? 'it' : 'them'}; fix the count by hand if it was here`]);
+  await done(plan, plan.short, A);
+  return { taken: plan.taken, short: plan.short };
+}
+let fbmRun = Promise.resolve();
+// records: order lines from lib/velocity orderRecords (any pull). One at a
+// time, each line in its own transaction.
+function applyFbmOrders(records, why) {
+  fbmRun = fbmRun.catch(() => {}).then(async () => {
+    const c = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fbm_since'")).rows[0];
+    const since = Date.parse((c && c.data && c.data.since) || '') || (Date.now() - 7 * 86400000);
+    const lines = (records || []).filter(r => r.fbm && r.shipped && r.order && r.qty > 0 && r.ts >= since);
+    const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fbm_orders'")).rows[0] || {}).data || {};
+    let applied = 0, units = 0, short = 0;
+    try {
+      for (const r of lines) {
+        const x = await withTx(db => applyFbmLine(db, r));
+        if (x) { applied++; units += x.taken; short += x.short; }
+      }
+      await saveCache('fbm_orders', { at: new Date().toISOString(), why, seen: lines.length, applied, units, short, since: new Date(since).toISOString(), lastApplied: applied ? new Date().toISOString() : prev.lastApplied || null });
+      if (applied) console.log(`[FBM] ${why}: ${applied} new FBM line(s), ${units} unit(s) taken off${short ? ', ' + short + ' not found' : ''}.`);
+    } catch (e) {
+      console.error('[FBM] taking orders off stock failed:', e.message);
+      await saveCache('fbm_orders', { ...prev, at: new Date().toISOString(), why, error: e.message });
+    }
+  });
+  return fbmRun;
+}
+// Read FBM orders now: since fbm_since (at most 30 days back).
+async function checkFbmNow(why) {
+  const c = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fbm_since'")).rows[0];
+  const since = Math.max(Date.parse((c && c.data && c.data.since) || '') || 0, Date.now() - 30 * 86400000);
+  const r = await getOrderRecords(since - 3600000);
+  await applyFbmOrders(r.records, why);
+  return r.failed.length ? r.failed : null;
+}
+// The first start with this: read the past week now, not at tomorrow's sync.
+setTimeout(async () => {
+  try {
+    const done = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fbm_orders'")).rows[0];
+    if (!done && (process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN)) await checkFbmNow('first run');
+  } catch (e) { console.error('[FBM] first run failed:', e.message); }
+}, 3 * 60 * 1000).unref();
+let fbmJob = { running: false };
+// FBM orders taken off stock lately (units only, no money): the Activity box.
+app.get('/api/fbm/recent', auth, async (req, res) => {
+  const rows = (await pool.query(`SELECT f.order_id, f.sku, f.asin, f.qty, f.ordered_at, f.applied_at, f.product_asin, f.taken, f.short, p.name
+      FROM inv_fbm_orders f LEFT JOIN inv_products p ON p.asin = f.product_asin
+     WHERE f.applied_at > now() - interval '14 days' ORDER BY f.ordered_at DESC LIMIT 200`)).rows;
+  const st = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fbm_orders'")).rows[0] || {}).data || null;
+  res.json({ ok: true, rows: rows.map(r => ({ ...r, where: r.taken && r.taken.why ? r.taken.why : fbmLib.takenText(r.taken || {}) })), status: st, running: fbmJob.running });
+});
+app.post('/api/fbm/check', auth, async (req, res) => {
+  if (fbmJob.running) return res.json({ ok: true, already: true });
+  fbmJob = { running: true };
+  checkFbmNow('checked by hand').then(f => { fbmJob = { running: false, failed: f }; })
+    .catch(e => { fbmJob = { running: false, error: e.message }; console.error('[FBM] check failed:', e.message); });
+  res.json({ ok: true, started: true });
+});
+
 function startSalesPull(full) {
   const y = new Date().getUTCFullYear();
   const fromDay = full ? (y - 1) + '-01-01' : salesDay(Date.now() - 86400000);
@@ -9116,6 +9250,7 @@ function startSalesPull(full) {
         gaps.push(a + ' to ' + b);
       }
       const n = await saveSalesDays(r.records, from, skip);
+      applyFbmOrders(r.records, full ? 'full sales pull' : 'Update today');
       // the full pull also reads returns over the same stretch
       let retNote = null, finNote = null;
       if (full) {
@@ -9167,6 +9302,7 @@ async function refreshVelocity(days) {
   const sales = await getSalesVelocity(days);
   // The same pull keeps daily gross sales current (Dashboard → New look).
   try { if (sales.records) await saveSalesDays(sales.records, salesDay(sales.fromMs + 86400000)); } catch (e) { console.error('[Sales] daily save failed:', e.message); }
+  if (sales.records) applyFbmOrders(sales.records, 'morning sync');
   // Every catalog product, stock row or not (a listing with nothing on our
   // shelf still sells), counted by ASIN across all our SKUs.
   const ours = await pool.query('SELECT p.asin, p.sku, p.name, COALESCE(s.onhand,0)::int AS onhand FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin');
