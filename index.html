@@ -40,9 +40,12 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
     b.onclick = function () { b.textContent = 'Updating…'; swFresh(); };
     (document.body || document.documentElement).appendChild(b);
   };
+  // A new worker took over: offer the update only if this page really is an
+  // older build (it took over a page that a refresh had already loaded live,
+  // and the bar showed on the new version, owner 11/4).
   navigator.serviceWorker.addEventListener('controllerchange', function () {
     if (!hadSw) { hadSw = true; return; }
-    swOffer();
+    swChecked = 0; swCheck();
   });
   // The page also asks the server which build is live (owner 11/4: "new
   // version never popped up but I tried to refresh"): the browser only looks
@@ -52,17 +55,24 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   // /api/ping means a deploy went out: fetch the new worker and offer the
   // update. Checked a few seconds after opening, on coming back to the app,
   // and every 5 minutes.
-  var PAGE_BUILD = '__PAGE_BUILD__', swChecked = 0;
+  // Just opened and not touched yet: load the new version at once instead of
+  // offering it (the app opens from its saved copy, so a deploy since the
+  // last use would otherwise always start with the bar).
+  var PAGE_BUILD = '__PAGE_BUILD__', swChecked = 0, swOpened = Date.now(), swTouched = false;
+  ['pointerdown', 'keydown'].forEach(function (ev) { window.addEventListener(ev, function () { swTouched = true; }, { capture: true, once: true }); });
   var swCheck = function () {
     if (PAGE_BUILD.indexOf('__') === 0 || Date.now() - swChecked < 30000) return;
     swChecked = Date.now();
     fetch('/api/ping', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (d) {
       if (!d || !d.build || d.build === PAGE_BUILD) return;
       navigator.serviceWorker.getRegistration().then(function (g) { if (g) g.update().catch(function () {}); }).catch(function () {});
+      // once per new build (sessionStorage), so a deploy still rolling out can't loop it
+      var auto = null; try { auto = sessionStorage.getItem('swAuto'); } catch (e) {}
+      if (!swTouched && Date.now() - swOpened < 15000 && auto !== d.build) { try { sessionStorage.setItem('swAuto', d.build); } catch (e) {} return swFresh(); }
       swOffer();
     }).catch(function () {});
   };
-  window.addEventListener('load', function () { setTimeout(swCheck, 4000); });
+  window.addEventListener('load', function () { setTimeout(swCheck, 1500); });
   document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') swCheck(); });
   setInterval(swCheck, 5 * 60 * 1000);
 }
@@ -11786,7 +11796,7 @@ function renderOnhand(){
     // by listing" table above it shows the same, per listing.
     const mktRow='';
     if(viewBig('onhand')) return bigOhCard(p, {available, pend, prep, t, o, mktRow});
-    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${p.is_bundle?'':`<div onclick="setCaseQty('${p.asin}')" title="Cases at ${caseQtyOf(p)} per case · tap to change" style="cursor:pointer;color:#0d4450;font-size:12px;font-weight:800;margin-top:3px;white-space:nowrap">📦 ${casesText(available, caseQtyOf(p))}<div style="font-size:10px;font-weight:600;color:#8a97a6">${caseQtyOf(p)}/case ✎</div></div>`}${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep'+(p.pending_duo!=null?'<div style="font-weight:600;font-size:10.5px">'+sdSplit(p.pending_single,p.pending_duo)+'</div>':'')+'</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700;margin-top:2px">'+prep+' prepped'+(p.prepped_duo!=null?'<div style="font-weight:600;font-size:10.5px">'+sdSplit(p.prepped_single,p.prepped_duo)+'</div>':'')+'</div>':''}${transitLine(p,t)}${fbaF>0?'<div style="color:#008296;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px" title="Amazon\'s inbound count for this single listing (duos are in the table below)">Amazon: '+fbaIn+' singles on the way</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}<div><button onclick="ohAdjust('${p.asin}')" title="Units missing on the floor (or found again): corrects On Hand and keeps a log on this card" style="margin-top:5px;padding:4px 9px;font-size:10.5px;font-weight:700;background:#fff;color:#5a6472;border:1px solid #d5d9d9;border-radius:999px;cursor:pointer;white-space:nowrap">✏️ Fix count</button></div>${shrinkNote(p)}</div></div>${amazonSplit(p)}${mktRow}</div>`;
+    return `<div class="pcard ohcard" style="flex-direction:column;align-items:stretch;gap:0"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink} ${fbmMark(p.asin)}</div><div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${p.location?'#eafaf1':'#fdeceb'};color:${p.location?'#1e8449':'#c0392b'};font-weight:800;cursor:pointer" onclick="editLocation('${p.asin}')">${p.location||'SET LOCATION'}</span><button onclick="editLocation('${p.asin}')" title="Change pallet location" class="copybtn">✏️</button></div>${pill('🏷️','ASIN',p.asin,'#eef4fb')}${p.sku?pill('🔖','SKU',p.sku,'#f0f4ef'):''}${duoNote}</div><div class="pc-qty"><div class="n ${available<=0?'low':''}">${available}</div><div class="l">Available</div>${p.is_bundle?'':`<div onclick="setCaseQty('${p.asin}')" title="Cases at ${caseQtyOf(p)} per case · tap to change" style="cursor:pointer;color:#0d4450;font-size:12px;font-weight:800;margin-top:3px;white-space:nowrap">📦 ${casesText(available, caseQtyOf(p))}<div style="font-size:10px;font-weight:600;color:#8a97a6">${caseQtyOf(p)}/case ✎</div></div>`}${pend>0?'<div style="color:#7a4fb5;font-size:11px;font-weight:700;margin-top:3px">'+pend+' pending prep'+(p.pending_duo!=null?'<div style="font-weight:600;font-size:10.5px">'+sdSplit(p.pending_single,p.pending_duo)+'</div>':'')+'</div>':''}${prep>0?'<div style="color:#b7791f;font-size:11px;font-weight:700;margin-top:2px">'+prep+' prepped'+(p.prepped_duo!=null?'<div style="font-weight:600;font-size:10.5px">'+sdSplit(p.prepped_single,p.prepped_duo)+'</div>':'')+'</div>':''}${transitLine(p,t)}${fbaF>0?'<div style="color:#008296;font-size:12px;font-weight:800;margin-top:3px">'+fbaF+' AT FBA</div>':'<div style="color:#c0392b;font-size:11px;font-weight:800;margin-top:3px">0 AT FBA</div>'}${fbaIn>0?'<div style="color:#9db0c9;font-size:10px" title="Amazon\'s inbound count for this single listing (duos are in the table below)">Amazon: '+fbaIn+' singles on the way</div>':''}<div style="color:#9db0c9;font-size:10px;margin-top:3px">${o} warehouse</div>${buildBtn}<div><button onclick="ohAdjust('${p.asin}')" title="Units missing on the floor (or found again): corrects On Hand and keeps a log on this card" style="margin-top:5px;padding:4px 9px;font-size:10.5px;font-weight:700;background:#fff;color:#5a6472;border:1px solid #d5d9d9;border-radius:999px;cursor:pointer;white-space:nowrap">✏️ Fix count</button></div>${shrinkNote(p)}</div></div>${amazonSplit(p)}${mktRow}</div>`;
   }).join('')+'</div>';
   // Full breakdown totals across ALL products, not just the filtered view.
   //
@@ -11895,6 +11905,19 @@ function renderFbm(){
     if(d.running) setTimeout(renderFbm, 8000);
   }).catch(()=>{});
 }
+// On Hand's small "−3 FBM" marker: units taken off for FBM orders in the
+// last 7 days (owner 11/4). Read once a minute at most; On Hand repaints
+// when it arrives.
+function loadFbmMarks(){
+  if(loadFbmMarks._busy || loadFbmMarks._at>Date.now()-60000) return; loadFbmMarks._busy=true; loadFbmMarks._at=Date.now();
+  api('/api/fbm/marks').then(d=>{ if(d&&d.ok){ const was=JSON.stringify(window._fbmMarks||null); window._fbmMarks=d.marks||{}; if(was!==JSON.stringify(window._fbmMarks)&&document.getElementById('onhandBody')) renderOnhand(); } }).catch(()=>{}).finally(()=>{ loadFbmMarks._busy=false; });
+}
+function fbmMark(asin){
+  loadFbmMarks();
+  const n=window._fbmMarks&&window._fbmMarks[asin]; if(!(n>0)) return '';
+  return '<span class="fbmMark" title="'+n+' taken off for FBM orders in the last 7 days — see Activity → FBM orders" onclick="event.stopPropagation();fbmGo()" style="display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:999px;background:#fff4e0;color:#9a5b00;border:1px solid #f0c27a;font-size:11.5px;font-weight:800;white-space:nowrap;cursor:pointer;vertical-align:middle">−'+n.toLocaleString()+' FBM <span style="font-weight:600;opacity:.8">7d</span></span>';
+}
+function fbmGo(){ const t=[...document.querySelectorAll('.tab')].find(e=>/'log'/.test(e.getAttribute('onclick')||'')); if(t) t.click(); }
 function fbmCheck(btn){
   if(btn){ btn.disabled=true; btn.textContent='Checking Amazon…'; }
   api('/api/fbm/check',{method:'POST',body:'{}'}).then(d=>{

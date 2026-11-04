@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fbm-off-stock-1134';
+const BUILD_ID = 'fbm-mark-1135';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -9218,6 +9218,17 @@ app.get('/api/fbm/recent', auth, async (req, res) => {
      WHERE f.applied_at > now() - interval '14 days' ORDER BY f.ordered_at DESC LIMIT 200`)).rows;
   const st = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fbm_orders'")).rows[0] || {}).data || null;
   res.json({ ok: true, rows: rows.map(r => ({ ...r, where: r.taken && r.taken.why ? r.taken.why : fbmLib.takenText(r.taken || {}) })), status: st, running: fbmJob.running });
+});
+// Units taken off for FBM orders in the last 7 days, per ASIN, for On Hand's
+// "−3 FBM" marker (owner 11/4, "add a small marker"): bottles as On Hand
+// counts them (the Activity lines), and a duo sold FBM under the duo too.
+app.get('/api/fbm/marks', auth, async (req, res) => {
+  const marks = {};
+  for (const r of (await pool.query(`SELECT asin, SUM(qty)::int AS n FROM inv_activity
+      WHERE direction='out' AND note LIKE 'FBM order %' AND ts > now() - interval '7 days' GROUP BY asin`)).rows) marks[r.asin] = r.n;
+  for (const r of (await pool.query(`SELECT f.product_asin AS asin, SUM(f.qty - f.short)::int AS n FROM inv_fbm_orders f
+      WHERE f.applied_at > now() - interval '7 days' AND f.product_asin IN (SELECT bundle_asin FROM inv_bundles) GROUP BY f.product_asin`)).rows) if (r.n > 0) marks[r.asin] = r.n;
+  res.json({ ok: true, marks });
 });
 app.post('/api/fbm/check', auth, async (req, res) => {
   if (fbmJob.running) return res.json({ ok: true, already: true });

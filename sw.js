@@ -52,13 +52,35 @@ function fromNetwork(req, key, waitMs) {
   });
 }
 
+// A refresh (F5, pull-to-refresh: the browser marks it no-cache) asks for the
+// live page (owner 11/4: F5 in the installed Chrome app only showed "New
+// version ready" over the old page). If the server is on another build, this
+// worker's saved files are dropped too, so the page's scripts come live with
+// it, and the new worker is fetched. Offline or slow (4 s): the saved copy.
+function freshPage(req) {
+  const net = fetch(req).then(async (res) => {
+    if (!res || !res.ok) return res;
+    const m = (await res.clone().text()).match(/PAGE_BUILD = '([^']*)'/);
+    if (m && m[1] !== BUILD) { await caches.delete(CACHE); self.registration.update().catch(() => {}); }
+    else { const copy = res.clone(); caches.open(CACHE).then(c => c.put('/', copy)); }
+    return res;
+  });
+  const saved = () => caches.match('/', { ignoreSearch: true });
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const t = setTimeout(() => saved().then(r => { if (r && !done) { done = true; resolve(r); } }), 4000);
+    net.then(r => { if (!done) { done = true; clearTimeout(t); resolve(r); } })
+       .catch(() => saved().then(r => { if (done) return; done = true; clearTimeout(t); r ? resolve(r) : reject(new Error('offline')); }));
+  });
+}
+
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === self.location.origin) {
     if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js') return;
-    if (req.mode === 'navigate') return e.respondWith(fromCache(req, '/'));
+    if (req.mode === 'navigate') return e.respondWith(req.cache === 'no-cache' || req.cache === 'reload' ? freshPage(req) : fromCache(req, '/'));
     if (SHELL.includes(url.pathname)) return e.respondWith(fromCache(req, url.pathname));
     return;
   }
