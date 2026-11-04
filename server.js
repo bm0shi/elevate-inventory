@@ -213,6 +213,11 @@ async function processInvoiceText(text) {
 
 const app = express();
 app.set('trust proxy', 1); // Railway sits behind a proxy — needed for a real req.ip
+// Compress what the server sends (owner 11/4: the app felt slower as a
+// home-screen app). index.html alone is ~1 MB and went out uncompressed on
+// every open; most data lists shrink 70-85%. Ask Elevate streams its progress
+// line by line, so it is left out (compressing would hold the lines back).
+app.use(require('compression')({ filter: (req, res) => !String(res.getHeader('Content-Type') || '').includes('ndjson') && req.path !== '/api/ask' && require('compression').filter(req, res) }));
 app.use(express.json({ limit: '2mb' }));
 
 // Express 4 does not catch errors thrown inside async route handlers, and on
@@ -464,7 +469,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'pwa-1125';
+const BUILD_ID = 'faster-1127';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1198,6 +1203,20 @@ async function initDb() {
     `);
   } catch(e) { console.error('cuft migration skipped:', e.message); }
 
+  // ---- Owner devices: "Remember me" keys and Face ID passkeys (owner 11/4) ----
+  // Only a hash of each device key is kept; pw_fp ties it to the current
+  // OWNER_PASSWORD, so changing the password in Railway signs every device out.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS inv_owner_devices (
+        id SERIAL PRIMARY KEY, token_hash TEXT UNIQUE NOT NULL, kind TEXT NOT NULL, label TEXT, pw_fp TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now(), last_used_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL, revoked_at TIMESTAMPTZ);
+      CREATE TABLE IF NOT EXISTS inv_owner_passkeys (
+        id SERIAL PRIMARY KEY, cred_id TEXT UNIQUE NOT NULL, public_key TEXT NOT NULL, label TEXT, pw_fp TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT now(), last_used_at TIMESTAMPTZ);
+    `);
+  } catch(e) { console.error('owner devices migration skipped:', e.message); }
+
   // ---- 2D Production: per-product packing defaults, remembered so they're
   // entered once (unit weight from Amazon unless typed; case qty and case box
   // size typed once), and what each packed shipment pulled from Amazon. ----
@@ -1372,9 +1391,146 @@ function auth(req, res, next) {
 // accept the app password — warehouse staff hold APP_PASSWORD and must not
 // see velocity, margin, or inventory value.
 function ownerAuth(req, res, next) {
-  if (safeEq(req.headers['x-owner-password'], OWNER_PASSWORD)) return next();
-  return res.status(403).json({ error: 'owner access required' });
+  const h = req.headers['x-owner-password'];
+  if (safeEq(h, OWNER_PASSWORD)) return next();
+  // A remembered device or a Face ID unlock sends its own key in the same
+  // header ("ot_…"); it is checked against the hashes kept for live devices.
+  const deny = () => res.status(403).json({ error: 'owner access required' });
+  if (typeof h === 'string' && h.startsWith('ot_')) {
+    // Right after a restart the device list may still be loading: wait for it
+    // rather than refuse, or every phone would be signed out by a deploy.
+    if (ownerKeysLoaded) return ownerKeyValid(h) ? next() : deny();
+    return ownerKeysReady.then(() => (ownerKeyValid(h) ? next() : deny()), deny);
+  }
+  return deny();
 }
+
+// ============================================================
+// OWNER DEVICES (owner 11/4: "remember me … so I don't have to fill it in
+// every time, and maybe Face ID"). The Admin password used to live only in
+// the tab's session, so a home-screen app asked for it on every open.
+//  - Remember me: after a password unlock the server issues this device a
+//    random key (180 days); the device keeps the key, never the password.
+//  - Face ID: a passkey (WebAuthn) made on the phone; each unlock signs a
+//    fresh challenge with it, the server checks the signature with the public
+//    key it kept, and issues a key for 12 hours.
+// Keys are stored hashed and bound to the current OWNER_PASSWORD (pw_fp):
+// changing the password signs out every device and retires every passkey.
+// ============================================================
+const ownerFp = () => crypto.createHash('sha256').update('elevate-owner:' + (OWNER_PASSWORD || '')).digest('hex');
+const keyHash = k => crypto.createHash('sha256').update(String(k)).digest('hex');
+let ownerKeys = new Map();          // token_hash → { id, exp }
+let ownerKeysLoaded = false, ownerKeysDone;
+const ownerKeysReady = new Promise(r => { ownerKeysDone = r; setTimeout(r, 30000); });
+async function loadOwnerKeys() {
+  try {
+    const r = await pool.query('SELECT id, token_hash, expires_at FROM inv_owner_devices WHERE revoked_at IS NULL AND expires_at > now() AND pw_fp=$1', [ownerFp()]);
+    ownerKeys = new Map(r.rows.map(x => [x.token_hash, { id: x.id, exp: new Date(x.expires_at).getTime() }]));
+    ownerKeysLoaded = true;
+  } catch (e) { console.error('[Owner] device keys:', e.message); }
+  ownerKeysDone();
+}
+function ownerKeyValid(k) {
+  if (!OWNER_PASSWORD) return false;
+  const row = ownerKeys.get(keyHash(k));
+  if (!row || row.exp < Date.now()) return false;
+  if (!row.seen || Date.now() - row.seen > 3600000) {   // last used, at most hourly
+    row.seen = Date.now();
+    pool.query('UPDATE inv_owner_devices SET last_used_at=now() WHERE id=$1', [row.id]).catch(() => {});
+  }
+  return true;
+}
+async function issueOwnerKey(kind, label, days) {
+  const key = 'ot_' + crypto.randomBytes(32).toString('hex');
+  const exp = new Date(Date.now() + days * 86400000);
+  const r = await pool.query('INSERT INTO inv_owner_devices(token_hash, kind, label, pw_fp, expires_at) VALUES($1,$2,$3,$4,$5) RETURNING id',
+    [keyHash(key), kind, String(label || '').slice(0, 80) || null, ownerFp(), exp]);
+  ownerKeys.set(keyHash(key), { id: r.rows[0].id, exp: exp.getTime() });
+  return { key, expires: exp.toISOString() };
+}
+const ownerLabel = req => String((req.body && req.body.label) || req.headers['user-agent'] || '').slice(0, 80);
+// Remember this device (called right after a password unlock).
+app.post('/api/owner-device/remember', ownerAuth, async (req, res) => {
+  if (!safeEq(req.headers['x-owner-password'], OWNER_PASSWORD)) return res.status(403).json({ ok: false, error: 'Unlock with the password first.' });
+  res.json({ ok: true, ...(await issueOwnerKey('remember', ownerLabel(req), 180)) });
+});
+// Is this device's key still good (page load)? 403 from ownerAuth if not.
+app.get('/api/owner-device/check', ownerAuth, (req, res) => res.json({ ok: true }));
+// Lock on this device: its key stops working.
+app.post('/api/owner-device/forget', async (req, res) => {
+  const k = req.headers['x-owner-password'];
+  if (typeof k === 'string' && k.startsWith('ot_')) {
+    await pool.query('UPDATE inv_owner_devices SET revoked_at=now() WHERE token_hash=$1', [keyHash(k)]);
+    ownerKeys.delete(keyHash(k));
+  }
+  res.json({ ok: true });
+});
+
+// ---- Face ID (passkeys) ----
+const b64u = b => Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = s => Buffer.from(String(s || '').replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+const pkChallenges = new Map();     // challenge → { purpose, exp }
+function newChallenge(purpose) {
+  const c = b64u(crypto.randomBytes(32));
+  pkChallenges.set(c, { purpose, exp: Date.now() + 5 * 60000 });
+  for (const [k, v] of pkChallenges) if (v.exp < Date.now()) pkChallenges.delete(k);
+  return c;
+}
+// The site's name for passkeys is the host the app is opened on.
+const rpIdOf = req => req.hostname;
+function checkClientData(req, clientDataB64, type, purpose) {
+  let cd; try { cd = JSON.parse(unb64u(clientDataB64).toString('utf8')); } catch (e) { return 'unreadable answer from the phone'; }
+  if (cd.type !== type) return 'wrong kind of answer';
+  const ch = pkChallenges.get(cd.challenge);
+  if (!ch || ch.purpose !== purpose || ch.exp < Date.now()) return 'that request expired — try again';
+  pkChallenges.delete(cd.challenge);
+  let o; try { o = new URL(cd.origin); } catch (e) { return 'bad origin'; }
+  if (o.hostname !== rpIdOf(req) || !(o.protocol === 'https:' || o.hostname === 'localhost')) return 'answer is for another site';
+  return null;
+}
+app.post('/api/owner-passkey/register-options', ownerAuth, async (req, res) => {
+  const have = (await pool.query('SELECT cred_id FROM inv_owner_passkeys WHERE pw_fp=$1', [ownerFp()])).rows.map(r => r.cred_id);
+  res.json({ ok: true, challenge: newChallenge('register'), rp: { id: rpIdOf(req), name: 'Elevate Inventory' },
+    user: { id: b64u(Buffer.from('elevate-owner')), name: 'owner', displayName: 'Elevate owner' }, exclude: have });
+});
+app.post('/api/owner-passkey/register', ownerAuth, async (req, res) => {
+  const b = req.body || {};
+  const why = checkClientData(req, b.clientDataJSON, 'webauthn.create', 'register');
+  if (why) return res.status(400).json({ ok: false, error: why });
+  if (!b.id || !b.publicKey || Number(b.alg) !== -7) return res.status(400).json({ ok: false, error: 'This device made a kind of key the app can\'t check (needs Face ID / Touch ID / a fingerprint).' });
+  try { crypto.createPublicKey({ key: unb64u(b.publicKey), format: 'der', type: 'spki' }); }
+  catch (e) { return res.status(400).json({ ok: false, error: 'The key from this device could not be read.' }); }
+  await pool.query(`INSERT INTO inv_owner_passkeys(cred_id, public_key, label, pw_fp) VALUES($1,$2,$3,$4)
+    ON CONFLICT (cred_id) DO UPDATE SET public_key=$2, label=$3, pw_fp=$4`, [String(b.id), String(b.publicKey), ownerLabel(req), ownerFp()]);
+  res.json({ ok: true });
+});
+app.post('/api/owner-passkey/login-options', loginLimiter, async (req, res) => {
+  const ids = (await pool.query('SELECT cred_id FROM inv_owner_passkeys WHERE pw_fp=$1', [ownerFp()])).rows.map(r => r.cred_id);
+  if (!ids.length) return res.status(404).json({ ok: false, error: 'Face ID isn\'t set up — unlock with the password, then tap "Set up Face ID".' });
+  res.json({ ok: true, challenge: newChallenge('login'), rpId: rpIdOf(req), allow: ids });
+});
+app.post('/api/owner-passkey/login', loginLimiter, async (req, res) => {
+  const b = req.body || {};
+  const fail = (msg) => { noteLoginFail(req); return res.status(401).json({ ok: false, error: msg }); };
+  if (!OWNER_PASSWORD) return fail('The owner password isn\'t set on the server.');
+  const why = checkClientData(req, b.clientDataJSON, 'webauthn.get', 'login');
+  if (why) return fail(why);
+  const pk = (await pool.query('SELECT id, public_key FROM inv_owner_passkeys WHERE cred_id=$1 AND pw_fp=$2', [String(b.id || ''), ownerFp()])).rows[0];
+  if (!pk) return fail('This Face ID key isn\'t on file any more — unlock with the password and set it up again.');
+  const auth = unb64u(b.authenticatorData);
+  if (auth.length < 37) return fail('unreadable answer from the phone');
+  const rpHash = crypto.createHash('sha256').update(rpIdOf(req)).digest();
+  if (!auth.subarray(0, 32).equals(rpHash)) return fail('answer is for another site');
+  const flags = auth[32];
+  if (!(flags & 0x01) || !(flags & 0x04)) return fail('Face ID didn\'t confirm it was you');   // user present + verified
+  const signed = Buffer.concat([auth, crypto.createHash('sha256').update(unb64u(b.clientDataJSON)).digest()]);
+  let ok = false;
+  try { ok = crypto.verify('sha256', signed, { key: unb64u(pk.public_key), format: 'der', type: 'spki' }, unb64u(b.signature)); } catch (e) { ok = false; }
+  if (!ok) return fail('Face ID check failed');
+  clearLoginFails(req);
+  await pool.query('UPDATE inv_owner_passkeys SET last_used_at=now() WHERE id=$1', [pk.id]);
+  res.json({ ok: true, ...(await issueOwnerKey('faceid', ownerLabel(req), 0.5)) });
+});
 
 app.post('/api/owner-login', loginLimiter, (req, res) => {
   const pw = req.body && req.body.password;
@@ -10053,6 +10209,7 @@ initDb().then(() => {
     setTimeout(() => { getFbaInventory().then(checkFnskuListings)
       .then(r => console.log(`[FBA] Listing check at start: ${r.autoSwitch.length} switched, ${r.conflicts.length} to pick.`))
       .catch(e => console.error('[FBA] listing check at start failed:', e.message)); }, 60 * 1000);
+  loadOwnerKeys();
   // Fees of shipments booked in the app before they were saved on the shipment.
   setTimeout(backfillBookedCosts, 30 * 1000);
   // The P&L's estimate needs the money events back to the last settlement.
