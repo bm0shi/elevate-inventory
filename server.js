@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'card-boxes-1137';
+const BUILD_ID = 'prep-owner-1138';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2664,16 +2664,22 @@ async function planPart1(id, step) {
         const mskus = [...new Set(p.items.map(i => i.msku))];
         for (let k = 0; k < mskus.length; k += 100) det.push(...((await amzInbound.listPrepDetails(mp, mskus.slice(k, k + 100))).mskuPrepDetails || []));
         const own = inboundLib.ownersFromPrepDetails(det);
+        // Only fills an owner the product doesn't have yet: one Amazon insisted
+        // on before (remembered on the product, amz_prep_owner) is not undone
+        // by this guess — it put NONE back on the same products every plan
+        // (owner 11/5, HAZ plan refused for 3 products).
         for (const i of p.items) {
           i.prepChecked = true;
-          if (own[i.msku]) Object.assign(i, own[i.msku]);
+          for (const [k, v] of Object.entries(own[i.msku] || {})) if (i[k] == null) i[k] = v;
         }
         await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
       } catch (e) { console.error(`[Inbound] plan ${id} prep lookup failed:`, e.message); }
     }
-    // Up to 3 tries: Amazon names each product whose prep/label owner it won't
-    // accept (inboundLib.ownerFixes); those are corrected, remembered on the
-    // product for next time, and the plan is sent again.
+    // Amazon names each product whose prep/label owner it won't accept
+    // (inboundLib.ownerFixes); those are corrected, remembered on the product
+    // for next time, and the plan is sent again — as long as each round fixes
+    // something new (up to 8). It used to stop after 3 without saving the last
+    // round's fixes, so with 12 products Retry hit the same refusal again.
     for (let attempt = 1; ; attempt++) {
       const pb = inboundLib.planBody({ name: p.name, items: p.items.map(i => ({ msku: i.msku, qty: i.qty, prepOwner: i.prepOwner, labelOwner: i.labelOwner, expiration: i.exp ? '20' + i.exp.slice(0, 2) + '-' + i.exp.slice(2, 4) + '-' + i.exp.slice(4, 6) : null })),
         source: src.address, marketplaceId: process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER', prepOwner: p.prep_owner });
@@ -2702,13 +2708,14 @@ async function planPart1(id, step) {
           throw new Error('Amazon needs the expiration date for: ' + miss.map(i => (i.name || i.msku).slice(0, 60) + ' (' + i.msku + ')').join(', ') + '. Type it below and press Save & retry.');
         }
         const fix = inboundLib.ownerFixes(e.message, p.items.map(i => i.msku));
-        const hit = p.items.filter(i => fix[i.msku]);
-        if (!hit.length || attempt >= 3) throw e;
+        const hit = p.items.filter(i => fix[i.msku] && Object.entries(fix[i.msku]).some(([k, v]) => i[k] !== v));
+        if (!hit.length) throw e;
         for (const i of hit) {
           Object.assign(i, fix[i.msku]);
           await pool.query('UPDATE inv_products SET amz_prep_owner=COALESCE($2, amz_prep_owner), amz_label_owner=COALESCE($3, amz_label_owner) WHERE asin=$1', [i.asin, fix[i.msku].prepOwner || null, fix[i.msku].labelOwner || null]);
         }
         await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+        if (attempt >= 8) throw e;
       }
     }
   }
