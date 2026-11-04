@@ -128,6 +128,39 @@
   .oh2-alert .shr{display:contents}
   .oh2-alert .shr > div{border:0!important;background:none!important;padding:0!important;margin:0!important;color:inherit!important}
   .oh2-more{border-top:1px solid ${K.line2};padding-top:2px}
+  .oh2-sells{width:100%;border-collapse:separate;border-spacing:0;font-size:15px;margin:2px 0 6px;table-layout:fixed}
+  .oh2-sells th{font-size:12px;font-weight:750;color:${K.muted};text-align:center;padding:4px 4px 6px;line-height:1.2;text-transform:uppercase;letter-spacing:.3px}
+  .oh2-sells th:first-child{width:34%;text-align:left}
+  .oh2-sells td{padding:8px 4px;text-align:center;vertical-align:middle;font-weight:800;border-top:1px solid ${K.line2}}
+  .oh2-sells td:first-child{text-align:left;font-weight:600;overflow-wrap:anywhere}
+  .oh2-sells td.z{color:#a8b4be;font-weight:600}
+  .oh2-sells tr.duo td{background:#fff5f3}
+  .oh2-sells tr.duo td:first-child{border-left:4px solid #c0392b}
+  .oh2-sells tr.single td:first-child{border-left:4px solid ${K.brand}}
+  .oh2-sells tr.parts td{border-top:none;padding:0 8px 9px 12px;text-align:left;font-weight:600;font-size:13.5px;color:${K.ink2}}
+  .oh2-sells tr.tot td{border-top:2px solid ${K.line};font-weight:900;color:${K.ink}}
+  .oh2-pill{display:inline-block;font-size:11px;font-weight:900;letter-spacing:.6px;padding:2px 7px;border-radius:5px;margin-right:6px;vertical-align:1px}
+  .oh2-pill.duo{background:#c0392b;color:#fff}
+  .oh2-pill.single{background:#e3eef0;color:${K.brand}}
+  .oh2-sub{font-size:12px;color:${K.muted};margin-top:3px;font-weight:600}
+  .oh2-part{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #f1d4ce;border-radius:8px;padding:3px 9px;margin:2px 4px 2px 0;white-space:nowrap}
+  .oh2-part b.n{font-size:15px}
+  .oh2-part .ab{font-weight:900;color:#c0392b}
+  .oh2-build{display:inline-block;font-weight:900;border-radius:8px;padding:3px 10px;margin-left:2px;white-space:nowrap}
+  @media (max-width:640px){
+    .oh2-sells thead{display:none}
+    .oh2-sells,.oh2-sells tbody{display:block}
+    .oh2-sells tr{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid ${K.line2}}
+    .oh2-sells td{border-top:none;padding:6px 4px}
+    .oh2-sells td:first-child{grid-column:1/-1}
+    .oh2-sells td[data-l]::before{content:attr(data-l);display:block;font-size:10.5px;font-weight:750;color:${K.muted};text-transform:uppercase;letter-spacing:.3px;margin-bottom:1px}
+    .oh2-sells tr.duo td{border-left:0}.oh2-sells tr.duo{border-left:4px solid #c0392b;background:#fff5f3}
+    .oh2-sells tr.single td{border-left:0}.oh2-sells tr.single{border-left:4px solid ${K.brand}}
+    .oh2-sells tr.duo td:first-child,.oh2-sells tr.single td:first-child{border-left:0}
+    .oh2-sells tr.parts{display:block;border-top:none}
+    .oh2-part{white-space:normal}
+    .oh2-sells td:empty{display:none}
+  }
   .oh2-more summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:15px;font-weight:750;color:${K.ink2};padding:8px 2px}
   .oh2-more summary::-webkit-details-marker{display:none}
   .oh2-more summary::before{content:"";width:7px;height:7px;border-right:2px solid ${K.muted};border-bottom:2px solid ${K.muted};transform:rotate(-45deg);transition:transform .2s;margin:0 3px 0 2px}
@@ -320,7 +353,6 @@
   function stats(p, t) {
     const lt = typeof listingTotals === 'function' ? listingTotals(p) : { at: 0, way: 0, rate: 0 };
     const cover = lt.rate > 0 ? (lt.at + lt.way) / (lt.rate / 30) : null;
-    const av = ssAvg && ssAvg.avg && ssAvg.avg[p.asin];
     const split = (s, d) => (typeof sdSplit === 'function' && d != null) ? sdSplit(s, d) : '';
     const x = p.transit_split;
     const waySub = x ? [x.single ? x.single + ' single' : '', x.duo ? x.duo + ' in duos' : '', x.other ? x.other + ' other' : ''].filter(Boolean).join(' · ') : '';
@@ -332,26 +364,67 @@
       cell('At Amazon', K.fba, n0(lt.at), lt.way ? lt.way + ' inbound' : '', 'Bottles at Amazon across this product’s listings (single + duos)') +
       '<div class="oh2-st oh2-gt" title="On hand (pending prep and prepped included) + on the way + at Amazon"><div class="k">Total</div><div class="v">' + n0(grandTotal(p)) + '</div><div class="x">(GRAND TOTAL)</div></div>' +
       '<div class="oh2-st" title="Days the stock at Amazon plus on the way lasts at the best-estimate sales rate"><div class="k">FBA cover</div><div class="v">' + coverBadge(cover) + '</div></div>' +
-      cell('3P avg / mo', null, av && av.avg != null ? '~' + n0(av.avg) : '—', av ? av.n + ' seller' + (av.n === 1 ? '' : 's') : '', 'Other sellers’ average monthly sales on this listing (SmartScout)') +
       '</div>';
   }
-  function duoTable(p) {
-    if (!p.is_component || !(p.partners && p.partners.length)) return '';
+  // SELLS AS (owner 11/5: "it's getting hard to read what items I can make
+  // into duos … this item is a DUO, part A has this many, part B has this
+  // many, then the data on the duo: 3P avg, our sold, total, at Amazon / on
+  // the way"). One table per product, one row per way it sells (the single,
+  // then each duo), the same columns all the way down; under each duo, what
+  // it's made of: each part's free bottles and how many duos that builds.
+  // Replaces the two tables that repeated the duos ("Pairs into duos" and
+  // "At Amazon by listing").
+  function sellsAs(p, available) {
+    const rows = typeof listingRows === 'function' ? listingRows(p) : [];
+    if (!rows.length) return '';
     const byAsin = a => (products || []).find(x => x.asin === a) || {};
-    const rows = p.partners.map(pt => {
-      const d = byAsin(pt.bundle_asin), av = ssAvg && ssAvg.avg && ssAvg.avg[pt.bundle_asin];
-      const partner = byAsin(pt.asin);
-      return '<tr><td>' + (typeof amzLinkSized === 'function' ? amzLinkSized(pt.asin, partner.name || pt.name) : E(pt.asin)) +
-        '<div style="margin-top:2px"><span class="oh2-mono" onclick="copyText(\'' + q1(pt.asin) + '\',this)" title="Copy partner ASIN">' + E(pt.asin) + '</span></div></td>' +
-        '<td><b style="color:' + (pt.onhand > 0 ? K.good : K.crit) + '">' + n0(pt.onhand) + '</b></td>' +
-        '<td><a href="https://www.amazon.com/dp/' + encodeURIComponent(pt.bundle_asin) + '" target="_blank" rel="noopener" class="oh2-mono" style="text-decoration:none">' + E(pt.bundle_asin) + '</a></td>' +
-        '<td>' + (d.fnsku ? '<span class="oh2-mono" style="color:' + K.ink + '" onclick="copyText(\'' + q1(d.fnsku) + '\',this)" title="Copy FNSKU">' + E(d.fnsku) + '</span>' : '<span style="color:#a8b4be">—</span>') + '</td>' +
-        '<td>' + (d.monthlySold != null ? '~' + n0(d.monthlySold) : '—') + '</td>' +
-        '<td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
-        '<td><span onclick="setCaseQty(\'' + q1(pt.bundle_asin) + '\',true)" title="Tap to change duos per case" style="cursor:pointer;font-weight:800;color:' + K.brand + '">' + (typeof caseQtyOf === 'function' ? caseQtyOf(Object.assign({ is_bundle: true }, d)) : 6) + ' ✎</span></td></tr>';
+    const freeOf = a => { if (a === p.asin) return available; const x = byAsin(a); return Math.max(0, (x.onhand || 0) - (x.pending_prep || 0) - (x.prepped || 0)); };
+    const N = window._soldNow; if (!N && typeof loadSoldNow === 'function') loadSoldNow();
+    const named = (a, nm) => typeof amzLinkSized === 'function' ? amzLinkSized(a, nm || byAsin(a).name || a) : E(nm || a);
+    const num = (v, cls, l) => { const dl = l ? ' data-l="' + l + '"' : ''; return v == null ? '<td class="z"' + dl + '>—</td>' : '<td' + dl + (v === 0 ? ' class="z"' : '') + (cls ? ' style="' + cls + '"' : '') + '>' + n0(v) + '</td>'; };
+    const metrics = (r) => {
+      const sold = N ? (N.sold && N.sold[r.asin]) || 0 : null;
+      const s3 = typeof ss3p === 'function' ? ss3p(r.asin) : null;
+      const R = typeof demandRate === 'function' ? demandRate(r.asin, r.sold) : { mo: 0 }, tot = r.at + r.way;
+      const cover = R.mo > 0 ? tot / (R.mo / 30) : null;
+      return '<td data-l="We sold 30d"' + (sold ? '' : ' class="z"') + ' title="' + E('Our own units sold, the last 30 days' + (r.sold != null ? ' · whole listing (all sellers, Keepa) ~' + n0(r.sold) + '/mo' : '')) + '">' + (sold == null ? '…' : n0(sold)) + '</td>' +
+        '<td data-l="3P avg / mo" style="color:#c0392b"' + (s3 ? ' title="' + E(s3.t) + '"' : '') + '>' + (s3 ? '~' + n0(s3.v) : '<span style="color:#a8b4be;font-weight:600">—</span>') + '</td>' +
+        num(r.at, 'color:#008296', 'At Amazon') + num(r.way, 'color:#2563a8', 'On the way') + num(tot, 'color:' + K.brand + ';font-weight:900', 'Total') +
+        '<td data-l="FBA cover"' + (R.note ? ' title="' + E(R.note) + '"' : '') + '>' + coverBadge(cover) + '</td>';
+    };
+    const parts = (duoAsin) => {
+      const b = (typeof _bundles !== 'undefined' && _bundles || []).find(x => x.bundle_asin === duoAsin);
+      let L = b ? b.components.map(c => ({ asin: c.asin, per: c.qty || 1, name: c.name })) : null;
+      if (!L) L = [{ asin: p.asin, per: 1 }].concat((p.partners || []).filter(pt => pt.bundle_asin === duoAsin).map(pt => ({ asin: pt.asin, per: 1, name: pt.name })));
+      // this bottle first, as part A
+      L.sort((x, y) => (y.asin === p.asin) - (x.asin === p.asin));
+      const can = Math.min(...L.map(c => Math.floor(freeOf(c.asin) / (c.per || 1))));
+      const build = isFinite(can) ? Math.max(0, can) : 0;
+      return L.map((c, i) => { const f = freeOf(c.asin);
+        return '<span class="oh2-part"><span class="ab">' + 'AB'.charAt(i) + (L.length > 2 ? '' : '') + '</span>' + (c.asin === p.asin ? '<span>this bottle</span>' : named(c.asin, c.name)) +
+          (c.per > 1 ? ' <span style="color:' + K.muted + '">×' + c.per + '</span>' : '') +
+          ' <span style="white-space:nowrap"><b class="n" style="color:' + (f > 0 ? K.good : K.crit) + '">' + n0(f) + '</b> <span style="color:' + K.muted + '">free</span></span></span>'; }).join('<span style="font-weight:900;color:' + K.muted + '"> + </span>') +
+        '<span style="font-weight:900;color:' + K.muted + '"> = </span><span class="oh2-build" style="background:' + (build > 0 ? '#e7f6ec;color:' + K.good : '#fdeceb;color:' + K.crit) + '">' + (build > 0 ? 'can build ' + n0(build) + ' duo' + (build === 1 ? '' : 's') : 'can’t build any: a part is short') + '</span>';
+    };
+    const nDuo = rows.filter(r => r.label === 'Duo').length, nSingle = rows.length - nDuo;
+    const body = rows.map(r => {
+      const d = byAsin(r.asin);
+      if (r.label !== 'Duo') return '<tr class="single"><td><span class="oh2-pill single">SINGLE</span>this bottle' +
+        '<div class="oh2-sub"><span class="oh2-mono" onclick="copyText(\'' + q1(r.asin) + '\',this)" title="Copy ASIN">' + E(r.asin) + '</span></div></td>' + metrics(r) + '</tr>';
+      const cq = typeof caseQtyOf === 'function' ? caseQtyOf(Object.assign({ is_bundle: true }, d)) : 6;
+      return '<tr class="duo"><td><span class="oh2-pill duo">DUO</span>' + named(r.asin, r.name || d.name) +
+        '<div class="oh2-sub"><span class="oh2-mono" onclick="copyText(\'' + q1(r.asin) + '\',this)" title="Copy duo ASIN">' + E(r.asin) + '</span>' +
+        (d.fnsku ? ' · <span class="oh2-mono" style="color:' + K.ink + '" onclick="copyText(\'' + q1(d.fnsku) + '\',this)" title="Copy duo FNSKU">' + E(d.fnsku) + '</span>' : '') +
+        ' · <span onclick="setCaseQty(\'' + q1(r.asin) + '\',true)" title="Tap to change duos per case" style="cursor:pointer;white-space:nowrap;color:' + K.brand + '">' + cq + ' / case ✎</span></div></td>' + metrics(r) + '</tr>' +
+        (p.is_bundle ? '' : '<tr class="duo parts"><td colspan="7">Made from ' + parts(r.asin) + '</td></tr>');
     }).join('');
-    return '<details class="oh2-more" open data-k="duo-' + E(p.asin) + '"><summary>Pairs into duos <span class="cnt">· ' + p.partners.length + ' duo' + (p.partners.length === 1 ? '' : 's') + '</span></summary>' +
-      '<table class="oh2-duo"><thead><tr><th>Partner bottle</th><th>Partner on hand</th><th>Duo ASIN</th><th>Duo FNSKU</th><th>Sold / mo</th><th>3P avg / mo</th><th>Duos / case</th></tr></thead><tbody>' + rows + '</tbody></table></details>';
+    const tAt = rows.reduce((n, r) => n + r.at * r.per, 0), tWay = rows.reduce((n, r) => n + r.way * r.per, 0);
+    const foot = rows.length > 1 ? '<tr class="tot"><td>All listings, in bottles</td><td></td><td></td>' + num(tAt, '', 'At Amazon') + num(tWay, '', 'On the way') + num(tAt + tWay, '', 'Total') + '<td></td></tr>' : '';
+    return '<details class="oh2-more" open data-k="sells-' + E(p.asin) + '"><summary>Sells as <span class="cnt">· ' +
+      [nSingle ? nSingle + ' single' : '', nDuo ? nDuo + ' duo' + (nDuo === 1 ? '' : 's') : ''].filter(Boolean).join(' + ') + '</span>' +
+      (p.fba_as_of ? '<a href="#" onclick="event.preventDefault();amazonCheck(\'' + q1(p.asin) + '\')" style="margin-left:auto;font-size:12.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a>' : '') + '</summary>' +
+      '<table class="oh2-sells"><thead><tr><th>Listing</th><th title="Our own units sold, the last 30 days">We sold 30d</th><th title="What one third-party seller sells a month, all of them on the listing">3P avg / mo</th><th>At Amazon</th><th>On the way</th><th title="At Amazon + on the way">Total</th><th title="Days at Amazon + on the way lasts at the best-estimate sales rate">FBA cover</th></tr></thead><tbody>' +
+      body + foot + '</tbody></table></details>';
   }
   function card(p, i) {
     const o = p.onhand || 0, t = p.transit || 0, pend = p.pending_prep || 0, prep = p.prepped || 0;
@@ -363,7 +436,6 @@
     const shr = typeof shrinkNote === 'function' ? shrinkNote(p) : '';
     const alerts = (shr ? '<div class="oh2-alert crit"><b>⚠</b><div class="shr">' + shr + '</div></div>' : '') +
       (p.fba_amazon_asin ? '<div class="oh2-alert warn"><b>ⓘ</b><div>Amazon files this SKU under ASIN <b>' + E(p.fba_amazon_asin) + '</b>, not ' + E(p.asin) + ' — matched by SKU.</div></div>' : '');
-    const amz = typeof amazonSplit === 'function' ? amazonSplit(p) : '';
     return '<article class="oh2-card" style="--d:' + Math.min(i, 12) * 30 + 'ms">' +
       '<div class="oh2-top"><div class="oh2-img">' + img + '</div>' +
       '<div style="min-width:0"><div class="oh2-name">' + name + '</div><div class="oh2-tags">' +
@@ -375,8 +447,7 @@
         (typeof fbmMark === 'function' ? fbmMark(p.asin) : '') +
       '</div></div>' +
       '<div class="oh2-av"><div class="n' + (available <= 0 ? ' zero' : '') + '">' + n0(available) + '</div><div class="l">Available</div>' + cases + '</div></div>' +
-      stockBar(p, available) + stats(p, t) + alerts + duoTable(p) +
-      (amz ? '<details class="oh2-more" open data-k="amz-' + E(p.asin) + '"><summary>At Amazon by listing</summary><div class="oh2-amz">' + amz + '</div></details>' : '') +
+      stockBar(p, available) + stats(p, t) + alerts + sellsAs(p, available) +
       '<div class="oh2-foot"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Label now, not part of any shipment">Prelabeling only</button>' +
       '<button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')" title="Units missing on the floor (or found again): corrects On Hand and keeps a log on this card">Fix count</button>' +
       (p.fba_as_of ? '<button class="oh-btn quiet sm" onclick="amazonCheck(\'' + q1(p.asin) + '\')">Check with Amazon</button>' : '') +
