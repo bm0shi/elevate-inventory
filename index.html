@@ -2629,21 +2629,29 @@ function ssAvgHtml(asin){
 // use: our units sold in 30 days, the other sellers' Smart Scout average,
 // what's at Amazon + on the way, how many days that lasts at the best
 // estimate of demand, and Keepa's sales rank.
+// The real last 30 days (to today) and days in stock at Amazon, for the strip.
+function loadSoldNow(){
+  if(loadSoldNow._busy || loadSoldNow._at>Date.now()-60000) return; loadSoldNow._busy=true; loadSoldNow._at=Date.now();
+  api('/api/our-sold30?to=today').then(d=>{ if(d&&d.ok){ window._soldNow=d; renderPendingPrep(); sellRepaint(); } }).catch(()=>{}).finally(()=>{ loadSoldNow._busy=false; });
+}
 function sellNums(asin){
-  if(!window._ourSold) loadOurSold();
+  if(!window._soldNow) loadSoldNow();
   if(!ssAvg) loadSsAvg();
   const p=(products||[]).find(y=>y.asin===asin)||{};
   const fba=p.fba_as_of?Math.max(p.fba_onhand||0,p.fba_fulfillable||0)+(p.fba_inbound||0):null;
   const mo=demandRate(asin, p.monthlySold).mo||null;
   const a=ssAvg&&ssAvg.avg&&ssAvg.avg[asin];
-  return { sold:ourSoldOf(asin), avg:a?a.avg:null, fba, days:fba!=null&&mo>0?fba/(mo/30):null, rank:p.salesRank!=null?p.salesRank:null };
+  const N=window._soldNow;
+  return { sold:N?(N.sold[asin]||0):null, avg:a?a.avg:null, fba, days:fba!=null&&mo>0?fba/(mo/30):null, rank:p.salesRank!=null?p.salesRank:null,
+    inStock:N&&N.snapDays?(N.inStock[asin]||0):null, snapDays:N?N.snapDays:0 };
 }
 const sellDayColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
 function sellStrip(asin){
   const n=sellNums(asin), f=v=>v==null?'—':Math.round(v).toLocaleString();
   const it=(l,v,t,c)=>'<span title="'+t+'" style="display:inline-flex;flex-direction:column;align-items:center;min-width:54px;padding:3px 6px;border-radius:7px;background:#f4f7f9"><b style="font-size:13.5px;line-height:1.2'+(c?';color:'+c:'')+'">'+v+'</b><span style="font-size:9.5px;font-weight:800;letter-spacing:.3px;color:#8a97a6;text-transform:uppercase">'+l+'</span></span>';
   return '<div class="sellStrip" style="display:flex;gap:5px;flex-wrap:wrap;margin-top:8px">'
-    +it('Sold 30d', n.sold==null?'…':f(n.sold), 'Our own units sold, last 30 days')
+    +it('Sold 30d', n.sold==null?'…':f(n.sold), 'Our own units sold, the last 30 days to today')
+    +it('In stock', n.inStock==null?'—':n.inStock+'/'+n.snapDays+'d', 'Days with stock available at Amazon, of the last '+(n.snapDays||30)+' days checked: an item that was out can\'t sell', n.inStock==null?null:n.inStock>=n.snapDays*0.9?'#1e8449':n.inStock>=n.snapDays*0.5?'#b7791f':'#c0392b')
     +it('3P avg', n.avg==null?'—':'~'+f(n.avg), 'Other sellers\' average units a month (Smart Scout)')
     +it('At Amazon', f(n.fba), 'At Amazon + on the way in')
     +it('Days', n.days==null?'—':f(n.days), 'How many days that stock lasts at the best estimate of demand', sellDayColor(n.days))
@@ -7084,15 +7092,16 @@ function renderPrelabelList(){
   if(!L.length){ el.innerHTML=''; return; }
   sortState('prelabel','qty',-1);
   const rows=sortRows('prelabel', L, { name:x=>String(x.name||''), qty:x=>x.prepped, fnsku:x=>String(x.fnsku||''),
-    sold:x=>sellNums(x.asin).sold, avg:x=>sellNums(x.asin).avg, fba:x=>sellNums(x.asin).fba, days:x=>sellNums(x.asin).days, rank:x=>{ const r=sellNums(x.asin).rank; return r==null?null:-r; } });
+    sold:x=>sellNums(x.asin).sold, instock:x=>sellNums(x.asin).inStock, avg:x=>sellNums(x.asin).avg, fba:x=>sellNums(x.asin).fba, days:x=>sellNums(x.asin).days, rank:x=>{ const r=sellNums(x.asin).rank; return r==null?null:-r; } });
   // how each sells, as sortable columns (owner 11/4); rank sorts best (lowest) first
   const sc=(x,k)=>{ const n=sellNums(x.asin), v=n[k], f=v==null?'—':Math.round(v).toLocaleString();
+    if(k==='inStock') return '<td style="text-align:center;white-space:nowrap;font-weight:800;color:'+(v==null?'#8a97a6':v>=n.snapDays*0.9?'#1e8449':v>=n.snapDays*0.5?'#b7791f':'#c0392b')+'">'+(v==null?'—':v+'/'+n.snapDays+'d')+'</td>';
     return '<td style="text-align:center;white-space:nowrap;font-weight:800'+(k==='days'?';color:'+sellDayColor(v):'')+'">'+(k==='sold'&&v==null?'…':k==='avg'&&v!=null?'~'+f:k==='rank'&&v!=null?'#'+f:f)+'</td>'; };
   const nm=x=>String(x.name||x.asin).replace(/'/g,"\\'").replace(/"/g,'');
   el.innerHTML='<div class="prelabelHead"><div class="t">🏷️ PRE-LABELED SKUS</div><div class="s">'+L.length+' product'+(L.length===1?'':'s')+' · '+(d.totalPrelabeled||0).toLocaleString()+' units labeled, not part of any shipment. When a shipment needs them, tap <b>Ready to ship</b>.</div></div>'
     +'<div class="box" style="padding:6px 8px;overflow-x:auto"><table class="prelabelT"><tr><th class="hsm" style="width:70px"></th>'
     +sortTh('prelabel','name','Product','renderPrelabelList')+sortTh('prelabel','fnsku','FNSKU','renderPrelabelList','hsm')
-    +sortTh('prelabel','sold','Sold 30d','renderPrelabelList')+sortTh('prelabel','avg','3P avg','renderPrelabelList')+sortTh('prelabel','fba','At Amazon','renderPrelabelList')
+    +sortTh('prelabel','sold','Sold 30d','renderPrelabelList')+sortTh('prelabel','instock','In stock','renderPrelabelList')+sortTh('prelabel','avg','3P avg','renderPrelabelList')+sortTh('prelabel','fba','At Amazon','renderPrelabelList')
     +sortTh('prelabel','days','Days','renderPrelabelList')+sortTh('prelabel','rank','Rank','renderPrelabelList')
     +sortTh('prelabel','qty','Pre-labeled','renderPrelabelList')+'<th style="width:150px"></th></tr>'
     +rows.map(x=>'<tr><td class="hsm">'+(x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'">':'📦')+'</td>'
@@ -7100,7 +7109,7 @@ function renderPrelabelList(){
         +'<div style="font-size:11.5px;margin-top:2px"><span onclick="copyText(\''+esc(x.asin)+'\',this)" style="cursor:pointer;font-family:monospace;color:#2563a8">'+esc(x.asin)+'</span></div>'
         +(x.fnsku?'<div class="fn-sm" style="font-size:11.5px;margin-top:2px;font-family:monospace;font-weight:700">FNSKU '+esc(x.fnsku)+'</div>':'')+'</td>'
       +'<td class="hsm" style="width:130px">'+(x.fnsku?'<span onclick="copyText(\''+esc(x.fnsku)+'\',this)" style="cursor:pointer;font-family:monospace;font-weight:700;background:#fdf3e6;border-radius:4px;padding:2px 6px">'+esc(x.fnsku)+'</span>':'—')+'</td>'
-      +sc(x,'sold')+sc(x,'avg')+sc(x,'fba')+sc(x,'days')+sc(x,'rank')
+      +sc(x,'sold')+sc(x,'inStock')+sc(x,'avg')+sc(x,'fba')+sc(x,'days')+sc(x,'rank')
       +'<td style="width:96px"><b style="font-size:20px;color:#7a4fb5">'+x.prepped.toLocaleString()+'</b><div><a href="#" onclick="event.preventDefault();editPrelabel(\''+esc(x.asin)+'\','+x.prepped+')" style="font-size:11px">edit</a></div></td>'
       +'<td><button onclick="prelabelToReady(\''+esc(x.asin)+'\',\''+esc(nm(x))+'\','+x.prepped+')" style="padding:8px 12px;font-size:12.5px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">→ Ready to ship</button></td></tr>').join('')
     +'</table></div>';
