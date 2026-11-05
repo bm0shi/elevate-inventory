@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'card-align-1150';
+const BUILD_ID = 'aerosol-check-1151';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1187,6 +1187,12 @@ async function initDb() {
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat BOOLEAN;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_source TEXT;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS hazmat_detail TEXT;
+      -- Which capacity bucket a listing counts in (owner 11/5, the aerosol
+      -- refusal): storage_type is the owner's own call ('standard' |
+      -- 'hazmat' | 'aerosol'), storage_type_amz Amazon's words from the
+      -- inventory planning report; lib/capacity.js kindOf picks.
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS storage_type TEXT;
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS storage_type_amz TEXT;
     `);
     console.log('[Inventory] Hazmat columns ready.');
   } catch(e) { console.error('hazmat migration skipped:', e.message); }
@@ -2935,6 +2941,17 @@ app.post('/api/inbound/plans', auth, async (req, res) => {
   } catch (e) { console.error('[Inbound] listing check skipped:', e.message); }
   const pre = inboundLib.planChecks(items, stuck.stranded || [], missing);
   if (pre.length) return res.status(400).json({ ok: false, error: pre.join(' '), problems: pre });
+  // Capacity (owner 11/5: Amazon refused a plan with FBA_INB_0132, aerosol
+  // volume over the limit, after every other step had run): each bucket's
+  // cubic feet against the room left, aerosol apart from flammable. Refused
+  // with the lines to cut; "Send anyway" (force) skips it when Seller
+  // Central shows more room than the app thinks. lib/capacity.js planFit.
+  if (!b.force) {
+    try {
+      const fit = capacity.planFit(items, await capacityNow());
+      if (fit.problems.length) return res.status(400).json({ ok: false, error: fit.problems.join(' '), problems: fit.problems, capacity: true, fit: { over: fit.over, noLimit: fit.noLimit } });
+    } catch (e) { console.error('[Inbound] capacity check skipped:', e.message); }
+  }
   // Prep owner is worked out per product (Amazon's prep data, planPart1); NONE is only the default.
   const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
   const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner, ship_from) VALUES($1,$2,$3,$4) RETURNING id', [String(b.name || '').trim().slice(0, 40) || null, JSON.stringify(items), prep, JSON.stringify(from)]);
@@ -8051,7 +8068,7 @@ async function capacityNow() {
   const fba = (fbaR.rows[0] && fbaR.rows[0].data) || [];
   const limR = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_capacity'");
   const lim = (limR.rows[0] && limR.rows[0].data) || {};
-  const prods = (await pool.query('SELECT asin, name, cuft::float AS cuft, hazmat, cuft_error FROM inv_products')).rows;
+  const prods = (await pool.query('SELECT asin, name, cuft::float AS cuft, hazmat, cuft_error, storage_type, storage_type_amz FROM inv_products')).rows;
   const P = {}; for (const p of prods) P[p.asin] = p;
   // Not in the catalog: the size from inv_asin_sizes, the name from Amazon's list.
   const xs = {}; for (const r of (await pool.query('SELECT asin, cuft::float AS cuft, error FROM inv_asin_sizes')).rows) xs[r.asin] = r;
@@ -8071,7 +8088,10 @@ async function capacityNow() {
   // Pre-labelled stock isn't headed to Amazon yet, so it takes no room there.
   const prepped = {}; for (const r of (await pool.query('SELECT asin, qty - prelabel_qty AS qty FROM inv_prepped WHERE qty - prelabel_qty > 0')).rows) prepped[r.asin] = r.qty;
   const pending = {}; for (const r of (await pool.query('SELECT asin, SUM(qty)::int AS q FROM inv_pending_prep WHERE NOT prelabel GROUP BY asin')).rows) pending[r.asin] = r.q;
-  const row = (asin, units) => ({ cuft: P[asin] ? P[asin].cuft : null, hazmat: !!(P[asin] && P[asin].hazmat), units, asin });
+  // Each product's bucket: standard / hazmat (flammable) / aerosol, and who said.
+  const kind = {}, kindSrc = {};
+  for (const p of prods) { const k = capacity.kindOf(p); kind[p.asin] = k.kind; kindSrc[p.asin] = k.source; }
+  const row = (asin, units) => ({ cuft: P[asin] ? P[asin].cuft : null, kind: kind[asin] || 'standard', units, asin });
   // Each listing counted on its own ASIN: a duo takes a duo box, not two bottles.
   const nowRows = fba.map(f => row(f.asin, Math.max(f.fba_onhand || 0, f.fba_fulfillable || 0) + (f.fba_inbound || 0)));
   const prepRows = Object.entries(prepped).map(([a, q]) => row(a, q));
@@ -8082,9 +8102,9 @@ async function capacityNow() {
   // Scale by how far off we were the last time the owner read Seller Central.
   const cal = lim.amazonUsed && lim.ourUsedThen ? capacity.calibration(lim.ourUsedThen, lim.amazonUsed) : 1;
   const cuft = {}; for (const p of prods) if (p.cuft > 0) cuft[p.asin] = p.cuft * cal;
-  const sc = (v) => ({ standard: v.standard * cal, hazmat: v.hazmat * cal, missing: v.missing });
-  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, setAt: lim.setAt || null, standardRoom: lim.standardRoom ?? null, hazmatRoom: lim.hazmatRoom ?? null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
-    cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, hazmat: prods.filter(p => p.hazmat).map(p => p.asin), stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
+  const sc = (v) => ({ standard: v.standard * cal, hazmat: v.hazmat * cal, aerosol: v.aerosol * cal, missing: v.missing });
+  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, aerosol: lim.aerosol || null, setAt: lim.setAt || null, standardRoom: lim.standardRoom ?? null, hazmatRoom: lim.hazmatRoom ?? null, aerosolRoom: lim.aerosolRoom ?? null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
+    cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, kind, kindSrc, hazmat: prods.filter(p => kind[p.asin] !== 'standard').map(p => p.asin), stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
     sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
 }
 app.get('/api/capacity', auth, async (req, res) => { res.json(await capacityNow()); });
@@ -8099,6 +8119,18 @@ app.post('/api/capacity/size', auth, async (req, res) => {
   if (!r.rowCount) await pool.query(`INSERT INTO inv_asin_sizes(asin, cuft, error, manual, at) VALUES($1,$2,NULL,true,now())
     ON CONFLICT (asin) DO UPDATE SET cuft=EXCLUDED.cuft, error=NULL, manual=true, at=now()`, [asin, cuft]);
   res.json({ ok: true, cuft });
+});
+// The owner's own call on a product's capacity bucket ('standard' |
+// 'hazmat' | 'aerosol'), or null to go back to Amazon's word / the hazmat
+// flag. Cubic feet only, no money, so the warehouse login is enough.
+app.post('/api/capacity/storage-type', auth, async (req, res) => {
+  const asin = String((req.body && req.body.asin) || '').trim().toUpperCase();
+  const t = req.body && req.body.type ? String(req.body.type) : null;
+  if (!/^B0[A-Z0-9]{8}$/.test(asin)) return res.status(400).json({ ok: false, error: 'Not an ASIN.' });
+  if (t && !capacity.KINDS.includes(t)) return res.status(400).json({ ok: false, error: 'Type must be standard, hazmat (flammable) or aerosol.' });
+  const r = await pool.query('UPDATE inv_products SET storage_type=$2 WHERE asin=$1 RETURNING asin, name, hazmat, storage_type, storage_type_amz', [asin, t]);
+  if (!r.rowCount) return res.status(404).json({ ok: false, error: 'Not in the catalog.' });
+  res.json({ ok: true, asin, ...capacity.kindOf(r.rows[0]) });
 });
 // Dangerous-goods storage request (Admin → Checks → Hazmat storage; owner
 // 10/30, Seller Support asked for "volume per unit (Cu Ft) × units = total"
@@ -8142,21 +8174,22 @@ app.post('/api/hazmat-storage/calc', ownerAuth, async (req, res) => {
 app.post('/api/capacity/limit', auth, async (req, res) => {
   const b = req.body || {};
   const num = (v) => v === '' || v == null ? null : Number(v);
-  let standard = num(b.standard), hazmat = num(b.hazmat);
-  const amazonUsed = num(b.amazonUsed), stdRoom = num(b.standardRoom), hazRoom = num(b.hazmatRoom);
-  for (const v of [standard, hazmat, amazonUsed, stdRoom, hazRoom]) if (v != null && !(v >= 0 && v < 1e7)) return res.status(400).json({ ok: false, error: 'Enter cubic feet as a number.' });
+  let standard = num(b.standard), hazmat = num(b.hazmat), aerosol = num(b.aerosol);
+  const amazonUsed = num(b.amazonUsed), stdRoom = num(b.standardRoom), hazRoom = num(b.hazmatRoom), aerRoom = num(b.aerosolRoom);
+  for (const v of [standard, hazmat, aerosol, amazonUsed, stdRoom, hazRoom, aerRoom]) if (v != null && !(v >= 0 && v < 1e7)) return res.status(400).json({ ok: false, error: 'Enter cubic feet as a number.' });
   // Seller Central's Capacity Monitor shows "Maximum shipment": the room LEFT
   // (limit minus stock at Amazon and on the way). The owner typed that 470 as
   // the limit and the bar read 299% full. Room left is what's entered now; the
   // limit is worked out as what the app counts right now + that room.
-  if (stdRoom != null || hazRoom != null) {
+  if (stdRoom != null || hazRoom != null || aerRoom != null) {
     const c = await capacityNow();
     if (stdRoom != null) standard = Math.round((c.used.standard + stdRoom) * 100) / 100;
     if (hazRoom != null) hazmat = Math.round((c.used.hazmat + hazRoom) * 100) / 100;
+    if (aerRoom != null) aerosol = Math.round((c.used.aerosol + aerRoom) * 100) / 100;
   }
   const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_capacity'")).rows[0];
-  const data = Object.assign({}, prev ? prev.data : {}, { standard, hazmat, setAt: new Date().toISOString(),
-    standardRoom: stdRoom, hazmatRoom: hazRoom });
+  const data = Object.assign({}, prev ? prev.data : {}, { standard, hazmat, aerosol, setAt: new Date().toISOString(),
+    standardRoom: stdRoom, hazmatRoom: hazRoom, aerosolRoom: aerRoom });
   if (amazonUsed != null) {
     // Store our own figure at the same moment, so the ratio compares like with like.
     const c = await capacityNow();
@@ -9073,12 +9106,25 @@ async function pullStuck(onStep) {
   };
   await one('stranded inventory', 'GET_STRANDED_INVENTORY_UI_DATA', stuckLib.parseStranded, 'stranded');
   await one('unsellable units', 'GET_FBA_MYI_UNSUPPRESSED_INVENTORY_DATA', stuckLib.parseUnsellable, 'unsellable');
-  await one('aged inventory', 'GET_FBA_INVENTORY_PLANNING_DATA', stuckLib.parseAged, 'aged');
+  // The planning report also says each SKU's storage type (Aerosol,
+  // Flammable, Standard-Size...): saved on the product so a plan is checked
+  // against the right capacity bucket before Amazon sees it (lib/capacity.js).
+  await one('aged inventory', 'GET_FBA_INVENTORY_PLANNING_DATA', (body) => { saveStorageTypes(stuckLib.parseStorageTypes(body)).catch(e => console.error('[Capacity] storage types:', e.message)); return stuckLib.parseAged(body); }, 'aged');
   // keep the last good list for a report that failed this time
   const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='stuck_stock'")).rows[0] || {}).data || {};
   for (const k of ['stranded', 'unsellable', 'aged']) if (out.errors.some(e => e.startsWith({ stranded: 'stranded', unsellable: 'unsellable', aged: 'aged' }[k])) && prev[k]) out[k] = prev[k];
   await saveCache('stuck_stock', out);
   return out;
+}
+// Amazon's storage-type words onto the catalog (by ASIN; the owner's own
+// call in storage_type still wins, see kindOf). Logged when a type changes.
+async function saveStorageTypes(rows) {
+  let n = 0;
+  for (const r of rows || []) {
+    const q = await pool.query('UPDATE inv_products SET storage_type_amz=$2 WHERE asin=$1 AND storage_type_amz IS DISTINCT FROM $2', [r.asin, String(r.raw).slice(0, 40)]);
+    n += q.rowCount;
+  }
+  if (n) console.log(`[Capacity] storage types from Amazon: ${n} changed.`);
 }
 let stuckJob = { running: false, step: '', done: false, error: null };
 app.post('/api/stuck/start', ownerAuth, (req, res) => {

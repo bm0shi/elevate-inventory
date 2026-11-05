@@ -30,3 +30,9 @@ test('tied up: units × cost, unknown costs counted apart; a BOM and missing col
   assert.deepStrictEqual(S.tiedUp([{ sku: 'A', units: 10 }, { sku: 'B', units: 3 }], 'units', { A: 9.5 }), { total: 95, unknownUnits: 3 });
   assert.deepStrictEqual(S.parseUnsellable('﻿sku\tasin\nSKU-A\tB001\n'), []);
 });
+
+test('storage type per SKU from the planning report; a report without the column gives nothing', () => {
+  const body = 'sku\tasin\tstorage-type\tavailable\nSKU1\tB0AAAAAAA1\tAerosol\t5\nSKU2\tB0AAAAAAA2\t\t3\nSKU3\tB0AAAAAAA3\tStandard-Size\t1\n';
+  assert.deepStrictEqual(S.parseStorageTypes(body), [{ sku: 'SKU1', asin: 'B0AAAAAAA1', raw: 'Aerosol' }, { sku: 'SKU3', asin: 'B0AAAAAAA3', raw: 'Standard-Size' }]);
+  assert.deepStrictEqual(S.parseStorageTypes('sku\tasin\tavailable\nSKU1\tB0AAAAAAA1\t5\n'), []);
+});
