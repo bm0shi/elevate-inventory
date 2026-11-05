@@ -128,38 +128,63 @@
   .oh2-alert .shr{display:contents}
   .oh2-alert .shr > div{border:0!important;background:none!important;padding:0!important;margin:0!important;color:inherit!important}
   .oh2-more{border-top:1px solid ${K.line2};padding-top:2px}
-  .oh2-sells{width:100%;border-collapse:separate;border-spacing:0;font-size:15px;margin:2px 0 6px;table-layout:fixed}
-  .oh2-sells th{font-size:12px;font-weight:750;color:${K.muted};text-align:center;padding:4px 4px 6px;line-height:1.2;text-transform:uppercase;letter-spacing:.3px}
-  .oh2-sells th:first-child{width:34%;text-align:left}
-  .oh2-sells td{padding:8px 4px;text-align:center;vertical-align:middle;font-weight:800;border-top:1px solid ${K.line2}}
-  .oh2-sells td:first-child{text-align:left;font-weight:600;overflow-wrap:anywhere}
-  .oh2-sells td.z{color:#a8b4be;font-weight:600}
-  .oh2-sells tr.duo td{background:#fff5f3}
-  .oh2-sells tr.duo td:first-child{border-left:4px solid #c0392b}
-  .oh2-sells tr.single td:first-child{border-left:4px solid ${K.brand}}
-  .oh2-sells tr.parts td{border-top:none;padding:0 8px 9px 12px;text-align:left;font-weight:600;font-size:13.5px;color:${K.ink2}}
-  .oh2-sells tr.tot td{border-top:2px solid ${K.line};font-weight:900;color:${K.ink}}
-  .oh2-pill{display:inline-block;font-size:11px;font-weight:900;letter-spacing:.6px;padding:2px 7px;border-radius:5px;margin-right:6px;vertical-align:1px}
-  .oh2-pill.duo{background:#c0392b;color:#fff}
-  .oh2-pill.single{background:#e3eef0;color:${K.brand}}
-  .oh2-sub{font-size:12px;color:${K.muted};margin-top:3px;font-weight:600}
-  .oh2-part{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #f1d4ce;border-radius:8px;padding:3px 9px;margin:2px 4px 2px 0;white-space:nowrap}
-  .oh2-part b.n{font-size:15px}
-  .oh2-part .ab{font-weight:900;color:#c0392b}
-  .oh2-build{display:inline-block;font-weight:900;border-radius:8px;padding:3px 10px;margin-left:2px;white-space:nowrap}
+  /* SELLS AS — one calm table: light header, one ink colour for numbers,
+     a three-line listing cell, duo parts as tiles (owner 11/5: "make it look
+     professional"). Classes are .sa-* so nothing else on the page restyles
+     them (the old ones shared .oh2-pill with the sync pill, and the page's
+     dark table header leaked in). */
+  .oh2 .sa{width:100%;border-collapse:separate;border-spacing:0;table-layout:fixed;margin:4px 0 8px;font-variant-numeric:tabular-nums}
+  .oh2 .sa th{background:transparent!important;color:${K.muted}!important;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;text-align:center;padding:6px 6px 8px;border:0;border-bottom:1px solid ${K.line};line-height:1.25;vertical-align:bottom}
+  .oh2 .sa th:first-child{width:38%;text-align:left;padding-left:14px}
+  .oh2 .sa td{padding:12px 6px;text-align:center;vertical-align:middle;font-size:15px;font-weight:650;color:${K.ink};border-bottom:1px solid ${K.line2};background:#fff}
+  .oh2 .sa td.z{color:#b4bec7;font-weight:500}
+  .oh2 .sa td.lst{text-align:left;padding-left:14px;border-left:3px solid transparent}
+  .oh2 .sa tr.g-duo td{background:#fffafa}
+  .oh2 .sa tr.g-duo td.lst,.oh2 .sa tr.g-duo td.pt{border-left-color:#e5484d}
+  .oh2 .sa tr.g-single td.lst{border-left-color:${K.brand}}
+  .oh2 .sa tr.top td{border-bottom:0}
+  .sa-kind{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.8px;padding:2px 7px;border-radius:4px;margin-bottom:5px}
+  .sa-kind.duo{background:#fdecea;color:#b42318}
+  .sa-kind.single{background:#eef2f5;color:${K.ink2}}
+  .sa-name{font-size:14.5px;font-weight:650;color:${K.ink};line-height:1.3}
+  .sa-name a,.sa-tn a{color:inherit!important;border-bottom:0!important}
+  .sa-name a:hover,.sa-tn a:hover{text-decoration:underline!important}
+  .sa-meta{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:5px;font-size:12px;color:${K.muted}}
+  .sa-meta b{font-weight:600;letter-spacing:.3px;margin-right:4px;font-size:10.5px;text-transform:uppercase}
+  .sa-meta .m{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:${K.ink2};cursor:pointer}
+  .sa-meta .e{color:${K.brand};cursor:pointer;font-weight:600}
+  .oh2 .sa td.pt{text-align:left;padding:0 14px 14px 14px;border-left:3px solid transparent}
+  .sa-ptl{font-size:10.5px;font-weight:800;letter-spacing:.8px;color:${K.muted};text-transform:uppercase;margin-bottom:6px}
+  .sa-parts{display:grid;grid-template-columns:1fr 1fr minmax(150px,auto);gap:8px;align-items:stretch}
+  .sa-tile{display:flex;align-items:center;gap:10px;background:#fff;border:1px solid ${K.line};border-radius:10px;padding:9px 12px;min-width:0}
+  .sa-ab{flex:none;width:22px;height:22px;border-radius:50%;background:#fdecea;color:#b42318;font-size:11.5px;font-weight:800;display:flex;align-items:center;justify-content:center}
+  .sa-tn{flex:1;min-width:0;font-size:13.5px;font-weight:600;color:${K.ink};line-height:1.3}
+  .sa-tn small{display:block;font-size:11.5px;font-weight:500;color:${K.muted}}
+  .sa-free{flex:none;text-align:right;line-height:1.1}
+  .sa-free b{display:block;font-size:19px;font-weight:750}
+  .sa-free span{font-size:10.5px;font-weight:700;letter-spacing:.6px;color:${K.muted};text-transform:uppercase}
+  .sa-res{border-radius:10px;padding:9px 14px;display:flex;flex-direction:column;justify-content:center;text-align:center}
+  .sa-res.ok{background:#ecf8f0;border:1px solid #bfe6cc;color:#18794e}
+  .sa-res.no{background:#fdf0ef;border:1px solid #f4cfcb;color:#b42318}
+  .sa-res span{font-size:10.5px;font-weight:800;letter-spacing:.8px;text-transform:uppercase}
+  .sa-res b{font-size:20px;font-weight:800;line-height:1.15}
+  .sa-res small{font-size:11.5px;font-weight:600}
+  .oh2 .sa tr.tot td{background:#f7f9fb;font-weight:750;border-bottom:0}
+  .oh2 .sa tr.tot td.lst{font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:${K.muted}}
   @media (max-width:640px){
-    .oh2-sells thead{display:none}
-    .oh2-sells,.oh2-sells tbody{display:block}
-    .oh2-sells tr{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid ${K.line2}}
-    .oh2-sells td{border-top:none;padding:6px 4px}
-    .oh2-sells td:first-child{grid-column:1/-1}
-    .oh2-sells td[data-l]::before{content:attr(data-l);display:block;font-size:10.5px;font-weight:750;color:${K.muted};text-transform:uppercase;letter-spacing:.3px;margin-bottom:1px}
-    .oh2-sells tr.duo td{border-left:0}.oh2-sells tr.duo{border-left:4px solid #c0392b;background:#fff5f3}
-    .oh2-sells tr.single td{border-left:0}.oh2-sells tr.single{border-left:4px solid ${K.brand}}
-    .oh2-sells tr.duo td:first-child,.oh2-sells tr.single td:first-child{border-left:0}
-    .oh2-sells tr.parts{display:block;border-top:none}
-    .oh2-part{white-space:normal}
-    .oh2-sells td:empty{display:none}
+    .oh2 .sa thead{display:none}
+    .oh2 .sa,.oh2 .sa tbody{display:block}
+    .oh2 .sa tr{display:grid;grid-template-columns:repeat(3,1fr)}
+    .oh2 .sa td{border-bottom:0;padding:8px 4px}
+    .oh2 .sa td.lst,.oh2 .sa td.pt{grid-column:1/-1}
+    .oh2 .sa td[data-l]::before{content:attr(data-l);display:block;font-size:10px;font-weight:700;color:${K.muted};text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
+    .oh2 .sa tr{border-left:3px solid transparent;border-bottom:1px solid ${K.line2}}
+    .oh2 .sa tr.g-duo{border-left-color:#e5484d;background:#fffafa}.oh2 .sa tr.g-single{border-left-color:${K.brand}}
+    .oh2 .sa td.lst,.oh2 .sa td.pt{border-left:0}
+    .oh2 .sa tr.top{border-bottom:0}
+    .oh2 .sa tr.pr{display:block}
+    .sa-parts{grid-template-columns:1fr}
+    .oh2 .sa td:empty{display:none}
   }
   .oh2-more summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:15px;font-weight:750;color:${K.ink2};padding:8px 2px}
   .oh2-more summary::-webkit-details-marker{display:none}
@@ -381,49 +406,53 @@
     const freeOf = a => { if (a === p.asin) return available; const x = byAsin(a); return Math.max(0, (x.onhand || 0) - (x.pending_prep || 0) - (x.prepped || 0)); };
     const N = window._soldNow; if (!N && typeof loadSoldNow === 'function') loadSoldNow();
     const named = (a, nm) => typeof amzLinkSized === 'function' ? amzLinkSized(a, nm || byAsin(a).name || a) : E(nm || a);
-    const num = (v, cls, l) => { const dl = l ? ' data-l="' + l + '"' : ''; return v == null ? '<td class="z"' + dl + '>—</td>' : '<td' + dl + (v === 0 ? ' class="z"' : '') + (cls ? ' style="' + cls + '"' : '') + '>' + n0(v) + '</td>'; };
+    const num = (v, l) => { const dl = l ? ' data-l="' + l + '"' : ''; return v == null ? '<td class="z"' + dl + '>—</td>' : '<td' + dl + (v === 0 ? ' class="z"' : '') + '>' + n0(v) + '</td>'; };
     const metrics = (r) => {
       const sold = N ? (N.sold && N.sold[r.asin]) || 0 : null;
       const s3 = typeof ss3p === 'function' ? ss3p(r.asin) : null;
       const R = typeof demandRate === 'function' ? demandRate(r.asin, r.sold) : { mo: 0 }, tot = r.at + r.way;
       const cover = R.mo > 0 ? tot / (R.mo / 30) : null;
       return '<td data-l="We sold 30d"' + (sold ? '' : ' class="z"') + ' title="' + E('Our own units sold, the last 30 days' + (r.sold != null ? ' · whole listing (all sellers, Keepa) ~' + n0(r.sold) + '/mo' : '')) + '">' + (sold == null ? '…' : n0(sold)) + '</td>' +
-        '<td data-l="3P avg / mo" style="color:#c0392b"' + (s3 ? ' title="' + E(s3.t) + '"' : '') + '>' + (s3 ? '~' + n0(s3.v) : '<span style="color:#a8b4be;font-weight:600">—</span>') + '</td>' +
-        num(r.at, 'color:#008296', 'At Amazon') + num(r.way, 'color:#2563a8', 'On the way') + num(tot, 'color:' + K.brand + ';font-weight:900', 'Total') +
+        '<td data-l="3P avg / mo"' + (s3 ? ' title="' + E(s3.t) + '"' : ' class="z"') + '>' + (s3 ? '~' + n0(s3.v) : '—') + '</td>' +
+        num(r.at, 'At Amazon') + num(r.way, 'On the way') + num(tot, 'Total') +
         '<td data-l="FBA cover"' + (R.note ? ' title="' + E(R.note) + '"' : '') + '>' + coverBadge(cover) + '</td>';
     };
+    const copy = (label, v, t) => v ? '<span><b>' + label + '</b><span class="m" onclick="copyText(\'' + q1(v) + '\',this)" title="' + t + '">' + E(v) + '</span></span>' : '';
     const parts = (duoAsin) => {
       const b = (typeof _bundles !== 'undefined' && _bundles || []).find(x => x.bundle_asin === duoAsin);
       let L = b ? b.components.map(c => ({ asin: c.asin, per: c.qty || 1, name: c.name })) : null;
       if (!L) L = [{ asin: p.asin, per: 1 }].concat((p.partners || []).filter(pt => pt.bundle_asin === duoAsin).map(pt => ({ asin: pt.asin, per: 1, name: pt.name })));
       // this bottle first, as part A
       L.sort((x, y) => (y.asin === p.asin) - (x.asin === p.asin));
-      const can = Math.min(...L.map(c => Math.floor(freeOf(c.asin) / (c.per || 1))));
-      const build = isFinite(can) ? Math.max(0, can) : 0;
-      return L.map((c, i) => { const f = freeOf(c.asin);
-        return '<span class="oh2-part"><span class="ab">' + 'AB'.charAt(i) + (L.length > 2 ? '' : '') + '</span>' + (c.asin === p.asin ? '<span>this bottle</span>' : named(c.asin, c.name)) +
-          (c.per > 1 ? ' <span style="color:' + K.muted + '">×' + c.per + '</span>' : '') +
-          ' <span style="white-space:nowrap"><b class="n" style="color:' + (f > 0 ? K.good : K.crit) + '">' + n0(f) + '</b> <span style="color:' + K.muted + '">free</span></span></span>'; }).join('<span style="font-weight:900;color:' + K.muted + '"> + </span>') +
-        '<span style="font-weight:900;color:' + K.muted + '"> = </span><span class="oh2-build" style="background:' + (build > 0 ? '#e7f6ec;color:' + K.good : '#fdeceb;color:' + K.crit) + '">' + (build > 0 ? 'can build ' + n0(build) + ' duo' + (build === 1 ? '' : 's') : 'can’t build any: a part is short') + '</span>';
+      const each = L.map(c => ({ c, f: freeOf(c.asin), can: Math.floor(freeOf(c.asin) / (c.per || 1)) }));
+      const build = each.length ? Math.max(0, Math.min(...each.map(x => x.can))) : 0;
+      const short = each.filter(x => x.can === build && build === 0).map((x, i) => 'ABCD'.charAt(each.indexOf(x)));
+      const tiles = each.map((x, i) => '<div class="sa-tile"><span class="sa-ab">' + 'ABCD'.charAt(i) + '</span>' +
+        '<div class="sa-tn">' + (x.c.asin === p.asin ? 'This bottle' : named(x.c.asin, x.c.name)) + '<small>' + (x.c.asin === p.asin ? 'the product on this card' : E(x.c.asin)) + (x.c.per > 1 ? ' · ×' + x.c.per + ' per duo' : '') + '</small></div>' +
+        '<div class="sa-free"><b style="color:' + (x.f > 0 ? '#18794e' : '#b42318') + '">' + n0(x.f) + '</b><span>free</span></div></div>').join('');
+      const res = build > 0
+        ? '<div class="sa-res ok"><span>Can build</span><b>' + n0(build) + '</b><small>duo' + (build === 1 ? '' : 's') + ' now</small></div>'
+        : '<div class="sa-res no"><span>Can’t build</span><b>0</b><small>part ' + short.join(' & ') + ' is short</small></div>';
+      return '<div class="sa-ptl">Built from</div><div class="sa-parts">' + tiles + res + '</div>';
     };
     const nDuo = rows.filter(r => r.label === 'Duo').length, nSingle = rows.length - nDuo;
     const body = rows.map(r => {
       const d = byAsin(r.asin);
-      if (r.label !== 'Duo') return '<tr class="single"><td><span class="oh2-pill single">SINGLE</span>this bottle' +
-        '<div class="oh2-sub"><span class="oh2-mono" onclick="copyText(\'' + q1(r.asin) + '\',this)" title="Copy ASIN">' + E(r.asin) + '</span></div></td>' + metrics(r) + '</tr>';
+      if (r.label !== 'Duo') return '<tr class="g-single"><td class="lst"><span class="sa-kind single">SINGLE</span>' +
+        '<div class="sa-name">This bottle on its own</div><div class="sa-meta">' + copy('ASIN', r.asin, 'Copy ASIN') + copy('FNSKU', p.fnsku, 'Copy FNSKU') + '</div></td>' + metrics(r) + '</tr>';
       const cq = typeof caseQtyOf === 'function' ? caseQtyOf(Object.assign({ is_bundle: true }, d)) : 6;
-      return '<tr class="duo"><td><span class="oh2-pill duo">DUO</span>' + named(r.asin, r.name || d.name) +
-        '<div class="oh2-sub"><span class="oh2-mono" onclick="copyText(\'' + q1(r.asin) + '\',this)" title="Copy duo ASIN">' + E(r.asin) + '</span>' +
-        (d.fnsku ? ' · <span class="oh2-mono" style="color:' + K.ink + '" onclick="copyText(\'' + q1(d.fnsku) + '\',this)" title="Copy duo FNSKU">' + E(d.fnsku) + '</span>' : '') +
-        ' · <span onclick="setCaseQty(\'' + q1(r.asin) + '\',true)" title="Tap to change duos per case" style="cursor:pointer;white-space:nowrap;color:' + K.brand + '">' + cq + ' / case ✎</span></div></td>' + metrics(r) + '</tr>' +
-        (p.is_bundle ? '' : '<tr class="duo parts"><td colspan="7">Made from ' + parts(r.asin) + '</td></tr>');
+      const withParts = !p.is_bundle;
+      return '<tr class="g-duo' + (withParts ? ' top' : '') + '"><td class="lst"><span class="sa-kind duo">DUO</span>' +
+        '<div class="sa-name">' + named(r.asin, r.name || d.name) + '</div><div class="sa-meta">' + copy('ASIN', r.asin, 'Copy duo ASIN') + copy('FNSKU', d.fnsku, 'Copy duo FNSKU') +
+        '<span><b>Case</b><span class="e" onclick="setCaseQty(\'' + q1(r.asin) + '\',true)" title="Tap to change duos per case">' + cq + ' duos ✎</span></span></div></td>' + metrics(r) + '</tr>' +
+        (withParts ? '<tr class="g-duo pr"><td class="pt" colspan="7">' + parts(r.asin) + '</td></tr>' : '');
     }).join('');
     const tAt = rows.reduce((n, r) => n + r.at * r.per, 0), tWay = rows.reduce((n, r) => n + r.way * r.per, 0);
-    const foot = rows.length > 1 ? '<tr class="tot"><td>All listings, in bottles</td><td></td><td></td>' + num(tAt, '', 'At Amazon') + num(tWay, '', 'On the way') + num(tAt + tWay, '', 'Total') + '<td></td></tr>' : '';
+    const foot = rows.length > 1 ? '<tr class="tot"><td class="lst">All listings · in bottles</td><td></td><td></td>' + num(tAt, 'At Amazon') + num(tWay, 'On the way') + num(tAt + tWay, 'Total') + '<td></td></tr>' : '';
     return '<details class="oh2-more" open data-k="sells-' + E(p.asin) + '"><summary>Sells as <span class="cnt">· ' +
       [nSingle ? nSingle + ' single' : '', nDuo ? nDuo + ' duo' + (nDuo === 1 ? '' : 's') : ''].filter(Boolean).join(' + ') + '</span>' +
-      (p.fba_as_of ? '<a href="#" onclick="event.preventDefault();amazonCheck(\'' + q1(p.asin) + '\')" style="margin-left:auto;font-size:12.5px;font-weight:700;color:#2563a8">🔍 Check with Amazon</a>' : '') + '</summary>' +
-      '<table class="oh2-sells"><thead><tr><th>Listing</th><th title="Our own units sold, the last 30 days">We sold 30d</th><th title="What one third-party seller sells a month, all of them on the listing">3P avg / mo</th><th>At Amazon</th><th>On the way</th><th title="At Amazon + on the way">Total</th><th title="Days at Amazon + on the way lasts at the best-estimate sales rate">FBA cover</th></tr></thead><tbody>' +
+      (p.fba_as_of ? '<a href="#" onclick="event.preventDefault();amazonCheck(\'' + q1(p.asin) + '\')" style="margin-left:auto;font-size:12.5px;font-weight:700;color:#2563a8">Check with Amazon</a>' : '') + '</summary>' +
+      '<table class="sa"><thead><tr><th>Listing</th><th title="Our own units sold, the last 30 days">Sold<br>30d</th><th title="What one third-party seller sells a month, all of them on the listing">3P avg<br>/ mo</th><th>At<br>Amazon</th><th>On the<br>way</th><th title="At Amazon + on the way">Total</th><th title="Days at Amazon + on the way lasts at the best-estimate sales rate">FBA<br>cover</th></tr></thead><tbody>' +
       body + foot + '</tbody></table></details>';
   }
   function card(p, i) {
