@@ -11540,6 +11540,19 @@ function duoBuildInfo(b){
   });
   return { comps, buildable: comps.length ? Math.min(...comps.map(c=>c.can)) : 0 };
 }
+// Duo items vs Duos I can build (owner 11/5: "Duo items shows a few items,
+// Duos I can build shows only one — not matching"). They answer different
+// questions: Duo items = every BOTTLE that goes into a duo, stock or not;
+// Duos I can build = every DUO with both bottles free on the shelf now. This
+// line on Duo items says so, with the same count Duos I can build shows.
+function duoItemsNote(nBottles){
+  if(!_bundles){ api('/api/bundles').then(d=>{ _bundles=Array.isArray(d)?d:[]; renderOnhand(); }).catch(()=>{}); return ''; }
+  const info=_bundles.map(duoBuildInfo), ready=info.filter(x=>x.buildable>0).length;
+  return '<div class="box" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;background:#fff5f3;border:1px solid #f1d4ce">'
+    +'<div style="flex:1;min-width:240px;font-size:14px;line-height:1.45">🧴 <b>Duo items</b> = the <b>'+nBottles+'</b> bottle'+(nBottles===1?'':'s')+' that go into your <b>'+_bundles.length+'</b> duo'+(_bundles.length===1?'':'s')+', whatever their stock.'
+    +'<br><b style="color:'+(ready?'#1e8449':'#c0392b')+'">'+ready+' of the '+_bundles.length+' duo'+(_bundles.length===1?'':'s')+'</b> can be built right now: that needs <b>both</b> bottles free on the shelf (not already in Pending Prep or Prepped).</div>'
+    +'<button class="action" onclick="document.getElementById(\'filterOnhand\').value=\'duobuildable\';renderOnhand()" style="padding:9px 14px;font-size:14px;background:#c0392b">See Duos I can build →</button></div>';
+}
 function renderDuoBuilder(body, q){
   if(!_bundles){
     body.innerHTML='<div class="hint" style="padding:20px;text-align:center">Loading duos…</div>';
@@ -11619,7 +11632,7 @@ function renderDuoBuilder(body, q){
   };
   window._duoRows=ready.concat(notReady);
   const grid=h=>'<div class="pcards'+(big?' bigcards':'')+'">'+h+'</div>';
-  body.innerHTML='<div class="hint" style="margin-bottom:10px"><b>'+ready.length+'</b> duo'+(ready.length===1?'':'s')+' can be built from free stock ('+ready.reduce((n,r)=>n+r.buildable,0)+' total). '
+  body.innerHTML='<div class="hint" style="margin-bottom:10px"><b>'+ready.length+' of your '+rows.length+'</b> duo'+(rows.length===1?'':'s')+' can be built from free stock ('+ready.reduce((n,r)=>n+r.buildable,0)+' duos in all); the other '+notReady.length+' '+(notReady.length===1?'has':'have')+' a bottle short (listed under "Can\'t build yet", with the bottle that\'s short). '
     +'Tap <b>Prep</b> to add it to Pending Prep — its bottles stop counting as available right away. ▸ marks the bottle that runs out first.</div>'
     + (ready.length ? grid(ready.map((r,i)=>card(r,i)).join('')) : '<div class="box hint" style="text-align:center">No duo can be built from free stock right now.</div>')
     + (notReady.length ? '<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:700;color:#5a6472">Can\'t build yet ('+notReady.length+')</summary><div style="margin-top:8px">'+grid(notReady.map((r,i)=>card(r,ready.length+i)).join(''))+'</div></details>' : '');
@@ -11864,8 +11877,9 @@ function renderOnhand(){
       +'<button class="action" onclick="ssPickClear()" style="background:#c0392b">✕ Clear all selections</button></div>'
       +(list.length?'':'<div class="box hint">Nothing selected yet. Tick products in the yellow On hand column on Admin → Smart Scout Orders.</div>')
     : '';
-  if(oh2On()){ OH2.render(body, list, {filter:stockFilter, q, pickBar}); return; }
-  body.innerHTML = pickBar+'<div class="pcards'+(viewBig('onhand')?' bigcards':'')+'">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
+  const topBar = pickBar + (stockFilter==='duoonly' ? duoItemsNote(list.length) : '');
+  if(oh2On()){ OH2.render(body, list, {filter:stockFilter, q, pickBar:topBar}); return; }
+  body.innerHTML = topBar+'<div class="pcards'+(viewBig('onhand')?' bigcards':'')+'">'+list.map(p=>{ const o=oh(p), t=tr(p); const prep=p.prepped||0;
     const img=p.image?`<img src="${esc(p.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
     const nameLink=p.asin?`<a href="https://www.amazon.com/dp/${p.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(p.name)}</a>`:p.name;
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
