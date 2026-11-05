@@ -32,11 +32,12 @@
   const CSS = `
   .oh2{color:${K.ink}}
   /* READABILITY PASS (owner 11/5: "max readability and still keep our important info") */
-  .oh2-ids{display:flex;flex-wrap:wrap;gap:3px 16px;margin-top:8px;font-size:12.5px;color:${K.muted}}
-  .oh2-ids span{cursor:pointer;white-space:nowrap}
-  .oh2-ids b{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-right:5px}
-  .oh2-ids i{font-style:normal;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:${K.ink2};font-weight:600}
-  .oh2-ids span:hover i{color:${K.brand};text-decoration:underline}
+  .oh2-ids{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .oh2-ids span{display:inline-flex;align-items:center;gap:6px;cursor:pointer;white-space:nowrap;background:#f3f6f8;border:1px solid ${K.line};border-radius:7px;padding:3px 9px;font-size:12.5px;line-height:1.3}
+  .oh2-ids span:hover{border-color:#c6d4dc;background:#fff}
+  .oh2-ids b{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:${K.muted}}
+  .oh2-ids i{font-style:normal;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:${K.ink};font-weight:650;letter-spacing:.2px}
+  .oh2-ids span:hover i{color:${K.brand}}
   .st-chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:750;border-radius:999px;padding:4px 10px;white-space:nowrap;line-height:1.2}
   .st-chip i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
   .st-chip.good{background:#ecf8f0;color:#18794e}.st-chip.warn{background:#fff4dc;color:#a15c07}.st-chip.crit{background:#fdecea;color:#b42318}
