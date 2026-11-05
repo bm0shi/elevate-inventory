@@ -1719,14 +1719,15 @@ function nsPlan(id){
       // ready = Finished on the floor and not sent yet; a plan with several
       // shipments sends each as it's ready, the others follow later.
       const ready=SH.filter(x=>x.floor&&x.floor.finished&&!x.boxesSentAt&&!x.booked), allDone=ready.length>0;
-      h+='<div class="box"><b style="font-size:16px">On the floor</b><div class="hint">Build and label the boxes in Shipment Production like any shipment (pick the product, units per box, number of boxes, print). Press Finish there when it\'s all built, then send the box info here.'+(SH.length>1?' Each shipment goes on its own: send the finished one now, the rest when they\'re built.':'')+'</div>'
+      const unbuilt=SH.filter(x=>!(x.floor&&x.floor.finished)&&!x.boxesSentAt&&!x.booked);
+      h+='<div class="box"><b style="font-size:16px">On the floor</b><div class="hint">Build and label the boxes in Shipment Production like any shipment (pick the product, units per box, number of boxes, print). Press Finish there when it\'s all built, then send the box info here.'+(SH.length>1?' Amazon takes the box info for every shipment of a plan at once: a shipment still being built can go as an estimate (what\'s built + full cases for the rest), and the floor then builds exactly that.':'')+'</div>'
         +SH.map(x=>{ const f=x.floor||{}, ok=f.finished||x.booked||x.boxesSentAt;
           return '<div style="margin-top:12px;padding:12px;border:2px solid '+(ok?'#1e8449':'#e2e8f0')+';border-radius:10px;background:'+(ok?'#f0faf4':'#fff')+'"><div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap"><div><b style="font-family:monospace;font-size:18px">'+esc(x.fba)+'</b> <span class="hint">→ '+nsWhere(x)+' · '+(f.boxes||0)+' boxes built</span> '
             +(x.booked?'<b style="color:#1e8449">✅ Freight booked'+(x.booked.carrier?' · '+esc(x.booked.carrier):'')+'</b>':x.boxesSentAt?'<b style="color:#1e8449">✅ Box info sent</b>':f.missing?'<b style="color:#c0392b">deleted from Shipment Production</b>':f.finished?'<b style="color:#1e8449">✅ Finished — ready to send</b>':'<b style="color:#b45309">building…</b>')+'</div>'+openBtn(x.fba)+'</div>'
             +(f.rows&&f.rows.length?'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0"><tr>'+prodTh('SKU','left')+prodTh('AMAZON EXPECTS')+prodTh('BUILT')+prodTh('LEFT')+'</tr>'
               +f.rows.map(r=>{ const left=r.planned-r.boxed; return '<tr style="background:'+(left===0?'#eefaf1':'#fdf2f2')+'">'+prodTd(esc(r.msku),'left','font-family:monospace')+prodTd('<b>'+r.planned+'</b>')+prodTd('<b>'+r.boxed+'</b>')+prodTd('<b style="color:'+(left===0?'#1e8449':'#c0392b')+'">'+(left===0?'✓':left)+'</b>')+'</tr>'; }).join('')+'</table>':'')+'</div>'; }).join('')
-        +'<button id="nsSendBoxesBtn" class="action'+(allDone&&p.status==='building'?' gold':'')+'" onclick="nsSendBoxes('+p.id+')"'+(allDone&&p.status==='building'?'':' disabled')+' style="width:100%;margin-top:14px;font-size:20px;padding:17px;background:#008296">📦 NEXT: Send box info to Amazon'+(SH.length>1&&ready.length?' for '+ready.map(x=>esc(x.fba)).join(' + '):'')+' →</button>'
-        +(allDone&&p.status==='building'?'<div class="hint" style="margin-top:6px;text-align:center">Tells Amazon what\'s in each box. Then this page asks Amazon for freight quotes from your pallets. Nothing is charged until you book the freight.'+(ready.length<SH.filter(x=>!x.booked).length?' The shipment'+(SH.filter(x=>!x.booked).length-ready.length===1?'':'s')+' still being built can follow later.':'')+'</div>':'')
+        +'<button id="nsSendBoxesBtn" class="action'+(allDone&&p.status==='building'?' gold':'')+'" onclick="nsSendBoxes('+p.id+')"'+(allDone&&p.status==='building'?'':' disabled')+' style="width:100%;margin-top:14px;font-size:20px;padding:17px;background:#008296">📦 NEXT: Send box info to Amazon'+(unbuilt.length&&ready.length?' — '+unbuilt.map(x=>esc(x.fba)).join(' + ')+' as an estimate':'')+' →</button>'
+        +(allDone&&p.status==='building'?'<div class="hint" style="margin-top:6px;text-align:center">Tells Amazon what\'s in each box. Then this page asks Amazon for freight quotes from your pallets. Nothing is charged until you book the freight.'+(unbuilt.length?' Amazon needs every shipment\'s box info at once, so the one still being built goes as an estimate from its case sizes — you\'ll see exactly what before it\'s sent.':'')+'</div>':'')
         +(allDone?'':'<div class="hint" style="margin-top:6px">Unlocks once a shipment above is Finished in Shipment Production.</div>')+'</div>';
     }
     // Amazon's box numbers vs the labels already on the boxes
@@ -1742,14 +1743,16 @@ function nsPlan(id){
       const today=new Date(Date.now()-7*3600000).toISOString().slice(0,10);
       const ready=(p.freight&&p.freight.readyDate&&p.freight.readyDate>=today)?p.freight.readyDate:today;
       h+='<div class="box"><b style="font-size:16px">Pallets for the freight quote</b><div class="hint">From the pallets in Shipment Production (same weights and heights as the floor screen). Change them if you weighed or measured differently; the quote uses these.</div>'
-        +SHf.map(sh=>'<div style="margin-top:12px;padding:12px;border:1px solid #e2e8f0;border-radius:10px"><b style="font-size:15px">'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b> <span class="hint">'+(sh.boxes||0)+' boxes · '+(sh.units||0).toLocaleString()+' units</span>'
+        +SHf.map(sh=>'<div style="margin-top:12px;padding:12px;border:1px solid #e2e8f0;border-radius:10px"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:flex-end"><div><b style="font-size:15px">'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b> <span class="hint">'+(sh.boxes||0)+' boxes · '+(sh.units||0).toLocaleString()+' units</span>'
+          +(sh.estimated?'<div style="margin-top:4px;font-size:13px;font-weight:800;color:#b45309">⚠ Sent as an estimate: '+sh.estimated.built+' built + '+sh.estimated.planned+' still to build. Its pallets below are estimated too — set its ready day for when it will be built.</div>':'')+'</div>'
+          +(SHf.length>1?'<label style="font-size:11px;font-weight:900;color:#5a6472">READY FOR PICKUP ON<input class="nsReadySh" data-sid="'+esc(sh.shipmentId)+'" type="date" min="'+today+'" value="'+esc(((p.freight||{}).readyDates||{})[sh.shipmentId]||(sh.estimated?new Date(Date.now()+6*86400000-7*3600000).toISOString().slice(0,10):ready))+'" style="display:block;margin-top:3px;padding:7px;font-size:16px;font-weight:800"></label>':'')+'</div>'
           +'<table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0"><tr>'+prodTh('PALLET')+prodTh('BOXES')+prodTh('WEIGHT (LB)')+prodTh('HEIGHT (IN)')+prodTh('')+'</tr>'
           +(P.pal[sh.shipmentId]||[]).map((x,k)=>'<tr>'+prodTd('#'+(k+1))+prodTd(x.boxes||'—')
             +prodTd('<input type="number" value="'+x.weight+'" oninput="_nsPal.pal[\''+sh.shipmentId+'\']['+k+'].weight=+this.value" style="width:90px;text-align:center;padding:6px;font-weight:800">')
             +prodTd('<input type="number" value="'+x.height+'" oninput="_nsPal.pal[\''+sh.shipmentId+'\']['+k+'].height=+this.value" style="width:80px;text-align:center;padding:6px;font-weight:800">')
             +prodTd((P.pal[sh.shipmentId].length>1?'<button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].splice('+k+',1);nsPlan('+p.id+')" style="cursor:pointer;border:1px solid #cfd8e3;background:#fff;color:#8a97a6;border-radius:6px;width:28px;height:28px">✕</button>':''))+'</tr>').join('')
           +'</table><button onclick="_nsPal.pal[\''+sh.shipmentId+'\'].push({weight:500,height:40});nsPlan('+p.id+')" style="margin-top:6px;cursor:pointer;border:1px solid #008296;color:#008296;background:#fff;border-radius:6px;padding:4px 10px;font-weight:800">+ Add pallet</button></div>').join('')
-        +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:13px;font-weight:900;color:#0f1111;padding:10px 12px;border:3px solid #ff9900;border-radius:10px;background:#fff8ec">🚚 FREIGHT READY FOR PICKUP ON<input id="nsReady" type="date" min="'+today+'" value="'+ready+'" style="display:block;margin-top:4px;padding:8px;font-size:18px;font-weight:800"><span style="display:block;font-size:11px;font-weight:700;color:#5f6675;margin-top:3px">Carriers pick up this day or after</span></label>'
+        +'<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;margin-top:12px"><label style="font-size:13px;font-weight:900;color:#0f1111;padding:10px 12px;border:3px solid #ff9900;border-radius:10px;background:#fff8ec'+(SHf.length>1?';opacity:.55':'')+'">🚚 FREIGHT READY FOR PICKUP ON<input id="nsReady" type="date" min="'+today+'" value="'+ready+'" style="display:block;margin-top:4px;padding:8px;font-size:18px;font-weight:800"><span style="display:block;font-size:11px;font-weight:700;color:#5f6675;margin-top:3px">'+(SHf.length>1?'Each shipment above has its own day; this one is only the fallback':'Carriers pick up this day or after')+'</span></label>'
         +'<label style="font-size:14px;font-weight:700;display:flex;gap:6px;align-items:center;text-transform:none;letter-spacing:0"><input id="nsStack" type="checkbox"'+(p.freight&&p.freight.stackable?' checked':'')+' style="width:20px;height:20px"> Pallets can be stacked</label>'
         +'<span style="font-size:14px;font-weight:700;color:#5f6675;align-self:center">Freight class 70</span>'
         +'<button class="action" onclick="nsQuote('+p.id+')" style="background:#008296;font-size:16px;padding:12px 20px">'+(p.freight?'↻ Get new quotes':'Get freight quotes →')+'</button></div></div>';
@@ -1793,7 +1796,7 @@ function nsPlan(id){
     }
     if(SHb.length&&p.confirmed&&(p.confirmed.liftgate!=null?p.confirmed.liftgate:(p.ship_from||{}).liftgate!==false)) h+=nsLiftgateBox(p.id, p.confirmed.liftgateOkAt, (p.confirmed.carriers||[]));
     if(SHb.length&&p.confirmed) h+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4"><b style="font-size:18px;color:#1e8449">✅ Freight booked with Amazon'+(SHb.length<SH.length?' — '+SHb.length+' of '+SH.length+' shipments':'')+'</b>'
-      +(SHb.length<SH.length?'<div class="hint" style="margin-top:2px">'+SH.filter(x=>!x.booked).map(x=>esc(x.fba)+' → '+nsWhere(x)).join(', ')+' still to build and send; it books on its own.</div>':'')
+      +(SHb.length<SH.length?'<div class="hint" style="margin-top:2px">'+SH.filter(x=>!x.booked).map(x=>esc(x.fba)+' → '+nsWhere(x)).join(', ')+' not booked yet.</div>':'')
       +SHb.map(x=>'<div style="margin-top:6px;font-size:15px"><b style="font-family:monospace">'+esc(x.fba)+'</b> → '+nsWhere(x)+' · '+esc(x.booked.carrier||'carrier')+(x.booked.pickup?' · 🚚 pickup '+nsPickup(x.booked.pickup):'')+' · <b>'+$$(x.booked.cost)+'</b></div>').join('')
       +(p.confirmed.pickup?'<div style="margin-top:6px;font-size:18px;font-weight:900">🚚 Pickup '+nsPickup(p.confirmed.pickup)+'</div>':'')
       +'<div style="margin-top:6px;font-size:15px">Freight charged: <b>'+$$(p.confirmed.freight)+'</b> · placement fee (confirmed with the destination): <b>'+$$(p.confirmed.placementFee)+'</b></div>'
@@ -1858,12 +1861,21 @@ function nsPlace(id, optId, fee, where){
 const nsPlaces=o=>(o.places&&o.places.length?o.places:(o.destinations||[]).map(fc=>({fc,city:'',state:''})));
 const nsWhere=sh=>esc(sh.fc||sh.shipmentId)+(sh.city?' ('+esc(sh.city)+', '+esc(sh.state)+')':'');
 function nsGuess(id){ ownerApi('/api/inbound/plans/'+id+'/guess',{method:'POST',body:'{}'}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); }); }
-function nsSendBoxes(id, force){
-  if(!force&&!confirm('Send the built boxes (contents, size, weight) to Amazon?')) return;
+function nsSendBoxes(id, force, estimate){
+  if(!force&&!estimate&&!confirm('Send the built boxes (contents, size, weight) to Amazon?')) return;
   window._nsPal=null; window._nsSel=null;
-  ownerApi('/api/inbound/plans/'+id+'/boxes',{method:'POST',body:JSON.stringify({force:!!force})}).then(d=>{
+  ownerApi('/api/inbound/plans/'+id+'/boxes',{method:'POST',body:JSON.stringify({force:!!force, estimate:!!estimate})}).then(d=>{
     if(d&&d.error==='built_differs'){
-      if(confirm('What was built doesn\'t match Amazon\'s shipment:\n\n'+d.diffs.join('\n')+'\n\nSend the boxes as built anyway? Amazon may adjust the shipment quantities.')) return nsSendBoxes(id, true);
+      if(confirm('What was built doesn\'t match Amazon\'s shipment:\n\n'+d.diffs.join('\n')+'\n\nSend the boxes as built anyway? Amazon may adjust the shipment quantities.')) return nsSendBoxes(id, true, estimate);
+      nsPlan(id); return;
+    }
+    // A shipment still being built (owner 11/5): Amazon wants every shipment's
+    // box info in one call, so it goes as an estimate — shown first, in full.
+    if(d&&d.error==='needs_estimate'){
+      const W=d.waiting||[], bad=W.filter(w=>w.problems&&w.problems.length);
+      if(bad.length){ alert('Can\'t estimate yet:\n\n'+bad.map(w=>w.fba+':\n• '+w.problems.join('\n• ')).join('\n\n')); nsPlan(id); return; }
+      const txt=W.map(w=>w.fba+' → '+(w.fc||'')+': '+w.boxes+' boxes in total = '+w.built+' built so far + '+w.planned+' still to build as full cases:\n'+w.lines.map(l=>'   '+l.msku+': '+l.units+' units → '+l.boxes+' box'+(l.boxes===1?'':'es')+' of '+l.perBox).join('\n')).join('\n\n');
+      if(confirm('Amazon needs the box info for every shipment of this plan at once.\n\nThis would be sent for the shipment still being built:\n\n'+txt+'\n\nThe floor must then build exactly that (Shipment Production shows the count). Freight for it is quoted on estimated pallets and booked together with the rest; it can\'t be changed at Amazon afterwards.\n\nSend it this way?')) return nsSendBoxes(id, force, true);
       nsPlan(id); return;
     }
     if(!d||d.ok===false) toast((d&&d.error)||'Not sent',true); nsPlan(id);
@@ -1871,8 +1883,9 @@ function nsSendBoxes(id, force){
 }
 function nsQuote(id){
   const readyDate=(document.getElementById('nsReady')||{}).value, stackable=!!(document.getElementById('nsStack')||{}).checked;
+  const readyDates={}; document.querySelectorAll('.nsReadySh').forEach(x=>{ if(x.value) readyDates[x.dataset.sid]=x.value; });
   window._nsSel=null;
-  ownerApi('/api/inbound/plans/'+id+'/quote',{method:'POST',body:JSON.stringify({readyDate, stackable, pallets:(window._nsPal||{}).pal})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); });
+  ownerApi('/api/inbound/plans/'+id+'/quote',{method:'POST',body:JSON.stringify({readyDate, readyDates, stackable, pallets:(window._nsPal||{}).pal})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'error',true); nsPlan(id); });
 }
 // The purchase: typed amount must match what's shown; the server checks it
 // against the quotes on file again.
@@ -2063,6 +2076,11 @@ function prodRender(){
   // send the box info, get freight quotes, book and print the BOL.
   const planRow=sh.amz&&sh.amz.planRow;
   let next='';
+  // Box info went to Amazon as an estimate while this was still being built
+  // (owner 11/5): the floor has to end at that many boxes.
+  if(v.boxesExpected){ const built=v.boxes.filter(b=>b.status==='closed'&&b.items.length).length;
+    next+='<div class="box" style="border:3px solid '+(done&&built!==v.boxesExpected?'#c0392b':'#b45309')+';background:#fff8ec;text-align:center;padding:14px"><div style="font-family:Montserrat,sans-serif;font-size:20px;font-weight:900;color:'+(done&&built!==v.boxesExpected?'#c0392b':'#b45309')+'">📦 AMAZON WAS TOLD '+v.boxesExpected+' BOXES'+(done?' — '+built+' BUILT'+(built===v.boxesExpected?' ✓':' ⚠ DIFFERENT'):' — '+built+' BUILT SO FAR')+'</div>'
+      +'<div style="font-size:14px;margin-top:4px">'+(done?(built===v.boxesExpected?'Matches what Amazon expects.':'Amazon expects '+v.boxesExpected+' boxes on this shipment; it can\'t be changed now. Check the pallets before the pickup and tell Amazon in Seller Central if a box is missing.'):'This shipment\'s box info was sent to Amazon as an estimate (full cases). Build the rest as full cases so it ends at '+v.boxesExpected+' boxes.')+'</div></div>'; }
   if(done&&planRow&&v.planStage==='booked'&&v.liftgate&&!v.liftgate.ok) next=nsLiftgateBox(planRow, null, [{carrier:v.liftgate.carrier, fba:sh.shipment_id}], true);
   if(done&&planRow&&v.planStage==='booked') next+='<div class="box" style="border:3px solid #1e8449;background:#f0faf4;text-align:center;padding:22px">'
     +'<div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#0f1111">✅ FREIGHT BOOKED — LAST STEP</div>'
