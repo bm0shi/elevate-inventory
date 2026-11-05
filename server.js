@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'sells-as-1141';
+const BUILD_ID = 'send-back-1142';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -9895,6 +9895,28 @@ app.post('/api/pending-prep/complete', auth, async (req, res) => {
 });
 
 // Adjust / remove a pending prep request
+// Send jobs back to On Hand (owner 11/5: "in case I screw up — easier than
+// editing 10 SKUs: one click to select each, then send back"). A Pending
+// Prep job only sets bottles aside, so removing it moves no stock: they're
+// Available on On Hand again. One transaction; each removal is noted in
+// Activity (qty 0, so the stock audit doesn't count it), and anyone still on
+// a removed job is signed off it. Safe to send twice: a job already gone is
+// simply not there.
+app.post('/api/pending-prep/remove', auth, async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body && req.body.ids) ? req.body.ids : []).map(n => parseInt(n, 10)).filter(n => n > 0))].slice(0, 500);
+  if (!ids.length) return res.status(400).json({ ok: false, error: 'Nothing selected.' });
+  const rows = await withTx(async (db) => {
+    const r = await db.query(`DELETE FROM inv_pending_prep WHERE id = ANY($1::int[])
+        RETURNING id, asin, qty, is_duo, prelabel, staged, claimed_by`, [ids]);
+    if (!r.rows.length) return [];
+    await db.query('UPDATE inv_prep_crew SET left_at=now() WHERE job_id = ANY($1::int[]) AND left_at IS NULL', [r.rows.map(x => x.id)]);
+    const names = {}; for (const p of (await db.query('SELECT asin, name FROM inv_products WHERE asin = ANY($1)', [r.rows.map(x => x.asin)])).rows) names[p.asin] = p.name;
+    for (const j of r.rows) await db.query('INSERT INTO inv_activity(direction,asin,name,qty,note) VALUES($1,$2,$3,$4,$5)',
+      ['note', j.asin, names[j.asin] || '', 0, `Pending Prep: ${j.qty} ${j.is_duo ? 'duo' + (j.qty === 1 ? '' : 's') : 'unit' + (j.qty === 1 ? '' : 's')} sent back to On Hand${j.prelabel ? ' (prelabeling job)' : ''}${j.claimed_by ? ' — it was being prepped by ' + j.claimed_by : ''}`]);
+    return r.rows;
+  });
+  res.json({ ok: true, removed: rows.length, units: rows.reduce((n, j) => n + j.qty, 0), jobs: rows });
+});
 app.post('/api/pending-prep/set', auth, async (req, res) => {
   const { id, qty } = req.body;
   const q = parseInt(qty) || 0;
