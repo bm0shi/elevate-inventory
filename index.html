@@ -1392,6 +1392,7 @@ function nsPlansBox(){
 function nsOpen(then){
   nsOwner().then(ok=>{ if(!ok) return;
     _ns={items:[], name:'', prep:'NONE'};
+    loadCapacity().then(()=>{ if(_ns&&document.getElementById('nsGo')) nsRender(); });
     api('/api/sku-check').then(d=>{ if(d&&d.ok&&_ns){ _ns.skuWarn={}; d.rows.filter(r=>r.risky).forEach(r=>{ _ns.skuWarn[r.asin]=r; }); if(document.getElementById('nsGo')) nsRender(); } }).catch(()=>{});
     ownerApi('/api/inbound/setup').then(d=>{ _ns.setup=d||{}; nsRender(); if(then) then(); }).catch(e=>toast('Could not load: '+e.message,true));
   });
@@ -1428,16 +1429,61 @@ function nsRender(){
     +'<div style="margin-top:14px;display:flex;justify-content:flex-end"><button class="action" onclick="nsFromTicked(this)" style="background:#008296" title="Adds everything ticked on Pending Prep and on Prepped &amp; Ready; the same product on both is added together. No stock changes until Finish in Shipment Production.">☑ Add ticked items (Pending Prep + Prepped &amp; Ready)</button></div>'
     +'<div style="margin-top:10px;position:relative"><input id="nsSearch" placeholder="Scan or search a product (name, ASIN, SKU, FNSKU) to add it" autocomplete="off" oninput="nsSearch(this.value)" onkeydown="if(event.key===\'Enter\'){event.preventDefault();nsAdd(this.value);}" style="width:100%;box-sizing:border-box;font-size:17px;padding:12px"><div id="nsResults"></div></div>';
   if(rows.length){
-    h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
+    h+='<table style="width:100%;border-collapse:collapse;margin-top:12px;box-shadow:none;border-radius:0"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('STORAGE')+prodTh('EXPIRATION')+prodTh('')+'</tr>'
       +rows.map((r,i)=>'<tr>'+prodTd('<b>'+esc(String(r.name||r.asin).slice(0,70))+'</b><div class="hint" style="font-family:monospace">'+esc(r.fnsku||'')+' · '+(r.sku&&_ns.skuWarn&&_ns.skuWarn[r.asin]?'<b style="color:#b45309">'+esc(r.sku)+'</b> <span style="color:#b45309;font-weight:800">⚠ Check the SKU — Amazon has '+_ns.skuWarn[r.asin].amazon.length+' for this ASIN and '+(_ns.skuWarn[r.asin].appListed?'another one holds more stock':'doesn\'t list this one')+': '+_ns.skuWarn[r.asin].amazon.map(x=>x.sku===r.sku?esc(x.sku)+' (using)':'<a href="#" onclick="skuUse(\''+esc(r.asin)+'\',\''+esc(x.sku).replace(/\x27/g,'')+'\',()=>{ _ns.items['+i+'].sku=\''+esc(x.sku).replace(/\x27/g,'')+'\'; api(\'/api/sku-check\').then(d=>{ _ns.skuWarn={}; (d.rows||[]).filter(q=>q.risky).forEach(q=>{ _ns.skuWarn[q.asin]=q; }); nsRender(); }); });return false" title="Ship under this SKU instead">'+esc(x.sku)+' ('+x.total+' at Amazon)</a>').join(' · ')+'</span>':r.sku?esc(r.sku):'<a href="#" onclick="setSku(\''+esc(r.asin)+'\',sku=>{ _ns.items['+i+'].sku=sku; nsRender(); });return false" style="color:#c0392b;font-weight:800" title="Amazon\'s inventory doesn\'t list a SKU for it — tap to type it (the app also looks it up when you create the plan)">no SKU — tap to add</a>')+'</div>','left')
           +prodTd('<input type="number" min="1" value="'+(r.qty||'')+'" oninput="_ns.items['+i+'].qty=this.value;nsTotals()" style="width:100px;text-align:center;font-size:17px;font-weight:800;padding:6px">')
+          +prodTd(nsKindChip(r.asin))
           +prodTd('<input placeholder="MM/DD/YYYY" value="'+esc(r.exp||'')+'" oninput="_ns.items['+i+'].exp=this.value;this.style.borderColor=this.value?\'\':\'#c0392b\'" style="width:110px;text-align:center;padding:6px;'+(r.needsExp&&!r.exp?'border:2px solid #c0392b':'')+'">'+(r.needsExp?'<div class="hint" style="font-size:11px;color:#c0392b;font-weight:800">Amazon requires it</div>':''))
           +prodTd('<button onclick="_ns.items.splice('+i+',1);nsRender()" style="cursor:pointer;border:1px solid #d5d9d9;background:#fff;color:#8a8f9a;border-radius:999px;width:32px;height:32px;font-weight:900">✕</button>')+'</tr>').join('')
       +'</table><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px"><div id="nsTot" style="font-size:16px;font-weight:800"></div>'
       +'<button class="action" onclick="nsFillExp()" style="background:#b45309;font-size:14px;padding:10px 14px" title="Fills every BLANK expiration with a random date 30–36 months from today (a different one per line). Dates already typed stay. Use a printed date instead when a bottle has one that is sooner.">🗓️ Fill blank expirations (30–36 months out)</button></div>';
   }
+  h+='<div id="nsCapBox"></div>';
   h+='<button class="action" id="nsGo" onclick="nsCreate()" style="width:100%;margin-top:14px;font-size:19px;padding:15px;background:#008296"'+(rows.length?'':' disabled')+'>Create plan with Amazon &amp; get destinations →</button></div>';
-  el.innerHTML=h; nsTotals();
+  el.innerHTML=h; nsTotals(); nsCapPaint();
+}
+// Which capacity bucket a line counts in (owner 11/5, the aerosol refusal):
+// Standard / Flammable / Aerosol from /api/capacity (the owner's call, else
+// Amazon's inventory report, else the hazmat flag with a name guess, shown
+// with a ?). Tap to set it; a 4th tap goes back to automatic.
+const NS_KIND={standard:['Standard','#eef2f6','#1f2733'], hazmat:['Flammable','#fff4e5','#b45309'], aerosol:['Aerosol','#fdecea','#c0392b']};
+function nsKindChip(asin){
+  const c=_cap||{}, k=(c.kind&&c.kind[asin])||'standard', src=(c.kindSrc&&c.kindSrc[asin])||'none', K=NS_KIND[k]||NS_KIND.standard;
+  const why={manual:'set by you', amazon:'from Amazon\'s inventory report', guess:'hazmat, guessed AEROSOL from the name — tap to confirm or change', hazmat:'hazmat with no word from Amazon on aerosol — counted as flammable, tap to change', none:'no hazmat flag — standard'}[src]||'';
+  const cf=c.cuft&&c.cuft[asin];
+  return '<button onclick="nsKindCycle(\''+esc(asin)+'\')" title="'+esc(why)+'. Tap to change." style="cursor:pointer;border:1px solid '+K[2]+'33;background:'+K[1]+';color:'+K[2]+';border-radius:999px;padding:5px 11px;font-weight:800;font-size:12px">'+K[0]+(src==='guess'?' ?':'')+(src==='manual'?' ✎':'')+'</button>'
+    +'<div class="hint" style="font-size:11px;margin-top:3px">'+(cf>0?cf.toFixed(3)+' cu ft each':'<span style="color:#b7791f">no size — not counted</span>')+'</div>';
+}
+function nsKindCycle(asin){
+  const c=_cap||{}, src=(c.kindSrc&&c.kindSrc[asin])||'none', k=(c.kind&&c.kind[asin])||'standard';
+  const order=['standard','hazmat','aerosol'];
+  // manual: step to the next kind, and after aerosol back to automatic; automatic: start from the kind after the current one
+  const next=src==='manual'?(k==='aerosol'?null:order[order.indexOf(k)+1]):order[(order.indexOf(k)+1)%3];
+  api('/api/capacity/storage-type',{method:'POST',body:JSON.stringify({asin, type:next})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not saved',true); return; }
+    toast(next?'Counted as '+NS_KIND[d.kind][0]:'Back to automatic: '+NS_KIND[d.kind][0]);
+    loadCapacity().then(()=>{ if(_ns&&document.getElementById('nsGo')){ _ns.name=(document.getElementById('nsName')||{}).value||_ns.name; nsRender(); } });
+  }).catch(()=>toast('Could not save',true));
+}
+// The capacity refusal from the server (problems + capacity:true), shown
+// in the page with the lines to cut, Set room left, and Send anyway.
+function nsCapPaint(){
+  const el=document.getElementById('nsCapBox'); if(!el) return;
+  const P=_ns&&_ns.capProblems; if(!P||!P.length){ el.innerHTML=''; return; }
+  const F=(_ns.capFit)||{}, f1=v=>(Math.round(v*10)/10).toLocaleString(), LBL={standard:'STANDARD',hazmat:'FLAMMABLE',aerosol:'AEROSOL'};
+  // one card per bucket: the headline numbers, then its lines biggest first with how many would fit
+  const card=(o, head, sub)=>'<div style="margin-top:8px;padding:10px 12px;background:#fff;border-radius:8px;border:1px solid #f3d9d6">'
+    +'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline"><b style="font-size:15px">'+head+'</b><span style="font-size:13px;color:#5a6472">'+sub+'</span></div>'
+    +'<table style="width:100%;border-collapse:collapse;margin-top:6px;box-shadow:none;border-radius:0;font-size:13px"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('CU FT')+prodTh(o.room!=null?'WOULD FIT ALONE':'')+'</tr>'
+    +o.lines.map(l=>'<tr>'+prodTd(amzLinkSized(l.asin,l.name)+(l.guessed?' <span style="color:#c0392b;font-weight:800;font-size:12px">aerosol is a guess from the name — check the Storage chip</span>':''),'left')+prodTd('<b>'+l.qty.toLocaleString()+'</b>')
+      +prodTd(l.cuft?f1(l.total):'<span style="color:#b7791f">no size</span>')+prodTd(o.room!=null?(l.cuft?'<b>'+Math.max(0,Math.floor(Math.max(0,o.room)/l.cuft)).toLocaleString()+'</b>':'—'):'')+'</tr>').join('')+'</table></div>';
+  const cards=(F.over||[]).map(o=>card(o, LBL[o.kind]+' · OVER by '+f1(o.over)+' cu ft', 'adds '+f1(o.add)+' cu ft · '+f1(Math.max(0,o.room))+' free (limit '+f1(o.limit)+', '+f1(o.used)+' there or on the way)'))
+    .concat((F.noLimit||[]).map(o=>card({...o, room:null}, LBL[o.kind]+' · limit not entered', 'adds '+f1(o.add)+' cu ft — tap Set room left and type the Aerosol “Maximum shipment” from Seller Central (often only 10)')));
+  el.innerHTML='<div class="box" style="margin-top:12px;border:2px solid #c0392b;background:#fff5f4"><b style="color:#c0392b;font-size:16px">⛔ Not sent — Amazon would refuse this plan for capacity</b>'
+    +'<div class="hint" style="margin-top:2px">Checked here first so you don\'t find out after the plan is created (Amazon\'s FBA_INB_0132). Cut the lines named, or set the room left if Seller Central shows more.</div>'
+    +(cards.length?cards.join(''):P.map(t=>'<div style="margin-top:8px;font-size:14px;line-height:1.5;padding:8px 10px;background:#fff;border-radius:8px;border:1px solid #f3d9d6">'+esc(t)+'</div>').join(''))
+    +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="action" onclick="capLimitModal()" style="background:#0d4450">Set room left</button>'
+    +'<button class="action" onclick="_ns.capProblems=null;_ns.capFit=null;nsCapPaint();nsCreate(true)" style="background:#fff;color:#c0392b;border:2px solid #c0392b" title="Skip the app\'s check. Amazon still checks, and refuses the whole plan if it really is over.">Send anyway</button></div></div>';
 }
 // Blank expirations → a random date 30–36 months from today, different per
 // line (the owner's ask: typing them was the slow part). Only blanks are
@@ -1559,17 +1605,18 @@ function nsDelAddr(){
   if(!confirm('Remove this ship-from address?')) return;
   nsSaveAddresses(((_ns.setup&&_ns.setup.addresses)||[]).filter(x=>x.id!==_ns.editAddr), null);
 }
-function nsCreate(){
+function nsCreate(force){
   const name=(document.getElementById('nsName')||{}).value||'';
   const items=_ns.items.map(r=>({asin:r.asin, qty:parseInt(r.qty)||0, exp:r.exp||null}));
   if(items.some(i=>!(i.qty>0))){ toast('Every product needs a quantity',true); return; }
   const noExp=_ns.items.filter(r=>r.needsExp&&!r.exp); if(noExp.length){ toast('Amazon requires an expiration date for: '+noExp.map(r=>r.name||r.asin).join(', '),true); return; }
   if(!confirm('Create this shipment plan at Amazon?\n\n'+items.length+' products · '+items.reduce((t,i)=>t+i.qty,0)+' units\n\nThis is free and can be cancelled. Amazon then shows the destination options and their fees.')) return;
   const b=document.getElementById('nsGo'); if(b){ b.disabled=true; b.textContent='Sending to Amazon…'; }
-  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, addressId:_ns.addressId})}).then(d=>{
+  ownerApi('/api/inbound/plans',{method:'POST',body:JSON.stringify({name, items, addressId:_ns.addressId, force:!!force})}).then(d=>{
     if(!d||d.ok===false){
       // The pre-checks name each product Amazon would refuse (stranded, no listing): list them, one per line.
-      if(d&&d.problems&&d.problems.length) alert('⛔ Not sent to Amazon — fix these first:\n\n• '+d.problems.join('\n\n• '));
+      if(d&&d.capacity&&d.problems&&d.problems.length){ _ns.capProblems=d.problems; _ns.capFit=d.fit||null; nsCapPaint(); const x=document.getElementById('nsCapBox'); if(x) x.scrollIntoView({behavior:'smooth',block:'center'}); }
+      else if(d&&d.problems&&d.problems.length) alert('⛔ Not sent to Amazon — fix these first:\n\n• '+d.problems.join('\n\n• '));
       else toast((d&&d.error)||'Not created',true);
       if(b){ b.disabled=false; b.textContent='Create plan with Amazon & get destinations →'; } return; }
     nsPlan(d.id);
@@ -5171,8 +5218,8 @@ function loadCapacity(){
 function renderPrepCap(){
   const el=document.getElementById('prepCapBar'), c=_cap, d=window._prepData; if(!el) return;
   if(!c||!d){ el.innerHTML=''; return; }
-  const f=v=>Math.round(v).toLocaleString(), haz=new Set(c.hazmat||[]), L=c.limit||{};
-  const sum=(rows, kind, pick)=>{ let cf=0, units=0, noSize=0; for(const x of rows){ if(haz.has(x.asin)!==(kind==='hazmat')||!pick(x)) continue; const q=pick(x), z=c.cuft&&c.cuft[x.asin]; if(z>0){ cf+=z*q; units+=q; } else noSize++; } return {cf, units, noSize}; };
+  const f=v=>Math.round(v).toLocaleString(), KD=c.kind||{}, L=c.limit||{};
+  const sum=(rows, kind, pick)=>{ let cf=0, units=0, noSize=0; for(const x of rows){ if((KD[x.asin]||'standard')!==kind||!pick(x)) continue; const q=pick(x), z=c.cuft&&c.cuft[x.asin]; if(z>0){ cf+=z*q; units+=q; } else noSize++; } return {cf, units, noSize}; };
   const line=(label, kind, limit)=>{
     const now=c.used[kind]||0, pend=(c.pending&&c.pending[kind])||0;
     const ready=sum(d.items||[], kind, x=>x.prepped), tick=sum(d.items||[], kind, x=>x.in_plan?x.prepped:0), pre=sum(d.prelabeled||[], kind, x=>x.prepped);
@@ -5199,7 +5246,7 @@ function renderPrepCap(){
       +(noSize?'<span style="color:#b7791f">⚠ '+noSize+' line'+(noSize===1?'':'s')+' with no size, not counted</span>':'')
       +'</div></div>';
   };
-  const h=line('Standard','standard',L.standard)+line('Dangerous goods','hazmat',L.hazmat);
+  const h=line('Standard','standard',L.standard)+line('Flammable','hazmat',L.hazmat)+line('Aerosol','aerosol',L.aerosol);
   el.innerHTML=h?'<div class="box" style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap"><b>📦 FBA capacity — how much you can send</b>'
     +'<span class="hint">'+(L.setAt?'room left entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+', less what\'s gone to Amazon since':'set room left on Pending Prep')+'</span></div>'+h+'</div>':'';
 }
@@ -5225,7 +5272,8 @@ function renderCapBar(){
     +'<div style="display:flex;gap:6px"><button class="action" onclick="capLimitModal()" style="padding:6px 12px;font-size:12px;background:#0d4450">Set room left</button>'
     +'<button class="action" onclick="capSizes()" style="padding:6px 12px;font-size:12px;background:#5a6472" title="Look up each listing\'s package size on Amazon">'+(c.sizeJob&&c.sizeJob.running?'Getting sizes… '+esc(c.sizeJob.step||''):'Get sizes from Amazon')+'</button></div></div>'
     +line('Standard', 'standard', L.standard)
-    +line('Dangerous goods', 'hazmat', L.hazmat);
+    +line('Flammable', 'hazmat', L.hazmat)
+    +line('Aerosol', 'aerosol', L.aerosol);
   // Each listing with its reason and a ✎ to type a measured size, since the
   // button can't clear one Amazon has no size for (owner 10/30).
   if(c.missing&&c.missing.length) h+='<details style="margin-top:6px"><summary class="hint" style="color:#b7791f;cursor:pointer">⚠ No package size for '+c.missing.length+' listing'+(c.missing.length===1?'':'s')+', not counted — tap to see why and type a size</summary>'
@@ -5263,7 +5311,7 @@ function capLimitModal(){
   const inp=(id,label,v,hint)=>'<label style="display:block;margin-top:10px;text-transform:none;letter-spacing:0;font-size:13px;font-weight:700;color:#1f2733">'+label+(hint?' <span class="hint" style="font-weight:400">'+hint+'</span>':'')+'<input id="'+id+'" type="number" min="0" step="any" value="'+(v==null?'':v)+'" style="width:100%;padding:10px;font-size:15px;border:2px solid #e2e8f0;border-radius:8px;margin-top:4px"></label>';
   m.innerHTML='<div style="background:#fff;border-radius:12px;padding:20px;max-width:420px;width:100%"><b style="font-size:16px">FBA capacity</b>'
     +'<div class="hint" style="margin-top:4px">Seller Central → Inventory → FBA dashboard → Capacity Monitor. Type the <b>Maximum shipment</b> number (cubic feet) — the room you have left to send. Update it when you check Seller Central.</div>'
-    +inp('capStd','Standard — Maximum shipment (cu ft)',L.standardRoom)+inp('capHaz','Dangerous goods — Maximum shipment (cu ft)',L.hazmatRoom,'(optional)')
+    +inp('capStd','Standard — Maximum shipment (cu ft)',L.standardRoom)+inp('capHaz','Flammable — Maximum shipment (cu ft)',L.hazmatRoom,'(dangerous goods)')+inp('capAer','Aerosol — Maximum shipment (cu ft)',L.aerosolRoom,'(its own small limit, often 10)')
     +'<div style="display:flex;gap:8px;margin-top:16px"><button onclick="document.getElementById(\'capModal\').remove()" style="flex:1;padding:11px;font-weight:700;background:#e2e8f0;border:none;border-radius:8px;cursor:pointer">Cancel</button>'
     +'<button onclick="capSaveLimit()" style="flex:2;padding:11px;font-weight:700;background:#0d4450;color:#fff;border:none;border-radius:8px;cursor:pointer">Save</button></div></div>';
   m.onclick=e=>{ if(e.target===m) m.remove(); };
@@ -5271,9 +5319,9 @@ function capLimitModal(){
 }
 function capSaveLimit(){
   const v=id=>{ const e=document.getElementById(id); return e?e.value.trim():''; };
-  api('/api/capacity/limit',{method:'POST',body:JSON.stringify({standardRoom:v('capStd')||null, hazmatRoom:v('capHaz')||null})}).then(d=>{
+  api('/api/capacity/limit',{method:'POST',body:JSON.stringify({standardRoom:v('capStd')||null, hazmatRoom:v('capHaz')||null, aerosolRoom:v('capAer')||null})}).then(d=>{
     if(!d||d.ok===false||d.error){ toast('NOT saved: '+((d&&d.error)||'error'),true); return; }
-    _cap=d; renderCapBar(); if(ppList()) renderPendingPrep();
+    _cap=d; renderCapBar(); renderPrepCap(); if(ppList()) renderPendingPrep(); if(_ns&&document.getElementById('nsGo')){ _ns.name=(document.getElementById('nsName')||{}).value||_ns.name; nsRender(); }
     const m=document.getElementById('capModal'); if(m) m.remove(); toast('Saved');
   }).catch(e=>toast('NOT saved: '+e.message,true));
 }
