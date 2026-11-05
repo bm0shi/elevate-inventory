@@ -1660,7 +1660,11 @@ function nsPlan(id){
       :needExp.length?needExp.map(i=>'<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap"><b style="flex:1;min-width:220px">'+esc(String(i.name||i.msku).slice(0,70))+' <span class="hint" style="font-family:monospace">'+esc(i.msku)+'</span></b>'
           +'<label style="font-size:11px;font-weight:900;color:#5a6472">EXPIRATION<input class="nsExp" data-msku="'+esc(i.msku)+'" placeholder="MM/DD/YYYY" value="'+esc(i.exp?expText(i.exp):'')+'" style="display:block;margin-top:3px;width:130px;padding:8px;font-size:15px;text-align:center;border:2px solid #c0392b"></label></div>').join('')
         +'<button class="action" onclick="nsSaveExp('+p.id+')" style="margin-top:12px;background:#c0392b">Save dates &amp; retry →</button>'
-        :'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button>')+'</div>';
+        :'<button class="action" onclick="nsRetry('+p.id+')" style="margin-top:10px;background:#c0392b">↻ Retry from where it stopped</button>')
+      // Not at Amazon yet: the lines stay editable (owner 11/5, a plan refused
+      // for SORTABLE storage had to be cancelled and rebuilt to cut a line).
+      +(!p.plan_id&&!needCat.length&&!needExp.length?'<div id="nsFit" style="margin-top:12px" class="hint">Reading the plan against your capacity…</div>':'')+'</div>';
+    if(!p.plan_id&&p.status==='error'&&!needCat.length&&!needExp.length) setTimeout(()=>nsFitLoad(p),0);
     h+='<div class="box"><b style="font-size:16px">Steps</b>'+stepRow(done('plan'),'1. Plan created at Amazon')
       +stepRow(done('place'),'2. Destination confirmed → FBA ID',chosen&&p.placement_confirmed_at?(SH.map(x=>esc(x.fba)+(x.fc?' → '+nsWhere(x):'')).join(' · ')+' · placement fee '+(chosen.fee>0?$$(chosen.fee):'none')):'')
       +stepRow(done('floor'),'3. Boxes built & labelled, Finish pressed in Shipment Production')
@@ -1872,6 +1876,37 @@ function nsConfirm(id, total){
   const picked=[...document.querySelectorAll('input[type=radio][name^="nsq_"]:checked')].map(r=>{ const l=r.closest('label'); if(!l) return ''; const pk=l.querySelector('.nsPk'); return ((l.querySelector('b')||{}).textContent||'')+(pk?' ('+pk.textContent.replace('🚚 ','')+')':''); }).filter(Boolean);
   if(!confirm('Book '+(picked.length?picked.join(' + '):'this freight')+' for $'+total.toFixed(2)+'?\n\n⚠️ Your Amazon account is charged $'+total.toFixed(2)+' when you press OK.\nNothing is charged before this step.')) return;
   ownerApi('/api/inbound/plans/'+id+'/confirm',{method:'POST',body:JSON.stringify({selections:(window._nsSel||{}).sel||{}, total})}).then(d=>{ if(!d||d.ok===false){ toast((d&&d.error)||'Not confirmed',true); } nsPlan(id); });
+}
+// A stopped plan's lines, editable, with each line's bucket, cu ft and how
+// many would fit alone, and each bucket's room (the app's figures; Amazon's
+// refusal means the Standard one is stale until re-entered).
+function nsFitLoad(p){
+  ownerApi('/api/inbound/plans/'+p.id+'/fit').then(d=>{
+    const el=document.getElementById('nsFit'); if(!el) return;
+    if(!d||d.ok===false){ el.innerHTML='<span style="color:#c0392b">'+esc((d&&d.error)||'Could not read the capacity')+'</span>'; return; }
+    const f1=v=>(Math.round(v*10)/10).toLocaleString(), LBL={standard:'Standard',hazmat:'Flammable',aerosol:'Aerosol'}, K=NS_KIND;
+    const overKind=(String(p.error||'').match(/over your room for (STANDARD|FLAMMABLE|AEROSOL) storage/i)||[])[1];
+    const ok=overKind?{STANDARD:'standard',FLAMMABLE:'hazmat',AEROSOL:'aerosol'}[overKind.toUpperCase()]:null;
+    const room=k=>{ const b=d.buckets[k]; if(!b) return ''; return b.limit?f1(Math.max(0,b.room))+' cu ft room left'+(d.setAt?' (entered '+new Date(d.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+')':''):'no room entered'; };
+    let h='<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><b style="font-size:15px;color:#1f2733">✎ Change quantities and send again</b>'
+      +'<span class="hint">'+['standard','hazmat','aerosol'].filter(k=>d.buckets[k]&&(d.buckets[k].add>0||k===ok)).map(k=>'<b style="color:'+K[k][2]+'">'+LBL[k]+'</b> adds '+f1(d.buckets[k].add)+' cu ft · '+room(k)).join(' &nbsp;·&nbsp; ')+'</span></div>'
+      +(ok?'<div class="hint" style="margin-top:4px;color:#c0392b;font-weight:700">Amazon refused the '+LBL[ok]+' lines. "Would fit alone" below uses the room the app has, which Amazon just showed is too high — re-enter it first, then cut.</div>':'')
+      +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0;background:#fff;font-size:13px"><tr>'+prodTh('PRODUCT','left')+prodTh('UNITS')+prodTh('STORAGE')+prodTh('CU FT')+prodTh('WOULD FIT ALONE')+'</tr>'
+      +d.lines.map(l=>{ const b=d.buckets[l.kind]||{}, fit=l.cuft&&b.limit?Math.max(0,Math.floor(Math.max(0,b.room)/l.cuft)):null, hot=ok&&l.kind===ok;
+        return '<tr'+(hot?' style="background:#fff5f4"':'')+'>'+prodTd(amzLinkSized(l.asin,l.name)+'<div class="hint" style="font-family:monospace;font-size:11px">'+esc(l.msku)+'</div>','left')
+          +prodTd('<input class="nsQty" data-msku="'+esc(l.msku)+'" type="number" min="0" value="'+l.qty+'" style="width:90px;text-align:center;font-size:16px;font-weight:800;padding:6px;border:2px solid '+(hot?'#c0392b':'#e2e8f0')+';border-radius:8px" title="0 removes the line">')
+          +prodTd('<span style="display:inline-block;padding:3px 9px;border-radius:999px;background:'+K[l.kind][1]+';color:'+K[l.kind][2]+';font-weight:800;font-size:12px">'+K[l.kind][0]+(l.kindSrc==='guess'?' ?':'')+'</span>')
+          +prodTd(l.cuft?f1(l.cuft*l.qty):'<span style="color:#b7791f">no size</span>')+prodTd(fit==null?'—':'<b>'+fit.toLocaleString()+'</b>')+'</tr>'; }).join('')+'</table>'
+      +'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"><button class="action" onclick="nsSaveQty('+p.id+')" style="background:#c0392b">Save quantities &amp; retry →</button>'
+      +'<button class="action" onclick="loadCapacity().then(()=>capLimitModal())" style="background:#0d4450">Set room left</button></div>';
+    el.innerHTML=h; el.className='';
+  }).catch(e=>{ const el=document.getElementById('nsFit'); if(el) el.textContent='Could not read the capacity: '+e.message; });
+}
+function nsSaveQty(id){
+  const qty={}; document.querySelectorAll('.nsQty').forEach(x=>{ qty[x.dataset.msku]=x.value.trim(); });
+  const gone=Object.values(qty).filter(v=>v==='0').length, tot=Object.values(qty).reduce((n,v)=>n+(parseInt(v)||0),0);
+  if(!confirm('Send the plan again with '+tot.toLocaleString()+' units'+(gone?' ('+gone+' line'+(gone===1?'':'s')+' removed)':'')+'?')) return;
+  ownerApi('/api/inbound/plans/'+id+'/items',{method:'POST',body:JSON.stringify({qty})}).then(d=>{ if(!d||d.ok===false) toast((d&&d.error)||'Not saved',true); nsPlan(id); });
 }
 // Amazon's prep categories (lib/inbound.js PREP_CATEGORIES; the server checks the pick).
 const NS_PREP_CATS=[{id:'NONE',label:'No prep needed',floor:'FNSKU label only'},{id:'LIQUID',label:'Liquid',floor:'bagged (sealed bottle)'},{id:'FRAGILE',label:'Fragile / glass',floor:'bubble wrap'},{id:'SMALL',label:'Small (under 2⅛ in)',floor:'bagged'},{id:'GRANULAR',label:'Powder / granular',floor:'bagged'},{id:'SET',label:'Set (sold together)',floor:'"sold as set" sticker'},{id:'SHARP',label:'Sharp',floor:'bubble wrap'},{id:'TEXTILE',label:'Textile / fabric',floor:'bagged'},{id:'PERFORATED',label:'Perforated packaging',floor:'bagged'},{id:'ADULT',label:'Adult',floor:'black shrink wrap'},{id:'BABY',label:'Baby',floor:'bagged'}];
@@ -5290,6 +5325,8 @@ function renderCapBar(){
     +line('Standard', 'standard', L.standard)
     +line('Flammable', 'hazmat', L.hazmat)
     +line('Aerosol', 'aerosol', L.aerosol);
+  // Amazon refused a plan for a bucket after the room was entered (FBA_INB_0132): say so until it's re-entered.
+  if(L.refused) h+='<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff5f4;border:1px solid #f3d9d6;color:#c0392b;font-weight:700;font-size:13px">⛔ Amazon refused a plan on '+new Date(L.refused.at).toLocaleDateString('en-US',{month:'short',day:'numeric'})+' for '+({standard:'Standard',hazmat:'Flammable',aerosol:'Aerosol'}[L.refused.kind]||L.refused.kind)+' storage, so the room left here is too high. Read Seller Central → Capacity Monitor → Maximum shipment and tap Set room left.</div>';
   // Each listing with its reason and a ✎ to type a measured size, since the
   // button can't clear one Amazon has no size for (owner 10/30).
   if(c.missing&&c.missing.length) h+='<details style="margin-top:6px"><summary class="hint" style="color:#b7791f;cursor:pointer">⚠ No package size for '+c.missing.length+' listing'+(c.missing.length===1?'':'s')+', not counted — tap to see why and type a size</summary>'
