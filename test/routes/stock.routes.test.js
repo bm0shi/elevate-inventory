@@ -307,6 +307,33 @@ test('a single (not just a duo) takes a crew of up to 3; finishing credits every
   assert.strictEqual((await one('SELECT count(*)::int AS n FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL', [id])).n, 0);
 });
 
+test('send back to On Hand: picked jobs are removed once, stock never moves, the crew is signed off', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTBACK','Test Back Gel','SKU-BACK','X00TESTBAK') ON CONFLICT (asin) DO NOTHING`);
+  await post('/api/receive', { asin: 'TSTBACK', qty: 50 });
+  await post('/api/pending-prep/add', { asin: 'TSTBACK', qty: 20 });
+  await post('/api/pending-prep/add', { asin: 'TSTBACK', qty: 10, prelabel: true });
+  const jobs = (await pool.query(`SELECT id FROM inv_pending_prep WHERE asin='TSTBACK' ORDER BY id`)).rows.map(r => r.id);
+  assert.strictEqual(jobs.length, 2);
+  await pool.query(`INSERT INTO inv_employees(display_name) VALUES ('Eve') ON CONFLICT DO NOTHING`);
+  assert.strictEqual((await post('/api/pending-prep/claim', { id: jobs[0], name: 'Eve' })).body.ok, true);
+  const before = await stock('TSTBACK');
+  // Two taps at once, plus a retry: removed once, nothing else touched
+  const [a, b] = await Promise.all([post('/api/pending-prep/remove', { ids: jobs }), post('/api/pending-prep/remove', { ids: jobs })]);
+  assert.strictEqual(a.status, 200); assert.strictEqual(b.status, 200);
+  assert.strictEqual(a.body.removed + b.body.removed, 2);
+  assert.strictEqual((await post('/api/pending-prep/remove', { ids: jobs })).body.removed, 0);
+  assert.strictEqual(await pending('TSTBACK'), 0);
+  assert.deepStrictEqual(await stock('TSTBACK'), before);
+  assert.strictEqual((await one('SELECT count(*)::int AS n FROM inv_prep_crew WHERE job_id=$1 AND left_at IS NULL', [jobs[0]])).n, 0);
+  const notes = (await pool.query(`SELECT qty, note FROM inv_activity WHERE asin='TSTBACK' AND note LIKE 'Pending Prep:%sent back%' ORDER BY id`)).rows;
+  assert.strictEqual(notes.length, 2);
+  assert.ok(notes.every(n => n.qty === 0));
+  assert.match(notes.map(n => n.note).join(' | '), /20 units sent back to On Hand — it was being prepped by Eve/);
+  // The freed units can be put on a job again
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'TSTBACK', qty: 50 })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/remove', { ids: [] })).status, 400);
+});
+
 test('next batch: held from the floor (no merge, claim, scan or finish), released once onto the list', { skip }, async () => {
   await pool.query(`INSERT INTO inv_products(asin, name, sku, fnsku) VALUES ('TSTNXT','Test Next','SKU-NXT','X00TESTNXT') ON CONFLICT (asin) DO NOTHING`);
   await post('/api/receive', { asin: 'TSTNXT', qty: 400 });   // singles are checked against the shelf now
