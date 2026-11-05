@@ -1134,6 +1134,9 @@ async function listAll(path, key, params) {
 const inbound = {
   createPlan: (body) => inbWrite('POST', '/inboundPlans', body),
   // Which products need prep, and who may do it (Amazon's own prep data per seller SKU).
+  // Give a SKU its prep category (and steps) when Amazon has none — the
+  // "Choose the prep category" step of Send to Amazon. → { operationId }
+  setPrepDetails: (body) => inbWrite('POST', '/items/prepDetails', body),
   listPrepDetails: (marketplaceId, mskus) => inbRead('/items/prepDetails?marketplaceId=' + encodeURIComponent(marketplaceId) + mskus.map(m => '&mskus=' + encodeURIComponent(m)).join('')),                                  // → { inboundPlanId, operationId }
   cancelPlan: (planId) => inbWrite('PUT', `/inboundPlans/${planId}/cancellation`),
   getPlan: (planId) => inbRead(`/inboundPlans/${planId}`),

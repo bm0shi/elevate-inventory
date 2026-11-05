@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'aerosol-check-1151';
+const BUILD_ID = 'prep-cat-1152';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2681,6 +2681,26 @@ async function planPart1(id, step) {
         await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
       } catch (e) { console.error(`[Inbound] plan ${id} prep lookup failed:`, e.message); }
     }
+    // A prep category the owner picked on the stopped plan (FBA_INB_0182, the
+    // SKU had none at Amazon) is set at Amazon first — the "Choose the prep
+    // category" step of Send to Amazon — then the plan is sent. Recorded per
+    // item the moment Amazon accepts it, so Retry doesn't set it twice.
+    const picks = {}; for (const i of p.items) if (i.prepCategory && !i.prepCatSent) picks[i.msku] = i.prepCategory;
+    if (Object.keys(picks).length) {
+      const mp = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER';
+      const sug = (p.items.find(i => i.prepSuggest) || {}).prepSuggest || null;
+      const pd = inboundLib.prepDetailsBody(mp, picks, sug);
+      if (pd.error) throw new Error(pd.error);
+      await step('Setting the prep category at Amazon…');
+      const r = await amzInbound.setPrepDetails(pd.body);
+      if (r && r.operationId) await amzInbound.waitOperation(r.operationId, { onProgress: step });
+      for (const i of p.items) if (picks[i.msku]) {
+        i.prepCatSent = true; i.needsPrepCat = false;
+        // we do all prep: a real category needs an owner, NONE needs none
+        i.prepOwner = i.prepCategory === 'NONE' ? 'NONE' : 'SELLER';
+      }
+      await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+    }
     // Amazon names each product whose prep/label owner it won't accept
     // (inboundLib.ownerFixes); those are corrected, remembered on the product
     // for next time, and the plan is sent again — as long as each round fixes
@@ -2712,6 +2732,25 @@ async function planPart1(id, step) {
           for (const i of miss) { i.needsExp = true; await pool.query('UPDATE inv_products SET amz_needs_exp=true WHERE asin=$1', [i.asin]); }
           await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
           throw new Error('Amazon needs the expiration date for: ' + miss.map(i => (i.name || i.msku).slice(0, 60) + ' (' + i.msku + ')').join(', ') + '. Type it below and press Save & retry.');
+        }
+        // No prep category at Amazon for a SKU (FBA_INB_0182; owner 11/5, two
+        // Awapuhi 5.1 oz): only the owner can choose, since the category sets
+        // what the floor does to each unit. Marked here, pre-filled with the
+        // category most of our other SKUs carry, and the plan stops; Save &
+        // retry sets it at Amazon (above) and sends the plan again.
+        const noCat = inboundLib.prepCategoryMissing(e.message, p.items.map(i => i.msku));
+        if (noCat.length) {
+          let sug = null;
+          try {
+            const mp = process.env.AMAZON_MARKETPLACE_ID || 'ATVPDKIKX0DER', det = [];
+            const all = (await pool.query("SELECT DISTINCT sku FROM inv_products WHERE sku IS NOT NULL AND sku <> ''")).rows.map(r => r.sku);
+            for (let k = 0; k < all.length && k < 400; k += 100) det.push(...((await amzInbound.listPrepDetails(mp, all.slice(k, k + 100))).mskuPrepDetails || []));
+            sug = inboundLib.prepCategorySuggest(det);
+          } catch (e2) { console.error(`[Inbound] plan ${id} prep suggestion skipped:`, e2.message); }
+          const miss = p.items.filter(i => noCat.includes(i.msku));
+          for (const i of miss) { i.needsPrepCat = true; i.prepCategory = null; i.prepCatSent = false; if (sug) i.prepSuggest = sug; }
+          await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+          throw new Error('Amazon has no prep category for: ' + miss.map(i => (i.name || i.msku).slice(0, 60) + ' (' + i.msku + ')').join(', ') + '. Pick one below and press Save & retry — the app sets it at Amazon and sends the plan again.');
         }
         const fix = inboundLib.ownerFixes(e.message, p.items.map(i => i.msku));
         const hit = p.items.filter(i => fix[i.msku] && Object.entries(fix[i.msku]).some(([k, v]) => i[k] !== v));
@@ -2980,6 +3019,30 @@ app.post('/api/inbound/plans/:id/exp', auth, async (req, res) => {
   runPlanJob(id, 'Sending the plan again…', (step) => planPart1(id, step), 'part1');
   res.json({ ok: true });
 });
+// Prep categories the owner picked for SKUs Amazon has none for (FBA_INB_0182);
+// saved on the plan's items, then part 1 runs again: it sets them at Amazon
+// and sends the plan. { cat: { msku: 'LIQUID' | 'NONE' | ... } }
+app.post('/api/inbound/plans/:id/prepcat', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
+  const p = (await pool.query('SELECT status, plan_id, items FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (p.status !== 'error' || p.plan_id) return res.status(409).json({ ok: false, error: 'Prep categories can only be set before Amazon accepts the plan.' });
+  const given = (req.body && req.body.cat) || {};
+  for (const i of p.items) {
+    if (!given[i.msku]) continue;
+    const c = inboundLib.PREP_CATEGORIES.find(x => x.id === String(given[i.msku]).toUpperCase());
+    if (!c) return res.status(400).json({ ok: false, error: `${i.name || i.msku}: "${String(given[i.msku]).slice(0, 20)}" isn't a prep category.` });
+    i.prepCategory = c.id; i.prepCatSent = false;
+  }
+  const still = p.items.filter(i => i.needsPrepCat && !i.prepCategory);
+  if (still.length) return res.status(400).json({ ok: false, error: 'Still needs a prep category: ' + still.map(i => i.name || i.msku).join(', ') });
+  await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
+  runPlanJob(id, 'Setting the prep category at Amazon…', (step) => planPart1(id, step), 'part1');
+  res.json({ ok: true });
+});
+// The categories for the picker, with what each means on the floor.
+app.get('/api/inbound/prep-categories', auth, (req, res) => res.json({ ok: true, categories: inboundLib.PREP_CATEGORIES }));
 // Remove a plan from the app only: for one already cancelled or deleted in
 // Seller Central after its destination was confirmed (Cancel here refuses
 // then, since it would call Amazon). No Amazon call, no stock change; its
