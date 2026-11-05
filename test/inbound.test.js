@@ -265,3 +265,10 @@ test('prep category missing (owner 11/5, FBA_INB_0182): the SKUs named; a sugges
   assert.match(ib.prepDetailsBody('M', { X: 'WET' }, sug).error, /isn't a prep category/);
   assert.match(ib.prepDetailsBody('M', {}, sug).error, /Nothing/);
 });
+
+test('capacity refusal (owner 11/5, FBA_INB_0132): Amazon\'s storage name → our bucket', () => {
+  assert.strictEqual(ib.capacityRefused('Amazon refused it — FBA_INB_0132: ERROR: This product exceeds the allowed volume for SORTABLE storage. Click on the Storage Volume monitor to view the maximum shipment volume for SORTABLE storage.'), 'standard');
+  assert.strictEqual(ib.capacityRefused('FBA_INB_0132: ERROR: This product exceeds the allowed volume for AEROSOL storage.'), 'aerosol');
+  assert.strictEqual(ib.capacityRefused('exceeds the allowed volume for FLAMMABLE storage'), 'hazmat');
+  assert.strictEqual(ib.capacityRefused('FBA_INB_0180: Expiration date required'), null);
+});

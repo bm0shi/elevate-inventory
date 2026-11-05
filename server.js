@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'prep-cat-1152';
+const BUILD_ID = 'plan-fit-1153';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2738,6 +2738,21 @@ async function planPart1(id, step) {
         // what the floor does to each unit. Marked here, pre-filled with the
         // category most of our other SKUs carry, and the plan stops; Save &
         // retry sets it at Amazon (above) and sends the plan again.
+        // Over Amazon's room for a storage type (FBA_INB_0132): the app's
+        // pre-check didn't catch it, so its room-left figure is older than what
+        // Amazon counts now (or was never entered). Remembered on the capacity
+        // settings so the bar says so until the room is re-entered; the plan
+        // stops with its lines editable (quantities & retry) and the bucket's
+        // numbers (/api/inbound/plans/:id/fit).
+        const overKind = inboundLib.capacityRefused(e.message);
+        if (overKind) {
+          try {
+            const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_capacity'")).rows[0] || {}).data || {};
+            await saveCache('fba_capacity', Object.assign({}, prev, { refused: { kind: overKind, at: new Date().toISOString(), plan: id } }));
+          } catch (e2) { console.error('[Inbound] capacity refusal not saved:', e2.message); }
+          const said = (e.message.match(/exceeds the allowed volume for [A-Z _-]+ storage\.?/i) || [''])[0];
+          throw new Error(`Amazon says this plan is over your room for ${capacity.KIND_LABEL[overKind].toUpperCase()} storage${said ? ' (FBA_INB_0132: ' + said + ')' : ''}. The app's room-left figure for it is out of date, since the check here passed: read Seller Central → Capacity Monitor → Maximum shipment, tap Set room left, then cut the lines below and press Save quantities & retry.`);
+        }
         const noCat = inboundLib.prepCategoryMissing(e.message, p.items.map(i => i.msku));
         if (noCat.length) {
           let sug = null;
@@ -3040,6 +3055,43 @@ app.post('/api/inbound/plans/:id/prepcat', auth, async (req, res) => {
   await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(p.items)]);
   runPlanJob(id, 'Setting the prep category at Amazon…', (step) => planPart1(id, step), 'part1');
   res.json({ ok: true });
+});
+// The stopped plan's lines against the capacity the app knows (planFit):
+// per line its bucket, cu ft and how many would fit alone, per bucket the
+// room left — so the owner cuts the right line without leaving the plan.
+app.get('/api/inbound/plans/:id/fit', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const p = (await pool.query('SELECT items FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  const c = await capacityNow();
+  const fit = capacity.planFit(p.items, c);
+  const lines = p.items.map(i => ({ msku: i.msku, asin: i.asin, name: i.name, qty: i.qty, kind: c.kind[i.asin] || 'standard', kindSrc: c.kindSrc[i.asin] || 'none', cuft: c.cuft[i.asin] || null }));
+  const buckets = {};
+  for (const k of capacity.KINDS) buckets[k] = { limit: c.limit[k] || null, used: c.used[k] || 0, room: c.limit[k] ? c.limit[k] - (c.used[k] || 0) : null, add: lines.filter(l => l.kind === k && l.cuft).reduce((n, l) => n + l.cuft * l.qty, 0) };
+  res.json({ ok: true, lines, buckets, over: fit.over, noLimit: fit.noLimit, setAt: c.limit.setAt || null, refused: c.limit.refused || null });
+});
+// New quantities for a plan that stopped before Amazon accepted it (over
+// capacity, or any other refusal): { qty: { msku: n } }, 0 removes the line;
+// then part 1 runs again. Nothing at Amazon yet, so nothing to cancel.
+app.post('/api/inbound/plans/:id/items', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
+  const p = (await pool.query('SELECT status, plan_id, items FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
+  if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
+  if (p.status !== 'error' || p.plan_id) return res.status(409).json({ ok: false, error: 'Quantities can only be changed before Amazon accepts the plan.' });
+  const given = (req.body && req.body.qty) || {};
+  const items = [];
+  for (const i of p.items) {
+    if (given[i.msku] == null || given[i.msku] === '') { items.push(i); continue; }
+    const q = parseInt(given[i.msku], 10);
+    if (q === 0) continue;
+    if (badQty(q)) return res.status(400).json({ ok: false, error: `${i.name || i.msku}: quantity ${String(given[i.msku]).slice(0, 12)} isn't valid.` });
+    items.push(Object.assign({}, i, { qty: q }));
+  }
+  if (!items.length) return res.status(400).json({ ok: false, error: 'Every line was removed — cancel the plan instead.' });
+  await pool.query('UPDATE inv_inbound_plans SET items=$2 WHERE id=$1', [id, JSON.stringify(items)]);
+  runPlanJob(id, 'Sending the plan again…', (step) => planPart1(id, step), 'part1');
+  res.json({ ok: true, lines: items.length, units: items.reduce((n, i) => n + i.qty, 0) });
 });
 // The categories for the picker, with what each means on the floor.
 app.get('/api/inbound/prep-categories', auth, (req, res) => res.json({ ok: true, categories: inboundLib.PREP_CATEGORIES }));
@@ -8166,7 +8218,9 @@ async function capacityNow() {
   const cal = lim.amazonUsed && lim.ourUsedThen ? capacity.calibration(lim.ourUsedThen, lim.amazonUsed) : 1;
   const cuft = {}; for (const p of prods) if (p.cuft > 0) cuft[p.asin] = p.cuft * cal;
   const sc = (v) => ({ standard: v.standard * cal, hazmat: v.hazmat * cal, aerosol: v.aerosol * cal, missing: v.missing });
-  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, aerosol: lim.aerosol || null, setAt: lim.setAt || null, standardRoom: lim.standardRoom ?? null, hazmatRoom: lim.hazmatRoom ?? null, aerosolRoom: lim.aerosolRoom ?? null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null },
+  return { ok: true, limit: { standard: lim.standard || null, hazmat: lim.hazmat || null, aerosol: lim.aerosol || null, setAt: lim.setAt || null, standardRoom: lim.standardRoom ?? null, hazmatRoom: lim.hazmatRoom ?? null, aerosolRoom: lim.aerosolRoom ?? null, amazonUsed: lim.amazonUsed || null, amazonUsedAt: lim.amazonUsedAt || null,
+      // Amazon refused a plan for a bucket after the room was entered: the figure is stale until re-entered.
+      refused: lim.refused && (!lim.setAt || lim.refused.at > lim.setAt) ? lim.refused : null },
     cal, used: sc(used), prepped: sc(prep), pending: sc(pend), missing, cuft, kind, kindSrc, hazmat: prods.filter(p => kind[p.asin] !== 'standard').map(p => p.asin), stockAt: fbaR.rows[0] && fbaR.rows[0].updated_at,
     sizeJob: { running: sizeJob.running, step: sizeJob.step, result: sizeJob.result, error: sizeJob.error || null } };
 }
