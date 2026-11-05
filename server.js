@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'send-back-1142';
+const BUILD_ID = 'duo-match-1143';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3713,13 +3713,24 @@ async function expandToComponents(asin, qty) {
 }
 
 // ---- Bundle management endpoints ----
+// Every duo, its listing in the catalog or not (owner 11/5: "Duo items shows
+// a few items, Duos I can build shows only one — not matching"). This used
+// to JOIN the duo's own listing, so a duo whose listing isn't in the catalog
+// dropped out of Duos I can build while the bottle cards (partners, from
+// /api/products) still listed it. Such a duo is named from the last FBA
+// inventory pull, else by its ASIN.
 app.get('/api/bundles', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT b.bundle_asin, bp.name AS bundle_name, b.component_asin, cp.name AS component_name, b.qty
+    `SELECT b.bundle_asin, bp.name AS bundle_name, (bp.asin IS NOT NULL) AS in_catalog, b.component_asin, cp.name AS component_name, b.qty
      FROM inv_bundles b
-     JOIN inv_products bp ON bp.asin = b.bundle_asin
+     LEFT JOIN inv_products bp ON bp.asin = b.bundle_asin
      JOIN inv_products cp ON cp.asin = b.component_asin
-     ORDER BY bp.name`);
+     ORDER BY bp.name NULLS LAST, b.bundle_asin`);
+  if (rows.some(r => !r.bundle_name)) {
+    const fc = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'")).rows[0];
+    const fbaName = {}; for (const f of ((fc && fc.data) || [])) if (f && f.asin && f.name) fbaName[f.asin] = f.name;
+    for (const r of rows) if (!r.bundle_name) r.bundle_name = fbaName[r.bundle_asin] || ('Duo ' + r.bundle_asin);
+  }
   // group by bundle
   const map = {};
   for (const r of rows) {
