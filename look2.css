@@ -101,7 +101,10 @@ html.nl .tabs .tab[onclick*="'admin'"] {
 html.nl .tabs .tab.active[onclick*="'admin'"] { background: var(--k-brand) !important; color: #fff !important; border-color: var(--k-brand) !important; }
 
 /* ---------- Page ---------- */
-html.nl .panel { padding: 22px 24px 40px; max-width: 1480px; margin: 0 auto; }
+/* Wide (owner 11/5: "make the overall page wider… a lot of space on the left
+   and right"): was 1480px, which left ~120px empty each side on a 1720px
+   window. Up to 1920px with a normal margin; still centred on bigger screens. */
+html.nl .panel { padding: 22px 20px 40px; max-width: 1920px; margin: 0 auto; }
 html.nl .nl-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin: 2px 2px 16px; }
 html.nl .nl-head h2 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.3px; color: var(--k-ink); }
 html.nl .nl-head p { margin: 4px 0 0; color: var(--k-ink2); font-size: 16px; line-height: 1.45; max-width: 860px; }
