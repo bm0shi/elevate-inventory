@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'ship-apart-1154';
+const BUILD_ID = 'box-estimate-1155';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2061,7 +2061,7 @@ async function packView(sid, opts = {}) {
   // Where the app-made plan behind this shipment is, so the finished page
   // shows the real next step (it kept saying "send box info" after the
   // freight was booked).
-  let planStage = null, liftgate = null;
+  let planStage = null, liftgate = null, boxesExpected = null;
   if (sh.amz && sh.amz.planRow) {
     const pr = (await pool.query('SELECT status, shipments, confirmed, ship_from FROM inv_inbound_plans WHERE id=$1', [sh.amz.planRow])).rows[0];
     if (pr) {
@@ -2069,13 +2069,15 @@ async function packView(sid, opts = {}) {
       // Per shipment (owner 11/5): a plan's shipments ship on their own, so
       // one can be booked while another is still being built.
       planStage = (me.booked || pr.status === 'confirmed') ? 'booked' : me.boxesSentAt ? 'freight' : 'boxes';
+      // Sent to Amazon as an estimate while still being built: the floor has to end at this many boxes.
+      if (me.estimated) boxesExpected = me.estimated.boxes;
       const c = pr.confirmed || {};
       // Booked before the setting existed: go by the address (liftgate unless turned off)
       const need = c.liftgate != null ? c.liftgate : (pr.ship_from || {}).liftgate !== false;
       if (planStage === 'booked' && need) liftgate = { ok: !!c.liftgateOkAt, carrier: ((c.carriers || []).find(x => x.fba === sid) || {}).carrier || '' };
     }
   }
-  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, planStage, liftgate,
+  return { ok: true, shipment: sh, boxes, plan, pallets, currentPallet: cur, settings: S, nextBoxNo, planStage, liftgate, boxesExpected,
            recommend: pallet.recommend(pallets[cur], candidates, S) };
 }
 // The 2D Production start page: every shipment built in the app (deleted
@@ -3248,6 +3250,37 @@ async function floorBoxes(fba, items) {
 function builtVsShipment(items, boxes) {
   return inboundLib.boxedVsPlan((items || []).map(i => ({ msku: i.msku, qty: i.qty })), boxes);
 }
+// A shipment not finished on the floor, when Amazon wants the box info for
+// EVERY shipment of the plan in one call (owner 11/5: "Provided package
+// grouping ids are incorrect. Expected all of [sh…, sh…]" — a two-warehouse
+// plan, one shipment built and the other not prepped until next week): the
+// boxes built so far plus full cases for the rest, from each product's case
+// size, box size and unit weight — the same numbers 2D Production's BOXES
+// LEFT shows, so the floor then builds exactly this. Box numbers carry on
+// after the last built box. With 2D barcode labels Amazon reads each box's
+// contents off the label, so only the count, sizes and weights go here.
+// → { boxes, built, planned, problems, lines: [{ msku, units, perBox }] }
+async function estimateShipmentBoxes(fba, items, S) {
+  const built = await floorBoxes(fba, items);
+  const boxed = {}; for (const b of built) for (const i of b.items) boxed[i.asin] = (boxed[i.asin] || 0) + (Number(i.qty) || 0);
+  const asins = (items || []).map(i => i.asin).filter(Boolean);
+  const P = {}; for (const r of (await pool.query('SELECT asin, case_qty, case_len, case_wid, case_hgt, unit_weight_lb FROM inv_products WHERE asin = ANY($1)', [asins])).rows) P[r.asin] = r;
+  const duos = new Set((await pool.query('SELECT DISTINCT bundle_asin FROM inv_bundles WHERE bundle_asin = ANY($1)', [asins])).rows.map(r => r.bundle_asin));
+  const lines = [], problems = [];
+  for (const it of items || []) {
+    const left = (Number(it.qty) || 0) - (boxed[it.asin] || 0); if (left <= 0) continue;
+    const p = P[it.asin] || {};
+    const per = p.case_qty > 0 ? Number(p.case_qty) : (duos.has(it.asin) ? 6 : 12);   // the usual case when none is saved (prodPerBox)
+    const size = p.case_len > 0 && p.case_wid > 0 && p.case_hgt > 0 ? { len: Number(p.case_len), wid: Number(p.case_wid), hgt: Number(p.case_hgt) } : null;
+    if (!size || !(p.unit_weight_lb > 0)) { problems.push(`${it.msku}: no ${!size ? 'box size' : 'unit weight'} on file — build one box of it in Shipment Production (or set its size there) first.`); continue; }
+    lines.push({ msku: it.msku, asin: it.asin, qty: left, units: left, perBox: per, ...size, unitLb: Number(p.unit_weight_lb), exp: it.expiration || null });
+  }
+  const plan = inboundLib.planBoxes(lines, S);
+  problems.push(...plan.problems);
+  const start = built.reduce((n, b) => Math.max(n, b.box_no), 0);
+  const planned = plan.boxes.map(b => ({ ...b, box_no: b.box_no + start, estimated: true, items: b.items.map(i => ({ ...i, asin: (lines.find(l => l.msku === i.msku) || {}).asin || null })) }));
+  return { boxes: built.concat(planned), built: built.length, planned: planned.length, problems, lines };
+}
 // Send each finished shipment's boxes to Amazon as 2D barcode (size and
 // weight; Amazon reads the contents off each label), then check Amazon has
 // the same number of boxes. Then the floor's pallets become the starting
@@ -3255,26 +3288,40 @@ function builtVsShipment(items, boxes) {
 async function planSendBoxes(id, args, step) {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   const S = await packSettings();
-  const ships = [];
-  // args.only: the shipments going now (the route picked the finished ones);
-  // the others stay as they are and go later. A plan from before this had no
-  // list: every shipment went together.
-  const going = new Set(args && args.only ? args.only : (p.shipments || []).map(sh => sh.fba));
-  for (const sh of p.shipments || []) {
-    if (!going.has(sh.fba) || sh.booked) { ships.push(sh); continue; }
-    const ps = (await pool.query('SELECT amz, pallets FROM inv_pack_shipments WHERE shipment_id=$1', [sh.fba])).rows[0];
+  const ships = p.shipments || [];
+  // Every shipment's boxes in ONE call (Amazon refuses a call that leaves a
+  // shipment out: "Expected all of [...]"). A shipment not finished on the
+  // floor goes as an estimate when the owner said so (args.estimate).
+  const groupings = [], boxesOf = {}, estOf = {};
+  for (const sh of ships) {
+    const ps = (await pool.query('SELECT status, amz, pallets FROM inv_pack_shipments WHERE shipment_id=$1', [sh.fba])).rows[0];
     const items = (ps && ps.amz && ps.amz.items) || [];
-    const boxes = await floorBoxes(sh.fba, items);
+    let boxes;
+    if (ps && ps.status === 'packing' && !sh.boxesSentAt) {
+      if (!args || !args.estimate) throw new Error(`${sh.fba} isn't finished — Amazon needs every shipment's box info at once. Finish it, or send it as an estimate.`);
+      const est = await estimateShipmentBoxes(sh.fba, items, S);
+      if (est.problems.length) throw new Error(sh.fba + ': ' + est.problems.join(' '));
+      boxes = est.boxes; estOf[sh.fba] = { built: est.built, planned: est.planned, boxes: est.boxes.length, at: new Date().toISOString(), lines: est.lines.map(l => ({ msku: l.msku, units: l.units, perBox: l.perBox })) };
+    } else boxes = await floorBoxes(sh.fba, items);
+    boxesOf[sh.fba] = { boxes, pallets: ps && ps.pallets };
     if (!sh.boxesSentAt) {
       const body = inboundLib.shipmentBoxesBody(sh.shipmentId, boxes, S);
       if (body.problems.length) throw new Error(sh.fba + ': ' + body.problems.join(' '));
-      await step(`Sending ${boxes.length} boxes for ${sh.fba} to Amazon…`);
-      const r = await amzInbound.setPackingInformation(p.plan_id, body.body);
-      await amzInbound.waitOperation(r.operationId, { onProgress: step });
-      sh.boxesSentAt = new Date().toISOString();
-      // Recorded straight away so Retry doesn't send it twice.
-      await pool.query('UPDATE inv_inbound_plans SET shipments=$2 WHERE id=$1', [id, JSON.stringify([...ships, sh, ...(p.shipments || []).slice(ships.length + 1)])]);
+      groupings.push(...body.body.packageGroupings);
     }
+  }
+  if (groupings.length) {
+    await step(`Sending ${groupings.reduce((n, g) => n + g.boxes.length, 0)} boxes for ${groupings.length} shipment${groupings.length === 1 ? '' : 's'} to Amazon…`);
+    const r = await amzInbound.setPackingInformation(p.plan_id, { packageGroupings: groupings });
+    await amzInbound.waitOperation(r.operationId, { onProgress: step });
+    const at = new Date().toISOString();
+    for (const sh of ships) if (!sh.boxesSentAt) { sh.boxesSentAt = at; if (estOf[sh.fba]) sh.estimated = estOf[sh.fba]; }
+    // Recorded straight away so Retry doesn't send it twice.
+    await pool.query('UPDATE inv_inbound_plans SET shipments=$2 WHERE id=$1', [id, JSON.stringify(ships)]);
+  }
+  for (const sh of ships) {
+    if (sh.booked) continue;
+    const { boxes, pallets } = boxesOf[sh.fba];
     await step(`Checking Amazon's box numbers for ${sh.fba}…`);
     const amzBoxes = await amzInbound.listShipmentBoxes(p.plan_id, sh.shipmentId);
     // 2D barcode: Amazon reads each box's contents off its label, so only the
@@ -3282,8 +3329,10 @@ async function planSendBoxes(id, args, step) {
     sh.boxCheck = inboundLib.checkBoxIds(boxes, amzBoxes);
     sh.boxCheck = { ...sh.boxCheck, wrong: [], ok: !sh.boxCheck.missing.length && !sh.boxCheck.extra.length };
     sh.boxes = boxes.length; sh.units = boxes.reduce((t, b) => t + b.items.reduce((u, i) => u + i.qty, 0), 0);
-    sh.pallets = inboundLib.floorPallets(boxes, S, ps && ps.pallets);
-    ships.push(sh);
+    // An estimated shipment's planned boxes have no pallet yet: stacked as the placement guess does.
+    const real = boxes.filter(b => !b.estimated), est = boxes.filter(b => b.estimated);
+    sh.pallets = inboundLib.floorPallets(real, S, pallets);
+    if (est.length) { const more = inboundLib.palletize(est, S); const n0 = sh.pallets.length; sh.pallets = sh.pallets.concat(more.map((x, k) => ({ ...x, pallet: n0 + k + 1, estimated: true }))); }
   }
   await pool.query("UPDATE inv_inbound_plans SET shipments=$2, freight=NULL, status='pallets', step=NULL, updated_at=now() WHERE id=$1", [id, JSON.stringify(ships)]);
 }
@@ -3293,9 +3342,10 @@ async function planQuote(id, args, step) {
   if (!c.contactName || !c.phone) throw new Error('Freight quotes need a contact name and phone on the ship-from address.');
   // 9 AM Arizona on the ready day; for today after 9 AM, from now (Amazon
   // refuses a ready time in the past).
-  const start = new Date(Math.max(new Date(args.readyDate + 'T09:00:00-07:00').getTime(), Date.now() + 5 * 60000));
+  const startOf = (day) => new Date(Math.max(new Date(day + 'T09:00:00-07:00').getTime(), Date.now() + 5 * 60000));
   const conf = inFlight(p).map(sh => {
     const edited = (args.pallets || {})[sh.shipmentId] || sh.pallets;
+    const start = startOf(((args.readyDates || {})[sh.shipmentId]) || args.readyDate);
     return { shipmentId: sh.shipmentId, readyToShipWindow: { start: start.toISOString() },
       contactInformation: { name: c.contactName, phoneNumber: String(c.phone).replace(/[^\d+]/g, ''), ...(c.email ? { email: c.email } : {}) },
       pallets: inboundLib.palletsBody(edited, !!args.stackable),
@@ -3312,7 +3362,7 @@ async function planQuote(id, args, step) {
   for (const o of all) (quotes[o.shipmentId] = quotes[o.shipmentId] || []).push(o);
   const ships = (p.shipments || []).map(sh => ({ ...sh, pallets: (args.pallets || {})[sh.shipmentId] || sh.pallets }));
   await pool.query("UPDATE inv_inbound_plans SET shipments=$2, freight=$3, status='quotes', step=NULL, updated_at=now() WHERE id=$1",
-    [id, JSON.stringify(ships), JSON.stringify({ readyDate: args.readyDate, stackable: !!args.stackable, quotes, at: new Date().toISOString() })]);
+    [id, JSON.stringify(ships), JSON.stringify({ readyDate: args.readyDate, readyDates: args.readyDates || {}, stackable: !!args.stackable, quotes, at: new Date().toISOString() })]);
 }
 // The purchase: book the freight (the destination was confirmed earlier).
 // Resumable: recorded the moment Amazon accepts it, so Retry never buys twice.
@@ -3386,25 +3436,35 @@ app.post('/api/inbound/plans/:id/boxes', auth, async (req, res) => {
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
   if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
   if (p.status !== 'building') return res.status(409).json({ ok: false, error: 'The boxes were already sent (or the destination isn\'t confirmed yet).' });
-  // Each shipment of a plan goes on its own (owner 11/5: a two-warehouse
-  // plan, one shipment built today and the other not prepped until next
-  // week, was held by the app until both were finished; Amazon takes box
-  // info, freight quotes and the booking per shipment). Only the shipments
-  // Finished on the floor and not sent yet go now; the rest follow later
-  // through the same button.
-  const diffs = [], only = [], waiting = [];
+  // Amazon takes the box info for EVERY shipment of a plan in one call
+  // (owner 11/5, "Expected all of [sh…, sh…]": a two-warehouse plan with one
+  // shipment built and the other not prepped until next week). A shipment
+  // still being built can go as an estimate (estimateShipmentBoxes: built
+  // boxes + full cases for the rest), with the owner's say-so (estimate:
+  // true); the answer `needs_estimate` lists what that would send.
+  const diffs = [], waiting = [], S = await packSettings();
+  let finished = 0;
   for (const sh of p.shipments || []) {
     if (sh.boxesSentAt || sh.booked) continue;
     const ps = (await pool.query('SELECT status, amz FROM inv_pack_shipments WHERE shipment_id=$1', [sh.fba])).rows[0];
     if (!ps) return res.status(409).json({ ok: false, error: `${sh.fba} isn't in Shipment Production any more.` });
-    if (ps.status === 'packing') { waiting.push(sh.fba); continue; }
-    const cmp = builtVsShipment((ps.amz && ps.amz.items) || [], await floorBoxes(sh.fba, (ps.amz && ps.amz.items) || []));
+    const items = (ps.amz && ps.amz.items) || [];
+    if (ps.status === 'packing') {
+      const est = await estimateShipmentBoxes(sh.fba, items, S);
+      waiting.push({ fba: sh.fba, fc: sh.fc, built: est.built, planned: est.planned, boxes: est.boxes.length, problems: est.problems,
+        lines: est.lines.map(l => ({ msku: l.msku, units: l.units, perBox: l.perBox, boxes: Math.ceil(l.units / l.perBox) })) });
+      continue;
+    }
+    finished++;
+    const cmp = builtVsShipment(items, await floorBoxes(sh.fba, items));
     for (const r of cmp.rows) if (r.planned !== r.boxed) diffs.push(`${sh.fba} ${r.msku}: built ${r.boxed}, Amazon expects ${r.planned}`);
-    only.push(sh.fba);
   }
-  if (!only.length) return res.status(409).json({ ok: false, error: waiting.length ? `Nothing is finished yet — build the boxes and press Finish in Shipment Production first (${waiting.join(', ')}).` : 'Every shipment was already sent.' });
+  if (!finished && !waiting.length) return res.status(409).json({ ok: false, error: 'Every shipment was already sent.' });
+  if (!finished) return res.status(409).json({ ok: false, error: `Nothing is finished yet — build the boxes and press Finish in Shipment Production first (${waiting.map(w => w.fba).join(', ')}).` });
+  if (waiting.length && !req.body.estimate) return res.status(409).json({ ok: false, error: 'needs_estimate', waiting });
+  if (waiting.some(w => w.problems.length)) return res.status(409).json({ ok: false, error: waiting.flatMap(w => w.problems.map(t => w.fba + ': ' + t)).join(' ') });
   if (diffs.length && !req.body.force) return res.status(409).json({ ok: false, error: 'built_differs', diffs });
-  const args = { force: !!req.body.force, only };
+  const args = { force: !!req.body.force, estimate: !!req.body.estimate };
   runPlanJob(id, 'Sending the boxes to Amazon…', (step) => planSendBoxes(id, args, step), 'boxes', args);
   res.json({ ok: true });
 });
@@ -3416,13 +3476,17 @@ app.post('/api/inbound/plans/:id/quote', auth, async (req, res) => {
   if (!['pallets', 'quotes'].includes(p.status)) return res.status(409).json({ ok: false, error: 'Send the boxes to Amazon first.' });
   const b = req.body || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(b.readyDate || '')) return res.status(400).json({ ok: false, error: 'Pick the date the pallets are ready.' });
+  // One ready day per shipment (owner 11/5: the second shipment of a plan is
+  // built next week; Amazon's readyToShipWindow is per shipment).
+  const readyDates = {};
+  for (const [sid, d] of Object.entries(b.readyDates || {})) { if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d || ''))) return res.status(400).json({ ok: false, error: 'Pick a ready date for each shipment.' }); readyDates[sid] = d; }
   const pallets = {};
   for (const sh of inFlight(p)) {
     const list = ((b.pallets || {})[sh.shipmentId] || sh.pallets).map(x => ({ boxes: parseInt(x.boxes, 10) || null, weight: Number(x.weight), height: Number(x.height) }));
     if (!list.length || list.some(x => !(x.weight > 0 && x.weight <= 5000 && x.height > 0 && x.height <= 110))) return res.status(400).json({ ok: false, error: 'Every pallet needs a real weight (lb) and height (in).' });
     pallets[sh.shipmentId] = list;
   }
-  const args = { readyDate: b.readyDate, stackable: !!b.stackable, pallets };
+  const args = { readyDate: b.readyDate, readyDates, stackable: !!b.stackable, pallets };
   runPlanJob(id, 'Asking Amazon for freight quotes…', (step) => planQuote(id, args, step), 'quote', args);
   res.json({ ok: true });
 });
