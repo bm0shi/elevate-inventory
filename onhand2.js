@@ -20,7 +20,10 @@
   'use strict';
   const K = { ink: '#0b1f24', ink2: '#45545f', muted: '#7d8b97', line: '#e3e9ee', line2: '#eef2f5', brand: '#0d4450', amz: '#ff9900',
               good: '#0b7a0b', goodBg: '#e8f6ea', warn: '#a86b00', warnBg: '#fff4dc', crit: '#b42d2d', critBg: '#fdecec', info: '#1f5fae', infoBg: '#e8f1fc',
-              shelf: '#2a78d6', pend: '#eb6834', prep: '#1baf7a', way: '#eda100', fba: '#e87ba4' };
+              // One colour per meaning across the app (owner 11/5, readability):
+              // warehouse = teal family, Amazon = blue family, sales = purple;
+              // red / amber / green only for status.
+              shelf: '#0f766e', pend: '#4fb3a9', prep: '#a3dbd3', way: '#93b8ee', fba: '#1d64c8', sales: '#6d3fc0' };
   const store = { get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} } };
   const E = s => (typeof esc === 'function' ? esc(String(s == null ? '' : s)) : String(s == null ? '' : s));
   const n0 = v => Math.round(v || 0).toLocaleString();
@@ -28,6 +31,50 @@
 
   const CSS = `
   .oh2{color:${K.ink}}
+  /* READABILITY PASS (owner 11/5: "max readability and still keep our important info") */
+  .oh2-ids{display:flex;flex-wrap:wrap;gap:3px 16px;margin-top:8px;font-size:12.5px;color:${K.muted}}
+  .oh2-ids span{cursor:pointer;white-space:nowrap}
+  .oh2-ids b{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-right:5px}
+  .oh2-ids i{font-style:normal;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:${K.ink2};font-weight:600}
+  .oh2-ids span:hover i{color:${K.brand};text-decoration:underline}
+  .st-chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:750;border-radius:999px;padding:4px 10px;white-space:nowrap;line-height:1.2}
+  .st-chip i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:none}
+  .st-chip.good{background:#ecf8f0;color:#18794e}.st-chip.warn{background:#fff4dc;color:#a15c07}.st-chip.crit{background:#fdecea;color:#b42318}
+  .st-chip.duo{background:#f5f1fd;color:#5b34a8}
+  .oh2 .sa tr.grp th{padding:4px 6px 3px;border-bottom:0;font-size:10px;letter-spacing:1.2px}
+  .oh2 .sa tr.grp th.gs{color:${K.sales}!important;box-shadow:inset 0 -2px 0 ${K.sales}}
+  .oh2 .sa tr.grp th.ga{color:${K.fba}!important;box-shadow:inset 0 -2px 0 ${K.fba}}
+  .oh2 .sa tr.grp th.gh{color:${K.ink2}!important;box-shadow:inset 0 -2px 0 #c3ccd4}
+  .oh2 .sa td.bs{box-shadow:inset 0 0 0 999px rgba(109,63,192,.045)}
+  .oh2 .sa td.ba{box-shadow:inset 0 0 0 999px rgba(29,100,200,.05)}
+  .oh2 .sa td.g1{border-left:1px solid ${K.line}}
+  .h-crit{box-shadow:inset 0 0 0 999px rgba(180,35,24,.08)!important}
+  .h-warn{box-shadow:inset 0 0 0 999px rgba(201,130,0,.09)!important}
+  .h-good{box-shadow:inset 0 0 0 999px rgba(24,121,78,.06)!important}
+  .sa-bf{all:unset;box-sizing:border-box;cursor:pointer;display:inline-flex;align-items:center;gap:7px;white-space:nowrap;max-width:100%;margin-top:8px;font-size:12.5px;font-weight:650;color:${K.ink2};background:#fff;border:1px solid ${K.line};border-radius:999px;padding:4px 11px}
+  .sa-bf:hover{border-color:#c6d4dc;color:${K.ink}}
+  .sa-bf .ok{color:#18794e;font-weight:800}.sa-bf .no{color:#b42318;font-weight:800}
+  .sa-bf .car{display:inline-block;transition:transform .2s;font-size:10px}
+  .sa-bf.open .car{transform:rotate(180deg)}
+  .oh2 .sa tr.pr{display:none}.oh2 .sa tr.pr.show{display:table-row}
+  .oh2 .sa tr.top td{border-bottom:1px solid ${K.line2}}.oh2 .sa tr.top.open td{border-bottom:0}
+  .oh2-tbl thead tr.grp th{top:0;z-index:3;font-size:10.5px;letter-spacing:1.2px;padding:6px 8px 4px;border-bottom:0;background:#fff;height:26px}
+  .oh2-tbl thead tr.cols th{top:26px}
+  .oh2-tbl th.gw{color:${K.shelf};box-shadow:inset 0 -2px 0 ${K.shelf}}
+  .oh2-tbl th.ga{color:${K.fba};box-shadow:inset 0 -2px 0 ${K.fba}}
+  .oh2-tbl th.gt{color:${K.brand};box-shadow:inset 0 -2px 0 ${K.brand}}
+  .oh2-tbl th.gs{color:${K.sales};box-shadow:inset 0 -2px 0 ${K.sales}}
+  .oh2-tbl td.bw{box-shadow:inset 0 0 0 999px rgba(15,118,110,.045)}
+  .oh2-tbl td.ba{box-shadow:inset 0 0 0 999px rgba(29,100,200,.05)}
+  .oh2-tbl td.bs{box-shadow:inset 0 0 0 999px rgba(109,63,192,.045)}
+  .oh2-tbl td.g1,.oh2-tbl th.g1{border-left:1px solid ${K.line}}
+  .oh2-tbl tr td:first-child{position:sticky;left:0;z-index:1;background:#fff}
+  .oh2-tbl thead th:first-child{position:sticky;left:0;z-index:4}
+  .oh2-tbl th.srt{cursor:pointer;user-select:none}.oh2-tbl th.srt:hover{color:${K.ink}}
+  .oh2-tbl th.srt.on{color:${K.brand}}
+  .oh2-tbl.compact td{padding:5px 8px}.oh2-tbl.compact .big{font-size:16px}
+  .oh2-tbl.compact .nm img,.oh2-tbl.compact .nm .ph{width:26px;height:26px;flex-basis:26px}
+  .oh2-tbl.compact .nm .t div{display:none}
   .oh2 *{box-sizing:border-box}
   .oh2-head{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;margin:2px 2px 14px}
   .oh2-head h2{margin:0;font-size:28px;font-weight:800;letter-spacing:-.3px}
@@ -182,7 +229,7 @@
     .oh2 .sa tr.g-duo{border-left-color:#e5484d;background:#fffafa}.oh2 .sa tr.g-single{border-left-color:${K.brand}}
     .oh2 .sa td.lst,.oh2 .sa td.pt{border-left:0}
     .oh2 .sa tr.top{border-bottom:0}
-    .oh2 .sa tr.pr{display:block}
+    .oh2 .sa tr.pr{display:none}.oh2 .sa tr.pr.show{display:block}
     .sa-parts{grid-template-columns:1fr}
     .oh2 .sa td:empty{display:none}
   }
@@ -268,7 +315,8 @@
       '<div class="oh2-bar" id="oh2Bar"><div class="oh2-search">' + searchIco + '<input id="oh2Q" type="search" placeholder="Search name or ASIN" autocomplete="off"><kbd>/</kbd></div>' +
       '<div class="oh2-chips" id="oh2Chips">' + FILTERS.map(f => '<button class="oh2-chip" data-f="' + f[0] + '">' + f[1] + '</button>').join('') + '</div>' +
       '<select class="oh2-sel" id="oh2Sort" title="Sort">' + sortOpts + '</select>' +
-      '<span class="oh2-seg" id="oh2Lay"><button data-lay="cards">Cards</button><button data-lay="table">Table</button></span></div>' +
+      '<span class="oh2-seg" id="oh2Lay"><button data-lay="cards">Cards</button><button data-lay="table">Table</button></span>' +
+      '<span class="oh2-seg" id="oh2Den" title="Row height in the table"><button data-den="roomy">Roomy</button><button data-den="compact">Compact</button></span></div>' +
       '<div class="oh2-count" id="oh2Count"></div>';
     // the classic "add product" box moves up here while the new look is on
     const box = document.getElementById('addProductBox'); if (box) document.getElementById('oh2AddWrap').appendChild(box);
@@ -291,6 +339,7 @@
     if (sortSrc) sort.value = sortSrc.value;
     sort.addEventListener('change', () => { if (sortSrc) sortSrc.value = sort.value; renderOnhand(); });
     document.getElementById('oh2Lay').addEventListener('click', e => { const b = e.target.closest('[data-lay]'); if (!b) return; store.set('ohLayout', b.dataset.lay); renderOnhand(); });
+    document.getElementById('oh2Den').addEventListener('click', e => { const b = e.target.closest('[data-den]'); if (!b) return; store.set('ohDensity', b.dataset.den); renderOnhand(); });
     document.getElementById('oh2Tiles').addEventListener('click', e => { const t = e.target.closest('[data-go]'); if (t) tileGo(t.dataset.go); });
     document.getElementById('oh2Add').addEventListener('click', () => { if (typeof toggleAddProduct === 'function') toggleAddProduct(); });
     document.getElementById('oh2Img').addEventListener('click', () => { if (typeof pullImages === 'function') pullImages(); });
@@ -406,16 +455,17 @@
     const freeOf = a => { if (a === p.asin) return available; const x = byAsin(a); return Math.max(0, (x.onhand || 0) - (x.pending_prep || 0) - (x.prepped || 0)); };
     const N = window._soldNow; if (!N && typeof loadSoldNow === 'function') loadSoldNow();
     const named = (a, nm) => typeof amzLinkSized === 'function' ? amzLinkSized(a, nm || byAsin(a).name || a) : E(nm || a);
-    const num = (v, l) => { const dl = l ? ' data-l="' + l + '"' : ''; return v == null ? '<td class="z"' + dl + '>—</td>' : '<td' + dl + (v === 0 ? ' class="z"' : '') + '>' + n0(v) + '</td>'; };
+    // Columns in shaded groups (owner 11/5): SALES (purple) | AT AMAZON (blue) | HEALTH.
+    const num = (v, l, cls) => { const dl = l ? ' data-l="' + l + '"' : '', c = [cls || '', v == null || v === 0 ? 'z' : ''].join(' ').trim(); return '<td' + dl + (c ? ' class="' + c + '"' : '') + '>' + (v == null ? '—' : n0(v)) + '</td>'; };
     const metrics = (r) => {
       const sold = N ? (N.sold && N.sold[r.asin]) || 0 : null;
       const s3 = typeof ss3p === 'function' ? ss3p(r.asin) : null;
       const R = typeof demandRate === 'function' ? demandRate(r.asin, r.sold) : { mo: 0 }, tot = r.at + r.way;
       const cover = R.mo > 0 ? tot / (R.mo / 30) : null;
-      return '<td data-l="We sold 30d"' + (sold ? '' : ' class="z"') + ' title="' + E('Our own units sold, the last 30 days' + (r.sold != null ? ' · whole listing (all sellers, Keepa) ~' + n0(r.sold) + '/mo' : '')) + '">' + (sold == null ? '…' : n0(sold)) + '</td>' +
-        '<td data-l="3P avg / mo"' + (s3 ? ' title="' + E(s3.t) + '"' : ' class="z"') + '>' + (s3 ? '~' + n0(s3.v) : '—') + '</td>' +
-        num(r.at, 'At Amazon') + num(r.way, 'On the way') + num(tot, 'Total') +
-        '<td data-l="FBA cover"' + (R.note ? ' title="' + E(R.note) + '"' : '') + '>' + coverBadge(cover) + '</td>';
+      return '<td data-l="We sold 30d" class="bs g1' + (sold ? '' : ' z') + '" title="' + E('Our own units sold, the last 30 days' + (r.sold != null ? ' · whole listing (all sellers, Keepa) ~' + n0(r.sold) + '/mo' : '')) + '">' + (sold == null ? '…' : n0(sold)) + '</td>' +
+        '<td data-l="3P avg / mo" class="bs' + (s3 ? '' : ' z') + '"' + (s3 ? ' title="' + E(s3.t) + '"' : '') + '>' + (s3 ? '~' + n0(s3.v) : '—') + '</td>' +
+        num(r.at, 'At Amazon', 'ba g1') + num(r.way, 'On the way', 'ba') + num(tot, 'Total', 'ba') +
+        '<td data-l="FBA cover" class="g1 ' + heat(cover) + '"' + (R.note ? ' title="' + E(R.note) + '"' : '') + '>' + coverBadge(cover) + '</td>';
     };
     const copy = (label, v, t) => v ? '<span><b>' + label + '</b><span class="m" onclick="copyText(\'' + q1(v) + '\',this)" title="' + t + '">' + E(v) + '</span></span>' : '';
     const parts = (duoAsin) => {
@@ -433,7 +483,8 @@
       const res = build > 0
         ? '<div class="sa-res ok"><span>Can build</span><b>' + n0(build) + '</b><small>duo' + (build === 1 ? '' : 's') + ' now</small></div>'
         : '<div class="sa-res no"><span>Can’t build</span><b>0</b><small>part ' + short.join(' & ') + ' is short</small></div>';
-      return '<div class="sa-ptl">Built from</div><div class="sa-parts">' + tiles + res + '</div>';
+      return { html: '<div class="sa-ptl">Built from</div><div class="sa-parts">' + tiles + res + '</div>',
+        sum: '<span>' + each.map((x, i) => '<b>' + 'ABCD'.charAt(i) + '</b> ' + n0(x.f)).join(' · ') + ' → ' + (build > 0 ? '<span class="ok">can build ' + n0(build) + '</span>' : '<span class="no">can’t build</span>') + '</span>' };
     };
     const nDuo = rows.filter(r => r.label === 'Duo').length, nSingle = rows.length - nDuo;
     const body = rows.map(r => {
@@ -441,20 +492,61 @@
       if (r.label !== 'Duo') return '<tr class="g-single"><td class="lst"><span class="sa-kind single">SINGLE</span>' +
         '<div class="sa-name">This bottle on its own</div><div class="sa-meta">' + copy('ASIN', r.asin, 'Copy ASIN') + copy('FNSKU', p.fnsku, 'Copy FNSKU') + '</div></td>' + metrics(r) + '</tr>';
       const cq = typeof caseQtyOf === 'function' ? caseQtyOf(Object.assign({ is_bundle: true }, d)) : 6;
-      const withParts = !p.is_bundle;
-      return '<tr class="g-duo' + (withParts ? ' top' : '') + '"><td class="lst"><span class="sa-kind duo">DUO</span>' +
+      // The parts fold away to one line (owner 11/5): tap it for the tiles.
+      const withParts = !p.is_bundle, key = p.asin + '|' + r.asin, open = !!(window._saOpen && window._saOpen.has(key));
+      const pt = withParts ? parts(r.asin) : null;
+      return '<tr class="g-duo' + (withParts ? ' top' + (open ? ' open' : '') : '') + '" data-sak="' + E(key) + '"><td class="lst"><span class="sa-kind duo">DUO</span>' +
         '<div class="sa-name">' + named(r.asin, r.name || d.name) + '</div><div class="sa-meta">' + copy('ASIN', r.asin, 'Copy duo ASIN') + copy('FNSKU', d.fnsku, 'Copy duo FNSKU') +
-        '<span><b>Case</b><span class="e" onclick="setCaseQty(\'' + q1(r.asin) + '\',true)" title="Tap to change duos per case">' + cq + ' duos ✎</span></span></div></td>' + metrics(r) + '</tr>' +
-        (withParts ? '<tr class="g-duo pr"><td class="pt" colspan="7">' + parts(r.asin) + '</td></tr>' : '');
+        '<span><b>Case</b><span class="e" onclick="setCaseQty(\'' + q1(r.asin) + '\',true)" title="Tap to change duos per case">' + cq + ' duos ✎</span></span></div>' +
+        (pt ? '<button class="sa-bf' + (open ? ' open' : '') + '" onclick="ohSaToggle(\'' + q1(key) + '\',this)" title="Show the bottles it\'s built from"><span style="color:' + K.muted + ';font-size:11px;font-weight:700;letter-spacing:.4px;text-transform:uppercase">Parts</span>' + pt.sum + '<span class="car">▾</span></button>' : '') +
+        '</td>' + metrics(r) + '</tr>' +
+        (pt ? '<tr class="g-duo pr' + (open ? ' show' : '') + '" data-sak="' + E(key) + '"><td class="pt" colspan="7">' + pt.html + '</td></tr>' : '');
     }).join('');
     const tAt = rows.reduce((n, r) => n + r.at * r.per, 0), tWay = rows.reduce((n, r) => n + r.way * r.per, 0);
-    const foot = rows.length > 1 ? '<tr class="tot"><td class="lst">All listings · in bottles</td><td></td><td></td>' + num(tAt, 'At Amazon') + num(tWay, 'On the way') + num(tAt + tWay, 'Total') + '<td></td></tr>' : '';
+    const foot = rows.length > 1 ? '<tr class="tot"><td class="lst">All listings · in bottles</td><td class="bs g1"></td><td class="bs"></td>' + num(tAt, 'At Amazon', 'ba g1') + num(tWay, 'On the way', 'ba') + num(tAt + tWay, 'Total', 'ba') + '<td class="g1"></td></tr>' : '';
     return '<details class="oh2-more" open data-k="sells-' + E(p.asin) + '"><summary>Sells as <span class="cnt">· ' +
       [nSingle ? nSingle + ' single' : '', nDuo ? nDuo + ' duo' + (nDuo === 1 ? '' : 's') : ''].filter(Boolean).join(' + ') + '</span>' +
       (p.fba_as_of ? '<a href="#" onclick="event.preventDefault();amazonCheck(\'' + q1(p.asin) + '\')" style="margin-left:auto;font-size:12.5px;font-weight:700;color:#2563a8">Check with Amazon</a>' : '') + '</summary>' +
-      '<table class="sa"><thead><tr><th>Listing</th><th title="Our own units sold, the last 30 days">Sold<br>30d</th><th title="What one third-party seller sells a month, all of them on the listing">3P avg<br>/ mo</th><th>At<br>Amazon</th><th>On the<br>way</th><th title="At Amazon + on the way">Total</th><th title="Days at Amazon + on the way lasts at the best-estimate sales rate">FBA<br>cover</th></tr></thead><tbody>' +
+      '<table class="sa"><thead><tr class="grp"><th></th><th colspan="2" class="gs">Sales</th><th colspan="3" class="ga">At Amazon</th><th class="gh">Health</th></tr><tr><th>Listing</th><th title="Our own units sold, the last 30 days">Sold<br>30d</th><th title="What one third-party seller sells a month, all of them on the listing">3P avg<br>/ mo</th><th>At<br>Amazon</th><th>On the<br>way</th><th title="At Amazon + on the way">Total</th><th title="Days at Amazon + on the way lasts at the best-estimate sales rate">FBA<br>cover</th></tr></thead><tbody>' +
       body + foot + '</tbody></table></details>';
   }
+  // IDs on one quiet line, each tap-to-copy (they were three big chips).
+  function idLine(pairs) {
+    const L = pairs.filter(x => x[1]);
+    return L.length ? '<div class="oh2-ids">' + L.map(([k, v]) => '<span onclick="copyText(\'' + q1(v) + '\')" title="Tap to copy ' + k + '"><b>' + k + '</b><i>' + E(v) + '</i></span>').join('') + '</div>' : '';
+  }
+  // The one-glance answer for the card: how long the stock at Amazon (+ on
+  // the way) lasts. Red under 21 days, amber under 45, green beyond.
+  function coverOf(p) {
+    const lt = typeof listingTotals === 'function' ? listingTotals(p) : { at: 0, way: 0, rate: 0 };
+    return lt.rate > 0 ? (lt.at + lt.way) / (lt.rate / 30) : null;
+  }
+  function healthChip(p) {
+    const c = coverOf(p); if (c == null) return '';
+    const d = Math.round(c), cls = d < 21 ? 'crit' : d < 45 ? 'warn' : 'good';
+    return '<span class="st-chip ' + cls + '" title="Days the stock at Amazon + on the way lasts at the best-estimate sales rate"><i></i>' + (cls === 'crit' ? 'Low at Amazon' : cls === 'warn' ? 'Watch' : 'Healthy') + ' · ' + n0(d) + 'd</span>';
+  }
+  function duoChip(p, available) {
+    let best = 0;
+    for (const pt of (p.partners || [])) best = Math.max(best, Math.min(available, pt.onhand || 0));
+    return best > 0 ? '<span class="st-chip duo" title="Duos you can build from free bottles right now (the best one)">Can build ' + n0(best) + ' duo' + (best === 1 ? '' : 's') + '</span>' : '';
+  }
+  const heat = d => d == null ? '' : d < 21 ? 'h-crit' : d < 45 ? 'h-warn' : 'h-good';
+  window.ohTblSort = function (e) {
+    const th = e.target.closest && e.target.closest('th[data-srt]'); if (!th) return;
+    const sel = document.getElementById('sortOnhand'); if (!sel) return;
+    let k = th.dataset.srt;
+    if (k === 'name' && sel.value === 'name') k = 'name_desc';
+    else if (k === 'onhand_desc' && sel.value === 'onhand_desc') k = 'onhand_asc';
+    sel.value = k; const s2 = document.getElementById('oh2Sort'); if (s2) s2.value = k;
+    renderOnhand();
+  };
+  window.ohSaToggle = function (k, btn) {
+    const S = window._saOpen = window._saOpen || new Set(), on = !S.has(k);
+    if (on) S.add(k); else S.delete(k);
+    document.querySelectorAll('[data-sak="' + (window.CSS && CSS.escape ? CSS.escape(k) : k) + '"]').forEach(el => el.classList.toggle(el.classList.contains('pr') ? 'show' : 'open', on));
+    if (btn) btn.classList.toggle('open', on);
+  };
   function card(p, i) {
     const o = p.onhand || 0, t = p.transit || 0, pend = p.pending_prep || 0, prep = p.prepped || 0;
     const available = Math.max(0, o - pend - prep);
@@ -469,12 +561,10 @@
       '<div class="oh2-top"><div class="oh2-img">' + img + '</div>' +
       '<div style="min-width:0"><div class="oh2-name">' + name + '</div><div class="oh2-tags">' +
         '<span class="oh2-tag loc' + (p.location ? '' : ' none') + '" onclick="editLocation(\'' + q1(p.asin) + '\')" title="Pallet location — tap to change">📍 <b>' + E(p.location || 'Set location') + '</b></span>' +
-        tag('', 'ASIN', p.asin, 'copyText(\'' + q1(p.asin) + '\',this)', 'Tap to copy') +
-        (p.sku ? tag('', 'SKU', p.sku, 'copyText(\'' + q1(p.sku) + '\',this)', 'Tap to copy') : '') +
-        (p.fnsku ? tag('', 'FNSKU', p.fnsku, 'copyText(\'' + q1(p.fnsku) + '\',this)', 'Tap to copy') : '') +
+        healthChip(p) + duoChip(p, available) +
         (p.is_bundle ? '<span class="oh2-tag duo">This is a duo</span>' : '') +
         (typeof fbmMark === 'function' ? fbmMark(p.asin) : '') +
-      '</div></div>' +
+      '</div>' + idLine([['ASIN', p.asin], ['SKU', p.sku], ['FNSKU', p.fnsku]]) + '</div>' +
       '<div class="oh2-av"><div class="n' + (available <= 0 ? ' zero' : '') + '">' + n0(available) + '</div><div class="l">Available</div>' + cases + '</div></div>' +
       stockBar(p, available) + stats(p, t) + alerts + sellsAs(p, available) +
       '<div class="oh2-foot"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Label now, not part of any shipment">Prelabeling only</button>' +
@@ -487,15 +577,15 @@
     const o = p.onhand || 0, pend = p.pending_prep || 0, prep = p.prepped || 0, available = Math.max(0, o - pend - prep);
     const lt = typeof listingTotals === 'function' ? listingTotals(p) : { at: 0, way: 0, rate: 0 };
     const cover = lt.rate > 0 ? (lt.at + lt.way) / (lt.rate / 30) : null;
-    const av = ssAvg && ssAvg.avg && ssAvg.avg[p.asin];
+    const s3 = typeof ss3p === 'function' ? ss3p(p.asin) : null;
     const img = p.image ? '<img src="' + E(p.image) + '" alt="" loading="lazy" onerror="this.style.visibility=\'hidden\'">' : '<span class="ph"></span>';
     return '<tr><td><div class="nm">' + img + '<div class="t">' + (typeof amzLinkSized === 'function' ? amzLinkSized(p.asin, p.name) : E(p.name)) +
       '<div style="font-size:14px;color:' + K.muted + ';margin-top:2px">📍 ' + E(p.location || '—') + ' · <span class="oh2-mono" onclick="copyText(\'' + q1(p.asin) + '\',this)">' + E(p.asin) + '</span>' + (typeof fbmMark === 'function' ? ' ' + fbmMark(p.asin) : '') + '</div></div></div></td>' +
-      '<td class="big" style="color:' + (available <= 0 ? K.crit : K.ink) + '">' + n0(available) + '</td>' +
-      '<td>' + (p.is_bundle ? '—' : E(typeof casesParts === 'function' ? casesParts(available, caseQtyOf(p)).main : '')) + '</td>' +
-      '<td>' + n0(pend) + '</td><td>' + n0(prep) + '</td><td>' + n0(p.transit) + '</td><td>' + n0(lt.at) + '</td>' +
-      '<td title="On hand (pending prep and prepped included) + on the way + at Amazon"><div class="big" style="color:' + K.brand + '">' + n0(grandTotal(p)) + '</div><div style="font-size:11px;font-weight:700;color:' + K.muted + ';letter-spacing:.3px">(GRAND TOTAL)</div></td>' +
-      '<td>' + coverBadge(cover) + '</td><td>' + (av && av.avg != null ? '~' + n0(av.avg) : '—') + '</td>' +
+      '<td class="big bw g1" style="color:' + (available <= 0 ? K.crit : K.ink) + '">' + n0(available) + '</td>' +
+      '<td class="bw">' + (p.is_bundle ? '—' : E(typeof casesParts === 'function' ? casesParts(available, caseQtyOf(p)).main : '')) + '</td>' +
+      '<td class="bw">' + n0(pend) + '</td><td class="bw">' + n0(prep) + '</td><td class="ba g1">' + n0(p.transit) + '</td><td class="ba">' + n0(lt.at) + '</td>' +
+      '<td class="g1" title="On hand (pending prep and prepped included) + on the way + at Amazon"><div class="big" style="color:' + K.brand + '">' + n0(grandTotal(p)) + '</div></td>' +
+      '<td class="bs g1 ' + heat(cover) + '">' + coverBadge(cover) + '</td><td class="bs">' + (s3 ? '~' + n0(s3.v) : '—') + '</td>' +
       '<td><div style="display:flex;gap:6px;justify-content:center;flex-wrap:wrap"><button class="oh-btn primary sm" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ')">Prep</button><button class="oh-btn sm oh2-pre" onclick="requestPrep(\'' + q1(p.asin) + '\',' + (p.is_component || p.is_bundle ? 'true' : 'false') + ',true)" title="Prelabeling only: label now, not part of any shipment">Prelabel</button><button class="oh-btn ghost sm" onclick="ohAdjust(\'' + q1(p.asin) + '\')">Fix</button></div></td></tr>';
   }
   function emptyState(filter, q) {
@@ -525,6 +615,8 @@
     const s = document.getElementById('oh2Sort'), ss = document.getElementById('sortOnhand'); if (s && ss && s.value !== ss.value) s.value = ss.value;
     const lay = store.get('ohLayout') === 'table' ? 'table' : 'cards';
     document.querySelectorAll('#oh2Lay button').forEach(b => b.classList.toggle('on', b.dataset.lay === lay));
+    const den = store.get('ohDensity') === 'compact' ? 'compact' : 'roomy', dn = document.getElementById('oh2Den');
+    if (dn) { dn.style.display = lay === 'table' ? '' : 'none'; dn.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.den === den)); }
     const cnt = document.getElementById('oh2Count');
     if (ctx.custom) { if (cnt) cnt.textContent = ''; return; }   // a screen that draws itself (Duos I can build)
     if (!(products || []).length) { body.innerHTML = skeleton(); if (cnt) cnt.textContent = 'Loading products…'; return; }
@@ -532,8 +624,11 @@
     const pre = ctx.pickBar || '';
     if (!list.length) { body.innerHTML = pre + '<div class="oh2-grid">' + emptyState(filter, q) + '</div>'; return; }
     if (lay === 'table') {
-      body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl"><colgroup><col style="width:23%"><col style="width:7%"><col style="width:9%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:13%"></colgroup>' +
-        '<thead><tr><th>Product</th><th>Available</th><th>Cases</th><th>Pending</th><th>Prepped</th><th>On the way</th><th>At Amazon</th><th>Grand total</th><th>FBA cover</th><th>3P avg / mo</th><th></th></tr></thead><tbody>' +
+      body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl' + (store.get('ohDensity') === 'compact' ? ' compact' : '') + '" onclick="ohTblSort(event)"><colgroup><col style="width:23%"><col style="width:7%"><col style="width:9%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:13%"></colgroup>' +
+        '<thead><tr class="grp"><th></th><th colspan="4" class="gw g1">In the warehouse</th><th colspan="2" class="ga g1">Amazon</th><th class="gt g1">Everything</th><th colspan="2" class="gs g1">Sales &amp; health</th><th></th></tr>' +
+        '<tr class="cols">' + [['Product', 'name'], ['Available', 'onhand_desc', 'g1'], ['Cases'], ['Pending'], ['Prepped'], ['On the way', 'transit_desc', 'g1'], ['At Amazon', 'fba_asc'], ['Grand total', null, 'g1'], ['FBA cover', 'fbacover_asc', 'g1'], ['3P avg / mo'], ['']]
+          .map(([t, k, c]) => { const cur = (document.getElementById('sortOnhand') || {}).value || ''; const on = k && (cur === k || (k === 'name' && cur === 'name_desc') || (k === 'onhand_desc' && cur === 'onhand_asc'));
+            return '<th class="' + [c || '', k ? 'srt' : '', on ? 'on' : ''].join(' ').trim() + '"' + (k ? ' data-srt="' + k + '" title="Sort"' : '') + '>' + t + (on ? (cur === 'name_desc' || cur === 'onhand_asc' ? ' ▲' : ' ▼') : '') + '</th>'; }).join('') + '</tr></thead><tbody>' +
         list.map(row).join('') + '</tbody></table></div>';
       return;
     }

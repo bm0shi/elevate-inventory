@@ -164,6 +164,39 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
   .pcard { background:#fff; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,0.1); padding:14px; display:flex; gap:12px; align-items:flex-start; }
   .pcard img { width:76px; height:76px; object-fit:contain; border-radius:8px; background:#f4f6f9; flex:0 0 auto; }
   .pcard .pc-body { flex:1 1 auto; min-width:0; }
+  /* READABILITY PASS (owner 11/5): one colour per meaning (warehouse teal,
+     Amazon blue, sales purple; red/amber/green only for status), numbers in
+     shaded groups, IDs on one quiet line, a status chip per card. */
+  .idLine{display:flex;flex-wrap:wrap;align-items:center;gap:3px 14px;margin-top:7px;font-size:12.5px;color:#7d8b97}
+  .idLine > span{cursor:pointer;white-space:nowrap}
+  .idLine b{font-size:10.5px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;margin-right:5px}
+  .idLine i{font-style:normal;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#45545f;font-weight:600}
+  .idLine > span:hover i{color:#0d4450;text-decoration:underline}
+  .idLine .copybtn{margin-left:-6px}
+  .cardChips{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+  .stChip,.locChip{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:750;border-radius:999px;padding:3px 10px;white-space:nowrap;line-height:1.3}
+  .stChip i{width:7px;height:7px;border-radius:50%;background:currentColor}
+  .stChip.good{background:#ecf8f0;color:#18794e}.stChip.warn{background:#fff4dc;color:#a15c07}.stChip.crit{background:#fdecea;color:#b42318}
+  .locChip{background:#e7f4f2;color:#0f766e;font-weight:800}.locChip.none{background:#fdecea;color:#b42318}
+  .sellStrip{display:grid;grid-template-columns:3fr 2fr 1.1fr;gap:6px;margin-top:10px}
+  .ss-g{border-radius:9px;padding:4px 3px 5px;min-width:0}
+  .ss-g.s{background:#f6f2fd}.ss-g.a{background:#eef4fd}.ss-g.h{background:#f3f6f8}
+  .ss-g.h.crit{background:#fdecea}.ss-g.h.warn{background:#fff4dc}.ss-g.h.good{background:#ecf8f0}
+  .ss-gl{font-size:9.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;text-align:center;margin-bottom:1px}
+  .ss-g.s .ss-gl{color:#6d3fc0}.ss-g.a .ss-gl{color:#1d64c8}.ss-g.h .ss-gl{color:#45545f}
+  .ss-gi{display:flex}
+  tr.lgrp td{font-size:10.5px!important;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;text-align:center;padding:4px 6px 3px}
+  tr.lgrp td.la{color:#1d64c8;box-shadow:inset 0 -2px 0 #1d64c8}tr.lgrp td.ls{color:#6d3fc0;box-shadow:inset 0 -2px 0 #6d3fc0}tr.lgrp td.lh{color:#45545f;box-shadow:inset 0 -2px 0 #c3ccd4}
+  td.lb-s{box-shadow:inset 0 0 0 999px rgba(109,63,192,.045)}td.lb-a{box-shadow:inset 0 0 0 999px rgba(29,100,200,.05)}
+  .lg1{border-left:1px solid #e3e9ee}
+  .prelabelT tr.pgrp th{font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;padding:4px 6px 3px;background:transparent}
+  .prelabelT th.ps{color:#6d3fc0;box-shadow:inset 0 -2px 0 #6d3fc0}.prelabelT th.pa{color:#1d64c8;box-shadow:inset 0 -2px 0 #1d64c8}.prelabelT th.ph{color:#45545f;box-shadow:inset 0 -2px 0 #c3ccd4}
+  .prelabelT td.pb-s{box-shadow:inset 0 0 0 999px rgba(109,63,192,.045)}.prelabelT td.pb-a{box-shadow:inset 0 0 0 999px rgba(29,100,200,.05)}
+  .prelabelT .pg1{border-left:1px solid #e3e9ee}
+  .h-crit{box-shadow:inset 0 0 0 999px rgba(180,35,24,.08)!important}.h-warn{box-shadow:inset 0 0 0 999px rgba(201,130,0,.09)!important}.h-good{box-shadow:inset 0 0 0 999px rgba(24,121,78,.06)!important}
+  .ss-b{flex:1;display:flex;flex-direction:column;align-items:center;min-width:0}
+  .ss-b b{font-size:14px;line-height:1.25;color:#0b1f24;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .ss-b em{font-style:normal;font-size:9.5px;font-weight:700;color:#7d8b97;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
   .pcard .pc-name { font-weight:600; font-size:15px; line-height:1.3; color:#1f2733; }
   .pcard .pc-meta { font-size:11px; color:#5a6472; margin-top:3px; font-family:monospace; }
   .pcard .pc-meta b { color:#2563a8; }
@@ -2708,15 +2741,32 @@ function sellNums(asin){
 const sellDayColor=d=>d==null?'#8a97a6':d<21?'#c0392b':d<45?'#b7791f':'#1e8449';
 function sellStrip(asin){
   const n=sellNums(asin), f=v=>v==null?'—':Math.round(v).toLocaleString();
-  const it=(l,v,t,c)=>'<span title="'+t+'" style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-width:0;padding:4px 4px;border-radius:7px;background:#f4f7f9;text-align:center;white-space:nowrap"><b style="font-size:13.5px;line-height:1.2'+(c?';color:'+c:'')+'">'+v+'</b><span style="font-size:9.5px;font-weight:800;letter-spacing:.3px;color:#8a97a6;text-transform:uppercase">'+l+'</span></span>';
-  return '<div class="sellStrip" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(58px,1fr));gap:5px;margin-top:10px">'
-    +it('Sold 30d', n.sold==null?'…':f(n.sold), 'Our own units sold, the last 30 days to today')
-    +it('In stock', n.inStock==null?'—':n.inStock+'/'+n.snapDays+'d', 'Days with stock available at Amazon, of the last '+(n.snapDays||30)+' days checked: an item that was out can\'t sell', n.inStock==null?null:n.inStock>=n.snapDays*0.9?'#1e8449':n.inStock>=n.snapDays*0.5?'#b7791f':'#c0392b')
-    +it('3P avg', n.avg==null?'—':'~'+f(n.avg), esc('Average units a month per third-party seller, all of them on the listing'+(n.avgT?': '+n.avgT:'')))
-    +it('At Amazon', f(n.fba), 'At Amazon + on the way in')
-    +it('Days', n.days==null?'—':f(n.days), 'How many days that stock lasts at the best estimate of demand', sellDayColor(n.days))
-    +it('Rank', n.rank==null?'—':'#'+f(n.rank), 'Amazon sales rank (Keepa)')
-    +'</div>';
+  // Grouped and shaded (owner 11/5, readability): SALES | AT AMAZON | HEALTH.
+  {
+    const box=(l,v,t,c)=>'<span class="ss-b" title="'+t+'"><b'+(c?' style="color:'+c+'"':'')+'>'+v+'</b><em>'+l+'</em></span>';
+    const grp=(cls,label,inner)=>'<div class="ss-g '+cls+'"><div class="ss-gl">'+label+'</div><div class="ss-gi">'+inner+'</div></div>';
+    const d=n.days==null?null:Math.round(n.days), heat=d==null?'':d<21?'crit':d<45?'warn':'good';
+    const isc=n.inStock==null?null:n.inStock>=n.snapDays*0.9?'#18794e':n.inStock>=n.snapDays*0.5?'#a15c07':'#b42318';
+    return '<div class="sellStrip">'
+      +grp('s','Sales', box('Sold 30d', n.sold==null?'…':f(n.sold), 'Our own units sold, the last 30 days to today')
+        +box('3P avg', n.avg==null?'—':'~'+f(n.avg), esc('Average units a month per third-party seller, all of them on the listing'+(n.avgT?': '+n.avgT:'')))
+        +box('Rank', n.rank==null?'—':'#'+f(n.rank), 'Amazon sales rank (Keepa)'))
+      +grp('a','At Amazon', box('+ on way', f(n.fba), 'At Amazon + on the way in')
+        +box('In stock', n.inStock==null?'—':n.inStock+'/'+n.snapDays+'d', 'Days with stock available at Amazon, of the last '+(n.snapDays||30)+' days checked: an item that was out can\'t sell', isc))
+      +grp('h '+heat,'Health', box('Days', d==null?'—':f(d), 'How many days the stock at Amazon + on the way lasts at the best estimate of demand', d==null?null:d<21?'#b42318':d<45?'#a15c07':'#18794e'))
+      +'</div>';
+  }
+}
+// IDs on one quiet line, tap to copy (owner 11/5: three big pill rows per card).
+function idLineHtml(pairs, extra){
+  const L=pairs.filter(p=>p[1]);
+  return '<div class="idLine">'+L.map(([k,v])=>'<span onclick="copyText(\''+esc(v)+'\')" title="Tap to copy '+k+'"><b>'+k+'</b><i>'+esc(v)+'</i></span>').join('')+(extra||'')+'</div>';
+}
+// One-glance answer per card: days the stock at Amazon + on the way lasts.
+function healthChipFor(asin){
+  const d=sellNums(asin).days; if(d==null) return '';
+  const r=Math.round(d), c=r<21?'crit':r<45?'warn':'good';
+  return '<span class="stChip '+c+'" title="Days the stock at Amazon + on the way lasts at the best estimate of demand"><i></i>'+(c==='crit'?'Low at Amazon':c==='warn'?'Watch':'Healthy')+' · '+r.toLocaleString()+'d</span>';
 }
 // Prepped & Ready repaints when the numbers above arrive.
 function sellRepaint(){ if(window._prepData&&document.getElementById('prepListBox')) try{ renderPrepList(); }catch(e){} }
@@ -6607,14 +6657,14 @@ function renderPrepJobs(d, b, pre){
   h+='<div class="pcards">';
   const cardHtml=(x,idx)=>{
     const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'" onmouseenter="picZoom(this,420)" onmouseleave="picZoomOff()" style="cursor:zoom-in">`:'<div class="noimg">📦</div>';
-    const nameLink=`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`;
+    const nameLink=amzLinkSized(x.asin, x.name);   // short name + size (owner 11/5), full title on hover
     const duoBadge=x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700">DUO</span>':'';
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     let compLines='';
     if(x.is_duo && x.components && x.components.length){
       compLines='<div style="margin-top:10px;padding:10px 12px;background:#fdf6f5;border-radius:8px;border:1px solid #f3d9d6;font-size:12.5px">'+
         '<div style="font-weight:800;color:#c0392b;margin-bottom:6px;font-size:13px;letter-spacing:0.2px">⚡ GRAB '+x.qty+' OF EACH BOTTLE</div>'+
-        x.components.map(c=>`<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1 1 150px;min-width:0;line-height:1.3;overflow-wrap:anywhere"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(c.name)}</a><div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button>${c.location?`<span style="margin-left:5px;background:#0d4450;color:#fff;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;letter-spacing:0.3px;white-space:nowrap">📍 ${c.location}</span>`:`<span style="margin-left:5px;background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;white-space:nowrap">📍 none</span>`}</div></span><span style="flex:0 0 auto;margin-left:auto;text-align:right;white-space:nowrap"><span style="display:block;font-weight:900;font-size:13px;color:#0d4450">📦 ${casesParts(x.qty*(c.per||1), caseQtyOf(c)).main}</span><span style="font-size:11.5px;color:#5a6472">${casesParts(x.qty*(c.per||1), caseQtyOf(c)).sub} · </span><span style="font-weight:800;font-size:12px;color:${(c.available??c.onhand)>0?'#1e8449':'#5a6472'}" title="Available, as On Hand shows it: on the shelf, not prepped or set aside for a prep job (this one included)">${c.available??c.onhand} available</span></span></div>`).join('')+
+        x.components.map(c=>`<div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;padding:5px 0;border-top:1px solid #f3e4e2;align-items:flex-start"><span style="flex:1 1 150px;min-width:0;line-height:1.3;overflow-wrap:anywhere">${amzLinkSized(c.asin, c.name)}<div style="margin-top:2px;display:flex;align-items:center;gap:3px"><a href="https://www.amazon.com/dp/${c.asin}" target="_blank" style="font-family:monospace;font-size:11.5px;color:#2563a8;font-weight:700;text-decoration:none;border-bottom:1px dotted #2563a8">${c.asin}</a><button onclick="event.preventDefault();copyText('${c.asin}',this)" title="Copy ASIN" class="copybtn">📋</button>${c.location?`<span style="margin-left:5px;background:#0d4450;color:#fff;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;letter-spacing:0.3px;white-space:nowrap">📍 ${c.location}</span>`:`<span style="margin-left:5px;background:#fdeceb;color:#c0392b;padding:2px 8px;border-radius:5px;font-size:11.5px;font-weight:800;white-space:nowrap">📍 none</span>`}</div></span><span style="flex:0 0 auto;margin-left:auto;text-align:right;white-space:nowrap"><span style="display:block;font-weight:900;font-size:13px;color:#0d4450">📦 ${casesParts(x.qty*(c.per||1), caseQtyOf(c)).main}</span><span style="font-size:11.5px;color:#5a6472">${casesParts(x.qty*(c.per||1), caseQtyOf(c)).sub} · </span><span style="font-weight:800;font-size:12px;color:${(c.available??c.onhand)>0?'#1e8449':'#5a6472'}" title="Available, as On Hand shows it: on the shelf, not prepped or set aside for a prep job (this one included)">${c.available??c.onhand} available</span></span></div>`).join('')+
         '</div>';
     }
     const claimed = !!x.claimed_by;
@@ -6657,7 +6707,7 @@ function renderPrepJobs(d, b, pre){
           <span style="font-size:10px;font-weight:800;letter-spacing:0.3px;color:${inPlan?'#1e8449':'#8a97a6'};text-transform:uppercase">${inPlan?'✓ In Plan':'In Plan?'}</span>
         </label></div>`;
     const divider='';   // placed between groups by the loop below, never inside a split pair
-    return `${divider}<div class="pcard ppcard${x.prelabel?' ppPre':''}" data-ppid="${x.id}" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div>${x.is_duo?'':`<div class="idrow"><span class="idlabel">📍 LOCATION</span><span class="idpill" style="background:${x.location?'#0d4450':'#fdeceb'};color:${x.location?'#fff':'#c0392b'};font-weight:800;font-size:13px">${x.location||'NOT SET'}</span></div>`}${pill('🏷️','ASIN',x.asin,'#eef4fb')}${x.fnsku?`<div class="idrow"><span class="idlabel">📦 FNSKU</span><span class="idpill" style="background:#fdf3e6" onclick="copyText('${x.fnsku}',this)">${x.fnsku}</span><button onclick="copyText('${x.fnsku}',this)" title="Copy FNSKU" class="copybtn">📋</button><button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button></div>`:''}${compLines}</div><div class="pc-qty" style="min-width:86px;max-width:124px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div>${x.is_duo?((x.components||[]).length?`<div style="margin-top:6px;font-size:13px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;line-height:1.3">${(()=>{ const cp=casesParts(x.qty, caseQtyOf(x)); return '<span onclick="setCaseQty(\''+esc(x.asin)+'\',true)" title="Tap to change duos per case" style="cursor:pointer">📦 '+cp.main.toUpperCase()+'<div style="font-size:10px;font-weight:700;color:#cfe3e6">'+caseQtyOf(x)+' DUOS PER CASE ✎</div></span>'; })()}</div>`:''):`<div style="margin-top:6px;font-size:12px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 7px;line-height:1.25;cursor:pointer;text-align:center" onclick="setCaseQty('${esc(x.asin)}')" title="Tap to change bottles per case">📦 ${casesParts(x.qty, caseQtyOf(x)).main.toUpperCase()}<div style="font-size:10px;font-weight:700;color:#cfe3e6">${casesParts(x.qty, caseQtyOf(x)).sub.toUpperCase()} ✎</div></div>`}<button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${sellStrip(x.asin)}${claimBanner}</div>`;
+    return `${divider}<div class="pcard ppcard${x.prelabel?' ppPre':''}" data-ppid="${x.id}" style="position:relative;flex-direction:column;align-items:stretch;gap:0;${cardBorder}">${planBadge}<div style="display:flex;gap:14px;align-items:stretch">${img}<div class="pc-body"><div class="pc-name">${nameLink}${duoBadge}</div><div class="cardChips">${x.is_duo?'':`<span class="locChip${x.location?'':' none'}">📍 ${esc(x.location||'No location')}</span>`}${healthChipFor(x.asin)}</div>${idLineHtml([['ASIN',x.asin],['FNSKU',x.fnsku]], x.fnsku?`<button onclick="printLabels('${x.fnsku}','${esc(String(x.name).replace(/'/g,"\\'").replace(/"/g,''))}',${x.qty})" title="Print FNSKU labels" class="copybtn" style="font-size:16px">🖨️</button>`:'')}${compLines}</div><div class="pc-qty" style="min-width:86px;max-width:124px;padding-top:34px"><div class="n" style="color:#7a4fb5;font-size:30px;line-height:1">${x.qty}</div><div class="l" style="margin-top:2px">${x.is_duo?'Duos':'To Prep'}</div>${x.is_duo?((x.components||[]).length?`<div style="margin-top:6px;font-size:13px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 9px;line-height:1.3">${(()=>{ const cp=casesParts(x.qty, caseQtyOf(x)); return '<span onclick="setCaseQty(\''+esc(x.asin)+'\',true)" title="Tap to change duos per case" style="cursor:pointer">📦 '+cp.main.toUpperCase()+'<div style="font-size:10px;font-weight:700;color:#cfe3e6">'+caseQtyOf(x)+' DUOS PER CASE ✎</div></span>'; })()}</div>`:''):`<div style="margin-top:6px;font-size:12px;font-weight:900;color:#fff;background:#0d4450;border-radius:7px;padding:4px 7px;line-height:1.25;cursor:pointer;text-align:center" onclick="setCaseQty('${esc(x.asin)}')" title="Tap to change bottles per case">📦 ${casesParts(x.qty, caseQtyOf(x)).main.toUpperCase()}<div style="font-size:10px;font-weight:700;color:#cfe3e6">${casesParts(x.qty, caseQtyOf(x)).sub.toUpperCase()} ✎</div></div>`}<button onclick="editPendingPrep(${x.id},${x.qty})" style="padding:4px 12px;font-size:11px;background:#eef2f6;color:#5a6472;border:none;border-radius:5px;cursor:pointer;margin-top:8px;font-weight:600">edit</button></div></div>${sellStrip(x.asin)}${claimBanner}</div>`;
   };
   // "Not started" divider: after the card (or split pair) holding the last
   // job in progress. It used to be inserted before that card, and inside a
@@ -6725,13 +6775,15 @@ function ppListRows(items){
   items=ppLinkSplits(items);
   const th=(k,label,title,left)=>'<td onclick="setPpListSort(\''+k+'\')" style="padding:4px 8px;cursor:pointer;user-select:none;'+(left?'':'text-align:center;')+(so.key===k?'color:#0d4450;font-weight:800':'')+'"'+(title?' title="'+title+' · click to sort"':' title="Click to sort"')+'>'+label+(so.key===k?(so.dir===1?' ▼':' ▲'):'')+'</td>';
   return '<div class="box" style="padding:6px 8px;overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px">'
+    // Shaded groups like the rest of the app (owner 11/5): AT AMAZON | SALES | HEALTH.
+    +'<tr class="lgrp"><td></td><td></td><td></td><td></td><td class="la lg1">At Amazon</td><td colspan="2" class="ls lg1">Sales</td><td colspan="2" class="lh lg1">Health</td><td></td><td></td></tr>'
     +'<tr class="hint" style="font-size:10px;text-transform:uppercase"><td style="padding:4px 8px"></td>'
-    +th('item','Item','Duos first, then singles',1)+th('qty','Qty')+th('space','Space (cu ft)','FBA capacity this job will use at Amazon: qty × the listing\'s package size')
-    +th('total','Total at Amazon + transit','At Amazon (in stock) plus on the way to Amazon, for this listing')
-    +th('you','You sold (30d)','Your real units sold on this listing, last 30 days (Amazon orders), the same 30 days as the SmartScout figures')
-    +th('avg','3P average (Smart Scout)','Average sales a month per third-party seller, counting all of them on the listing (its 3P sales ÷ the 3P sellers); the sellers we have Smart Scout files for under it')
-    +th('days','Days covered','Total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
-    +th('daysPrep','Days covered (with pending prep)','Same as Days covered, adding everything queued in Pending Prep for this listing')
+    +th('item','Item','Duos first, then singles',1)+th('qty','Qty')+th('space','Cu ft','FBA capacity this job will use at Amazon: qty × the listing\'s package size')
+    +th('total','At Amazon + way','At Amazon (in stock) plus on the way to Amazon, for this listing')
+    +th('you','Sold 30d','Your real units sold on this listing, last 30 days (Amazon orders), the same 30 days as the SmartScout figures')
+    +th('avg','3P avg','Average sales a month per third-party seller, counting all of them on the listing (its 3P sales ÷ the 3P sellers); the sellers we have Smart Scout files for under it')
+    +th('days','Days','Days covered: total at Amazon + transit ÷ daily sales (best estimate, same as Send Next). Hover a number to see what it leans on. * = rough fallback')
+    +th('daysPrep','Days + prep','Same as Days covered, adding everything queued in Pending Prep for this listing')
     +th('plan','Plan','Ticked first')+th('status','Status','In progress first',1)+'</tr>'
     +items.map((x,ri)=>{
       const claimed=!!x.claimed_by;
@@ -6756,7 +6808,7 @@ function ppListRows(items){
         +'<td style="'+td+';border-top:2px solid #ff9900;text-align:center;white-space:nowrap"><b style="font-size:22px;color:#b45309">'+(x.qty+items[ri+1].qty).toLocaleString()+'</b><div style="font-size:10.5px;font-weight:800;color:#b45309;letter-spacing:.3px">TOTAL '+(x.is_duo?'DUOS':'UNITS')+'</div><div class="hint" style="font-size:10px">enter this in Source Correct</div></td>'
         +'<td colspan="17" style="'+td+';border-top:2px solid #ff9900"></td></tr>':'')
         +'<tr data-ppid="'+x.id+'" style="'+(claimed?'background:#f0faf4':x.prelabel?'background:#f3eefa':inPair?'background:#fff8ec':x.is_duo?'background:#fdebe6':'')+(inPair?';border-left:4px solid #ff9900':'')+(pairSecond?';border-bottom:2px solid #ff9900':'')+'"><td style="'+td+';width:98px">'+(inPair?'<div class="ppPart" style="font-size:13px;margin-bottom:4px;white-space:nowrap">'+(pairFirst?'🔗 PART 1 🔗':'🔗 PART 2 🔗')+'</div>':'')+img+'</td>'
-        +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25"><a href="https://www.amazon.com/dp/'+esc(x.asin)+'" target="_blank" style="color:#1f2733;text-decoration:none">'+esc(x.name)+'</a>'+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
+        +'<td style="'+td+'"><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.is_duo?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+'</div>'
           +'<div style="font-size:12px;margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+loc+copy(x.asin,'ASIN')+(x.fnsku?copy(x.fnsku,'FNSKU')+'<button onclick="printLabels(\''+esc(x.fnsku)+'\',\''+esc(safeName)+'\','+x.qty+')" title="Print FNSKU labels" class="copybtn">🖨️</button>':'')+'</div>'+comps+'</td>'
         +'<td style="'+td+';text-align:center;white-space:nowrap"><b style="font-size:18px;color:#7a4fb5">'+x.qty+'</b><div class="hint" style="font-size:10px">'+(x.is_duo?'duos':'units')+' · <a href="#" onclick="event.preventDefault();editPendingPrep('+x.id+','+x.qty+')">edit</a></div>'+(x.is_duo?'':'<div style="font-size:12px;font-weight:900;color:#0d4450">📦 '+casesText(x.qty, caseQtyOf(x))+'</div>')+'</td>'
         +(()=>{ const sp=space(x); return '<td style="'+td+';'+num+';color:#5a6472"'+(sp==null?' title="No package size yet — Get sizes from Amazon (capacity box above)"':'')+'>'+(sp==null?'—':(sp<10?sp.toFixed(1):Math.round(sp).toLocaleString()))+'</td>'; })()
@@ -6764,11 +6816,12 @@ function ppListRows(items){
             const R=demandRate(x.asin, a.p.monthlySold), mo=R.mo||null, d=a.known&&mo>0?Math.round(a.total/(mo/30)):null;
             const dp=a.known&&mo>0?Math.round((a.total+(queued[x.asin]||0))/(mo/30)):null, star=R.est?'*':'';
             const why=mo>0?' · selling ~'+Math.round(mo).toLocaleString()+'/mo ('+R.note+')':'';
-            return '<td style="'+td+';'+num+';color:#2563a8">'+(a.known?a.total.toLocaleString():'—')+'</td>'
-              +'<td style="'+td+';'+num+';color:#008296;font-weight:800">'+youSoldHtml(x.asin)+'</td>'
-              +'<td style="'+td+';'+num+';color:#7a4fb5">'+ssAvgHtml(x.asin)+'</td>'
-              +'<td style="'+td+';'+num+';color:'+dColor(d)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit'+why:'')+'">'+(d==null?'—':d+' days'+star)+'</td>'
-              +'<td style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep'+why:'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
+            const ht=v=>v==null?'':v<21?'h-crit':v<45?'h-warn':'h-good';
+            return '<td class="lb-a lg1" style="'+td+';'+num+';color:#1d64c8">'+(a.known?a.total.toLocaleString():'—')+'</td>'
+              +'<td class="lb-s lg1" style="'+td+';'+num+';color:#0b1f24;font-weight:800">'+youSoldHtml(x.asin)+'</td>'
+              +'<td class="lb-s" style="'+td+';'+num+';color:#0b1f24">'+ssAvgHtml(x.asin)+'</td>'
+              +'<td class="lg1 '+ht(d)+'" style="'+td+';'+num+';color:'+dColor(d)+'" title=""'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit'+why:'')+'">'+(d==null?'—':d+' days'+star)+'</td>'
+              +'<td class="'+ht(dp)+'" style="'+td+';'+num+';color:'+dColor(dp)+'" title="'+esc(a.known?a.total.toLocaleString()+' at Amazon + transit + '+(queued[x.asin]||0)+' in pending prep'+why:'')+'">'+(dp==null?'—':dp+' days'+star)+'</td>'; })()
         +'<td style="'+td+';text-align:center">'+(x.prelabel?'<span class="prelabelTag" title="Pre-labeling only: not for any shipment">🏷️</span>':'<input type="checkbox" '+(x.in_plan?'checked':'')+' onclick="toggleInPlan('+x.id+', this.checked)" title="Added to the shipment plan" style="width:18px;height:18px;cursor:pointer">')+'</td>'
         +'<td style="'+td+'">'+status+'</td></tr>';
     }).join('')+'</table></div>';
@@ -7287,13 +7340,13 @@ function renderPrepList(){
   h+='<div class="pcards">';
   h+=items.map(x=>{
     const img=x.image?`<img src="${esc(x.image)}" onerror="this.style.display='none'">`:'<div class="noimg">📦</div>';
-    const nameLink=x.asin?`<a href="https://www.amazon.com/dp/${x.asin}" target="_blank" style="color:#1f2733;text-decoration:none">${esc(x.name)}</a>`:x.name;
+    const nameLink=x.asin?amzLinkSized(x.asin, x.name):esc(x.name);   // short name + size (owner 11/5)
     const badge=x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">DUO</span>':'';
     // labeled pill rows for ASIN + FNSKU (like the reference app)
     const pill=(icon,label,val,color)=>val?`<div class="idrow"><span class="idlabel">${icon} ${esc(label)}</span><span class="idpill" style="background:${color}" onclick="copyText('${val}',this)" title="click to copy">${val}</span><button onclick="copyText('${val}',this)" title="Copy ${esc(label)}" class="copybtn">📋</button></div>`:'';
     const border=x.isBundle?'border:1px solid #fdeceb;':'';
     const tick=`<label title="Tick to send to the next shipment (with Pending Prep's ticked jobs)" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:6px;padding:4px 10px;border-radius:999px;cursor:pointer;text-transform:none;letter-spacing:0;font-size:12px;font-weight:800;${x.in_plan?'background:#e7f6ec;color:#1e8449;border:1.5px solid #1e8449':'background:#fff;color:#5a6472;border:1.5px solid #d5d9d9'}"><input type="checkbox" ${x.in_plan?'checked':''} onchange="prepTick(['${esc(x.asin)}'],this.checked)" style="width:18px;height:18px;margin:0">${x.in_plan?'✓ FOR SHIPMENT':'For shipment'}</label>`;
-    return `<div class="pcard" style="${border};flex-direction:column;align-items:stretch;gap:0${x.in_plan?';outline:2px solid #1e8449':''}"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge} ${fbmMark(x.asin)}</div>${pill('🏷️','ASIN',x.asin,'#eef4fb')}${pill('📦','FNSKU',x.fnsku,'#fdf3e6')}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>${sellStrip(x.asin)}</div>`;
+    return `<div class="pcard" style="${border};flex-direction:column;align-items:stretch;gap:0${x.in_plan?';outline:2px solid #1e8449':''}"><div style="display:flex;gap:12px;align-items:stretch">${img}<div class="pc-body">${tick}<div class="pc-name">${nameLink}${badge}</div><div class="cardChips">${healthChipFor(x.asin)}${fbmMark(x.asin)}</div>${idLineHtml([['ASIN',x.asin],['FNSKU',x.fnsku]])}</div><div class="pc-qty"><div class="n" style="${x.isBundle?'color:#c0392b':''}">${x.prepped}</div><div class="l">Prepped</div><button onclick="editPrep('${x.asin}',${x.prepped})" style="padding:3px 10px;font-size:11px;background:#e2e8f0;border:none;border-radius:4px;cursor:pointer;margin-top:4px">edit</button></div></div>${sellStrip(x.asin)}</div>`;
   }).join('');
   h+='</div><div class="hint"><b>Units to Ship</b> counts a duo as ONE sellable unit (one FNSKU) — matches your shipment plan software. Click ASIN/FNSKU to copy. Duos in red. These clear when you finalize the shipment on Ship to FBA.</div>';
   b.innerHTML=h;
@@ -7309,22 +7362,26 @@ function renderPrelabelList(){
   const rows=sortRows('prelabel', L, { name:x=>String(x.name||''), qty:x=>x.prepped, fnsku:x=>String(x.fnsku||''),
     sold:x=>sellNums(x.asin).sold, instock:x=>sellNums(x.asin).inStock, avg:x=>sellNums(x.asin).avg, fba:x=>sellNums(x.asin).fba, days:x=>sellNums(x.asin).days, rank:x=>{ const r=sellNums(x.asin).rank; return r==null?null:-r; } });
   // how each sells, as sortable columns (owner 11/4); rank sorts best (lowest) first
+  // Shaded groups like everywhere else (owner 11/5): SALES | AT AMAZON | HEALTH.
+  const band={sold:'pb-s pg1',avg:'pb-s',rank:'pb-s',fba:'pb-a pg1',inStock:'pb-a'};
   const sc=(x,k)=>{ const n=sellNums(x.asin), v=n[k], f=v==null?'—':Math.round(v).toLocaleString();
-    if(k==='inStock') return '<td style="text-align:center;white-space:nowrap;font-weight:800;color:'+(v==null?'#8a97a6':v>=n.snapDays*0.9?'#1e8449':v>=n.snapDays*0.5?'#b7791f':'#c0392b')+'">'+(v==null?'—':v+'/'+n.snapDays+'d')+'</td>';
-    return '<td style="text-align:center;white-space:nowrap;font-weight:800'+(k==='days'?';color:'+sellDayColor(v):'')+'">'+(k==='sold'&&v==null?'…':k==='avg'&&v!=null?'~'+f:k==='rank'&&v!=null?'#'+f:f)+'</td>'; };
+    if(k==='inStock') return '<td class="'+band[k]+'" style="text-align:center;white-space:nowrap;font-weight:800;color:'+(v==null?'#8a97a6':v>=n.snapDays*0.9?'#18794e':v>=n.snapDays*0.5?'#a15c07':'#b42318')+'">'+(v==null?'—':v+'/'+n.snapDays+'d')+'</td>';
+    if(k==='days'){ const d=v==null?null:Math.round(v); return '<td class="pg1 '+(d==null?'':d<21?'h-crit':d<45?'h-warn':'h-good')+'" style="text-align:center;white-space:nowrap;font-weight:800;color:'+(d==null?'#8a97a6':d<21?'#b42318':d<45?'#a15c07':'#18794e')+'">'+f+'</td>'; }
+    return '<td class="'+band[k]+'" style="text-align:center;white-space:nowrap;font-weight:700">'+(k==='sold'&&v==null?'…':k==='avg'&&v!=null?'~'+f:k==='rank'&&v!=null?'#'+f:f)+'</td>'; };
   const nm=x=>String(x.name||x.asin).replace(/'/g,"\\'").replace(/"/g,'');
   el.innerHTML='<div class="prelabelHead"><div class="t">🏷️ PRE-LABELED SKUS</div><div class="s">'+L.length+' product'+(L.length===1?'':'s')+' · '+(d.totalPrelabeled||0).toLocaleString()+' units labeled, not part of any shipment. When a shipment needs them, tap <b>Ready to ship</b>.</div></div>'
-    +'<div class="box" style="padding:6px 8px;overflow-x:auto"><table class="prelabelT"><tr><th class="hsm" style="width:70px"></th>'
+    +'<div class="box" style="padding:6px 8px;overflow-x:auto"><table class="prelabelT"><tr class="pgrp"><th class="hsm"></th><th></th><th class="hsm"></th><th colspan="3" class="ps pg1">Sales</th><th colspan="2" class="pa pg1">At Amazon</th><th class="ph pg1">Health</th><th></th><th></th></tr><tr><th class="hsm" style="width:70px"></th>'
     +sortTh('prelabel','name','Product','renderPrelabelList')+sortTh('prelabel','fnsku','FNSKU','renderPrelabelList','hsm')
-    +sortTh('prelabel','sold','Sold 30d','renderPrelabelList')+sortTh('prelabel','instock','In stock','renderPrelabelList')+sortTh('prelabel','avg','3P avg','renderPrelabelList')+sortTh('prelabel','fba','At Amazon','renderPrelabelList')
-    +sortTh('prelabel','days','Days','renderPrelabelList')+sortTh('prelabel','rank','Rank','renderPrelabelList')
+    +sortTh('prelabel','sold','Sold 30d','renderPrelabelList')+sortTh('prelabel','avg','3P avg','renderPrelabelList')+sortTh('prelabel','rank','Rank','renderPrelabelList')
+    +sortTh('prelabel','fba','At Amazon','renderPrelabelList')+sortTh('prelabel','instock','In stock','renderPrelabelList')
+    +sortTh('prelabel','days','Days','renderPrelabelList')
     +sortTh('prelabel','qty','Pre-labeled','renderPrelabelList')+'<th style="width:150px"></th></tr>'
     +rows.map(x=>'<tr><td class="hsm">'+(x.image?'<img src="'+esc(x.image)+'" onerror="this.style.visibility=\'hidden\'">':'📦')+'</td>'
       +'<td style="min-width:240px"><div style="font-weight:700;line-height:1.25">'+amzLinkSized(x.asin, x.name)+(x.isBundle?' <span style="background:#fdeceb;color:#c0392b;padding:1px 6px;border-radius:8px;font-size:10px;font-weight:800">DUO</span>':'')+' '+fbmMark(x.asin)+'</div>'
-        +'<div style="font-size:11.5px;margin-top:2px"><span onclick="copyText(\''+esc(x.asin)+'\',this)" style="cursor:pointer;font-family:monospace;color:#2563a8">'+esc(x.asin)+'</span></div>'
+        +idLineHtml([['ASIN',x.asin]])
         +(x.fnsku?'<div class="fn-sm" style="font-size:11.5px;margin-top:2px;font-family:monospace;font-weight:700">FNSKU '+esc(x.fnsku)+'</div>':'')+'</td>'
       +'<td class="hsm" style="width:130px">'+(x.fnsku?'<span onclick="copyText(\''+esc(x.fnsku)+'\',this)" style="cursor:pointer;font-family:monospace;font-weight:700;background:#fdf3e6;border-radius:4px;padding:2px 6px">'+esc(x.fnsku)+'</span>':'—')+'</td>'
-      +sc(x,'sold')+sc(x,'inStock')+sc(x,'avg')+sc(x,'fba')+sc(x,'days')+sc(x,'rank')
+      +sc(x,'sold')+sc(x,'avg')+sc(x,'rank')+sc(x,'fba')+sc(x,'inStock')+sc(x,'days')
       +'<td style="width:96px"><b style="font-size:20px;color:#7a4fb5">'+x.prepped.toLocaleString()+'</b><div><a href="#" onclick="event.preventDefault();editPrelabel(\''+esc(x.asin)+'\','+x.prepped+')" style="font-size:11px">edit</a></div></td>'
       +'<td><button onclick="prelabelToReady(\''+esc(x.asin)+'\',\''+esc(nm(x))+'\','+x.prepped+')" style="padding:8px 12px;font-size:12.5px;font-weight:800;background:#0d4450;color:#fff;border:none;border-radius:6px;cursor:pointer;white-space:nowrap">→ Ready to ship</button></td></tr>').join('')
     +'</table></div>';
