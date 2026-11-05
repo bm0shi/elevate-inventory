@@ -244,3 +244,24 @@ test('prep owners: a prep category of its own needs SELLER even with no prep ste
   assert.deepStrictEqual(ib.ownerFixes(msg, ['Freeze and Shine 8.5', 'PM Sculpt Foam - 16.9 oz', 'Freeze and Shine Liters']),
     { 'Freeze and Shine 8.5': { prepOwner: 'SELLER' }, 'PM Sculpt Foam - 16.9 oz': { prepOwner: 'SELLER' } });
 });
+
+test('prep category missing (owner 11/5, FBA_INB_0182): the SKUs named; a suggestion from what our other SKUs carry; the body to set it', () => {
+  const msg = "Amazon refused it — FBA_INB_0182: ERROR: Prep classification for this SKU was missing. Choose the prep category that applies to this SKU and apply any required prep and labeling to each sellable unit. (There's an input error with the resource 'Awapuhi W.G Intensive Treat - 5.1 oz'.) · FBA_INB_0182: ERROR: Prep classification for this SKU was missing. Choose the prep category that applies to this SKU and apply any required prep and labeling to each sellable unit. (There's an input error with the resource 'Awapuhi WG Style Treat Oil - 5.1 oz'.)";
+  const skus = ['Awapuhi W.G Intensive Treat - 5.1 oz', 'Awapuhi WG Style Treat Oil - 5.1 oz', 'TTS 16.9'];
+  assert.deepStrictEqual(ib.prepCategoryMissing(msg, skus), skus.slice(0, 2));
+  assert.deepStrictEqual(ib.prepCategoryMissing('FBA_INB_0180: Expiration date required', skus), []);
+  const sug = ib.prepCategorySuggest([
+    { msku: 'A', prepCategory: 'LIQUID', prepTypes: ['ITEM_POLYBAGGING'] }, { msku: 'B', prepCategory: 'LIQUID', prepTypes: ['ITEM_POLYBAGGING'] },
+    { msku: 'C', prepCategory: 'LIQUID', prepTypes: ['ITEM_CAP_SEALING', 'ITEM_POLYBAGGING'] }, { msku: 'D', prepCategory: 'NONE', prepTypes: ['ITEM_NO_PREP'] },
+    { msku: 'E', prepCategory: 'UNKNOWN', prepTypes: [] }, { msku: 'F' }]);
+  assert.strictEqual(sug.category, 'LIQUID'); assert.strictEqual(sug.count, 3); assert.strictEqual(sug.total, 4);
+  assert.deepStrictEqual(sug.prepTypes, ['ITEM_POLYBAGGING']);
+  assert.deepStrictEqual(sug.byCategory.NONE, { count: 1, prepTypes: ['ITEM_NO_PREP'] });
+  // the body: our SKUs' own steps for a category they carry, the usual ones otherwise
+  const b = ib.prepDetailsBody('ATVPDKIKX0DER', { 'Awapuhi WG Style Treat Oil - 5.1 oz': 'liquid', X: 'FRAGILE' }, sug);
+  assert.deepStrictEqual(b.body, { marketplaceId: 'ATVPDKIKX0DER', mskuPrepDetails: [
+    { msku: 'Awapuhi WG Style Treat Oil - 5.1 oz', prepCategory: 'LIQUID', prepTypes: ['ITEM_POLYBAGGING'] },
+    { msku: 'X', prepCategory: 'FRAGILE', prepTypes: ['ITEM_BUBBLEWRAP'] }] });
+  assert.match(ib.prepDetailsBody('M', { X: 'WET' }, sug).error, /isn't a prep category/);
+  assert.match(ib.prepDetailsBody('M', {}, sug).error, /Nothing/);
+});
