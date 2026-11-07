@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'box-estimate-1155';
+const BUILD_ID = 'one-carrier-1156';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3473,7 +3473,8 @@ app.post('/api/inbound/plans/:id/quote', auth, async (req, res) => {
   const p = (await pool.query('SELECT status, shipments FROM inv_inbound_plans WHERE id=$1', [id])).rows[0];
   if (!p) return res.status(404).json({ ok: false, error: 'Not found' });
   if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan.' });
-  if (!['pallets', 'quotes'].includes(p.status)) return res.status(409).json({ ok: false, error: 'Send the boxes to Amazon first.' });
+  const p2 = (await pool.query('SELECT stage FROM inv_inbound_plans WHERE id=$1', [id])).rows[0] || {};
+  if (!(['pallets', 'quotes'].includes(p.status) || (p.status === 'error' && ['quote', 'confirm'].includes(p2.stage)))) return res.status(409).json({ ok: false, error: 'Send the boxes to Amazon first.' });
   const b = req.body || {};
   if (!/^\d{4}-\d{2}-\d{2}$/.test(b.readyDate || '')) return res.status(400).json({ ok: false, error: 'Pick the date the pallets are ready.' });
   // One ready day per shipment (owner 11/5: the second shipment of a plan is
@@ -3498,8 +3499,9 @@ app.post('/api/inbound/plans/:id/confirm', auth, async (req, res) => {
     const p = (await db.query('SELECT * FROM inv_inbound_plans WHERE id=$1 FOR UPDATE', [id])).rows[0];
     if (!p) return { status: 404, body: { ok: false, error: 'Not found' } };
     if (planJobs.has(id)) return { status: 409, body: { ok: false, error: 'Amazon is still working on this plan.' } };
-    if (p.status === 'confirmed' || p.stage === 'confirm') return { status: 409, body: { ok: false, error: 'Already confirmed (or confirming) — nothing was bought twice.' } };
-    if (p.status !== 'quotes' || !p.freight) return { status: 409, body: { ok: false, error: 'Get freight quotes first.' } };
+    if (p.status === 'confirmed' || (p.stage === 'confirm' && p.status !== 'error')) return { status: 409, body: { ok: false, error: 'Already confirmed (or confirming) — nothing was bought twice.' } };
+    // 'error' at the booking step (Amazon refused the picks, FBA_INB_0354): new picks are fine, nothing was bought.
+    if (!(p.status === 'quotes' || (p.status === 'error' && p.stage === 'confirm')) || !p.freight) return { status: 409, body: { ok: false, error: 'Get freight quotes first.' } };
     const sel = req.body.selections || {};
     let freight = 0;
     for (const sh of inFlight(p)) {
@@ -3508,6 +3510,10 @@ app.post('/api/inbound/plans/:id/confirm', auth, async (req, res) => {
       if (o.expiration && new Date(o.expiration) < new Date()) return { status: 409, body: { ok: false, error: 'A freight quote expired — get new quotes.' } };
       freight += o.cost || 0;
     }
+    // Amazon books every shipment of a plan with the same carrier (owner
+    // 11/7, FBA_INB_0354 after each shipment's own cheapest option was picked).
+    const names = new Set(inFlight(p).map(sh => ((p.freight.quotes[sh.shipmentId] || []).find(q => q.transportationOptionId === sel[sh.shipmentId]) || {}).carrier || ''));
+    if (names.size > 1) return { status: 400, body: { ok: false, error: 'Amazon books every shipment of a plan with the same carrier — pick one carrier for all of them (' + [...names].join(' / ') + ' were picked). Nothing was bought.' } };
     const total = Math.round(freight * 100) / 100;   // the placement fee was confirmed with the destination
     if (Math.abs(Number(req.body.total) - total) > 0.009) return { status: 409, body: { ok: false, error: `The total is $${total.toFixed(2)}, not what was confirmed — nothing was bought. Check it and confirm again.` } };
     await db.query("UPDATE inv_inbound_plans SET stage='confirm' WHERE id=$1", [id]);

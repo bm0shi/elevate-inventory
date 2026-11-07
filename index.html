@@ -1737,7 +1737,10 @@ function nsPlan(id){
       +'<div class="hint" style="margin-top:6px">Tell Claude before booking freight.</div></div>';
     else if(sent) h+='<div class="box" style="border:2px solid #1e8449;background:#f0faf4;font-weight:800;color:#1e8449">✅ Box info sent to Amazon (2D barcode) — Amazon reads each box\'s contents from its label.</div>';
     // 5. Pallets → freight quotes
-    if(SHf.length&&(p.status==='pallets'||p.status==='quotes')){
+    // A plan stopped while quoting or booking keeps its steps open (owner 11/7:
+    // FBA_INB_0354 left only Retry, which sends the same picks again).
+    const stoppedAt=p.status==='error'&&['quote','confirm'].includes(p.stage);
+    if(SHf.length&&(p.status==='pallets'||p.status==='quotes'||stoppedAt)){
       const P=window._nsPal=window._nsPal&&window._nsPal.id===p.id?window._nsPal:{id:p.id, pal:JSON.parse(JSON.stringify(Object.fromEntries(SHf.map(sh=>[sh.shipmentId,sh.pallets||[]]))))};
       // Default today (Arizona): the owner always wants the soonest pickup
       const today=new Date(Date.now()-7*3600000).toISOString().slice(0,10);
@@ -1758,13 +1761,33 @@ function nsPlan(id){
         +'<button class="action" onclick="nsQuote('+p.id+')" style="background:#008296;font-size:16px;padding:12px 20px">'+(p.freight?'↻ Get new quotes':'Get freight quotes →')+'</button></div></div>';
     }
     // 6. Freight options + book
-    if(p.status==='quotes'&&p.freight){
+    if((p.status==='quotes'||(stoppedAt&&p.stage==='confirm'))&&p.freight){
       const S=window._nsSel=window._nsSel&&window._nsSel.id===p.id?window._nsSel:{id:p.id, sel:{}};
+      // ONE CARRIER FOR EVERY SHIPMENT OF A PLAN (owner 11/7: booking the two
+      // shipments with each one's cheapest option came back FBA_INB_0354
+      // "Requested transportation options do not have the same carrier as
+      // confirmed options"). With several shipments, the carriers quoted for
+      // all of them are offered with the total of each one's cheapest options,
+      // and each shipment's list shows only the chosen carrier.
+      const multi=SHf.length>1;
+      const validQ=sh=>(p.freight.quotes[sh.shipmentId]||[]).filter(o=>o.cost!=null&&!o.preconditions.length);
+      let carriers=[];
+      if(multi){
+        const by={};
+        for(const sh of SHf) for(const o of validQ(sh)){ const c=by[o.carrier||'']=by[o.carrier||'']||{name:o.carrier||'', partnered:false, per:{}}; c.partnered=c.partnered||!!o.partnered; c.per[sh.shipmentId]=Math.min(c.per[sh.shipmentId]??1e9, o.cost); }
+        carriers=Object.values(by).filter(c=>SHf.every(sh=>c.per[sh.shipmentId]!=null)).map(c=>({...c, total:SHf.reduce((n,sh)=>n+c.per[sh.shipmentId],0)})).sort((a,b)=>(b.partnered-a.partnered)||(a.total-b.total));
+        if(!S.carrier||!carriers.some(c=>c.name===S.carrier)) S.carrier=carriers[0]?carriers[0].name:null;
+        // picks from another carrier are dropped, so the rows below re-pick within the chosen one
+        for(const sh of SHf){ const o=validQ(sh).find(x=>x.transportationOptionId===S.sel[sh.shipmentId]); if(o&&o.carrier!==S.carrier) delete S.sel[sh.shipmentId]; }
+      }
       if((p.ship_from||{}).liftgate!==false) h+='<div class="box" style="border:2px solid #c0392b;background:#fdecea;font-size:14px;line-height:1.5"><b style="color:#c0392b">🚚 This pickup needs a LIFTGATE truck.</b> Amazon doesn\'t let the app ask for one, so after booking you\'ll call the carrier. Carriers often run liftgate trucks only some days, so the pickup may come a day later — set the ready date a day earlier if you can.</div>';
       h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">By pickup day, soonest first: the first 4 days with the best 5 each (Amazon partnered first, then cheapest). Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
+      if(multi) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#f3f8fd;border:1px solid #cfe0f5"><b>Carrier for all '+SHf.length+' shipments</b> <span class="hint">Amazon books every shipment of a plan with the same carrier (FBA_INB_0354). Totals are each carrier\'s cheapest option per shipment.</span>'
+        +(carriers.length?'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+carriers.map(c=>'<button onclick="_nsSel.carrier=\''+esc(c.name).replace(/'/g,'')+'\';_nsSel.sel={};nsPlan('+p.id+')" style="cursor:pointer;padding:8px 14px;border-radius:999px;font-weight:800;border:2px solid '+(S.carrier===c.name?'#008296':'#cfd8e3')+';background:'+(S.carrier===c.name?'#e6f4f6':'#fff')+'">'+esc(c.name||'Carrier')+(c.partnered?' <span style="font-size:11px;color:#008296">· Amazon partnered</span>':'')+' <b>'+$$(c.total)+'</b></button>').join('')+'</div>'
+          :'<div style="margin-top:6px;color:#c0392b;font-weight:800">No carrier quoted every shipment — get new quotes (try another ready day or pallet weights).</div>')+'</div>';
       let freight=0, all=true;
       for(const sh of SHf){
-        const q=(p.freight.quotes[sh.shipmentId]||[]).filter(o=>o.cost!=null&&!o.preconditions.length);
+        const q=validQ(sh).filter(o=>!multi||o.carrier===S.carrier);
         if(!S.sel[sh.shipmentId]&&q[0]) S.sel[sh.shipmentId]=q[0].transportationOptionId;
         const pick=q.find(o=>o.transportationOptionId===S.sel[sh.shipmentId]); if(pick) freight+=pick.cost; else all=false;
         // By pickup day (owner 10/31: "11/2 and the top 5, 11/3 and the top 5,
