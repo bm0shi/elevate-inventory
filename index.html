@@ -1781,7 +1781,9 @@ function nsPlan(id){
         for(const sh of SHf){ const o=validQ(sh).find(x=>x.transportationOptionId===S.sel[sh.shipmentId]); if(o&&o.carrier!==S.carrier) delete S.sel[sh.shipmentId]; }
       }
       if((p.ship_from||{}).liftgate!==false) h+='<div class="box" style="border:2px solid #c0392b;background:#fdecea;font-size:14px;line-height:1.5"><b style="color:#c0392b">🚚 This pickup needs a LIFTGATE truck.</b> Amazon doesn\'t let the app ask for one, so after booking you\'ll call the carrier. Carriers often run liftgate trucks only some days, so the pickup may come a day later — set the ready date a day earlier if you can.</div>';
-      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">By pickup day, soonest first: the first 4 days with the best 5 each (Amazon partnered first, then cheapest). Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>';
+      const expired=SHf.every(sh=>validQ(sh).length)&&SHf.some(sh=>validQ(sh).every(o=>o.expiration&&new Date(o.expiration)<new Date()));
+      h+='<div class="box"><b style="font-size:16px">Freight options</b><div class="hint">By pickup day, soonest first: the first 4 days with the best 5 each (Amazon partnered first, then cheapest). Quoted '+new Date(p.freight.at).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.</div>'
+        +(expired?'<div style="margin-top:8px;padding:10px 12px;border-radius:10px;background:#fdecea;border:2px solid #c0392b;color:#c0392b;font-weight:800">⏰ These quotes have expired — Amazon refuses them. Press “Get new quotes” above, then pick and book.</div>':'');
       if(multi) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#f3f8fd;border:1px solid #cfe0f5"><b>Carrier for all '+SHf.length+' shipments</b> <span class="hint">Amazon books every shipment of a plan with the same carrier (FBA_INB_0354). Totals are each carrier\'s cheapest option per shipment.</span>'
         +(carriers.length?'<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">'+carriers.map(c=>'<button onclick="_nsSel.carrier=\''+esc(c.name).replace(/'/g,'')+'\';_nsSel.sel={};nsPlan('+p.id+')" style="cursor:pointer;padding:8px 14px;border-radius:999px;font-weight:800;border:2px solid '+(S.carrier===c.name?'#008296':'#cfd8e3')+';background:'+(S.carrier===c.name?'#e6f4f6':'#fff')+'">'+esc(c.name||'Carrier')+(c.partnered?' <span style="font-size:11px;color:#008296">· Amazon partnered</span>':'')+' <b>'+$$(c.total)+'</b></button>').join('')+'</div>'
           :'<div style="margin-top:6px;color:#c0392b;font-weight:800">No carrier quoted every shipment — get new quotes (try another ready day or pallet weights).</div>')+'</div>';
@@ -1799,7 +1801,12 @@ function nsPlan(id){
             +'<b style="font-size:18px">'+$$(o.cost)+'</b></label>';
         const days={}; for(const o of q){ const d=o.pickup?nsPickupDay(o.pickup):{key:'~',label:'Pickup day not given'}; (days[d.key]=days[d.key]||{label:d.label,list:[]}).list.push(o); }
         const keys=Object.keys(days).sort(), showAll=window._nsAllDays===p.id, shownKeys=showAll?keys:keys.slice(0,4);
-        h+='<div style="margin-top:12px"><b>'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b>'+(q.length?'':' <span style="color:#c0392b;font-weight:800">no quote came back — change the pallets or date and get new quotes</span>');
+        // With several shipments: this shipment's cheapest per carrier, so the
+        // chosen carrier can be judged without scrolling up (owner 11/7: "all I
+        // see is Central when before there were multiple options").
+        const perCar=multi?carriers.map(c=>'<span style="'+(c.name===S.carrier?'font-weight:900;color:#008296':'')+'">'+esc(c.name||'Carrier')+' '+$$(c.per[sh.shipmentId])+'</span>').join(' · '):'';
+        h+='<div style="margin-top:12px"><b>'+esc(sh.fba||'')+' → '+nsWhere(sh)+'</b>'+(q.length?'':' <span style="color:#c0392b;font-weight:800">no quote came back — change the pallets or date and get new quotes</span>')
+          +(perCar?'<div class="hint" style="margin-top:2px">Cheapest per carrier for this shipment: '+perCar+' — the carrier is picked for the plan as a whole, above.</div>':'');
         for(const k of shownKeys){
           const list=days[k].list.slice().sort((a,b)=>(b.partnered-a.partnered)||((a.cost??1e9)-(b.cost??1e9)));
           let top=showAll?list:list.slice(0,5);
