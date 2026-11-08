@@ -154,6 +154,9 @@ function simplify(p) {
 
   // monthlySold: real "bought past month" figure (bracketed by Amazon). Most ASINs lack it.
   const monthlySold = (p.monthlySold != null) ? p.monthlySold : null;
+  // Sales-rank drops in 30 days: each is at least one sale. The fallback when
+  // a listing has no "bought in past month" badge (Brand Finder, owner 11/8).
+  const rankDrops30 = (stats.salesRankDrops30 != null && stats.salesRankDrops30 >= 0) ? stats.salesRankDrops30 : null;
 
   // ---- IS AMAZON SELLING? ----
   // amazonPrice (from stats.current[AMAZON]) is null when Amazon has NO live offer.
@@ -196,7 +199,7 @@ function simplify(p) {
     salesRank, salesRankAvg30,
     buyBoxPrice, amazonPrice,
     amazonHasBuyBox, amazonOOS, amazonBuyBoxPct, buyBoxWinners3P, bbShares,
-    offerCount, monthlySold,
+    offerCount, monthlySold, rankDrops30,
     pickPackFee, referralPct,
     availabilityAmazon: availAmz, amazonSelling, amazonOutOfStock,
   };
@@ -226,4 +229,28 @@ async function findAsins(selection) {
   throw new Error('Keepa finder: out of tokens, try again later');
 }
 
-module.exports = { getProducts, findAsins, keyOk };
+// Seller names by seller id (1 token each, up to 100 a call), to tell the
+// brand's own store among a listing's sellers (Brand Finder, owner 11/8).
+async function getSellerNames(ids) {
+  if (!keyOk()) throw new Error('KEEPA_API_KEY not set');
+  const out = {}, list = [...new Set((ids || []).filter(Boolean))];
+  for (let i = 0; i < list.length; i += 100) {
+    const batch = list.slice(i, i + 100);
+    const url = `${KEEPA_BASE}/seller?key=${process.env.KEEPA_API_KEY}&domain=${DOMAIN}&seller=${batch.join(',')}`;
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      let resp;
+      try { resp = await axios.get(url, { timeout: 60000, decompress: true }); }
+      catch (err) {
+        const d = err.response?.data;
+        if (err.response?.status === 429 || (d && d.error && d.error.type === 'NOT_ENOUGH_TOKEN')) { await sleep(Math.min(((d && d.refillIn) || 20000) + 1000, 65000)); continue; }
+        throw new Error('Keepa seller lookup: ' + (err.response?.status || '') + ' ' + JSON.stringify(d || err.message).slice(0, 150));
+      }
+      if (resp.data && resp.data.error && resp.data.error.type === 'NOT_ENOUGH_TOKEN') { await sleep(Math.min((resp.data.refillIn || 20000) + 1000, 65000)); continue; }
+      for (const [id, v] of Object.entries((resp.data && resp.data.sellers) || {})) if (v && v.sellerName) out[id] = v.sellerName;
+      break;
+    }
+  }
+  return out;
+}
+
+module.exports = { getProducts, findAsins, getSellerNames, keyOk };

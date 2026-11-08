@@ -674,6 +674,31 @@ async function getLiveOffers(asins, onProgress) {
   return out;
 }
 
+// The sellers on each listing (Amazon's getItemOffers, up to 20 new offers):
+// { asin: { sellers: [{ id, fba, bb }], total } }, for Brand Finder's exact
+// third-party count and the brand's own store (owner 11/8). 0.5 calls/s.
+async function getOfferSellers(asins, onProgress) {
+  const out = {};
+  let i = 0;
+  for (const asin of asins) {
+    i++;
+    if (onProgress) onProgress(`sellers on listing ${i} of ${asins.length}…`);
+    try {
+      const token = await getAccessToken();
+      const resp = await http.get(`${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
+        { headers: { 'x-amz-access-token': token } });
+      const payload = resp.data.payload || {};
+      out[asin] = { sellers: (payload.Offers || []).map(o => ({ id: o.SellerId, fba: !!o.IsFulfilledByAmazon, bb: !!o.IsBuyBoxWinner })),
+        total: (payload.Summary && payload.Summary.TotalOfferCount) ?? (payload.Offers || []).length };
+    } catch (err) {
+      if (err.response?.status === 429 && requeue(asins, asin)) { await sleep(4000); continue; }
+      out[asin] = { error: err.response?.data?.errors?.[0]?.message || err.message };
+    }
+    await sleep(2100);
+  }
+  return out;
+}
+
 // Current Amazon title (and main image) per ASIN.
 // Product names in inv_products are frozen from the original seed file, but
 // brands rewrite listings — "The Original Leave-In Conditioner" is now titled
@@ -1371,4 +1396,4 @@ async function ownsBuyBox(asin, sellerId) {
   }
 }
 
-module.exports = { getListingPrice, setListingPrice, ownsBuyBox, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+module.exports = { getOfferSellers, getListingPrice, setListingPrice, ownsBuyBox, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
