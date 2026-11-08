@@ -523,12 +523,48 @@ async function getSnapshotReport(reportType, label) {
 // Get Amazon prices per ASIN. Uses the getItemOffers endpoint per-ASIN which is
 // more reliable for returning a current price than the batch price endpoint.
 // Returns { asin: price }. Also returns diagnostics via a global.
+// Our own listing price per ASIN, 20 at a time (Product Pricing v0
+// getPricing, ItemType=Asin, 0.5 calls/s): owner 11/8, the one-at-a-time
+// offers lookup below took 5+ minutes for the catalog ("Inventory Value
+// taking forever"). Listings this can't price (no offer of ours) go to the
+// Buy Box lookup afterwards, so nothing that was priced before goes missing.
 async function getMyPrices(asins, onProgress) {
+  const pricesLib = require('./lib/prices');
+  const unique = [...new Set(asins.filter(Boolean))];
+  const prices = {};
+  const groups = pricesLib.chunk(unique, 20);
+  let batchErrors = 0;
+  for (let g = 0; g < groups.length; g++) {
+    if (onProgress) onProgress(`pricing ${Math.min((g + 1) * 20, unique.length)} of ${unique.length} products…`);
+    let attempt = 0, done = false;
+    while (attempt < 4 && !done) {
+      try {
+        const token = await getAccessToken();
+        const resp = await http.get(`${SP_API_BASE}/products/pricing/v0/price?MarketplaceId=${MARKETPLACE_ID}&ItemType=Asin&ItemCondition=New&Asins=${encodeURIComponent(groups[g].join(','))}`,
+          { headers: { 'x-amz-access-token': token } });
+        Object.assign(prices, pricesLib.myPricesFromPayload(resp.data.payload));
+        done = true;
+      } catch (e) {
+        if (e.response?.status === 429) { attempt++; await sleep(3000 * attempt); }
+        else { batchErrors++; if (batchErrors <= 3) console.error('[Pricing] batch', e.response?.status, JSON.stringify(e.response?.data || e.message).slice(0, 200)); done = true; }
+      }
+    }
+    await sleep(2100);   // 0.5 calls/s
+  }
+  const left = unique.filter(a => prices[a] == null);
+  console.log(`[Pricing] ${Object.keys(prices).length} of ${unique.length} priced in ${groups.length} batches; ${left.length} to the offers lookup.`);
+  if (left.length) Object.assign(prices, await getOfferPrices(left, onProgress));
+  return prices;
+}
+// The Buy Box / lowest offer per ASIN, one call each (0.5/s): the fallback
+// for listings with no offer of ours, and what this used to be for all.
+async function getOfferPrices(asins, onProgress) {
   const token = await getAccessToken();
   const prices = {};
   const unique = [...new Set(asins.filter(Boolean))];
-  let errors = 0, noPrice = 0, ok = 0;
+  let errors = 0, noPrice = 0, ok = 0, i = 0;
   for (const asin of unique) {
+    i++; if (onProgress && i % 5 === 0) onProgress(`Buy Box price ${i} of ${unique.length} (listings without our own offer)…`);
     let attempt = 0;
     let done = false;
     while (attempt < 4 && !done) {

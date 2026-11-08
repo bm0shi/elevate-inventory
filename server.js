@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'quick-sync-1158';
+const BUILD_ID = 'fast-value-1159';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -8223,6 +8223,14 @@ function startAmazonSync(trigger) {
       if (sz.failed) result.errors.push('package sizes: ' + sz.failed + ' lookup' + (sz.failed === 1 ? '' : 's') + ' refused by Amazon');
       if (sz.none) result.notes.push(sz.none + ' listing' + (sz.none === 1 ? ' has' : 's have') + ' no package size at Amazon — type it on Pending Prep\'s capacity bar (✎)');
     } catch (e) { result.errors.push('package sizes: ' + e.message); }
+    // Inventory value (our prices × stock), so the figure is fresh each
+    // morning instead of weeks old (owner 11/8; it took a button press and
+    // minutes). Skipped when the owner's own pull is running.
+    if (full && !valJob.running) try {
+      amazonSync.step = 'Pricing the stock for Inventory Value…';
+      const r = await runInventoryValuePull(t => { amazonSync.step = 'Inventory Value: ' + t; });
+      result.valued = r.length;
+    } catch (e) { result.errors.push('inventory value: ' + e.message); }
     amazonSync.result = result;
     amazonSync.error = result.errors.length ? result.errors.join(' · ') : null;
     amazonSync.running = false; amazonSync.done = true; amazonSync.finishedAt = new Date().toISOString();
