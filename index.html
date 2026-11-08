@@ -1334,7 +1334,7 @@ function prodHome(d){
       +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#008296;font-size:17px;padding:14px 26px;border-radius:10px">Load from Amazon →</button>'
       +'<button class="action" onclick="nsOpen()" style="background:#0d4450;font-size:17px;padding:14px 26px;border-radius:10px">➕ New shipment (no Send to Amazon)</button>'
       +'<button class="action" onclick="skuCheckOpen()" style="background:#eef2f6;color:#1f2733;font-size:15px;padding:14px 18px;border-radius:10px" title="ASINs with more than one SKU at Amazon (old SKUs), or an app SKU Amazon doesn\'t list">🔎 SKU check</button></div></div>'
-      +'<div id="nsPlans"></div>';
+      +'<div id="nsPlans"></div><div id="nsFreight"></div>';
   // The floor's section: where boxes are built and 2D labels printed. Big
   // and outlined so a new employee knows this is the one to tap (the plans
   // box above is the main shipment page: destination and freight setup).
@@ -1378,7 +1378,41 @@ let _ns=null;
 function nsOwner(){ return Promise.resolve(true); }
 const NS_STATUS={new:['STARTING','#5a6472','#eef0f3'],working:['AMAZON WORKING…','#2563a8','#e6effa'],placement:['PICK DESTINATION','#b45309','#fff3dc'],building:['BUILDING ON THE FLOOR','#2563a8','#e6effa'],pallets:['CHECK PALLETS','#b45309','#fff3dc'],quotes:['PICK FREIGHT & BOOK','#b45309','#fff3dc'],confirmed:['FREIGHT BOOKED','#1e8449','#e7f6ec'],error:['NEEDS ATTENTION','#c0392b','#fdecea']};
 const nsPill=st=>{ const x=NS_STATUS[st]||[String(st||'').toUpperCase(),'#5a6472','#eef0f3']; return '<span style="display:inline-block;padding:6px 13px;border-radius:999px;font-family:Montserrat,sans-serif;font-size:12px;font-weight:800;letter-spacing:0.6px;color:'+x[1]+';background:'+x[2]+'">'+x[0]+'</span>'; };
+// What freight has really cost, plan by plan, and what the other choice was
+// estimated at (owner 11/8): split and no placement fee, or one warehouse
+// with the fee and shorter freight. Estimate → booked → billed per shipment.
+function nsFreightBox(){
+  const el=document.getElementById('nsFreight'); if(!el) return;
+  ownerApi('/api/inbound/freight-log').then(d=>{
+    if(!d||!d.ok||!d.plans.length){ el.innerHTML=''; return; }
+    const $$=v=>v==null?'—':'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:0});
+    const pct=(a,b)=>a!=null&&b?Math.round((a/b-1)*100):null;
+    const off=(a,b)=>{ const x=pct(a,b); return x==null?'':' <span style="font-size:11px;color:'+(Math.abs(x)<=15?'#1e8449':Math.abs(x)<=35?'#b45309':'#c0392b')+'">'+(x>=0?'+':'')+x+'% vs est.</span>'; };
+    // how the estimates have been doing: billed (else booked) vs estimate, over plans with both
+    const done=d.plans.filter(p=>p.freight!=null&&p.est!=null);
+    const sumE=done.reduce((n,p)=>n+p.est,0), sumR=done.reduce((n,p)=>n+p.freight,0);
+    let h='<div class="box" style="padding:0;overflow:hidden"><div style="padding:16px 24px;border-bottom:1px solid #d5d9d9;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><div><div style="font-family:Montserrat,sans-serif;font-size:20px;font-weight:900;color:#002f36;letter-spacing:1px">📊 FREIGHT SO FAR</div>'
+      +'<div class="hint">Each plan: the warehouses chosen, the placement fee, and the freight as estimated → booked → billed by Amazon. The estimate learns from these: it\'s corrected by what '+(d.cal.n?d.cal.n+' shipment'+(d.cal.n===1?'':'s')+' really cost (×'+d.cal.k.toFixed(2)+')':'your shipments really cost — nothing billed yet, so it runs on the rate table alone')+'.</div></div>'
+      +(done.length?'<div style="text-align:right"><div style="font-size:22px;font-weight:900;color:'+(Math.abs(pct(sumR,sumE)||0)<=15?'#1e8449':'#b45309')+'">'+(pct(sumR,sumE)>=0?'+':'')+pct(sumR,sumE)+'%</div><div class="hint">real freight vs estimate, '+done.length+' plan'+(done.length===1?'':'s')+' ('+$$(sumR)+' vs '+$$(sumE)+')</div></div>':'')+'</div>'
+      +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('PLAN','left')+prodTh('WAREHOUSES')+prodTh('UNITS')+prodTh('PLACEMENT FEE')+prodTh('FREIGHT EST.')+prodTh('FREIGHT REAL')+prodTh('TOTAL')+prodTh('PER UNIT')+prodTh('THE OTHER WAY','left')+'</tr>';
+    for(const p of d.plans){
+      const other=p.warehouses>1?p.single:p.split;
+      const otherTxt=other?(p.warehouses>1?'1 warehouse'+(other.fc?' ('+esc(other.fc)+')':''):other.warehouses+' warehouses, no fee')+': fee '+$$(other.fee)+' + est. freight '+$$(other.est)+' = <b>'+$$(other.total)+'</b>'+(p.total!=null?(other.total<p.total?' <span style="color:#c0392b;font-weight:800">est. '+$$(p.total-other.total)+' cheaper</span>':' <span style="color:#1e8449;font-weight:800">est. '+$$(other.total-p.total)+' dearer</span>'):''):'<span class="hint">no other option quoted</span>';
+      h+='<tr style="border-top:2px solid #cfd8e3">'+prodTd('<b>'+esc(p.name||('Plan '+p.id))+'</b><div class="hint">'+new Date(p.at).toLocaleDateString('en-US',{month:'short',day:'numeric'})+(p.booked?'':' · not booked yet')+'</div>','left')
+        +prodTd('<b>'+p.warehouses+'</b>')+prodTd(p.units.toLocaleString())+prodTd(p.fee>0?'<b style="color:#c0392b">'+$$(p.fee)+'</b>':'<span style="color:#1e8449;font-weight:800">$0</span>')
+        +prodTd($$(p.est))+prodTd(p.freight!=null?'<b>'+$$(p.freight)+'</b>'+off(p.freight,p.est):'—')+prodTd(p.total!=null?'<b style="font-size:16px">'+$$(p.total)+'</b>':'—')+prodTd(p.total!=null&&p.units?'$'+(p.total/p.units).toFixed(2):'—')
+        +prodTd(otherTxt,'left','font-size:12px')+'</tr>';
+      for(const sh of p.ships) h+='<tr style="background:#f8fafc;font-size:12px">'+prodTd('<span style="font-family:monospace">'+esc(sh.fba)+'</span> → '+esc(sh.fc||'')+(sh.city?' ('+esc(sh.city)+', '+esc(sh.state)+')':'')+(sh.miles?' · '+Math.round(sh.miles).toLocaleString()+' mi':'')+(sh.carrier?' · '+esc(sh.carrier):''),'left','padding-left:28px')
+        +prodTd('')+prodTd(sh.units!=null?sh.units.toLocaleString():'')+prodTd('')+prodTd($$(sh.est)+(sh.palletsEst?'<div class="hint">'+sh.palletsEst+' pallet'+(sh.palletsEst===1?'':'s')+' est.</div>':''))
+        +prodTd((sh.billed!=null?'<b>'+$$(sh.billed)+'</b> billed':sh.booked!=null?$$(sh.booked)+' booked':'—')+(sh.palletsReal?'<div class="hint">'+sh.palletsReal+' pallet'+(sh.palletsReal===1?'':'s')+' built</div>':'')+off(sh.billed!=null?sh.billed:sh.booked,sh.est))
+        +prodTd('')+prodTd('')+prodTd('','left')+'</tr>';
+    }
+    h+='</table><div class="hint" style="padding:8px 24px 14px">"The other way" is the cheapest option Amazon offered of the opposite kind, at the app\'s estimate (±25–35%) — a guide to whether paying the placement fee or splitting has been the better deal, not a bill. Billed = the settlement\'s figure; booked = what Amazon quoted at booking.</div></div>';
+    el.innerHTML=h;
+  }).catch(()=>{});
+}
 function nsPlansBox(){
+  nsFreightBox();
   const el=document.getElementById('nsPlans'); if(!el) return;
   ownerApi('/api/inbound/plans').then(d=>{
     if(!d||!d.ok||!d.plans.length){ el.innerHTML=''; return; }
@@ -1701,7 +1735,7 @@ function nsPlan(id){
       h+='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;flex-wrap:wrap"><div><b style="font-size:16px">Destination options from Amazon</b><div class="hint">Cheapest estimated total (placement fee + freight) first. Est. pallets and est. freight are our own estimates (weight, size and distance; nothing sent to Amazon), ±25–35%. The real freight quote comes at the end from the floor\'s pallets.</div></div>'
         +(p.status==='placement'&&p.placement.some(o=>!o.guess||o.guess.freight===undefined)?'<button class="action" onclick="nsGuess('+p.id+')" style="background:#eef2f6;color:#1f2733;font-size:13px;padding:8px 12px">Work out pallets &amp; freight</button>':'')+'</div>'
         +'<div style="overflow-x:auto;margin-top:10px"><table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'
-          +prodTh('OPTION','left')+prodTh('EST. PALLETS')+prodTh('PLACEMENT FEE')+prodTh('EST. FREIGHT<br><span style="font-weight:600;color:#8a97a6">±25–35%</span>')+prodTh('EST. TOTAL<br><span style="font-weight:600;color:#8a97a6">fee + freight</span>')+prodTh('')+'</tr>'
+          +prodTh('OPTION','left')+prodTh('EST. PALLETS')+prodTh('PLACEMENT FEE')+prodTh('EST. FREIGHT<br><span style="font-weight:600;color:#8a97a6">±25–35%'+((p.placement[0]||{}).guess&&(p.placement[0].guess.calibratedOn||0)>0?' · learned from '+p.placement[0].guess.calibratedOn+' of your shipments':' · rate table, no freight bills yet')+'</span>')+prodTh('EST. TOTAL<br><span style="font-weight:600;color:#8a97a6">fee + freight</span>')+prodTh('')+'</tr>'
         +opts.map((o,i)=>{ const g=o.guess||{}, bg=o._best?'background:#f0faf4;':'';
           const bl=o._best?'border-top:3px solid #1e8449;border-bottom:3px solid #1e8449;':'border-top:2px solid #e2e8f0;';
           return '<tr>'
