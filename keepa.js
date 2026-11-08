@@ -4,7 +4,8 @@
 // ============================================================
 const axios = require('axios');
 
-const KEEPA_BASE = 'https://api.keepa.com';
+// KEEPA_BASE_URL: local testing only (a fake Keepa), never set in Railway.
+const KEEPA_BASE = process.env.KEEPA_BASE_URL || 'https://api.keepa.com';
 const DOMAIN = 1; // amazon.com
 const AMAZON_SELLER_ID = 'ATVPDKIKX0DER';
 
@@ -19,7 +20,8 @@ const IDX = { AMAZON:0, NEW:1, SALES:3, COUNT_NEW:11, BUY_BOX:18 };
 // can persist progress. A batch that fails after its retries is recorded and
 // skipped rather than throwing away the whole run — previously one bad batch
 // discarded all the tokens already spent.
-async function getProducts(asins, onProgress, onBatch) {
+async function getProducts(asins, onProgress, onBatch, opt) {
+  const bb = !(opt && opt.buybox === false);
   if (!keyOk()) throw new Error('KEEPA_API_KEY not set');
   const key = process.env.KEEPA_API_KEY;
   const out = [];
@@ -28,7 +30,7 @@ async function getProducts(asins, onProgress, onBatch) {
   for (let i = 0; i < asins.length; i += 100) {
     const batch = asins.slice(i, i + 100);
     if (onProgress) onProgress(`batch ${Math.floor(i/100)+1} of ${Math.ceil(asins.length/100)} — ${out.length} products so far`);
-    const url = `${KEEPA_BASE}/product?key=${key}&domain=${DOMAIN}&asin=${batch.join(',')}&stats=90&buybox=1`;
+    const url = `${KEEPA_BASE}/product?key=${key}&domain=${DOMAIN}&asin=${batch.join(',')}&stats=90${bb ? '&buybox=1' : ''}`;
 
     let done = false, attempts = 0;
     while (!done && attempts < 6) {
@@ -200,4 +202,28 @@ function simplify(p) {
   };
 }
 
-module.exports = { getProducts, keyOk };
+// Keepa Product Finder: the ASINs matching a selection (brand, offer count,
+// sales rank…), best first. 10 tokens + 1 per 100 ASINs. Brand Finder (owner
+// 11/8) uses it to list a brand's listings before reading them.
+async function findAsins(selection) {
+  if (!keyOk()) throw new Error('KEEPA_API_KEY not set');
+  const url = `${KEEPA_BASE}/query?key=${process.env.KEEPA_API_KEY}&domain=${DOMAIN}&selection=${encodeURIComponent(JSON.stringify(selection))}`;
+  for (let attempt = 1; attempt <= 6; attempt++) {
+    let resp;
+    try { resp = await axios.get(url, { timeout: 60000, decompress: true }); }
+    catch (err) {
+      const st = err.response?.status, d = err.response?.data;
+      if (st === 429 || (d && d.error && d.error.type === 'NOT_ENOUGH_TOKEN')) { await sleep(Math.min(((d && d.refillIn) || 20000) + 1000, 65000)); continue; }
+      if (st >= 500 && attempt < 4) { await sleep(5000); continue; }
+      throw new Error('Keepa finder ' + (st || '') + ': ' + (typeof d === 'string' ? d.slice(0, 150) : JSON.stringify(d || err.message).slice(0, 150)));
+    }
+    if (resp.data && resp.data.error) {
+      if (resp.data.error.type === 'NOT_ENOUGH_TOKEN') { await sleep(Math.min((resp.data.refillIn || 20000) + 1000, 65000)); continue; }
+      throw new Error('Keepa finder: ' + (resp.data.error.message || resp.data.error.type));
+    }
+    return { asins: resp.data.asinList || [], total: resp.data.totalResults || 0, tokensLeft: resp.data.tokensLeft };
+  }
+  throw new Error('Keepa finder: out of tokens, try again later');
+}
+
+module.exports = { getProducts, findAsins, keyOk };

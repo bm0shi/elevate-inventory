@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'freight-log-1163';
+const BUILD_ID = 'brand-finder-1164';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7405,6 +7405,70 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
 
 // Products to Add: ASINs the owner hid (crossed out, left out of the totals;
 // unhiding brings them back). Owner-only, like the screen.
+// ---------- BRAND FINDER (owner 11/8) ----------
+// Cosmoprof brands worth adding: listings open to 3+ third-party sellers,
+// 100+ a day between them (lib/brand-finder.js). The brand list is pasted
+// (Cosmoprof needs the owner's login; Claude in Chrome on their computer can
+// copy it). Per brand: Keepa's finder for its listings with enough sellers,
+// then the top ones read for sales and seller counts. Saved brand by brand
+// in inv_cache 'brand_finder', so a stop keeps what's done and a re-run
+// skips brands checked in the last 7 days unless asked.
+const brandFinder = require('./lib/brand-finder');
+let brandJob = { running: false, step: '', done: 0, total: 0, error: null, startedAt: null };
+app.post('/api/brand-finder/start', ownerAuth, async (req, res) => {
+  if (brandJob.running) return res.json({ ok: true, already: true });
+  if (!keepa.keyOk()) return res.status(400).json({ ok: false, error: 'KEEPA_API_KEY is not set on the server.' });
+  const b = req.body || {};
+  const brands = brandFinder.parseBrands(b.text || (Array.isArray(b.brands) ? b.brands.join('\n') : ''));
+  if (!brands.length) return res.status(400).json({ ok: false, error: 'Paste at least one brand name.' });
+  if (brands.length > 500) return res.status(400).json({ ok: false, error: 'Up to 500 brands at a time.' });
+  const opt = { minSellers: Math.max(1, Math.min(20, parseInt(b.minSellers, 10) || 3)), minPerDay: Math.max(1, Math.min(10000, Number(b.minPerDay) || 100)), perBrand: Math.max(10, Math.min(100, parseInt(b.perBrand, 10) || 30)) };
+  const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder'")).rows[0] || {}).data || {};
+  const results = prev.results || {};
+  const fresh = r => r && r.at && Date.now() - new Date(r.at).getTime() < 7 * 86400000 && r.opt && r.opt.minSellers === opt.minSellers && r.opt.perBrand === opt.perBrand;
+  const todo = b.recheck ? brands : brands.filter(x => !fresh(results[x.toLowerCase()]));
+  brandJob = { running: true, step: 'Starting…', done: 0, total: todo.length, skipped: brands.length - todo.length, error: null, startedAt: new Date().toISOString(), tokensLeft: null };
+  res.json({ ok: true, started: true, total: todo.length, skipped: brands.length - todo.length });
+  (async () => {
+    const save = async () => saveCache('brand_finder', { at: new Date().toISOString(), opt, brands, results });
+    try {
+      for (const brand of todo) {
+        brandJob.step = `${brand}: finding its listings on Amazon…`;
+        try {
+          const f = await keepa.findAsins(brandFinder.finderSelection(brand, opt));
+          brandJob.tokensLeft = f.tokensLeft;
+          const top = f.asins.slice(0, opt.perBrand);
+          let products = [];
+          if (top.length) {
+            brandJob.step = `${brand}: reading ${top.length} listings (sales, sellers)…`;
+            const r = await keepa.getProducts(top, null, null, { buybox: false });
+            products = r.products; if (r.tokensLeft != null) brandJob.tokensLeft = r.tokensLeft;
+          }
+          results[brand.toLowerCase()] = { ...brandFinder.scoreBrand(brand, products, opt), found: f.total, at: new Date().toISOString(), opt };
+        } catch (e) {
+          results[brand.toLowerCase()] = { brand, error: String(e.message).slice(0, 200), at: new Date().toISOString(), opt };
+          if (/KEEPA_API_KEY|invalid|unauthor/i.test(e.message)) throw e;
+        }
+        brandJob.done++;
+        await save();
+      }
+      brandJob.step = 'Done';
+    } catch (e) { brandJob.error = e.message; brandJob.step = 'Stopped'; await save().catch(() => {}); }
+    finally { brandJob.running = false; }
+  })();
+});
+app.get('/api/brand-finder/status', ownerAuth, (req, res) => res.json(brandJob));
+app.get('/api/brand-finder', ownerAuth, async (req, res) => {
+  const d = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder'")).rows[0] || {}).data || null;
+  // Brands we already sell: from the catalog's own Keepa brand names
+  const mine = new Set();
+  try {
+    const md = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='market_data'")).rows[0] || {}).data;
+    const list = Array.isArray(md) ? md : (md && (md.products || md.items)) || [];
+    for (const p of list) if (p && p.brand) mine.add(String(p.brand).toLowerCase());
+  } catch (e) {}
+  res.json({ ok: true, data: d, ourBrands: [...mine], job: brandJob });
+});
 app.get('/api/products-to-add/hidden', ownerAuth, async (req, res) => {
   const r = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='toadd_hidden'")).rows[0];
   res.json({ ok: true, asins: (r && r.data && r.data.asins) || [] });
