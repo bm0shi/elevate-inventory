@@ -807,7 +807,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
           <div class="subcard"><div class="subgroup-label">📦 Data</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="market" onclick="showSubTab('market',event)">Market Data</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button></div></div>
           <div class="subcard"><div class="subgroup-label">🚚 Shipments</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button></div></div>
           <div class="subcard"><div class="subgroup-label">🏷️ Prices</div><div class="subgroup-btns"><button class="subtab amz" title="Night price drop: lower prices in time slots, put them back after" data-sub="reprice" onclick="showSubTab('reprice',event)">Repricer</button></div></div>
-          <div class="subcard"><div class="subgroup-label">🧭 Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button></div></div>
+          <div class="subcard"><div class="subgroup-label">🧭 Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button><button class="subtab" data-sub="brands" onclick="showSubTab('brands',event)">Brand Finder</button></div></div>
           <div class="subcard"><div class="subgroup-label">✅ Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="status" onclick="showSubTab('status',event)">App status<span id="statusDot" class="fresh-tag" style="display:none"></span></button><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button><button class="subtab" data-sub="hzstore" onclick="showSubTab('hzstore',event)" title="Cubic feet per ASIN for a dangerous-goods storage increase request">Hazmat storage</button></div></div>
           <div class="subcard"><div class="subgroup-label">📍 Item locations</div><div class="subgroup-btns"><button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button></div></div>
           <div class="subcard"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button><button class="subtab" data-sub="count" onclick="showSubTab('count',event)">Cycle Count</button></span></div></div>
@@ -1056,6 +1056,7 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
     </div>
     <div id="restockBody"></div>
   </div>
+<div id="sub-brands" class="subpanel"><div id="brandsBody"><div class="hint" style="padding:20px;text-align:center">Loading…</div></div></div>
 <div id="sub-toadd" class="subpanel">
     <div class="box">
       <div style="font-weight:700">Products to Add — Expansion Roadmap</div>
@@ -4238,6 +4239,71 @@ function addPhotoInvoice(){
   }).catch(e=>{ toast(e.message,true); if(b){ b.disabled=false; b.textContent='Add to Order Check-In'; } });
 }
 // ==================== PRODUCTS TO ADD ====================
+// ---- BRAND FINDER (owner 11/8) ----
+// Cosmoprof brands worth adding on Amazon: listings open to 3+ third-party
+// sellers and 100+ a day between them. The brand list is pasted (Cosmoprof
+// needs the owner's login: Claude in Chrome on their computer can copy it);
+// Keepa does the Amazon side on the server. /api/brand-finder.
+const BF_CHROME_PROMPT='Open cosmoprofbeauty.com (I am logged in). Go to the Brands page (Shop → Brands, or the A–Z brand list). Copy the name of EVERY brand listed, A to Z, one brand per line, with nothing else — no counts, no headings. If the list is split into letters or pages, go through all of them. Then give me the full list in one block I can copy.';
+let _bfSort={col:'openPerDay',dir:-1}, _bfPoll=null, _bfOpen=new Set();
+function loadBrands(){
+  ownerApi('/api/brand-finder').then(d=>{ if(!d||d.ok===false){ document.getElementById('brandsBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">'+esc((d&&d.error)||'Could not load')+'</div>'; return; }
+    window._bf=d; renderBrands(); if(d.job&&d.job.running) bfPoll(); }).catch(e=>{ document.getElementById('brandsBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not load: '+esc(e.message)+'</div>'; });
+}
+function bfPoll(){ clearTimeout(_bfPoll); _bfPoll=setTimeout(()=>{ ownerApi('/api/brand-finder').then(d=>{ if(d&&d.ok){ window._bf=d; renderBrands(); if(d.job&&d.job.running) bfPoll(); else toast(d.job&&d.job.error?'Brand Finder stopped: '+d.job.error:'Brand Finder done',!!(d.job&&d.job.error)); } }).catch(()=>bfPoll()); }, 4000); }
+function bfStart(recheck){
+  const v=id=>(document.getElementById(id)||{}).value;
+  const text=v('bfText')||'';
+  if(!text.trim()){ toast('Paste the Cosmoprof brand list first',true); return; }
+  ownerApi('/api/brand-finder/start',{method:'POST',body:JSON.stringify({text, minSellers:v('bfSellers'), minPerDay:v('bfPerDay'), perBrand:v('bfPer'), recheck:!!recheck})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not start',true); return; }
+    toast(d.already?'Already running':'Checking '+d.total+' brand'+(d.total===1?'':'s')+(d.skipped?' ('+d.skipped+' checked this week, kept)':''));
+    loadBrands();
+  }).catch(e=>toast('Could not start: '+e.message,true));
+}
+function bfSortBy(c){ _bfSort=_bfSort.col===c?{col:c,dir:-_bfSort.dir}:{col:c,dir:c==='brand'?1:-1}; renderBrands(); }
+function bfToggle(k){ if(_bfOpen.has(k)) _bfOpen.delete(k); else _bfOpen.add(k); renderBrands(); }
+function renderBrands(){
+  const el=document.getElementById('brandsBody'); if(!el) return;
+  const d=window._bf||{}, D=d.data||{}, J=d.job||{}, opt=D.opt||{minSellers:3,minPerDay:100,perBrand:30};
+  const ours=new Set(d.ourBrands||[]);
+  const keep=document.getElementById('bfText'), txt=keep?keep.value:(D.brands||[]).join('\n');
+  const rows=Object.values(D.results||{}).filter(r=>!D.brands||D.brands.some(b=>b.toLowerCase()===String(r.brand).toLowerCase()));
+  const n=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
+  let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><b style="font-size:18px">🔎 Brand Finder</b><span class="hint">Cosmoprof brands worth adding: listings open to '+opt.minSellers+'+ third-party sellers, selling '+opt.minPerDay+'+ a day between them</span></div>'
+    +'<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#f3f8fd;border:1px solid #cfe0f5;font-size:13px;line-height:1.5"><b>1. Get the brand list from Cosmoprof.</b> The app can\'t log in there, so copy it yourself from the Brands page, or let <b>Claude in Chrome</b> do it on your computer (logged in to Cosmoprof): <button class="mini" onclick="copyText(BF_CHROME_PROMPT);toast(\'Copied — paste it into Claude in Chrome\')">📋 Copy the instruction for Claude in Chrome</button></div>'
+    +'<div style="margin-top:10px"><b style="font-size:13px">2. Paste the brands here</b> <span class="hint">one per line or comma-separated; counts like “(312)” are fine</span>'
+    +'<textarea id="bfText" rows="6" style="width:100%;box-sizing:border-box;margin-top:4px;padding:10px;font-size:14px;border:2px solid #e2e8f0;border-radius:8px" placeholder="Paul Mitchell&#10;Redken&#10;Joico&#10;…">'+esc(txt)+'</textarea></div>'
+    +'<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">'
+    +'<label style="font-size:12px;font-weight:800;color:#5a6472">3P SELLERS AT LEAST<input id="bfSellers" type="number" min="1" max="20" value="'+opt.minSellers+'" style="display:block;width:90px;margin-top:3px;padding:7px;font-size:15px"></label>'
+    +'<label style="font-size:12px;font-weight:800;color:#5a6472">UNITS A DAY AT LEAST<input id="bfPerDay" type="number" min="1" value="'+opt.minPerDay+'" style="display:block;width:100px;margin-top:3px;padding:7px;font-size:15px"></label>'
+    +'<label style="font-size:12px;font-weight:800;color:#5a6472">LISTINGS READ PER BRAND<input id="bfPer" type="number" min="10" max="100" value="'+opt.perBrand+'" style="display:block;width:100px;margin-top:3px;padding:7px;font-size:15px"></label>'
+    +'<button class="action" onclick="bfStart(false)" style="background:#008296"'+(J.running?' disabled':'')+'>3. Check on Amazon →</button>'
+    +'<button class="action" onclick="bfStart(true)" style="background:#5a6472"'+(J.running?' disabled':'')+' title="Check every brand again, including ones checked this week">↻ Re-check all</button></div>'
+    +'<div class="hint" style="margin-top:6px">Uses Keepa: about '+(10+Number(opt.perBrand||30))+' tokens a brand (its best-selling listings with '+opt.minSellers+'+ offers, then each one\'s sales and sellers). Brands checked this week are kept. Units a day = Amazon\'s “bought in past month” ÷ 30 — a floor; a listing without it sells under ~50 a month and counts as 0.</div>';
+  if(J.running) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#eef4fb;font-weight:700;color:#0d4450">⏳ '+esc(J.step||'')+' · '+J.done+' of '+J.total+' brands'+(J.tokensLeft!=null?' · '+J.tokensLeft+' Keepa tokens left':'')+'<div class="hint" style="font-weight:600">Keeps going on the server; Keepa waits for tokens when it runs low. Results show as each brand finishes.</div></div>';
+  else if(J.error) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#fdecea;color:#c0392b;font-weight:700">Stopped: '+esc(J.error)+'</div>';
+  h+='</div>';
+  if(rows.length){
+    const s=_bfSort, val=(r,c)=>c==='brand'?String(r.brand).toLowerCase():(r[c]??-1);
+    rows.sort((a,b)=>(b.qualifies?1:0)-(a.qualifies?1:0)||(val(a,s.col)<val(b,s.col)?-1:val(a,s.col)>val(b,s.col)?1:0)*(s.col==='brand'?s.dir:-s.dir));
+    const q=rows.filter(r=>r.qualifies), th=(c,t)=>prodTh('<a href="#" onclick="bfSortBy(\''+c+'\');return false" style="color:inherit;text-decoration:none">'+t+(s.col===c?(s.dir<0?' ▼':' ▲'):'')+'</a>');
+    h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap"><b style="font-size:16px">'+q.length+' of '+rows.length+' brands qualify</b><span class="hint">Qualifying brands first. Tap a brand for its listings.</span></div>'
+      +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0"><tr>'+th('brand','BRAND')+th('openPerDay','UNITS/DAY · OPEN LISTINGS')+th('open','OPEN LISTINGS')+th('avgSellers','AVG 3P SELLERS')+th('openRevenuePerDay','$/DAY · OPEN')+th('amazonOn','AMAZON SELLS')+th('allPerDay','UNITS/DAY · ALL READ')+'</tr>';
+    for(const r of rows){
+      const k=String(r.brand).toLowerCase(), mine=ours.has(k);
+      if(r.error){ h+='<tr style="border-top:1px solid #eef2f6">'+prodTd('<b>'+esc(r.brand)+'</b>','left')+'<td colspan="6" style="color:#c0392b;font-size:12px;padding:8px">'+esc(r.error)+'</td></tr>'; continue; }
+      h+='<tr style="border-top:1px solid #eef2f6;cursor:pointer;background:'+(r.qualifies?'#f0faf4':'')+'" onclick="bfToggle(\''+esc(k).replace(/'/g,'')+'\')">'
+        +prodTd('<b>'+esc(r.brand)+'</b>'+(r.qualifies?' <span style="color:#1e8449;font-weight:900;font-size:12px">✓ QUALIFIES</span>':'')+(mine?' <span style="font-size:11px;padding:2px 7px;border-radius:999px;background:#eef2f6;color:#5a6472;font-weight:800">already selling</span>':'')+'<div class="hint" style="font-size:11px">'+(r.found!=null?r.found.toLocaleString()+' listings with '+opt.minSellers+'+ offers on Amazon · '+r.checked+' read':'')+'</div>','left')
+        +prodTd('<b style="font-size:16px;color:'+(r.qualifies?'#1e8449':'#1f2733')+'">'+n(r.openPerDay)+'</b>')+prodTd(r.open+(r.noFigure?'<div class="hint" style="font-size:11px">'+r.noFigure+' read with no sales figure</div>':''))+prodTd(n(r.avgSellers))+prodTd(r.openRevenuePerDay?'$'+Number(r.openRevenuePerDay).toLocaleString():'—')+prodTd(r.amazonOn+' of '+r.checked)+prodTd(n(r.allPerDay))+'</tr>';
+      if(_bfOpen.has(k)) h+='<tr><td colspan="7" style="padding:0 0 10px 18px;background:#fafcfd"><table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0;font-size:12px"><tr>'+prodTh('LISTING','left')+prodTh('UNITS/DAY')+prodTh('3P SELLERS')+prodTh('AMAZON')+prodTh('PRICE')+prodTh('RANK')+'</tr>'
+        +(r.listings||[]).map(l=>'<tr style="'+(l.open?'':'color:#8a97a6')+'">'+prodTd('<a href="https://www.amazon.com/dp/'+esc(l.asin)+'" target="_blank" style="color:#008296">'+esc(String(l.title||l.asin).slice(0,90))+'</a> <span class="hint" style="font-family:monospace">'+esc(l.asin)+'</span>','left')
+          +prodTd(l.monthlySold>0?n(l.perDay):'<span class="hint">under ~2</span>')+prodTd(l.thirdParty==null?'—':'<b style="color:'+(l.open?'#1e8449':'#c0392b')+'">'+l.thirdParty+'</b>')+prodTd(l.amazonSelling?'sells':'—')+prodTd(l.price?'$'+Number(l.price).toFixed(2):'—')+prodTd(l.rank?'#'+Number(l.rank).toLocaleString():'—')+'</tr>').join('')+'</table></td></tr>';
+    }
+    h+='</table></div>';
+  }
+  el.innerHTML=h;
+}
 function loadToAdd(){
   const btn=document.getElementById('toaddBtn'); if(btn){btn.textContent='Loading...';btn.disabled=true;}
   ownerApi('/api/products-to-add').then(d=>{
@@ -4950,6 +5016,7 @@ function showSubTab(name, ev){
   if(name==='smartscout') loadSmartScout();
   if(name==='itemlocs') loadItemLocs();
   if(name==='toadd'){ if(window._toaddData) renderToAdd(); else loadToAdd(); }
+  if(name==='brands') loadBrands();
   if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
