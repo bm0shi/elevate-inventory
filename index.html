@@ -5345,12 +5345,13 @@ function renderPrepCap(){
     if(!limit) return '<div style="margin-top:8px;font-size:13px"><b>'+label+'</b> · <span class="hint">no limit set — tap Set room left on Pending Prep</span></div>';
     const room=Math.max(0, limit-now), out=ready.cf+pend, free=room-out;
     const per=pre.units?pre.cf/pre.units:null, fitUnits=per&&free>0?Math.floor(free/per):0;
-    const w=v=>Math.max(0,Math.min(100, v/limit*100));
+    // The bar is the room left; what's headed out fills it (owner 11/8: drawn
+    // against the whole limit it read nearly full before anything was sent).
+    const w=v=>room>0?Math.max(0,Math.min(100, v/room*100)):(v>0?100:0);
     const col=free<0?'#c0392b':free<room*0.1?'#b7791f':'#1e8449';
-    const bar='<div style="position:relative;height:18px;background:#eef2f6;border-radius:9px;overflow:hidden;margin-top:6px">'
-      +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+w(now)+'%;background:#2563a8" title="At Amazon + on the way: '+f(now)+' cu ft"></div>'
-      +'<div style="position:absolute;left:'+w(now)+'%;top:0;bottom:0;width:'+(w(now+out)-w(now))+'%;background:#1e8449" title="Prepped & Ready + Pending Prep: '+f(out)+' cu ft"></div>'
-      +'<div style="position:absolute;left:'+w(now+out)+'%;top:0;bottom:0;width:'+(w(now+out+pre.cf)-w(now+out))+'%;background:repeating-linear-gradient(45deg,#7a4fb5,#7a4fb5 5px,#9b78cc 5px,#9b78cc 10px)" title="Pre-labeled: '+f(pre.cf)+' cu ft"></div></div>';
+    const bar='<div style="position:relative;height:18px;background:#eef2f6;border-radius:9px;overflow:hidden;margin-top:6px" title="Room left at Amazon: '+f(room)+' cu ft">'
+      +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+w(out)+'%;background:#1e8449" title="Prepped & Ready + Pending Prep: '+f(out)+' cu ft"></div>'
+      +'<div style="position:absolute;left:'+w(out)+'%;top:0;bottom:0;width:'+(w(out+pre.cf)-w(out))+'%;background:repeating-linear-gradient(45deg,#7a4fb5,#7a4fb5 5px,#9b78cc 5px,#9b78cc 10px)" title="Pre-labeled: '+f(pre.cf)+' cu ft"></div></div>';
     const noSize=ready.noSize+pre.noSize;
     return '<div style="margin-top:10px">'
       +'<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:baseline">'
@@ -5358,10 +5359,10 @@ function renderPrepCap(){
       +'<b style="font-size:16px;color:'+col+'">'+(free<0?'OVER by '+f(-free)+' cu ft':f(free)+' cu ft free'+(per?' ≈ '+fitUnits.toLocaleString()+' pre-labeled units':''))+'</b></div>'
       +bar
       +'<div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px;margin-top:4px;color:#5a6472">'
-      +'<span><b style="color:#2563a8">■</b> At Amazon + on the way '+f(now)+'</span>'
       +'<span><b style="color:#1e8449">■</b> Ready + pending prep '+f(out)+(tick.cf?' (ticked '+f(tick.cf)+')':'')+'</span>'
       +'<span><b style="color:#7a4fb5">■</b> Pre-labeled '+f(pre.cf)+(pre.cf>0&&free>0?(pre.cf<=free?' — all of it fits':' — '+f(free)+' of it fits'):'')+'</span>'
       +(noSize?'<span style="color:#b7791f">⚠ '+noSize+' line'+(noSize===1?'':'s')+' with no size, not counted</span>':'')
+      +'<span class="hint">'+f(now)+' cu ft at Amazon + on the way is already counted in the room left</span>'
       +'</div></div>';
   };
   const h=line('Standard','standard',L.standard)+line('Flammable','hazmat',L.hazmat)+line('Aerosol','aerosol',L.aerosol);
@@ -5374,15 +5375,19 @@ function renderCapBar(){
   const line=(label, key, limit)=>{
     const now=c.used[key], prep=c.prepped[key], pend=c.pending[key], tot=now+prep+pend;
     if(!limit && !tot) return '';
-    const pct=limit?tot/limit*100:null, col=pct==null?'#5a6472':pct>100?'#c0392b':pct>90?'#b7791f':'#1e8449';
-    const w=v=>limit?Math.min(100, v/limit*100):0;
-    const bar=limit?'<div style="position:relative;height:16px;background:#eef2f6;border-radius:8px;overflow:hidden;margin-top:6px">'
-      +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+w(now)+'%;background:#2563a8" title="At Amazon + on the way: '+f(now)+' cu ft"></div>'
-      +'<div style="position:absolute;left:'+w(now)+'%;top:0;bottom:0;width:'+Math.max(0,w(now+prep)-w(now))+'%;background:#b7791f" title="Prepped, not shipped: '+f(prep)+' cu ft"></div>'
-      +'<div style="position:absolute;left:'+w(now+prep)+'%;top:0;bottom:0;width:'+Math.max(0,w(tot)-w(now+prep))+'%;background:#7a4fb5" title="Pending prep: '+f(pend)+' cu ft"></div></div>':'';
+    // The bar is the ROOM LEFT (what the owner typed from Seller Central, less
+    // anything sent since), filled by what's about to go: prepped + pending
+    // prep. Owner 11/8: drawn against Amazon's whole limit with the stock
+    // already at Amazon in blue, it read "3/4 full" with 928 units to send.
+    const room=limit?Math.max(0,limit-now):0, add=prep+pend;
+    const pct=limit?(room>0?add/room*100:(add>0?999:0)):null, col=pct==null?'#5a6472':pct>100?'#c0392b':pct>90?'#b7791f':'#1e8449';
+    const w=v=>room>0?Math.min(100, v/room*100):(v>0?100:0);
+    const bar=limit?'<div style="position:relative;height:16px;background:#eef2f6;border-radius:8px;overflow:hidden;margin-top:6px" title="Room left at Amazon: '+f(room)+' cu ft">'
+      +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+w(prep)+'%;background:#b7791f" title="Prepped, not shipped: '+f(prep)+' cu ft"></div>'
+      +'<div style="position:absolute;left:'+w(prep)+'%;top:0;bottom:0;width:'+Math.max(0,w(add)-w(prep))+'%;background:#7a4fb5" title="Pending prep: '+f(pend)+' cu ft"></div></div>':'';
     return '<div style="margin-top:8px"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px">'
-      +'<span><b>'+label+'</b> · <span style="color:#2563a8">'+f(now)+' at Amazon + on the way</span> + <span style="color:#b7791f">'+f(prep)+' prepped</span> + <span style="color:#7a4fb5">'+f(pend)+' pending prep</span></span>'
-      +(limit?(()=>{ const room=Math.max(0,limit-now), add=prep+pend; return '<b style="color:'+col+'">'+f(add)+' to send · '+f(room)+' cu ft room left'+(add>room?' — OVER by '+f(add-room):' ('+f(room-add)+' spare)')+'</b>'; })():'<b style="color:#5a6472">'+f(tot)+' cu ft · no limit set</b>')+'</div>'+bar+'</div>';
+      +'<span><b>'+label+'</b> · <span style="color:#b7791f">'+f(prep)+' prepped</span> + <span style="color:#7a4fb5">'+f(pend)+' pending prep</span> = '+f(add)+' cu ft to send'+(limit?' <span class="hint">· '+f(now)+' cu ft at Amazon + on the way already counted in the room left</span>':'')+'</span>'
+      +(limit?'<b style="color:'+col+'">'+f(add)+' of '+f(room)+' cu ft room left'+(add>room?' — OVER by '+f(add-room):' · '+f(room-add)+' spare')+'</b>':'<b style="color:#5a6472">'+f(tot)+' cu ft · no limit set</b>')+'</div>'+bar+'</div>';
   };
   const L=c.limit||{};
   let h='<div class="box" style="margin-bottom:12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
@@ -5402,7 +5407,7 @@ function renderCapBar(){
       +'<span style="font-family:monospace">'+esc(m.asin)+'</span><span style="flex:1;min-width:160px">'+(m.name&&m.name!==m.asin?amzLinkSized(m.asin,m.name):'')+'</span>'
       +'<span class="hint">'+esc(m.why||'not looked up yet')+'</span>'
       +'<button class="mini" onclick="capSizeManual(\''+esc(m.asin)+'\')">✎ size</button></div>').join('')+'</details>';
-  h+='<div class="hint" style="margin-top:4px">Room left = Seller Central\'s <b>Maximum shipment</b>'+(L.setAt?' (entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+(L.standardRoom!=null?': '+f(L.standardRoom)+' cu ft':'')+')':'')+', less anything sent to Amazon since. Prepped and pending prep are what you\'re about to send.</div></div>';
+  h+='<div class="hint" style="margin-top:4px">Each bar is the room left = Seller Central\'s <b>Maximum shipment</b>'+(L.setAt?' (entered '+new Date(L.setAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})+(L.standardRoom!=null?': '+f(L.standardRoom)+' cu ft':'')+')':'')+', less anything sent to Amazon since; Amazon already took what\'s there and on the way off that number. The fill is what you\'re about to send: prepped and pending prep.</div></div>';
   el.innerHTML=h;
 }
 function capSizeManual(asin){
