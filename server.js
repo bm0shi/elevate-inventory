@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'room-nudge-1162';
+const BUILD_ID = 'freight-log-1163';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -2920,6 +2920,51 @@ app.get('/api/inbound/plans', auth, async (req, res) => {
          WHERE ps.shipment_id IS NULL OR ps.status = 'packing')) AS floor_done
     FROM inv_inbound_plans WHERE status <> 'cancelled' ORDER BY created_at DESC LIMIT 100`);
   res.json({ ok: true, plans: r.rows });
+});
+// FREIGHT LOG (owner 11/8, "are you keeping track of our freight costs with
+// each shipment so we can improve the estimates … split and save on
+// placement fees, or pay the fee and ship to the closest FC?"). The
+// bookkeeping was there (saveBookedCost per shipment, the settlement's
+// billed amount on top, freightCalibration's median over the last 60) but
+// nothing showed it. Per confirmed plan: the option taken (warehouses,
+// placement fee, estimate → booked → billed per shipment, pallets, miles)
+// and the cheapest estimated single-warehouse and split options it was
+// chosen over, so the owner can see which way has been paying off.
+app.get('/api/inbound/freight-log', auth, async (req, res) => {
+  const S = await packSettings();
+  const cal = await freightCalibration(S);
+  const plans = (await pool.query(`SELECT id, name, created_at, placement, placement_id, shipments, confirmed, items FROM inv_inbound_plans
+    WHERE placement_confirmed_at IS NOT NULL AND status <> 'cancelled' AND jsonb_typeof(shipments) = 'array' ORDER BY created_at DESC LIMIT 60`)).rows;
+  const fbas = plans.flatMap(p => (p.shipments || []).map(s => s.fba)).filter(Boolean);
+  const costs = {};
+  for (const r of (await pool.query("SELECT shipment_id, kind, amount::float AS amount, source FROM inv_shipment_costs WHERE shipment_id = ANY($1) AND kind IN ('freight','placement')", [fbas])).rows)
+    (costs[r.shipment_id] = costs[r.shipment_id] || {})[r.kind] = { amount: r.amount, source: r.source };
+  const fcMem = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fc_addresses'")).rows[0] || {}).data || {};
+  const out = [];
+  for (const p of plans) {
+    const opts = p.placement || [], chosen = opts.find(o => o.placementOptionId === p.placement_id) || {};
+    const units = (p.items || []).reduce((n, i) => n + (Number(i.qty) || 0), 0);
+    const tot = o => o.guess && o.guess.freight != null ? (o.fee || 0) + o.guess.freight : null;
+    const single = opts.filter(o => o.shipments === 1 && tot(o) != null).sort((a, b) => tot(a) - tot(b))[0] || null;
+    const split = opts.filter(o => o.shipments > 1 && tot(o) != null).sort((a, b) => tot(a) - tot(b))[0] || null;
+    const ships = (p.shipments || []).map((sh, j) => {
+      const g = (chosen.guess && chosen.guess.ships && chosen.guess.ships[j]) || {};
+      const c = costs[sh.fba] || {};
+      const billed = c.freight && c.freight.source === 'actual' ? c.freight.amount : null;
+      const booked = sh.booked && sh.booked.cost > 0 ? sh.booked.cost : (c.freight && c.freight.source === 'amazon' ? c.freight.amount : null);
+      const real = (sh.pallets || []).length || null;
+      return { fba: sh.fba, fc: sh.fc, city: (fcMem[sh.fc] || {}).city || sh.city || '', state: (fcMem[sh.fc] || {}).state || sh.state || '',
+        units: sh.units || g.units || null, palletsEst: g.pallets || null, palletsReal: real, miles: g.miles || null,
+        est: g.freight != null ? g.freight : null, booked, billed, carrier: sh.booked ? sh.booked.carrier : null };
+    });
+    const freightReal = ships.every(s => s.billed != null || s.booked != null) ? ships.reduce((n, s) => n + (s.billed != null ? s.billed : s.booked), 0) : null;
+    out.push({ id: p.id, name: p.name, at: p.created_at, units, warehouses: ships.length, fee: chosen.fee || 0,
+      est: chosen.guess && chosen.guess.freight != null ? chosen.guess.freight : null, freight: freightReal, booked: !!(p.confirmed && p.confirmed.shipments && p.confirmed.shipments.length),
+      total: freightReal != null ? Math.round(((chosen.fee || 0) + freightReal) * 100) / 100 : null, ships,
+      single: single ? { fee: single.fee || 0, est: single.guess.freight, total: tot(single), fc: (single.destinations || [])[0] || null } : null,
+      split: split ? { fee: split.fee || 0, est: split.guess.freight, total: tot(split), warehouses: split.shipments } : null });
+  }
+  res.json({ ok: true, cal, plans: out });
 });
 app.get('/api/inbound/plans/:id', auth, async (req, res) => {
   const p = (await pool.query('SELECT * FROM inv_inbound_plans WHERE id=$1', [parseInt(req.params.id, 10) || 0])).rows[0];
