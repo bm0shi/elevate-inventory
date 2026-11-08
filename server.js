@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, getListingPrice, inbound: amzInbound } = require('./spapi');
+const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, getListingPrice, getOfferSellers, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'brand-marks-1165';
+const BUILD_ID = 'brand-spellings-1166';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7425,10 +7425,14 @@ app.post('/api/brand-finder/start', ownerAuth, async (req, res) => {
   const opt = { minSellers: Math.max(1, Math.min(20, parseInt(b.minSellers, 10) || 3)), minPerDay: Math.max(1, Math.min(10000, Number(b.minPerDay) || 100)), perBrand: Math.max(10, Math.min(100, parseInt(b.perBrand, 10) || 30)) };
   const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder'")).rows[0] || {}).data || {};
   const results = prev.results || {};
-  const fresh = r => r && r.at && Date.now() - new Date(r.at).getTime() < 7 * 86400000 && r.opt && r.opt.minSellers === opt.minSellers && r.opt.perBrand === opt.perBrand;
+  const fresh = r => r && r.at && Date.now() - new Date(r.at).getTime() < 7 * 86400000 && r.opt && r.opt.minSellers === opt.minSellers && r.opt.perBrand === opt.perBrand
+    // checked before the spellings and real sellers (11/8): checked again
+    && Array.isArray(r.tried);
   // Brands the owner removed (no potential) aren't checked again: no tokens spent on them.
   const marks = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
-  const removed = new Set(marks.removed || []);
+  const removed = new Set(marks.removed || []), aliases = marks.aliases || {};
+  // seller names already looked up (Keepa charges per seller): kept for good
+  const sellerNames = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='seller_names'")).rows[0] || {}).data || {};
   const todo = (b.recheck ? brands : brands.filter(x => !fresh(results[x.toLowerCase()]))).filter(x => !removed.has(x.toLowerCase()));
   brandJob = { running: true, step: 'Starting…', done: 0, total: todo.length, skipped: brands.length - todo.length, error: null, startedAt: new Date().toISOString(), tokensLeft: null };
   res.json({ ok: true, started: true, total: todo.length, skipped: brands.length - todo.length });
@@ -7438,7 +7442,10 @@ app.post('/api/brand-finder/start', ownerAuth, async (req, res) => {
       for (const brand of todo) {
         brandJob.step = `${brand}: finding its listings on Amazon…`;
         try {
-          const f = await keepa.findAsins(brandFinder.finderSelection(brand, opt));
+          // Every spelling at once (Cosmoprof's "John Paul Mitchell Systems" is
+          // "Paul Mitchell" on Amazon), plus what the owner typed for it.
+          const variants = brandFinder.brandVariants(brand, aliases[brand.toLowerCase()] || []);
+          const f = await keepa.findAsins(brandFinder.finderSelection(brand, opt, variants));
           brandJob.tokensLeft = f.tokensLeft;
           const top = f.asins.slice(0, opt.perBrand);
           let products = [];
@@ -7447,7 +7454,23 @@ app.post('/api/brand-finder/start', ownerAuth, async (req, res) => {
             const r = await keepa.getProducts(top, null, null, { buybox: false });
             products = r.products; if (r.tokensLeft != null) brandJob.tokensLeft = r.tokensLeft;
           }
-          results[brand.toLowerCase()] = { ...brandFinder.scoreBrand(brand, products, opt), found: f.total, at: new Date().toISOString(), opt };
+          // The real sellers on its 8 best listings (Amazon's offers, no
+          // tokens): the exact reseller count and whether the brand itself
+          // sells there (owner 11/8, "I meant the actual brand selling").
+          let offers = {}, own = { sells: null, sellers: [], checked: 0 };
+          const first = brandFinder.scoreBrand(brand, products, opt, { variants });
+          const look = first.listings.slice(0, 8).map(l => l.asin);
+          if (look.length) {
+            brandJob.step = `${brand}: reading who sells its top ${look.length} listings…`;
+            try {
+              offers = await getOfferSellers(look, t => { brandJob.step = `${brand}: ${t}`; });
+              const ids = [...new Set(Object.values(offers).flatMap(o => (o.sellers || []).map(x => x.id)))].filter(id => id && !sellerNames[id] && id !== 'ATVPDKIKX0DER');
+              if (ids.length) { Object.assign(sellerNames, await keepa.getSellerNames(ids)); await saveCache('seller_names', sellerNames); }
+              own = brandFinder.brandSellers(offers, sellerNames, variants, 'ATVPDKIKX0DER');
+            } catch (e2) { own.error = String(e2.message).slice(0, 150); }
+          }
+          const sc = brandFinder.scoreBrand(brand, products, opt, { variants, offers, brandSellerIds: own.sellers.map(x => x.id) });
+          results[brand.toLowerCase()] = { ...sc, found: f.total, tried: variants, brandSells: own.sells, brandStores: own.sellers, sellersChecked: own.checked, sellersError: own.error || null, at: new Date().toISOString(), opt };
         } catch (e) {
           results[brand.toLowerCase()] = { brand, error: String(e.message).slice(0, 200), at: new Date().toISOString(), opt };
           if (/KEEPA_API_KEY|invalid|unauthor/i.test(e.message)) throw e;
@@ -7471,7 +7494,7 @@ app.get('/api/brand-finder', ownerAuth, async (req, res) => {
     for (const p of list) if (p && p.brand) mine.add(String(p.brand).toLowerCase());
   } catch (e) {}
   const marks = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
-  res.json({ ok: true, data: d, ourBrands: [...mine], job: brandJob, marks: { potential: marks.potential || [], removed: marks.removed || [] } });
+  res.json({ ok: true, data: d, ourBrands: [...mine], job: brandJob, marks: { potential: marks.potential || [], removed: marks.removed || [], aliases: marks.aliases || {} } });
 });
 // The owner's calls on brands (owner 11/8): ✓ potential (its own section at
 // the top) or ✕ no potential (hidden, kept in a Removed list to restore, and
@@ -7482,10 +7505,18 @@ app.post('/api/brand-finder/mark', ownerAuth, async (req, res) => {
   if (!k) return res.status(400).json({ ok: false, error: 'brand required' });
   if (mark != null && !['potential', 'removed'].includes(mark)) return res.status(400).json({ ok: false, error: 'mark must be potential, removed or null' });
   const cur = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
-  const pot = new Set(cur.potential || []), rem = new Set(cur.removed || []);
+  const pot = new Set(cur.potential || []), rem = new Set(cur.removed || []), aliases = cur.aliases || {};
+  // The Amazon name(s) for a brand the spellings didn't find: { brand, alias: "Paul Mitchell, Tea Tree" }
+  if (req.body && req.body.alias != null) {
+    const list = String(req.body.alias).split(',').map(x => x.trim()).filter(Boolean).slice(0, 8).map(x => x.slice(0, 60));
+    if (list.length) aliases[k] = list; else delete aliases[k];
+    const data = { potential: [...pot], removed: [...rem], aliases };
+    await saveCache('brand_finder_marks', data);
+    return res.json({ ok: true, marks: data });
+  }
   pot.delete(k); rem.delete(k);
   if (mark === 'potential') pot.add(k); else if (mark === 'removed') rem.add(k);
-  const data = { potential: [...pot], removed: [...rem] };
+  const data = { potential: [...pot], removed: [...rem], aliases };
   await saveCache('brand_finder_marks', data);
   res.json({ ok: true, marks: data });
 });
