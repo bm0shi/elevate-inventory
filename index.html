@@ -5397,6 +5397,12 @@ function renderCapBar(){
     +line('Standard', 'standard', L.standard)
     +line('Flammable', 'hazmat', L.hazmat)
     +line('Aerosol', 'aerosol', L.aerosol);
+  // The limit itself isn't in Amazon's API and Amazon sets a new one each
+  // month (owner 11/8, "can you pull that daily?": the room left already moves
+  // with each day's stock pull; the typed figure is what goes stale): a figure
+  // from a previous month, or over three weeks old, gets an amber nudge.
+  if(L.setAt){ const at=new Date(L.setAt), now=new Date(), days=(now-at)/86400000, otherMonth=at.getFullYear()!==now.getFullYear()||at.getMonth()!==now.getMonth();
+    if(otherMonth||days>21) h+='<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff8ec;border:1px solid #f3dfb5;color:#b45309;font-weight:700;font-size:13px">⏰ The room left was entered '+(otherMonth?'in '+at.toLocaleDateString('en-US',{month:'long'}):Math.round(days)+' days ago')+'. Amazon sets a new limit each month and its figure isn\'t in the API, so check Seller Central → Capacity Monitor → Maximum shipment and tap Set room left. (Day to day, the room here already moves with the stock at Amazon.)</div>'; }
   // Amazon refused a plan for a bucket after the room was entered (FBA_INB_0132): say so until it's re-entered.
   if(L.refused) h+='<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#fff5f4;border:1px solid #f3d9d6;color:#c0392b;font-weight:700;font-size:13px">⛔ Amazon refused a plan on '+new Date(L.refused.at).toLocaleDateString('en-US',{month:'short',day:'numeric'})+' for '+({standard:'Standard',hazmat:'Flammable',aerosol:'Aerosol'}[L.refused.kind]||L.refused.kind)+' storage, so the room left here is too high. Read Seller Central → Capacity Monitor → Maximum shipment and tap Set room left.</div>';
   // Each listing with its reason and a ✎ to type a measured size, since the
