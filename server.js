@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'fast-value-1159';
+const BUILD_ID = 'value-amazon-1160';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7833,13 +7833,20 @@ app.get('/api/inventory-value/status', ownerAuth, (req,res)=>res.json(valJob));
 // Inventory value (owner) — units on hand × cost, needs cost per item
 async function runInventoryValuePull(onProgress) {
   // include everything we hold ANYWHERE: warehouse, in transit, or sitting at FBA
-  let fbaAsins = new Set();
+  // Stock at Amazon per ASIN from the last FBA pull, including listings that
+  // aren't in the catalog (owner 11/8, "missing a ton of items": the list had
+  // only catalog products, and valued nothing at Amazon).
+  const fbaAsins = new Set(), fbaOf = {};
   try {
     const fc = await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'");
     if (fc.rows.length) {
       const d = fc.rows[0].data;
       const list = Array.isArray(d) ? d : (d.items || []);
-      for (const f of list) if ((f.fba_total||0) > 0) fbaAsins.add(f.asin);
+      for (const f of list) {
+        if (!f.asin) continue;
+        const units = Math.max(Number(f.fba_total) || 0, Number(f.fba_fulfillable) || 0), inbound = Number(f.fba_inbound) || 0;
+        if (units > 0 || inbound > 0) { fbaAsins.add(f.asin); fbaOf[f.asin] = { units, inbound, name: f.name || null, sku: f.sku || null }; }
+      }
     }
   } catch(e) {}
 
@@ -7848,13 +7855,16 @@ async function runInventoryValuePull(onProgress) {
      FROM inv_products p LEFT JOIN inv_stock s ON s.asin=p.asin
      WHERE COALESCE(s.onhand,0) > 0 OR COALESCE(s.transit,0) > 0 OR p.asin = ANY($1::text[])`,
     [[...fbaAsins]]);
-  const asins = rows.rows.map(r => r.asin).filter(Boolean);
-  console.log(`[Value] pricing ${asins.length} products (warehouse + transit + FBA)`);
+  const inCat = new Set(rows.rows.map(r => r.asin));
+  const outside = [...fbaAsins].filter(a => !inCat.has(a)).map(a => ({ asin: a, sku: fbaOf[a].sku, name: fbaOf[a].name || a, onhand: 0, transit: 0, outside: true }));
+  const all = rows.rows.concat(outside);
+  const asins = all.map(r => r.asin).filter(Boolean);
+  console.log(`[Value] pricing ${asins.length} products (warehouse + transit + FBA, ${outside.length} not in the catalog)`);
   if (onProgress) onProgress(`pulling Amazon prices for ${asins.length} products…`);
   let retail = {};
   try { retail = await getMyPrices(asins, onProgress); }
   catch(e) { console.error('retail fetch failed:', e.message); }
-  const out = rows.rows.map(r => ({ ...r, amazon_price: retail[r.asin] || null }));
+  const out = all.map(r => ({ ...r, amazon_price: retail[r.asin] || null, fba_units: (fbaOf[r.asin] || {}).units || 0, fba_inbound: (fbaOf[r.asin] || {}).inbound || 0 }));
   out.sort((a,b)=>((b.amazon_price||0)*b.onhand)-((a.amazon_price||0)*a.onhand));
   await saveCache('inventory_value', out);
   return out;
