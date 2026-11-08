@@ -10063,7 +10063,7 @@ function loadStatus(){
     const nBad=d.checks.filter(c=>c.state==='bad').length, nWarn=d.checks.filter(c=>c.state==='warn').length;
     let h='<div class="st-hero"><div class="dot" style="background:'+o[1]+';color:'+o[0]+'">'+o[3]+'</div><div><h3>'+head+'</h3><p>'
       +(nBad?nBad+' broken · ':'')+(nWarn?nWarn+' to check · ':'')+'Checked '+new Date(d.at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})+'</p></div>'
-      +'<div class="acts"><button class="mini" onclick="statusTestAlert(this)">Send a test alert</button><button class="mini" onclick="loadStatus()">↻ Refresh</button></div></div>';
+      +'<div class="acts"><button class="mini" onclick="statusFullSync(this)" title="Everything the 6:30 AM sync does: stock, check-ins, sales, returns, fees, reimbursements, stuck stock, settlements, sizes. 10+ minutes of Amazon reports.">▶ Run the full sync now</button><button class="mini" onclick="statusTestAlert(this)">Send a test alert</button><button class="mini" onclick="loadStatus()">↻ Refresh</button></div></div>';
     h+='<div class="st-grid">'+d.checks.map(c=>{ const k=ST_COL[c.state];
       return '<div class="st-c" style="--c:'+k[0]+';--bg:'+k[1]+'"><div class="h">'+esc(c.label)+'<span class="b">'+k[3]+' '+k[2]+'</span></div><div class="d">'+esc(c.detail)+'</div>'+(c.fix?'<div class="f">'+esc(c.fix)+'</div>':'')+'</div>'; }).join('')+'</div>';
     // data the screens show, and how old it is (same sets as the Admin tags)
@@ -12209,6 +12209,13 @@ function pullImages(){
 // browser. This starts it, or picks up one already running (the 6:30 AM
 // daily sync, or another device), and shows progress until it finishes.
 let _syncPoll=null;
+// Admin → App status: the whole morning job, by hand (On Hand's button is the quick one).
+function statusFullSync(btn){
+  if(!confirm('Run the full Amazon sync now? Stock, check-ins and every report (sales, returns, fees, reimbursements, stuck stock, settlements, sizes) — 10 minutes or more. It keeps going on the server.')) return;
+  if(btn){ btn.disabled=true; btn.textContent='Starting…'; }
+  api('/api/amazon-sync/start',{method:'POST',body:JSON.stringify({full:true})}).then(d=>{ toast(d&&d.already?'A sync is already running':'Full sync started — App status shows it running'); setTimeout(loadStatus,1500); })
+    .catch(()=>{ toast('Could not start the sync',true); if(btn){ btn.disabled=false; btn.textContent='▶ Run the full sync now'; } });
+}
 function syncFba(){
   api('/api/amazon-sync/start',{method:'POST',body:'{}'}).then(d=>{
     if(d && d.already) toast('A sync is already running — showing its progress');
@@ -12227,7 +12234,7 @@ function renderSyncStatus(st){
     if(btn){ btn.disabled=true; btn.textContent='Syncing…'; }
     const secs=Math.round((Date.now()-new Date(st.startedAt).getTime())/1000);
     box.innerHTML='<div style="background:#eef4fb;border-radius:8px;padding:10px 12px">'
-      +'<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;color:#0d4450"><span>🔄 Syncing with Amazon'+(st.trigger==='daily'?' (morning auto-sync)':'')+'</span><span style="color:#5a6472">'+Math.floor(secs/60)+':'+String(secs%60).padStart(2,'0')+'</span></div>'
+      +'<div style="display:flex;justify-content:space-between;font-size:13px;font-weight:700;color:#0d4450"><span>🔄 Syncing with Amazon'+(st.trigger==='daily'?' (morning auto-sync)':st.trigger==='full'?' (full sync)':' (quick: check-ins + stock, about a minute)')+'</span><span style="color:#5a6472">'+Math.floor(secs/60)+':'+String(secs%60).padStart(2,'0')+'</span></div>'
       +'<div style="height:8px;background:#d8e3f0;border-radius:4px;overflow:hidden;margin:7px 0"><div class="syncbar" style="height:100%;width:40%;background:#2563a8;border-radius:4px;animation:syncslide 1.4s ease-in-out infinite"></div></div>'
       +'<div style="font-size:12.5px;color:#5a6472">'+esc(st.step||'')+'</div>'
       +'<div class="hint" style="margin-top:3px">You can keep working or close this page — it keeps going on the server.</div></div>';
@@ -12238,8 +12245,9 @@ function renderSyncStatus(st){
   box.innerHTML = last
     ? '<div class="hint">Last synced with Amazon: <b>'+esc(fmtAgo(last.at))+'</b>'+(last.trigger==='daily'?' · morning auto-sync':'')
       +(last.result?' · '+(last.result.amazonSkus!=null?last.result.amazonSkus+' Amazon SKUs in '+last.result.pages+' page'+(last.result.pages===1?'':'s')+(last.result.recovered?' (+'+last.result.recovered+' found by direct lookup)':''):last.result.products+' products')+(last.result.errors&&last.result.errors.length?' · <span style="color:#c0392b">'+esc(last.result.errors.join(' · '))+'</span>':''):'')
-      +' · runs automatically every day at 6:30 AM</div>'
-    : '<div class="hint">Not synced yet · runs automatically every day at 6:30 AM</div>';
+      +(last.result&&last.result.notes&&last.result.notes.length?' · '+esc(last.result.notes.join(' · ')):'')
+      +' · '+(last.result&&last.result.quick?'quick sync (check-ins, stock at Amazon and on the way)':'full sync')+' · the full sync with every report runs every day at 6:30 AM (or Admin → App status → Run the full sync now)</div>'
+    : '<div class="hint">Not synced yet · the full sync runs automatically every day at 6:30 AM</div>';
 }
 function pollSync(){
   clearTimeout(_syncPoll);

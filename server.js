@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'per-carrier-1157';
+const BUILD_ID = 'quick-sync-1158';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -1203,6 +1203,10 @@ async function initDb() {
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft NUMERIC;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_at TIMESTAMPTZ;
       ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_error TEXT;
+      -- when Amazon was last asked (found or not): the morning sync asks a
+      -- listing with no size again only after a week (owner 11/8, "package
+      -- sizes: 4 failed" alerted every morning for the same 4 listings)
+      ALTER TABLE inv_products ADD COLUMN IF NOT EXISTS cuft_checked_at TIMESTAMPTZ;
       -- listings at Amazon with no catalog row (owner 10/30: four of them sat
       -- under "no package size" for good, since the lookup only read the catalog)
       CREATE TABLE IF NOT EXISTS inv_asin_sizes (asin TEXT PRIMARY KEY, cuft NUMERIC, error TEXT,
@@ -8152,11 +8156,17 @@ app.get('/api/fba-inventory', auth, async (req, res) => {
 // polls /api/amazon-sync/status for progress. Also runs every morning (below).
 // ============================================================
 let amazonSync = { running: false, step: '', done: false, error: null, result: null, startedAt: null, finishedAt: null, trigger: null };
+// trigger: 'daily' (6:30 AM, the whole thing: stock, check-ins and every
+// report), 'manual' (On Hand's Sync with Amazon: QUICK — check-ins, stock at
+// Amazon and on the way, sizes for new listings; owner 11/8: the button ran
+// the whole morning job, 10+ minutes of Amazon reports, "taking way too
+// long"), 'full' (Admin → App status → Run the full sync now).
 function startAmazonSync(trigger) {
   if (amazonSync.running) return false;
-  amazonSync = { running: true, step: 'Starting…', done: false, error: null, result: null, startedAt: new Date().toISOString(), finishedAt: null, trigger };
+  const full = trigger !== 'manual';
+  amazonSync = { running: true, step: 'Starting…', done: false, error: null, result: null, startedAt: new Date().toISOString(), finishedAt: null, trigger, quick: !full };
   (async () => {
-    const result = { products: 0, checkedIn: 0, errors: [] };
+    const result = { products: 0, checkedIn: 0, errors: [], notes: [], quick: !full };
     try {
       amazonSync.step = 'Checking which shipments Amazon has received…';
       const r = await refreshShipmentsFromAmazon(trigger);
@@ -8169,7 +8179,7 @@ function startAmazonSync(trigger) {
     }
     // Amazon's own restock number, shown beside ours on Send Next. Separate
     // try: a failure here mustn't hide the stock pull above.
-    try {
+    if (full) try {
       amazonSync.step = "Reading Amazon's restock recommendation…";
       const rs = parseRestockReport(await getRestockReport());
       await saveCache('amazon_restock', rs);
@@ -8177,17 +8187,17 @@ function startAmazonSync(trigger) {
     } catch (e) { result.errors.push('restock report: ' + e.message); }
     // Our sales, same window as the last pull (60 days if never set), so the
     // attack list and the forecast are fresh each morning.
-    try {
+    if (full) try {
       amazonSync.step = 'Reading our sales (orders report)…';
       const prev = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='velocity'")).rows[0];
       const v = await refreshVelocity((prev && prev.data && prev.data.days) || 60);
       result.salesUnits = v.report.units;
     } catch (e) { result.errors.push('sales report: ' + e.message); }
     // Customer returns, last 60 days, for the dashboard's Returns metric.
-    try { amazonSync.step = 'Reading customer returns…'; await pullReturns(salesDay(Date.now() - 60 * 86400000)); }
+    if (full) try { amazonSync.step = 'Reading customer returns…'; await pullReturns(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('returns report: ' + e.message); }
     // Reimbursement finder: what Amazon paid lately, and shipments' received counts.
-    try {
+    if (full) try {
       amazonSync.step = 'Checking reimbursements…';
       await pullReimbursements(salesDay(Date.now() - 60 * 86400000)); await pullInboundRecon(t => { amazonSync.step = t; });
       const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='claims_scan'")).rows[0] || {}).data || {};
@@ -8195,19 +8205,23 @@ function startAmazonSync(trigger) {
     }
     catch (e) { result.errors.push('reimbursements: ' + e.message); }
     // Money stuck at Amazon: stranded, unsellable, aged (snapshot reports).
-    try { const o = await pullStuck(t => { amazonSync.step = t; }); if (o.errors.length) result.errors.push('stuck stock: ' + o.errors.join(' · ')); }
+    if (full) try { const o = await pullStuck(t => { amazonSync.step = t; }); if (o.errors.length) result.errors.push('stuck stock: ' + o.errors.join(' · ')); }
     catch (e) { result.errors.push('stuck stock: ' + e.message); }
     // Refunds and Amazon fees, on time (financial events), last 60 days.
-    try { amazonSync.step = 'Reading refunds and fees…'; await pullFinEvents(salesDay(Date.now() - 60 * 86400000)); }
+    if (full) try { amazonSync.step = 'Reading refunds and fees…'; await pullFinEvents(salesDay(Date.now() - 60 * 86400000)); }
     catch (e) { result.errors.push('refunds/fees: ' + e.message); }
     // New settlements (only ones not stored yet; runs on in the background)
-    try { startSettlementSync({ sinceDays: 45, maxReports: 3 }); } catch (e) { result.errors.push('settlements: ' + e.message); }
+    if (full) try { startSettlementSync({ sinceDays: 45, maxReports: 3 }); } catch (e) { result.errors.push('settlements: ' + e.message); }
     // Package sizes for listings that don't have one yet (new products), for
-    // the FBA capacity bar. Only the missing ones: sizes rarely change.
+    // the FBA capacity bar. Only the missing ones, and a listing asked in the
+    // last week isn't asked again. A listing Amazon has no size for is a
+    // note, not a problem (it alerted every morning as "4 failed"); only an
+    // Amazon error counts.
     try {
       amazonSync.step = 'Looking up package sizes for new listings…';
-      const sz = await pullItemSizes(false);
-      if (sz.failed) result.errors.push('package sizes: ' + sz.failed + ' failed');
+      const sz = await pullItemSizes(false, null, { skipRecent: true });
+      if (sz.failed) result.errors.push('package sizes: ' + sz.failed + ' lookup' + (sz.failed === 1 ? '' : 's') + ' refused by Amazon');
+      if (sz.none) result.notes.push(sz.none + ' listing' + (sz.none === 1 ? ' has' : 's have') + ' no package size at Amazon — type it on Pending Prep\'s capacity bar (✎)');
     } catch (e) { result.errors.push('package sizes: ' + e.message); }
     amazonSync.result = result;
     amazonSync.error = result.errors.length ? result.errors.join(' · ') : null;
@@ -8224,7 +8238,7 @@ function startAmazonSync(trigger) {
   return true;
 }
 app.post('/api/amazon-sync/start', auth, (req, res) => {
-  const started = startAmazonSync('manual');
+  const started = startAmazonSync(req.body && req.body.full ? 'full' : 'manual');
   res.json({ ok: true, started, already: !started });
 });
 app.get('/api/amazon-sync/status', auth, async (req, res) => {
@@ -8241,23 +8255,25 @@ app.get('/api/amazon-sync/status', auth, async (req, res) => {
 // sees BEFORE the work is done whether it will fit. Math in lib/capacity.js.
 // ============================================================
 let sizeJob = { running: false, step: '', done: false, result: null };
-async function pullItemSizes(all, onStep) {
-  const q = all ? 'SELECT asin FROM inv_products' : 'SELECT asin FROM inv_products WHERE cuft IS NULL OR unit_weight_lb IS NULL';
+async function pullItemSizes(all, onStep, opt) {
+  const skipRecent = !!(opt && opt.skipRecent);   // the morning sync: not the same listings every day
+  const q = all ? 'SELECT asin FROM inv_products' : `SELECT asin FROM inv_products WHERE (cuft IS NULL OR unit_weight_lb IS NULL)${skipRecent ? " AND (cuft_checked_at IS NULL OR cuft_checked_at < now() - interval '7 days')" : ''}`;
   const asins = (await pool.query(q)).rows.map(r => r.asin);
   // listings at Amazon that aren't in the catalog: sizes kept in inv_asin_sizes
   // (a size typed by hand is never looked up again)
   const fba = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='fba_inventory'")).rows[0] || {}).data || [];
   const inCat = new Set((await pool.query('SELECT asin FROM inv_products')).rows.map(r => r.asin));
-  const have = {}; for (const r of (await pool.query('SELECT asin, cuft, manual FROM inv_asin_sizes')).rows) have[r.asin] = r;
+  const have = {}; for (const r of (await pool.query("SELECT asin, cuft, manual, at > now() - interval '7 days' AS recent FROM inv_asin_sizes")).rows) have[r.asin] = r;
   const extra = [...new Set(fba.map(f => f.asin).filter(a => a && !inCat.has(a)))]
-    .filter(a => !(have[a] && (have[a].manual || (!all && Number(have[a].cuft) > 0))));
-  if (!asins.length && !extra.length) return { looked: 0, found: 0, failed: 0 };
+    .filter(a => !(have[a] && (have[a].manual || (!all && Number(have[a].cuft) > 0) || (skipRecent && have[a].recent))));
+  if (!asins.length && !extra.length) return { looked: 0, found: 0, failed: 0, none: 0 };
   const dims = await getItemDimensions(asins.concat(extra), onStep);
-  let found = 0, failed = 0;
+  // found = a size; none = Amazon has no size for it; failed = Amazon refused the call
+  let found = 0, failed = 0, none = 0;
   for (const a of extra) {
     const r = dims[a] || {};
     const cf = r.error ? null : capacity.cubicFeet(r.dimensions);
-    if (cf) found++; else failed++;
+    if (cf) found++; else if (r.error) failed++; else none++;
     await pool.query(`INSERT INTO inv_asin_sizes(asin, cuft, error, at) VALUES($1,$2,$3,now())
       ON CONFLICT (asin) DO UPDATE SET cuft=COALESCE(EXCLUDED.cuft, inv_asin_sizes.cuft), error=EXCLUDED.error, at=now() WHERE NOT inv_asin_sizes.manual`,
       [a, cf, cf ? null : (r.error || 'Amazon has no size for this listing')]);
@@ -8265,15 +8281,16 @@ async function pullItemSizes(all, onStep) {
   for (const a of asins) {
     const r = dims[a] || {};
     const cf = r.error ? null : capacity.cubicFeet(r.dimensions);
-    if (cf) found++; else failed++;
-    await pool.query('UPDATE inv_products SET cuft=COALESCE($2, cuft), cuft_at=CASE WHEN $2::numeric IS NULL THEN cuft_at ELSE now() END, cuft_error=$3 WHERE asin=$1',
+    if (cf) found++; else if (r.error) failed++; else none++;
+    await pool.query('UPDATE inv_products SET cuft=COALESCE($2, cuft), cuft_at=CASE WHEN $2::numeric IS NULL THEN cuft_at ELSE now() END, cuft_error=$3, cuft_checked_at=now() WHERE asin=$1',
       [a, cf, cf ? null : (r.error || 'Amazon has no size for this listing')]);
     // Unit weight for 2D Production box weights — never over a typed one.
     const lb = r.error ? null : capacity.unitWeightLb(r.dimensions);
     if (lb) await pool.query("UPDATE inv_products SET unit_weight_lb=$2, unit_weight_src='amazon' WHERE asin=$1 AND COALESCE(unit_weight_src,'') <> 'manual'", [a, lb]);
   }
-  console.log(`[Capacity] sizes: ${found} found, ${failed} without.`);
-  return { looked: asins.length, found, failed };
+  console.log(`[Capacity] sizes: ${found} found, ${none} without, ${failed} refused.`);
+  // failed for callers that show one number: without a size, either way
+  return { looked: asins.length + extra.length, found, failed: failed + none, refused: failed, none };
 }
 app.post('/api/capacity/sizes/start', auth, (req, res) => {
   if (sizeJob.running) return res.json({ ok: true, already: true });
