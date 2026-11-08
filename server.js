@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'brand-finder-1164';
+const BUILD_ID = 'brand-marks-1165';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7426,7 +7426,10 @@ app.post('/api/brand-finder/start', ownerAuth, async (req, res) => {
   const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder'")).rows[0] || {}).data || {};
   const results = prev.results || {};
   const fresh = r => r && r.at && Date.now() - new Date(r.at).getTime() < 7 * 86400000 && r.opt && r.opt.minSellers === opt.minSellers && r.opt.perBrand === opt.perBrand;
-  const todo = b.recheck ? brands : brands.filter(x => !fresh(results[x.toLowerCase()]));
+  // Brands the owner removed (no potential) aren't checked again: no tokens spent on them.
+  const marks = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
+  const removed = new Set(marks.removed || []);
+  const todo = (b.recheck ? brands : brands.filter(x => !fresh(results[x.toLowerCase()]))).filter(x => !removed.has(x.toLowerCase()));
   brandJob = { running: true, step: 'Starting…', done: 0, total: todo.length, skipped: brands.length - todo.length, error: null, startedAt: new Date().toISOString(), tokensLeft: null };
   res.json({ ok: true, started: true, total: todo.length, skipped: brands.length - todo.length });
   (async () => {
@@ -7467,7 +7470,24 @@ app.get('/api/brand-finder', ownerAuth, async (req, res) => {
     const list = Array.isArray(md) ? md : (md && (md.products || md.items)) || [];
     for (const p of list) if (p && p.brand) mine.add(String(p.brand).toLowerCase());
   } catch (e) {}
-  res.json({ ok: true, data: d, ourBrands: [...mine], job: brandJob });
+  const marks = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
+  res.json({ ok: true, data: d, ourBrands: [...mine], job: brandJob, marks: { potential: marks.potential || [], removed: marks.removed || [] } });
+});
+// The owner's calls on brands (owner 11/8): ✓ potential (its own section at
+// the top) or ✕ no potential (hidden, kept in a Removed list to restore, and
+// not checked again). { brand, mark: 'potential' | 'removed' | null }.
+app.post('/api/brand-finder/mark', ownerAuth, async (req, res) => {
+  const k = String((req.body && req.body.brand) || '').trim().toLowerCase().slice(0, 60);
+  const mark = req.body && req.body.mark;
+  if (!k) return res.status(400).json({ ok: false, error: 'brand required' });
+  if (mark != null && !['potential', 'removed'].includes(mark)) return res.status(400).json({ ok: false, error: 'mark must be potential, removed or null' });
+  const cur = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
+  const pot = new Set(cur.potential || []), rem = new Set(cur.removed || []);
+  pot.delete(k); rem.delete(k);
+  if (mark === 'potential') pot.add(k); else if (mark === 'removed') rem.add(k);
+  const data = { potential: [...pot], removed: [...rem] };
+  await saveCache('brand_finder_marks', data);
+  res.json({ ok: true, marks: data });
 });
 app.get('/api/products-to-add/hidden', ownerAuth, async (req, res) => {
   const r = (await pool.query("SELECT data FROM inv_cache WHERE cache_key='toadd_hidden'")).rows[0];
