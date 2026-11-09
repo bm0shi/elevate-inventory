@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'brand-spellings-1166';
+const BUILD_ID = 'brand-prices-1167';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7426,8 +7426,9 @@ app.post('/api/brand-finder/start', ownerAuth, async (req, res) => {
   const prev = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder'")).rows[0] || {}).data || {};
   const results = prev.results || {};
   const fresh = r => r && r.at && Date.now() - new Date(r.at).getTime() < 7 * 86400000 && r.opt && r.opt.minSellers === opt.minSellers && r.opt.perBrand === opt.perBrand
-    // checked before the spellings and real sellers (11/8): checked again
-    && Array.isArray(r.tried);
+    // checked before the spellings and real sellers (11/8) or retail prices
+    // (11/9): checked again
+    && Array.isArray(r.tried) && 'medianPrice' in r;
   // Brands the owner removed (no potential) aren't checked again: no tokens spent on them.
   const marks = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='brand_finder_marks'")).rows[0] || {}).data || {};
   const removed = new Set(marks.removed || []), aliases = marks.aliases || {};

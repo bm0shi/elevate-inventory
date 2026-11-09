@@ -688,7 +688,10 @@ async function getOfferSellers(asins, onProgress) {
       const resp = await http.get(`${SP_API_BASE}/products/pricing/v0/items/${asin}/offers?MarketplaceId=${MARKETPLACE_ID}&ItemCondition=New`,
         { headers: { 'x-amz-access-token': token } });
       const payload = resp.data.payload || {};
-      out[asin] = { sellers: (payload.Offers || []).map(o => ({ id: o.SellerId, fba: !!o.IsFulfilledByAmazon, bb: !!o.IsBuyBoxWinner })),
+      const offerPrice = o => { const a = Number(o.ListingPrice?.Amount); return a > 0 ? Math.round((a + (Number(o.Shipping?.Amount) || 0)) * 100) / 100 : null; };
+      const bbo = (payload.Offers || []).find(o => o.IsBuyBoxWinner);
+      out[asin] = { sellers: (payload.Offers || []).map(o => ({ id: o.SellerId, fba: !!o.IsFulfilledByAmazon, bb: !!o.IsBuyBoxWinner, price: offerPrice(o) })),
+        bbPrice: bbo ? offerPrice(bbo) : null,
         total: (payload.Summary && payload.Summary.TotalOfferCount) ?? (payload.Offers || []).length };
     } catch (err) {
       if (err.response?.status === 429 && requeue(asins, asin)) { await sleep(4000); continue; }

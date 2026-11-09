@@ -13,7 +13,7 @@ function keyOk() { return !!process.env.KEEPA_API_KEY; }
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // csv/stats index constants
-const IDX = { AMAZON:0, NEW:1, SALES:3, COUNT_NEW:11, BUY_BOX:18 };
+const IDX = { AMAZON:0, NEW:1, SALES:3, NEW_FBA:10, COUNT_NEW:11, BUY_BOX:18 };
 
 // Fetch product data for ASINs (up to 100 per request). stats=90 for 90-day stats.
 // onBatch(products, info) is called after EVERY successful batch so the caller
@@ -119,6 +119,9 @@ function simplify(p) {
   const buyBoxPrice = cents(cur[IDX.BUY_BOX]);
   // Amazon price (index 0)
   const amazonPrice = cents(cur[IDX.AMAZON]);
+  // Lowest new price with FBA only (index 10) and lowest new overall (index 1):
+  // the retail price when the Buy Box wasn't asked for (Brand Finder, owner 11/9).
+  const newFbaPrice = cents(cur[IDX.NEW_FBA]), newPrice = cents(cur[IDX.NEW]);
 
   // Offer count: COUNT_NEW (index 11) = number of new marketplace sellers
   const offerCount = (cur[IDX.COUNT_NEW] != null && cur[IDX.COUNT_NEW] >= 0) ? cur[IDX.COUNT_NEW] : null;
@@ -197,7 +200,7 @@ function simplify(p) {
     image,
     productType: p.productType,
     salesRank, salesRankAvg30,
-    buyBoxPrice, amazonPrice,
+    buyBoxPrice, amazonPrice, newFbaPrice, newPrice,
     amazonHasBuyBox, amazonOOS, amazonBuyBoxPct, buyBoxWinners3P, bbShares,
     offerCount, monthlySold, rankDrops30,
     pickPackFee, referralPct,
