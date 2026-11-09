@@ -4248,7 +4248,24 @@ const BF_CHROME_PROMPT='Open cosmoprofbeauty.com (I am logged in). Go to the Bra
 let _bfSort={col:'openPerDay',dir:-1}, _bfPoll=null, _bfOpen=new Set();
 // Filters (owner 11/8, "I need to filter more"): which brands, Amazon itself
 // selling on them or not, minimum units a day, a name search; per device.
-let _bfF=(()=>{ try{ return Object.assign({show:'all',amazon:'any',brand:'any',minDay:'',q:'',ours:'any'}, JSON.parse(localStorage_get('bfFilters')||'{}')); }catch(e){ return {show:'all',amazon:'any',brand:'any',minDay:'',q:'',ours:'any'}; } })();
+let _bfF=(()=>{ const d={show:'all',amazon:'any',brand:'any',minDay:'',minPrice:'',q:'',ours:'any'}; try{ return Object.assign(d, JSON.parse(localStorage_get('bfFilters')||'{}')); }catch(e){ return d; } })();
+// The brand counted again without its listings under the price floor (owner
+// 11/9, "filter out low cost ones"); same as lib/brand-finder.js priceCut. A
+// listing with no price is kept, since it can't be told cheap.
+function bfPriceCut(r, minPrice, minPerDay){
+  if(!(minPrice>0)||!r||r.error||!Array.isArray(r.listings)) return r;
+  const keep=r.listings.filter(l=>!(l.price>0)||l.price>=minPrice), open=keep.filter(l=>l.open);
+  const sum=list=>Math.round(list.reduce((n,x)=>n+(x.perDay||0),0)*10)/10;
+  const tps=open.map(x=>x.thirdParty).filter(x=>x!=null);
+  const med=list=>{ const a=list.filter(x=>x>0).sort((x,y)=>x-y); if(!a.length) return null; const m=Math.floor(a.length/2); return Math.round((a.length%2?a[m]:(a[m-1]+a[m])/2)*100)/100; };
+  return Object.assign({},r,{checked:keep.length,open:open.length,openPerDay:sum(open),allPerDay:sum(keep),
+    estimated:keep.filter(x=>x.est).length,noFigure:keep.filter(x=>!(x.perDay>0)).length,
+    avgSellers:tps.length?Math.round(tps.reduce((n,x)=>n+x,0)/tps.length*10)/10:null,
+    amazonOn:keep.filter(x=>x.amazonSelling).length,
+    openRevenuePerDay:Math.round(open.reduce((n,x)=>n+x.perDay*(x.price||0),0)),
+    qualifies:open.length>0&&sum(open)>=minPerDay,
+    medianPrice:med((open.length?open:keep).map(x=>x.price)),cheapOut:r.listings.length-keep.length});
+}
 // The Amazon name(s) for a brand Keepa didn't find under its Cosmoprof name
 function bfAlias(brand, ev){
   if(ev) ev.stopPropagation();
@@ -4293,7 +4310,8 @@ function renderBrands(){
   const d=window._bf||{}, D=d.data||{}, J=d.job||{}, opt=D.opt||{minSellers:3,minPerDay:100,perBrand:30};
   const ours=new Set(d.ourBrands||[]);
   const keep=document.getElementById('bfText'), txt=keep?keep.value:(D.brands||[]).join('\n');
-  const rows=Object.values(D.results||{}).filter(r=>!D.brands||D.brands.some(b=>b.toLowerCase()===String(r.brand).toLowerCase()));
+  const floor=Number(_bfF.minPrice)||0;
+  const rows=Object.values(D.results||{}).filter(r=>!D.brands||D.brands.some(b=>b.toLowerCase()===String(r.brand).toLowerCase())).map(r=>bfPriceCut(r,floor,Number(opt.minPerDay)||100));
   const n=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
   let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><b style="font-size:18px">🔎 Brand Finder</b><span class="hint">Cosmoprof brands worth adding: listings open to '+opt.minSellers+'+ third-party sellers, selling '+opt.minPerDay+'+ a day between them</span></div>'
     +'<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#f3f8fd;border:1px solid #cfe0f5;font-size:13px;line-height:1.5"><b>1. Get the brand list from Cosmoprof.</b> The app can\'t log in there, so copy it yourself from the Brands page, or let <b>Claude in Chrome</b> do it on your computer (logged in to Cosmoprof): <button class="mini" onclick="copyText(BF_CHROME_PROMPT);toast(\'Copied — paste it into Claude in Chrome\')">📋 Copy the instruction for Claude in Chrome</button></div>'
@@ -4305,7 +4323,7 @@ function renderBrands(){
     +'<label style="font-size:12px;font-weight:800;color:#5a6472">LISTINGS READ PER BRAND<input id="bfPer" type="number" min="10" max="100" value="'+opt.perBrand+'" style="display:block;width:100px;margin-top:3px;padding:7px;font-size:15px"></label>'
     +'<button class="action" onclick="bfStart(false)" style="background:#008296"'+(J.running?' disabled':'')+'>3. Check on Amazon →</button>'
     +'<button class="action" onclick="bfStart(true)" style="background:#5a6472"'+(J.running?' disabled':'')+' title="Check every brand again, including ones checked this week">↻ Re-check all</button></div>'
-    +'<div class="hint" style="margin-top:6px">Uses Keepa: about '+(10+Number(opt.perBrand||30))+' tokens a brand (its best-selling listings with '+opt.minSellers+'+ offers, then each one\'s sales and sellers). Brands checked this week are kept. Each brand is searched under several spellings (Cosmoprof\'s “John Paul Mitchell Systems” is “Paul Mitchell” on Amazon); one still not found gets ✎ Amazon name. Units a day = Amazon\'s “bought in past month” ÷ 30, else Keepa\'s sales-rank drops (≈). The real sellers on each brand\'s top 8 listings are read from Amazon: resellers counted exactly, and the brand\'s own store spotted.</div>';
+    +'<div class="hint" style="margin-top:6px">Uses Keepa: about '+(10+Number(opt.perBrand||30))+' tokens a brand (its best-selling listings with '+opt.minSellers+'+ offers, then each one\'s sales and sellers). Brands checked this week are kept. Each brand is searched under several spellings (Cosmoprof\'s “John Paul Mitchell Systems” is “Paul Mitchell” on Amazon); one still not found gets ✎ Amazon name. Units a day = Amazon\'s “bought in past month” ÷ 30, else Keepa\'s sales-rank drops (≈). The real sellers on each brand\'s top 8 listings are read from Amazon: resellers counted exactly, and the brand\'s own store spotted. Retail price = the Buy Box on those 8, else the lowest FBA offer (Keepa); the brand\'s is its open listings\' middle price. “Listings $ and up” recounts each brand without its cheaper listings.</div>';
   if(J.running) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#eef4fb;font-weight:700;color:#0d4450">⏳ '+esc(J.step||'')+' · '+J.done+' of '+J.total+' brands'+(J.tokensLeft!=null?' · '+J.tokensLeft+' Keepa tokens left':'')+'<div class="hint" style="font-weight:600">Keeps going on the server; Keepa waits for tokens when it runs low. Results show as each brand finishes.</div></div>';
   else if(J.error) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#fdecea;color:#c0392b;font-weight:700">Stopped: '+esc(J.error)+'</div>';
   h+='</div>';
@@ -4331,13 +4349,13 @@ function renderBrands(){
     const listRows=rows.filter(r=>!pot.has(keyOf(r))&&!rem.has(keyOf(r))), shown=listRows.filter(passes);
     const q=listRows.filter(r=>r.qualifies), th=(c,t)=>prodTh('<a href="#" onclick="bfSortBy(\''+c+'\');return false" style="color:inherit;text-decoration:none">'+t+(s.col===c?(s.dir<0?' ▼':' ▲'):'')+'</a>');
     const sel=(k,opts)=>'<select onchange="bfFilter(\''+k+'\',this.value)" style="padding:7px 10px;font-size:13px;font-weight:700;border:2px solid #e2e8f0;border-radius:8px">'+opts.map(o=>'<option value="'+o[0]+'"'+(String(F[k])===o[0]?' selected':'')+'>'+o[1]+'</option>').join('')+'</select>';
-    const head='<tr>'+prodTh('')+th('brand','BRAND')+th('openPerDay','UNITS/DAY · OPEN LISTINGS')+th('open','OPEN LISTINGS')+th('avgSellers','AVG 3P SELLERS')+th('openRevenuePerDay','$/DAY · OPEN')+th('amazonOn','AMAZON SELLS')+th('brandSells','BRAND SELLS ITSELF')+th('allPerDay','UNITS/DAY · ALL READ')+'</tr>';
+    const head='<tr>'+prodTh('')+th('brand','BRAND')+th('openPerDay','UNITS/DAY · OPEN LISTINGS')+th('open','OPEN LISTINGS')+th('avgSellers','AVG 3P SELLERS')+th('medianPrice','RETAIL PRICE')+th('openRevenuePerDay','$/DAY · OPEN')+th('amazonOn','AMAZON SELLS')+th('brandSells','BRAND SELLS ITSELF')+th('allPerDay','UNITS/DAY · ALL READ')+'</tr>';
     const rowHtml=(r, where)=>{
       const k=keyOf(r), mine=ours.has(k), b=esc(r.brand).replace(/'/g,'');
       const acts=where==='list'?'<button onclick="bfMark(\''+b+'\',\'potential\',event)" title="Has potential: move to the Potential section" style="cursor:pointer;width:34px;height:34px;border-radius:999px;border:2px solid #1e8449;background:#fff;color:#1e8449;font-weight:900;font-size:16px">✓</button> <button onclick="bfMark(\''+b+'\',\'removed\',event)" title="No potential: remove it (it won\'t be checked again)" style="cursor:pointer;width:34px;height:34px;border-radius:999px;border:2px solid #e2e8f0;background:#fff;color:#c0392b;font-weight:900;font-size:15px">✕</button>'
         :where==='potential'?'<button onclick="bfMark(\''+b+'\',null,event)" title="Take it out of Potential" style="cursor:pointer;width:34px;height:34px;border-radius:999px;border:2px solid #1e8449;background:#1e8449;color:#fff;font-weight:900;font-size:16px">✓</button>'
         :'<button onclick="bfMark(\''+b+'\',null,event)" style="cursor:pointer;padding:6px 12px;border-radius:999px;border:2px solid #e2e8f0;background:#fff;font-weight:800;font-size:12px">↩ Restore</button>';
-      if(r.error) return '<tr style="border-top:1px solid #eef2f6">'+prodTd(acts,'center','white-space:nowrap')+prodTd('<b>'+esc(r.brand)+'</b>','left')+'<td colspan="7" style="color:#c0392b;font-size:12px;padding:8px">'+esc(r.error)+'</td></tr>';
+      if(r.error) return '<tr style="border-top:1px solid #eef2f6">'+prodTd(acts,'center','white-space:nowrap')+prodTd('<b>'+esc(r.brand)+'</b>','left')+'<td colspan="8" style="color:#c0392b;font-size:12px;padding:8px">'+esc(r.error)+'</td></tr>';
       const al=((M.aliases||{})[k]||[]);
       // where Amazon has it, or that it wasn't found under any spelling tried
       const onAmz=r.found===0?'<div style="font-size:11px;color:#b45309;font-weight:700">Not found on Amazon as: '+esc((r.tried||[r.brand]).join(' · '))+'</div>'
@@ -4348,8 +4366,8 @@ function renderBrands(){
         :'<span class="hint">'+(r.sellersError?'not read':'—')+'</span>';
       let x='<tr style="border-top:1px solid #eef2f6;cursor:pointer;background:'+(where==='potential'?'#f3fbf6':r.qualifies?'#f0faf4':'')+'" onclick="bfToggle(\''+esc(k).replace(/'/g,'')+'\')">'
         +prodTd(acts,'center','white-space:nowrap')
-        +prodTd('<b>'+esc(r.brand)+'</b>'+(r.qualifies?' <span style="color:#1e8449;font-weight:900;font-size:12px">QUALIFIES</span>':'')+(mine?' <span style="font-size:11px;padding:2px 7px;border-radius:999px;background:#eef2f6;color:#5a6472;font-weight:800">already selling</span>':'')+'<div class="hint" style="font-size:11px">'+(r.found!=null?r.found.toLocaleString()+' listings with '+opt.minSellers+'+ offers on Amazon · '+r.checked+' read':'')+'</div>'+onAmz+fix,'left')
-        +prodTd('<b style="font-size:16px;color:'+(r.qualifies?'#1e8449':'#1f2733')+'">'+n(r.openPerDay)+'</b>'+(r.estimated?'<div class="hint" style="font-size:11px">'+r.estimated+' from rank drops ≈</div>':''))+prodTd(r.open+(r.noFigure?'<div class="hint" style="font-size:11px">'+r.noFigure+' with no sales seen</div>':''))+prodTd(n(r.avgSellers))+prodTd(r.openRevenuePerDay?'$'+Number(r.openRevenuePerDay).toLocaleString():'—')
+        +prodTd('<b>'+esc(r.brand)+'</b>'+(r.qualifies?' <span style="color:#1e8449;font-weight:900;font-size:12px">QUALIFIES</span>':'')+(mine?' <span style="font-size:11px;padding:2px 7px;border-radius:999px;background:#eef2f6;color:#5a6472;font-weight:800">already selling</span>':'')+'<div class="hint" style="font-size:11px">'+(r.found!=null?r.found.toLocaleString()+' listings with '+opt.minSellers+'+ offers on Amazon · '+(r.listings?r.listings.length:r.checked)+' read':'')+'</div>'+onAmz+fix,'left')
+        +prodTd('<b style="font-size:16px;color:'+(r.qualifies?'#1e8449':'#1f2733')+'">'+n(r.openPerDay)+'</b>'+(r.estimated?'<div class="hint" style="font-size:11px">'+r.estimated+' from rank drops ≈</div>':''))+prodTd(r.open+(r.noFigure?'<div class="hint" style="font-size:11px">'+r.noFigure+' with no sales seen</div>':''))+prodTd(n(r.avgSellers))+prodTd(r.medianPrice?'<b>$'+Number(r.medianPrice).toFixed(2)+'</b>'+(r.minPrice&&r.maxPrice&&r.maxPrice>r.minPrice?'<div class="hint" style="font-size:11px">$'+Math.round(r.minPrice)+'–$'+Math.round(r.maxPrice)+'</div>':'')+(r.cheapOut?'<div class="hint" style="font-size:11px">'+r.cheapOut+' under $'+floor+' left out</div>':''):'<span class="hint">'+(r.cheapOut?'all '+r.cheapOut+' under $'+floor:'medianPrice' in r?'—':'re-check')+'</span>')+prodTd(r.openRevenuePerDay?'$'+Number(r.openRevenuePerDay).toLocaleString():'—')
         +prodTd(r.amazonOn?'<b style="color:#b45309">'+r.amazonOn+' of '+r.checked+'</b>':'<span style="color:#1e8449;font-weight:800">no</span>')+prodTd(bs)+prodTd(n(r.allPerDay))+'</tr>';
       if(_bfOpen.has(k)) x+=bfListings(r);
       return x;
@@ -4363,12 +4381,13 @@ function renderBrands(){
       +sel('brand',[['any','Brand sells itself: any'],['no','Brand not selling itself'],['yes','Brand sells itself']])
       +sel('ours',[['any','Ours and new'],['new','New brands only'],['ours','Already selling']])
       +'<label style="font-size:12px;font-weight:800;color:#5a6472;display:flex;align-items:center;gap:6px">AT LEAST <input type="number" min="0" value="'+esc(F.minDay)+'" onchange="bfFilter(\'minDay\',this.value)" placeholder="any" style="width:80px;padding:7px;font-size:13px"> / DAY</label>'
+      +'<label style="font-size:12px;font-weight:800;color:#5a6472;display:flex;align-items:center;gap:6px" title="Listings under this price are left out of each brand\'s numbers">LISTINGS $<input type="number" min="0" step="1" value="'+esc(F.minPrice)+'" onchange="bfFilter(\'minPrice\',this.value)" placeholder="any" style="width:80px;padding:7px;font-size:13px"> AND UP</label>'
       +'<input placeholder="Find a brand…" value="'+esc(F.q)+'" oninput="_bfF.q=this.value;clearTimeout(window._bfQ);window._bfQ=setTimeout(()=>bfFilter(\'q\',_bfF.q),300)" style="flex:1;min-width:160px;padding:7px 10px;font-size:13px;border:2px solid #e2e8f0;border-radius:8px">'
       +'</div>'
       +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0">'+head;
     for(const r of shown){ h+=rowHtml(r,'list');
     }
-    if(!shown.length) h+='<tr><td colspan="9" class="hint" style="padding:14px;text-align:center">No brands match these filters.</td></tr>';
+    if(!shown.length) h+='<tr><td colspan="10" class="hint" style="padding:14px;text-align:center">No brands match these filters.</td></tr>';
     h+='</table></div>';
     if(remRows.length) h+='<details class="box" style="overflow-x:auto"><summary style="cursor:pointer;font-weight:800">✕ Removed · '+remRows.length+' brand'+(remRows.length===1?'':'s')+' with no potential <span class="hint" style="font-weight:600">— not checked again; Restore puts one back</span></summary>'
       +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0">'+head+remRows.map(r=>rowHtml(r,'removed')).join('')+'</table></details>';
@@ -4378,9 +4397,10 @@ function renderBrands(){
 // One brand's listings, under its row
 function bfListings(r){
   const n=v=>v==null?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:1});
-  return '<tr><td colspan="9" style="padding:0 0 10px 18px;background:#fafcfd"><table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0;font-size:12px"><tr>'+prodTh('LISTING','left')+prodTh('UNITS/DAY')+prodTh('3P SELLERS')+prodTh('AMAZON')+prodTh('BRAND')+prodTh('PRICE')+prodTh('RANK')+'</tr>'
-    +(r.listings||[]).map(l=>'<tr style="'+(l.open?'':'color:#8a97a6')+'">'+prodTd('<a href="https://www.amazon.com/dp/'+esc(l.asin)+'" target="_blank" style="color:#008296">'+esc(String(l.title||l.asin).slice(0,90))+'</a> <span class="hint" style="font-family:monospace">'+esc(l.asin)+'</span>','left')
-      +prodTd(l.perDay>0?n(l.perDay)+(l.est?' <span class="hint" title="From Keepa\'s sales-rank drops: no Amazon badge on this listing">≈</span>':''):'<span class="hint">none seen</span>')+prodTd(l.thirdParty==null?'—':'<b style="color:'+(l.open?'#1e8449':'#c0392b')+'">'+l.thirdParty+'</b>'+(l.sellersRead?'':' <span class="hint" title="Keepa\'s offer count; the real sellers are read on the brand\'s top 8">≈</span>'))+prodTd(l.amazonSelling?'sells':'—')+prodTd(l.brandSells===true?'<b style="color:#c0392b">sells</b>':l.brandSells===false?'—':'<span class="hint">not read</span>')+prodTd(l.price?'$'+Number(l.price).toFixed(2):'—')+prodTd(l.rank?'#'+Number(l.rank).toLocaleString():'—')+'</tr>').join('')+'</table></td></tr>';
+  const floor=Number(_bfF.minPrice)||0;
+  return '<tr><td colspan="10" style="padding:0 0 10px 18px;background:#fafcfd"><table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0;font-size:12px"><tr>'+prodTh('LISTING','left')+prodTh('UNITS/DAY')+prodTh('3P SELLERS')+prodTh('AMAZON')+prodTh('BRAND')+prodTh('PRICE')+prodTh('RANK')+'</tr>'
+    +(r.listings||[]).map(l=>{ const cheap=floor>0&&l.price>0&&l.price<floor; return '<tr style="'+(l.open&&!cheap?'':'color:#8a97a6')+(cheap?';text-decoration:line-through':'')+'">'+prodTd('<a href="https://www.amazon.com/dp/'+esc(l.asin)+'" target="_blank" style="color:#008296">'+esc(String(l.title||l.asin).slice(0,90))+'</a> <span class="hint" style="font-family:monospace">'+esc(l.asin)+'</span>','left')
+      +prodTd(l.perDay>0?n(l.perDay)+(l.est?' <span class="hint" title="From Keepa\'s sales-rank drops: no Amazon badge on this listing">≈</span>':''):'<span class="hint">none seen</span>')+prodTd(l.thirdParty==null?'—':'<b style="color:'+(l.open?'#1e8449':'#c0392b')+'">'+l.thirdParty+'</b>'+(l.sellersRead?'':' <span class="hint" title="Keepa\'s offer count; the real sellers are read on the brand\'s top 8">≈</span>'))+prodTd(l.amazonSelling?'sells':'—')+prodTd(l.brandSells===true?'<b style="color:#c0392b">sells</b>':l.brandSells===false?'—':'<span class="hint">not read</span>')+prodTd(l.price?'$'+Number(l.price).toFixed(2)+(cheap?' <span style="text-decoration:none;font-size:11px">under $'+floor+'</span>':''):'—')+prodTd(l.rank?'#'+Number(l.rank).toLocaleString():'—')+'</tr>'; }).join('')+'</table></td></tr>';
 }
 function loadToAdd(){
   const btn=document.getElementById('toaddBtn'); if(btn){btn.textContent='Loading...';btn.disabled=true;}

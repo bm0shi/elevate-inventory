@@ -60,3 +60,21 @@ test('finder selection: every spelling at once', () => {
   assert.deepStrictEqual(B.finderSelection('Redken', { minSellers: 3, perBrand: 30 }, ['Redken', 'Redken 5th Avenue']),
     { brand: ['Redken', 'Redken 5th Avenue'], current_COUNT_NEW_gte: 3, current_SALES_gte: 1, sort: [['current_SALES', 'asc']], perPage: 50, page: 0 });
 });
+
+test('retail price: Amazon offers Buy Box, else Keepa Buy Box, lowest FBA, lowest new (owner 11/9)', () => {
+  assert.strictEqual(B.retailPrice({ buyBoxPrice: 20, newFbaPrice: 18 }, { bbPrice: 22.5 }), 22.5);
+  assert.strictEqual(B.retailPrice({ buyBoxPrice: null, newFbaPrice: 18, newPrice: 15 }), 18);
+  assert.strictEqual(B.retailPrice({ newPrice: 15, amazonPrice: 16 }), 15);
+  assert.strictEqual(B.retailPrice({}), null);
+});
+
+test('price floor: a brand recounted without its cheap listings stops qualifying (owner 11/9)', () => {
+  const p = (asin, price, monthly) => ({ asin, brand: 'Joico', offerCount: 5, monthlySold: monthly, newFbaPrice: price, salesRank: 100 });
+  const s = B.scoreBrand('Joico', [p('A1', 8, 2400), p('A2', 30, 900), p('A3', null, 300)], { minSellers: 3, minPerDay: 100 });
+  assert.strictEqual(s.qualifies, true); assert.strictEqual(s.openPerDay, 120);
+  assert.strictEqual(s.medianPrice, 19); assert.strictEqual(s.minPrice, 8); assert.strictEqual(s.maxPrice, 30);
+  const c = B.priceCut(s, 10, { minPerDay: 100 });
+  assert.strictEqual(c.open, 2); assert.strictEqual(c.openPerDay, 40); assert.strictEqual(c.qualifies, false);
+  assert.strictEqual(c.cheapOut, 1); assert.strictEqual(c.medianPrice, 30);
+  assert.strictEqual(B.priceCut(s, 0), s);
+});
