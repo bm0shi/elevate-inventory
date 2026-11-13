@@ -30,6 +30,8 @@ html.nl {
 }
 html.nl .nl-only { display: revert; }
 html.nl .nl-hide { display: none !important; }
+/* buttons that belong to the Bold look (look3.css): hidden until this device is on it */
+html.nl:not(.n3) .n3-only { display: none !important; }
 html.nl body { background: var(--k-page); color: var(--k-ink); font-family: var(--k-font); }
 html.nl .app { background: var(--k-page); }
 html.nl h1, html.nl h2, html.nl h3 { font-family: var(--k-font); letter-spacing: -.2px; }

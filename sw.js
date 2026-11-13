@@ -16,7 +16,7 @@
 //    (index.html) and reloads by itself when it's next hidden.
 const BUILD = '__BUILD__';
 const CACHE = 'elevate-' + BUILD;
-const SHELL = ['/', '/look2.css', '/dash2.js', '/onhand2.js', '/palette.js', '/tablet.js', '/vendor/bwip-js.min.js',
+const SHELL = ['/', '/look2.css', '/look3.css', '/theme3.js', '/dash2.js', '/onhand2.js', '/palette.js', '/tablet.js', '/vendor/bwip-js.min.js',
   '/manifest.webmanifest', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/favicon-32.png'];
 // Outside files the page loads (barcode drawing, fonts): kept for offline too.
 const OUTSIDE = /^https:\/\/(cdn\.jsdelivr\.net\/npm\/jsbarcode|fonts\.googleapis\.com|fonts\.gstatic\.com)/;

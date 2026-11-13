@@ -85,6 +85,10 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 // the page just looks Classic.
 try { if (localStorage.getItem('tabletMode') === '1') document.documentElement.classList.add('tablet'); } catch (e) {}
 try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElement.classList.add('nl'); document.write('<link rel="stylesheet" href="/look2.css">'); } } catch (e) {}
+// BOLD (owner 11/13): a third look laid over the new one (look3.css), with a
+// light and a dark mode (theme3.js), chosen per device (appLook='bold',
+// appDark='1'). Both classes are set before the first paint.
+try { if (localStorage.getItem('appLook') === 'bold') { document.documentElement.classList.add('n3'); if (localStorage.getItem('appDark') === '1') document.documentElement.classList.add('dk'); document.write('<link rel="stylesheet" href="/look3.css"><script src="/theme3.js"><\/script>'); } } catch (e) {}
 </script>
 <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.6/dist/JsBarcode.all.min.js"></script>
 <style>
@@ -446,6 +450,9 @@ try { if (localStorage.getItem('appLook') !== 'classic') { document.documentElem
       <button id="autoRefreshBtn" onclick="toggleAutoRefresh()" style="margin-left:10px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#1e8449;color:#fff;cursor:pointer;font-weight:700">🔄 Live: ON</button>
       <button id="uiScaleBtn" onclick="cycleUiScale()" title="Display size on THIS device only (e.g. smaller on the Surface). Other computers keep their own." style="margin-left:6px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#0d4450;color:#fff;cursor:pointer;font-weight:700">🔍 Size: 100%</button>
       <button class="nl-hide" onclick="setAppLook('new')" title="The new look for every screen, on this device" style="margin-left:6px;padding:3px 10px;font-size:11px;border:none;border-radius:10px;background:#ff9900;color:#131921;cursor:pointer;font-weight:800">✨ New look</button>
+      <button class="nl-only n3-hide" onclick="setAppLook('bold')" title="The Bold look on this device: big numbers, colour tiles, light and dark. Every button does the same thing.">✨ Bold look</button>
+      <button class="nl-only n3-only" id="n3DarkBtn" onclick="if(window.setAppDark)setAppDark()" title="Light or dark, on this device">☾ Dark</button>
+      <button class="nl-only n3-only nl-classic" onclick="setAppLook('new')" title="Back to the standard look on this device">Standard look</button>
       <button class="nl-only nl-classic" onclick="setAppLook('classic')" title="Switch this device back to the classic screens">Classic view</button>
     </div>
   </header>
@@ -7471,7 +7478,8 @@ function applyUiScale(){
 // everything: Classic also puts On Hand and the dashboard back to Classic.
 function setAppLook(v){
   try{
-    localStorage.setItem('appLook', v==='classic' ? 'classic' : 'new');
+    // 'bold' = the Bold look (look3.css) over the new one; On Hand and the dashboard stay on their new screens
+    localStorage.setItem('appLook', v==='classic' ? 'classic' : v==='bold' ? 'bold' : 'new');
     localStorage.setItem('ohView', v==='classic' ? 'classic' : 'new');
     localStorage.setItem('dashView', v==='classic' ? 'classic' : 'new');
   }catch(e){}
