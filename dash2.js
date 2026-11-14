@@ -217,16 +217,19 @@
      delivery truck drives right behind it. Tap the truck: it hops. Tap the
      lens: the coin pays out. All our own drawings. Visible at rest; motion
      stops under Reduce Motion. --p = how far it has got (0-100). */
-  .d2-pullbar.mini{padding:9px 14px 9px}
-  .d2-pullbar.mini .d2-pull-head{gap:9px}
-  .d2-pullbar.mini .d2-pull-tx{flex:1;min-width:0;display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap}
-  .d2-pullbar.mini .d2-pull-tx b{font-size:15px}
-  .d2-pullbar.mini .d2-sub{font-size:13px;margin:0}
-  .d2-pullbar.mini .d2-spin{width:16px;height:16px;flex:0 0 16px;border-width:2px}
-  .d2-pullbar.mini .d2-pull-ic{width:20px;height:20px;flex:0 0 20px;font-size:12px}
-  .d2-pullbar.mini .d2-pull-pct{font-size:16px;min-width:40px}
-  .d2-pullbar.mini .d2-pull-steps{margin-top:7px;font-size:11.5px;gap:5px}
-  .d2-pullbar.mini .d2-pull-steps span{padding:1px 8px}
+  /* .slim, not .mini: .mini is the app's small-button class, and the Bold look's
+     pill rule for it turned this card into an oval that cut off its corners on a
+     phone (owner 11/14). */
+  .d2-pullbar.slim{padding:9px 14px 9px}
+  .d2-pullbar.slim .d2-pull-head{gap:9px}
+  .d2-pullbar.slim .d2-pull-tx{flex:1;min-width:0;display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap}
+  .d2-pullbar.slim .d2-pull-tx b{font-size:15px}
+  .d2-pullbar.slim .d2-sub{font-size:13px;margin:0}
+  .d2-pullbar.slim .d2-spin{width:16px;height:16px;flex:0 0 16px;border-width:2px}
+  .d2-pullbar.slim .d2-pull-ic{width:20px;height:20px;flex:0 0 20px;font-size:12px}
+  .d2-pullbar.slim .d2-pull-pct{font-size:16px;min-width:40px}
+  .d2-pullbar.slim .d2-pull-steps{margin-top:7px;font-size:11.5px;gap:5px}
+  .d2-pullbar.slim .d2-pull-steps span{padding:1px 8px}
   .d2-lane{--p:0;--e:calc(30px + (100% - 60px) * var(--p) / 100);position:relative;height:56px;margin-top:9px;border-radius:28px;overflow:hidden;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;
     box-shadow:inset 0 2px 5px rgba(0,0,0,.35),0 0 0 3px #fff,0 0 0 4px #cfdde2,0 6px 14px -8px rgba(13,68,80,.5)}
   .d2-sky{position:absolute;inset:0;image-rendering:pixelated;background-repeat:no-repeat,no-repeat,no-repeat,repeat-x;background-position:left bottom,right bottom,22% 0,left bottom;background-size:auto 100%}
@@ -1043,7 +1046,7 @@
     if (!j) { box.innerHTML = ''; state.pullJob = null; state.pullStart = null; return; }
     if (j.doneView) {   // finished: a full bar and what happened, then it goes away
       // done well: the box has the coin; a failure keeps the plain red bar
-      box.innerHTML = '<div class="d2-pullbar pro ' + (j.ok ? 'ok mini' : 'bad') + '"><div class="d2-pull-head"><span class="d2-pull-ic">' + (j.ok ? '✓' : '!') + '</span><div class="d2-pull-tx" style="flex:1;min-width:0"><b>' + E(j.title) + '</b><div class="d2-sub">' + E(j.text || '') + '</div></div></div>'
+      box.innerHTML = '<div class="d2-pullbar pro ' + (j.ok ? 'ok slim' : 'bad') + '"><div class="d2-pull-head"><span class="d2-pull-ic">' + (j.ok ? '✓' : '!') + '</span><div class="d2-pull-tx" style="flex:1;min-width:0"><b>' + E(j.title) + '</b><div class="d2-sub">' + E(j.text || '') + '</div></div></div>'
         + (j.ok ? chaseHtml(100, true) : '<div class="d2-pulltrack det"><i style="width:100%"></i></div>') + '</div>';
       const won = box.querySelector('.d2-lane'); if (won) won.addEventListener('click', chaseTap);
       state.pullJob = null; state.pullStart = null;
@@ -1063,7 +1066,7 @@
     // (as it used to) would restart the chase's animation each time.
     let bar = box.querySelector('.d2-pullbar.run');
     if (!bar) {
-      box.innerHTML = '<div class="d2-pullbar pro run mini" role="status" aria-live="polite"><div class="d2-pull-head"><div class="d2-spin"></div><div class="d2-pull-tx"><b class="d2-pull-t"></b><div class="d2-sub"></div></div><div class="d2-pull-pct"></div></div>'
+      box.innerHTML = '<div class="d2-pullbar pro run slim" role="status" aria-live="polite"><div class="d2-pull-head"><div class="d2-spin"></div><div class="d2-pull-tx"><b class="d2-pull-t"></b><div class="d2-sub"></div></div><div class="d2-pull-pct"></div></div>'
         + chaseHtml(v.pct, false) + '<div class="d2-pull-steps"></div></div>';
       bar = box.querySelector('.d2-pullbar.run');
       bar.querySelector('.d2-lane').addEventListener('click', chaseTap);
