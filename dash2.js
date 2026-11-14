@@ -207,15 +207,16 @@
   .d2-pullbar.bad{border-color:#f0b7b0;background:#fdf3f2}.d2-pullbar.bad .d2-pulltrack.det i{background:${C.crit}}.d2-pullbar.bad .d2-pulltrack.det i::after{display:none}
   .d2-pull-ic{width:28px;height:28px;flex:0 0 28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff;background:#1e8449}
   .d2-pullbar.bad .d2-pull-ic{background:${C.crit}}
-  /* THE CHASE (owner 11/14: "a cool interactive loading bar … chasing the money
-     sign … something cool and fun"; then "instead of on top of the bar … make
-     the animation the bar and make the entire box smaller"). The bar IS the
-     scene: a lane of small gold coins, and our own money guy (green suit,
-     shades, tie flying; nobody else's character) running down it at the bar's
-     leading edge after one big dollar coin. The fill follows him and covers the
-     coins he has passed. Tap him and he jumps; tap the big coin and it pays
-     out. Everything is visible at rest; motion stops under Reduce Motion.
-     --p = how far the bar has got (0–100), --c = where the big coin is. */
+  /* THE SALES BAR (owner 11/14: "a cool interactive loading bar … something cool
+     and fun"; two tries with a runner on / in a thin bar "got a little worse";
+     then a reference: a chunky pill slider filled with a pixel-art scene, lit on
+     one side of a glass knob and night on the other). So the bar is a pill
+     window onto a pixel street: our warehouse at the left, the Amazon building
+     at the right. What is still to load is NIGHT; what has loaded is DAY. A
+     glass lens with a dollar coin in it rides the edge between them and our
+     delivery truck drives right behind it. Tap the truck: it hops. Tap the
+     lens: the coin pays out. All our own drawings. Visible at rest; motion
+     stops under Reduce Motion. --p = how far it has got (0-100). */
   .d2-pullbar.mini{padding:9px 14px 9px}
   .d2-pullbar.mini .d2-pull-head{gap:9px}
   .d2-pullbar.mini .d2-pull-tx{flex:1;min-width:0;display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap}
@@ -224,45 +225,38 @@
   .d2-pullbar.mini .d2-spin{width:16px;height:16px;flex:0 0 16px;border-width:2px}
   .d2-pullbar.mini .d2-pull-ic{width:20px;height:20px;flex:0 0 20px;font-size:12px}
   .d2-pullbar.mini .d2-pull-pct{font-size:16px;min-width:40px}
-  .d2-pullbar.mini .d2-pull-steps{margin-top:6px;font-size:11.5px;gap:5px}
+  .d2-pullbar.mini .d2-pull-steps{margin-top:7px;font-size:11.5px;gap:5px}
   .d2-pullbar.mini .d2-pull-steps span{padding:1px 8px}
-  .d2-lane{--p:0;--c:10;position:relative;height:30px;margin-top:8px;border-radius:15px;background:#dcebef;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
-  .d2-lane::before{content:"";position:absolute;inset:0 6px 0 26px;border-radius:15px;background:radial-gradient(circle,#ffc93c 0 2.4px,#c98e00 2.4px 3.4px,transparent 3.9px) 0 50%/24px 100% repeat-x}
-  .d2-lane>i{position:absolute;left:0;top:0;bottom:0;width:calc((100% - 36px) * var(--p) / 100 + 14px);border-radius:15px;background:linear-gradient(90deg,${C.brand},#1d8a9c);transition:width 1s linear;overflow:hidden}
-  .d2-lane>i::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);animation:d2shine 1.4s linear infinite}
-  .d2-runner,.d2-coin{position:absolute;transition:left 1s linear;will-change:left}
-  .d2-runner{bottom:0;left:calc((100% - 36px) * var(--p) / 100 + 2px);width:34px;height:34px}
-  .d2-coin{top:4px;left:calc((100% - 36px) * var(--c) / 100 + 10px);width:22px;height:22px}
+  .d2-lane{--p:0;--e:calc(30px + (100% - 60px) * var(--p) / 100);position:relative;height:56px;margin-top:9px;border-radius:28px;overflow:hidden;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;
+    box-shadow:inset 0 2px 5px rgba(0,0,0,.35),0 0 0 3px #fff,0 0 0 4px #cfdde2,0 6px 14px -8px rgba(13,68,80,.5)}
+  .d2-sky{position:absolute;inset:0;image-rendering:pixelated;background-repeat:no-repeat,no-repeat,no-repeat,repeat-x;background-position:left bottom,right bottom,22% 0,left bottom;background-size:auto 100%}
+  .d2-sky.night{background-position:left bottom,right bottom,78% 0,left bottom}
+  .d2-lane.won .d2-sky.day{clip-path:none}
+  .d2-sky.day{clip-path:inset(0 calc(100% - var(--e)) 0 0);transition:clip-path 1s linear}
+  .d2-sky.night::after{content:"";position:absolute;inset:0;background:radial-gradient(circle,#fff 0 1px,transparent 1.5px) 7px 6px/46px 23px,radial-gradient(circle,#fff 0 1px,transparent 1.5px) 29px 13px/61px 19px;opacity:.7;animation:d2twinkle 2.2s ease-in-out infinite alternate;height:45%}
+  .d2-truck,.d2-lens{position:absolute;transition:left 1s linear;will-change:left}
+  .d2-truck{bottom:3px;left:max(4px,calc(var(--e) - 76px));width:48px;height:30px}
   .d2-rj{display:block;width:100%;height:100%}
   .d2-rj.jump{animation:d2jump .5s cubic-bezier(.3,.7,.4,1)}
-  .d2-runner svg{display:block;width:100%;height:100%;overflow:visible;animation:d2bob .26s ease-in-out infinite alternate}
-  .d2-runner .leg{transform-box:fill-box;transform-origin:50% 0;animation:d2leg .26s ease-in-out infinite alternate}
-  .d2-runner .leg.b{animation-direction:alternate-reverse}
-  .d2-runner .arm{transform-box:fill-box;transform-origin:0 100%;animation:d2arm .26s ease-in-out infinite alternate}
-  .d2-runner .tie{transform-box:fill-box;transform-origin:100% 0;animation:d2tie .2s ease-in-out infinite alternate}
-  .d2-coin svg{display:block;width:100%;height:100%;animation:d2coin 1.1s ease-in-out infinite}
-  .d2-coin.hit svg{animation:d2flip .5s ease-out}
-  .d2-plus{position:absolute;top:-6px;transform:translateX(-50%);font-size:13px;font-weight:900;color:#b7791f;pointer-events:none;animation:d2plus .8s ease-out forwards}
-  .d2-pullbar.ok .d2-lane>i{background:#1e8449}.d2-pullbar.ok .d2-lane>i::after{display:none}
-  .d2-lane.won::before{display:none}
-  .d2-lane.won .d2-runner{left:calc(100% - 62px);transition:none}
-  .d2-lane.won .d2-coin{left:calc(100% - 28px);transition:none}
-  .d2-lane.won .d2-runner svg,.d2-lane.won .d2-runner .leg,.d2-lane.won .d2-runner .arm,.d2-lane.won .d2-runner .tie{animation:none}
+  .d2-truck svg{display:block;width:100%;height:100%;image-rendering:pixelated;animation:d2bob .22s steps(2) infinite alternate}
+  .d2-lens{top:3px;left:calc(var(--e) - 25px);width:50px;height:50px;border-radius:50%;border:2px solid rgba(255,255,255,.85);display:grid;place-items:center;
+    background:radial-gradient(circle at 32% 28%,rgba(255,255,255,.75),rgba(255,255,255,.12) 38%,rgba(255,255,255,.04) 70%);backdrop-filter:brightness(1.18) saturate(1.35) blur(.4px);-webkit-backdrop-filter:brightness(1.18) saturate(1.35) blur(.4px);
+    box-shadow:0 3px 10px rgba(0,0,0,.35),inset 0 -6px 12px rgba(255,255,255,.18),inset 0 0 0 1px rgba(0,0,0,.08)}
+  .d2-lens svg{width:24px;height:24px;display:block;animation:d2coin 1.1s ease-in-out infinite}
+  .d2-lens.hit svg{animation:d2flip .5s ease-out}
+  .d2-plus{position:absolute;top:2px;transform:translateX(-50%);font-size:14px;font-weight:900;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6);pointer-events:none;animation:d2plus .8s ease-out forwards}
+  .d2-lane.won .d2-truck svg{animation:none}
   .d2-lane.won .d2-rj{animation:d2jump .5s cubic-bezier(.3,.7,.4,1) 2}
-  .d2-lane.won .d2-coin svg{animation:d2win .6s cubic-bezier(.3,1.6,.5,1) backwards,d2coin 1.1s ease-in-out .6s infinite}
-  .d2-burst{position:absolute;right:16px;top:12px;width:0;height:0;pointer-events:none}
-  .d2-burst b{position:absolute;width:7px;height:7px;border-radius:50%;background:#ffc93c;border:1.5px solid #d99a00;animation:d2burst .9s ease-out forwards;animation-delay:.15s;opacity:0}
-  @keyframes d2bob{from{transform:translateY(0)}to{transform:translateY(-1.5px)}}
-  @keyframes d2leg{from{transform:rotate(-36deg)}to{transform:rotate(36deg)}}
-  @keyframes d2arm{from{transform:rotate(-12deg)}to{transform:rotate(16deg)}}
-  @keyframes d2tie{from{transform:rotate(-10deg)}to{transform:rotate(12deg)}}
+  .d2-burst{position:absolute;right:30px;top:24px;width:0;height:0;pointer-events:none}
+  .d2-burst b{position:absolute;width:7px;height:7px;background:#ffc93c;border:1.5px solid #d99a00;animation:d2burst .9s ease-out forwards;animation-delay:.15s;opacity:0}
+  @keyframes d2bob{from{transform:translateY(0)}to{transform:translateY(-1px)}}
+  @keyframes d2twinkle{from{opacity:.35}to{opacity:.85}}
   @keyframes d2coin{0%,100%{transform:scaleX(1)}25%,75%{transform:scaleX(.25)}50%{transform:scaleX(1)}}
-  @keyframes d2flip{0%{transform:translateY(0) rotate(0)}50%{transform:translateY(-12px) rotate(180deg)}100%{transform:translateY(0) rotate(360deg)}}
-  @keyframes d2jump{0%,100%{transform:translateY(0)}45%{transform:translateY(-13px) rotate(-8deg)}}
-  @keyframes d2plus{0%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-20px)}}
-  @keyframes d2win{from{transform:translateX(-20px) scale(.5)}to{transform:none}}
+  @keyframes d2flip{0%{transform:translateY(0) rotate(0)}50%{transform:translateY(-10px) rotate(180deg)}100%{transform:translateY(0) rotate(360deg)}}
+  @keyframes d2jump{0%,100%{transform:translateY(0)}45%{transform:translateY(-12px) rotate(-6deg)}}
+  @keyframes d2plus{0%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-18px)}}
   @keyframes d2burst{0%{opacity:1;transform:translate(0,0) scale(1)}100%{opacity:0;transform:translate(var(--x),var(--y)) scale(.4)}}
-  @media (prefers-reduced-motion:reduce){.d2-lane *,.d2-lane>i::after{animation:none!important}.d2-runner,.d2-coin,.d2-lane>i{transition:none}}
+  @media (prefers-reduced-motion:reduce){.d2-lane *,.d2-lane *::after{animation:none!important}.d2-truck,.d2-lens,.d2-sky.day{transition:none}}
   .d2-btn.busy{opacity:.6;cursor:progress}
   @keyframes d2slide{0%{left:-30%}100%{left:100%}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
@@ -982,26 +976,55 @@
     const before = exp.slice(0, i).reduce((a, b) => a + b, 0);
     return { steps, i, pct: Math.max(3, Math.min(99, 100 * (before + within * exp[i]) / total)), waitedInStep: Date.now() - state.pullStep.at };
   }
-  // The chase's two drawings. The runner is our own money guy: green suit,
-  // shades, red tie flying back, one arm out for the coin. He is not the
-  // Monopoly man (owner asked; that character is Hasbro's, lookalikes included).
-  const CHASE_GUY = '<svg viewBox="0 0 30 30" aria-hidden="true">'
-    + '<g class="leg a"><path d="M13.5 20v7h3.2" fill="none" stroke="#8a6a45" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>'
-    + '<g class="leg b"><path d="M17 20v7h3.2" fill="none" stroke="#8a6a45" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>'
-    + '<path class="tie" d="M15 12.5l-8 1.6" fill="none" stroke="#e23d3d" stroke-width="2.4" stroke-linecap="round"/>'
-    + '<path class="arm" d="M19.5 14.5l7-2.6" fill="none" stroke="#1e8449" stroke-width="2.8" stroke-linecap="round"/>'
-    + '<rect x="10" y="10.5" width="10.5" height="10.5" rx="3.2" fill="#1e8449" stroke="#fff" stroke-width="1"/><path d="M15.4 11l-2.2 3.4h4.4z" fill="#fff"/>'
-    + '<circle cx="16" cy="6.2" r="4.7" fill="#f3c9a1" stroke="#fff" stroke-width="1"/><path d="M11.4 5.6a4.7 4.7 0 0 1 8.3-2.4c-2.6 0-5.4.6-8.3 2.4z" fill="#3a2a1c"/>'
-    + '<rect x="15.2" y="5.2" width="5.6" height="2.3" rx="1.1" fill="#16181b"/></svg>';
+  // The sales bar's pixel art, drawn here as rectangles (2px to the unit).
+  // One street, two palettes: day for what has loaded, night for what hasn't.
+  const PXR = a => a.map(r => '<rect x="' + r[0] + '" y="' + r[1] + '" width="' + r[2] + '" height="' + r[3] + '" fill="' + r[4] + '"/>').join('');
+  const pxUri = (w, h, body) => 'url("data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" shape-rendering="crispEdges">' + body + '</svg>') + '")';
+  const PAL = {
+    day: { sky: '#bfe6f5', far: '#a9cfe3', bld: '#86b1cb', win: '#eaf7fc', grass: '#6cc070', road: '#5b6570', line: '#f4f6f8', tree: '#3f9d56', tree2: '#57b56c', trunk: '#8a5a33', lamp: '#56606b', cloud: '#ffffff', sun: '#ffd34d',
+      wh: '#e9a23b', wh2: '#c9822a', roof: '#7a4a1e', door: '#cfd6db', doorL: '#aab4bb', lit: '#fff4c2', hub: '#3b82c4', hub2: '#2f6aa3', hubRoof: '#1f4a78', coin: '#ffc93c', coin2: '#d99a00' },
+    night: { sky: '#121836', far: '#1a2250', bld: '#252e66', win: '#ffd966', grass: '#1c4436', road: '#232838', line: '#69708c', tree: '#17503a', tree2: '#1f6248', trunk: '#4a3423', lamp: '#8a93b5', glow: '#ffe58a', moon: '#f3f1d8',
+      wh: '#7a5a2a', wh2: '#5e4520', roof: '#3a2712', door: '#59606e', doorL: '#444b58', lit: '#ffd966', hub: '#1f3f73', hub2: '#18325c', hubRoof: '#0f2342', coin: '#e0ad2e', coin2: '#a67800' },
+  };
+  function pxTile(c, night) {     // 96 x 28, repeats along the street
+    const r = [[0, 0, 96, 28, c.sky]];
+    if (!night) r.push([8, 3, 9, 2, c.cloud], [10, 2, 5, 1, c.cloud], [56, 5, 11, 2, c.cloud], [59, 4, 6, 1, c.cloud]);
+    [[2, 11, 12, c.far], [15, 7, 10, c.bld], [27, 13, 13, c.far], [51, 9, 9, c.bld], [61, 14, 15, c.far], [79, 10, 11, c.bld]].forEach((b, k) => {
+      r.push([b[0], b[1], b[2], 22 - b[1], b[3]]);
+      for (let y = b[1] + 2; y < 20; y += 3) for (let x = b[0] + 2; x < b[0] + b[2] - 1; x += 3) if (!night || (x * 7 + y * 3 + k) % 3) r.push([x, y, 1, 2, c.win]);
+    });
+    r.push([0, 22, 96, 2, c.grass], [0, 24, 96, 4, c.road]);
+    for (let x = 2; x < 96; x += 8) r.push([x, 26, 4, 1, c.line]);
+    r.push([44, 17, 2, 5, c.trunk], [41, 11, 8, 6, c.tree], [42, 9, 6, 2, c.tree], [42, 12, 3, 2, c.tree2]);
+    r.push([72, 11, 1, 11, c.lamp], [71, 10, 3, 1, c.lamp]);
+    if (night) r.push([70, 11, 5, 2, c.glow]);
+    return pxUri(96, 28, PXR(r));
+  }
+  function pxWarehouse(c) {       // ours, at the left end
+    return pxUri(40, 28, PXR([[2, 9, 34, 15, c.wh], [2, 21, 34, 3, c.wh2], [0, 6, 38, 3, c.roof], [7, 13, 12, 11, c.door], [7, 15, 12, 1, c.doorL], [7, 18, 12, 1, c.doorL], [7, 21, 12, 1, c.doorL],
+      [24, 12, 8, 5, c.lit], [27, 12, 1, 5, c.wh2], [24, 14, 8, 1, c.wh2], [0, 24, 40, 4, c.road]]));
+  }
+  function pxHub(c) {             // the Amazon building, at the right end (no logo: a plain blue hub with a coin sign)
+    return pxUri(46, 28, PXR([[4, 5, 40, 19, c.hub], [4, 20, 40, 4, c.hub2], [2, 3, 44, 3, c.hubRoof], [8, 14, 7, 10, c.door], [18, 14, 7, 10, c.door], [28, 14, 7, 10, c.door],
+      [8, 17, 7, 1, c.doorL], [18, 17, 7, 1, c.doorL], [28, 17, 7, 1, c.doorL], [37, 7, 5, 5, c.coin], [38, 6, 3, 7, c.coin], [36, 8, 7, 3, c.coin], [39, 8, 1, 3, c.coin2], [0, 24, 46, 4, c.road]]));
+  }
+  // one sun, one moon (in the street tile they repeated: five suns in a row)
+  const pxOrb = (c, night) => pxUri(9, 28, PXR(night ? [[2, 3, 5, 5, c.moon], [3, 2, 3, 7, c.moon], [1, 4, 7, 3, c.moon], [5, 3, 2, 2, c.sky]] : [[2, 2, 5, 5, c.sun], [3, 1, 3, 7, c.sun], [1, 3, 7, 3, c.sun]]));
+  const PXBG = {};
+  const pxBg = k => PXBG[k] || (PXBG[k] = pxWarehouse(PAL[k]) + ',' + pxHub(PAL[k]) + ',' + pxOrb(PAL[k], k === 'night') + ',' + pxTile(PAL[k], k === 'night'));
+  const CHASE_TRUCK = '<svg viewBox="0 0 24 15" shape-rendering="crispEdges" aria-hidden="true">' + PXR([[0, 1, 15, 10, '#f7f3e8'], [0, 1, 15, 1, '#d9d2bf'], [0, 8, 15, 3, '#1e8449'],
+    [6, 3, 3, 1, '#1e8449'], [6, 4, 1, 1, '#1e8449'], [6, 5, 3, 1, '#1e8449'], [8, 6, 1, 1, '#1e8449'], [6, 7, 3, 1, '#1e8449'], [7, 2, 1, 7, '#1e8449'],
+    [15, 4, 7, 7, '#1e8449'], [17, 5, 4, 3, '#bfe6f5'], [22, 8, 2, 3, '#145c33'], [23, 8, 1, 1, '#ffe58a'], [0, 11, 24, 1, '#2a323b'],
+    [3, 11, 4, 4, '#20262d'], [4, 12, 2, 2, '#9aa6b1'], [16, 11, 4, 4, '#20262d'], [17, 12, 2, 2, '#9aa6b1']]) + '</svg>';
   const CHASE_COIN = '<svg viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.5" fill="#ffc93c" stroke="#d99a00" stroke-width="2"/>'
     + '<circle cx="13" cy="13" r="8" fill="none" stroke="#f0b21b" stroke-width="1.2"/><text x="13" y="18.2" text-anchor="middle" font-size="15" font-weight="900" font-family="Arial,sans-serif" fill="#9a6a00">$</text></svg>';
-  // the big coin keeps a lead that closes as the bar fills
-  const coinAt = pct => Math.min(100, pct + 5 + 12 * (1 - pct / 100));
+  const coinAt = pct => pct;      // kept for paintPull; the lens sits on the edge itself
   function chaseHtml(pct, won) {
-    return '<div class="d2-lane' + (won ? ' won' : '') + '" style="--p:' + pct.toFixed(1) + ';--c:' + coinAt(pct).toFixed(1) + '" title="Tap the runner to make him jump. Tap the coin to cash it.">'
-      + '<i></i><div class="d2-coin" data-nodark>' + CHASE_COIN + '</div>'
-      + '<div class="d2-runner"><span class="d2-rj" data-nodark>' + CHASE_GUY + '</span></div>'
-      + (won ? '<div class="d2-burst">' + [[-22, -18], [-8, -24], [10, -22], [22, -12], [-28, 2], [26, 6]].map(v => '<b style="--x:' + v[0] + 'px;--y:' + v[1] + 'px"></b>').join('') + '</div>' : '')
+    return '<div class="d2-lane' + (won ? ' won' : '') + '" data-nodark style="--p:' + pct.toFixed(1) + '" title="Tap the truck to make it hop. Tap the lens to cash the coin.">'
+      + '<div class="d2-sky night" style=\'background-image:' + pxBg('night') + '\'></div><div class="d2-sky day" style=\'background-image:' + pxBg('day') + '\'></div>'
+      + '<div class="d2-truck"><span class="d2-rj">' + CHASE_TRUCK + '</span></div>'
+      + '<div class="d2-lens d2-coin">' + CHASE_COIN + '</div>'
+      + (won ? '<div class="d2-burst">' + [[-22, -16], [-8, -20], [10, -18], [20, -8], [-26, 4], [22, 8]].map(v => '<b style="--x:' + v[0] + 'px;--y:' + v[1] + 'px"></b>').join('') + '</div>' : '')
       + '</div>';
   }
   function chaseTap(e) {
