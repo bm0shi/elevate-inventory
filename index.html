@@ -10563,6 +10563,10 @@ const RP_CSS = `
 #sub-reprice .rp-sw.on .rp-tog::after{left:50px}
 #sub-reprice .rp-tog[disabled]{opacity:.6;pointer-events:none}
 #sub-reprice .rp-sw .s{font-size:16px;line-height:1.45;opacity:.95}
+#sub-reprice .rp-tz{display:flex;gap:6px 18px;flex-wrap:wrap;margin-top:6px;font-size:14px;font-weight:600;opacity:.92}
+#sub-reprice .rp-tz span{white-space:nowrap}
+#sub-reprice .rp-tz b{font-weight:800;font-size:11.5px;letter-spacing:.5px;text-transform:uppercase;opacity:.8;margin-right:4px}
+#sub-reprice .rp-tz.in{margin:-2px 0 10px 2px;font-size:13px;color:var(--rp-mute)}
 #sub-reprice .rp-sw .acts{margin-top:14px;display:flex;gap:10px;flex-wrap:wrap}
 #sub-reprice .rp-sw .acts button{all:unset;cursor:pointer;font-size:15px;font-weight:800;border-radius:12px;padding:12px 16px;background:#fff;color:#0b1f24}
 #sub-reprice .rp-sw .acts button[disabled]{opacity:.6;pointer-events:none}
@@ -10632,6 +10636,17 @@ let _rp=null, _rpEdit=null, _rpPoll=null;
 const rpMoney=v=>v==null?'—':'$'+Number(v).toFixed(2);
 function rpLabel(t){ const m=/^(\d+):(\d+)$/.exec(t||''); if(!m) return t||''; const h=+m[1]; return (h%12===0?12:h%12)+':'+m[2]+(h<12?' AM':' PM'); }
 function rpLen(s){ const a=s.drop.split(':'), b=s.back.split(':'); const n=((+b[0]*60+ +b[1])-(+a[0]*60+ +a[1])+1440)%1440; return n<60?n+' min':(Math.round(n/6)/10)+' h'; }
+// The same moment in California and New York (owner 11/14: "time changed for
+// the rest of the nation but AZ stayed the same"). Arizona never moves its
+// clocks, so it is always UTC-7; the other two are worked out for the day in
+// question, so the gap follows daylight saving by itself (Pacific = Arizona in
+// summer and an hour behind in winter, Eastern 3 hours ahead in summer and 2
+// in winter). A slot's HH:MM is taken on today's date.
+const RP_ZONES=[['California','America/Los_Angeles'],['New York','America/New_York']];
+function rpInZone(t, tz){ const m=/^(\d+):(\d+)$/.exec(t||''); if(!m) return ''; const n=new Date();
+  return new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate(), +m[1]+7, +m[2])).toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',timeZone:tz}); }
+function rpSlotZones(s){ return RP_ZONES.map(z=>'<span><b>'+z[0]+'</b> '+rpInZone(s.drop,z[1])+' → '+rpInZone(s.back,z[1])+'</span>').join(''); }
+function rpTimeZones(iso){ return RP_ZONES.map(z=>'<span><b>'+z[0]+'</b> '+new Date(iso).toLocaleString('en-US',{weekday:'short',hour:'numeric',minute:'2-digit',timeZone:z[1]})+'</span>').join(''); }
 // Arizona time, like the slots (the owner's device may be elsewhere).
 function rpTime(iso){ return new Date(iso).toLocaleString([], {weekday:'short',hour:'numeric',minute:'2-digit',timeZone:'America/Phoenix'}); }
 function loadReprice(){
@@ -10659,13 +10674,13 @@ function renderReprice(){
   let h='<div class="rp-hero"><div class="rp-sw'+(S.enabled?' on':'')+'"><div class="l">Repricer</div><div class="row">'
     +'<button class="rp-tog" id="rpTog" title="Turn the repricer '+(S.enabled?'off':'on')+'" onclick="rpToggle()"></button><div class="v">'+(S.enabled?'ON':'OFF')+'</div></div>'
     +'<div class="s">'+(S.enabled
-      ? 'Drops prices <b>'+rpMoney(S.drop)+'</b> '+(onSlots.length?onSlots.map(s=>rpLabel(s.drop)+' → '+rpLabel(s.back)).join(', '):'(no time slot switched on)')+' Arizona time, then puts them back.'
+      ? 'Drops prices <b>'+rpMoney(S.drop)+'</b> '+(onSlots.length?onSlots.map(s=>rpLabel(s.drop)+' → '+rpLabel(s.back)).join(', '):'(no time slot switched on)')+' Arizona time, then puts them back.'+onSlots.map(s=>'<div class="rp-tz">'+rpSlotZones(s)+'</div>').join('')
       : 'No prices are lowered. Anything still lowered goes back within a minute.')+'</div>'
     +(pending.length?'<div class="acts"><button id="rpBackBtn" onclick="rpRestoreNow()">↩ Put '+pending.length+' price'+(pending.length===1?'':'s')+' back now</button></div>':'')
     +'</div><div class="rp-now">';
   if(d.job&&d.job.running) h+='<div class="big">'+(d.job.running==='drop'?'Dropping prices now':'Putting prices back now')+'</div>'+esc(d.job.progress||'Starting…');
-  else if(d.active) h+='<div class="big">Inside the '+esc(d.active.label)+' slot</div>'+(pending.length?'<b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' lowered right now; they go back at '+rpTime(d.active.end)+'.':'This slot\'s drop has run. Prices go back at '+rpTime(d.active.end)+'.');
-  else if(d.next) h+='<div class="big">Next drop: '+rpTime(d.next.start)+'</div>Back at '+rpTime(d.next.end)+' (Arizona time).'+(pending.length?'<br><b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' waiting to go back.':'');
+  else if(d.active) h+='<div class="big">Inside the '+esc(d.active.label)+' slot</div>'+(pending.length?'<b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' lowered right now; they go back at '+rpTime(d.active.end)+'.':'This slot\'s drop has run. Prices go back at '+rpTime(d.active.end)+'.')+'<div class="rp-tz">Back at '+rpTimeZones(d.active.end)+'</div>';
+  else if(d.next) h+='<div class="big">Next drop: '+rpTime(d.next.start)+'</div>Back at '+rpTime(d.next.end)+' (Arizona time).<div class="rp-tz">Drop '+rpTimeZones(d.next.start)+'</div>'+(pending.length?'<br><b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' waiting to go back.':'');
   else h+='<div class="big">'+(S.enabled?'No time slot is switched on':'Switched off')+'</div>'+(pending.length?'<b>'+pending.length+'</b> price'+(pending.length===1?' is':'s are')+' waiting to go back (within a minute).':'Nothing is lowered.');
   if(d.job&&d.job.lastError) h+='<div class="warn">Last problem ('+new Date(d.job.lastError.at).toLocaleString([], {month:'numeric',day:'numeric',hour:'numeric',minute:'2-digit'})+'): '+esc(d.job.lastError.message)+'</div>';
   if(!d.sellerKnown) h+='<div class="warn">The app doesn\'t know your Amazon seller id yet, so it can\'t change prices. Add <b>SELLER_ID</b> in Railway (Seller Central → Settings → Account Info → Merchant Token).</div>';
@@ -10675,7 +10690,7 @@ function renderReprice(){
     +'<div><span class="rp-lab">Price drop</span><div class="rp-money">− $<input type="number" id="rpDrop" min="0.01" max="50" step="0.01" value="'+Number(E.drop).toFixed(2)+'" oninput="_rpEdit.drop=this.value;rpNote()"></div></div>'
     +'<div><span class="rp-lab">Time slots (Arizona time)</span>'
     +E.slots.map((s,i)=>'<div class="rp-slot'+(s.on?'':' off')+'"><input type="time" value="'+esc(s.drop)+'" onchange="_rpEdit.slots['+i+'].drop=this.value;renderReprice()" aria-label="Drop at"><span class="to">back at</span><input type="time" value="'+esc(s.back)+'" onchange="_rpEdit.slots['+i+'].back=this.value;renderReprice()" aria-label="Back at">'
-      +'<label><input type="checkbox"'+(s.on?' checked':'')+' onchange="_rpEdit.slots['+i+'].on=this.checked;renderReprice()"> On</label><span class="len">'+rpLen(s)+'</span><button class="rp-x" onclick="_rpEdit.slots.splice('+i+',1);renderReprice()">Remove</button></div>').join('')
+      +'<label><input type="checkbox"'+(s.on?' checked':'')+' onchange="_rpEdit.slots['+i+'].on=this.checked;renderReprice()"> On</label><span class="len">'+rpLen(s)+'</span><button class="rp-x" onclick="_rpEdit.slots.splice('+i+',1);renderReprice()">Remove</button></div><div class="rp-tz in">'+rpSlotZones(s)+'</div>').join('')
     +(E.slots.length<6?'<button class="rp-add" onclick="rpAddSlot()">+ Add time slot</button>':'')+'</div></div>'
     +rpOverridesList(S)
     +rpOverridesHtml(E)
