@@ -211,7 +211,7 @@
      and fun"; two tries with a runner on / in a thin bar "got a little worse";
      then a reference: a chunky pill slider filled with a pixel-art scene, lit on
      one side of a glass knob and night on the other). So the bar is a pill
-     window onto a pixel street: our warehouse at the left, the Amazon building
+     window onto a pixel desert road: our warehouse at the left, the Amazon building
      at the right. What is still to load is NIGHT; what has loaded is DAY. A
      glass lens with a dollar coin in it rides the edge between them and our
      delivery truck drives right behind it. Tap the truck: it hops. Tap the
@@ -980,27 +980,35 @@
     return { steps, i, pct: Math.max(3, Math.min(99, 100 * (before + within * exp[i]) / total)), waitedInStep: Date.now() - state.pullStep.at };
   }
   // The sales bar's pixel art, drawn here as rectangles (2px to the unit).
-  // One street, two palettes: day for what has loaded, night for what hasn't.
+  // One desert road, two palettes: day for what has loaded, night for what hasn't.
   const PXR = a => a.map(r => '<rect x="' + r[0] + '" y="' + r[1] + '" width="' + r[2] + '" height="' + r[3] + '" fill="' + r[4] + '"/>').join('');
   const pxUri = (w, h, body) => 'url("data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '" shape-rendering="crispEdges">' + body + '</svg>') + '")';
   const PAL = {
-    day: { sky: '#bfe6f5', far: '#a9cfe3', bld: '#86b1cb', win: '#eaf7fc', grass: '#6cc070', road: '#5b6570', line: '#f4f6f8', tree: '#3f9d56', tree2: '#57b56c', trunk: '#8a5a33', lamp: '#56606b', cloud: '#ffffff', sun: '#ffd34d',
+    day: { sky: '#aedff3', glow: '#fbe3bd', far: '#e2a878', mesa: '#c96f43', shade: '#a95631', sand: '#ecd29a', sand2: '#d8b671', road: '#5b6570', line: '#f4f6f8', cac: '#3f9d56', cac2: '#63bd77', shrub: '#a3a552', cloud: '#ffffff', sun: '#ffd34d',
       wh: '#e9a23b', wh2: '#c9822a', roof: '#7a4a1e', door: '#cfd6db', doorL: '#aab4bb', lit: '#fff4c2', hub: '#3b82c4', hub2: '#2f6aa3', hubRoof: '#1f4a78', coin: '#ffc93c', coin2: '#d99a00' },
-    night: { sky: '#121836', far: '#1a2250', bld: '#252e66', win: '#ffd966', grass: '#1c4436', road: '#232838', line: '#69708c', tree: '#17503a', tree2: '#1f6248', trunk: '#4a3423', lamp: '#8a93b5', glow: '#ffe58a', moon: '#f3f1d8',
+    night: { sky: '#121836', glow: '#2f2763', far: '#3b3577', mesa: '#2a2560', shade: '#1d1947', sand: '#463e63', sand2: '#373051', road: '#232838', line: '#69708c', cac: '#17503a', cac2: '#1f6248', shrub: '#3a4234', moon: '#f3f1d8',
       wh: '#7a5a2a', wh2: '#5e4520', roof: '#3a2712', door: '#59606e', doorL: '#444b58', lit: '#ffd966', hub: '#1f3f73', hub2: '#18325c', hubRoof: '#0f2342', coin: '#e0ad2e', coin2: '#a67800' },
   };
-  function pxTile(c, night) {     // 96 x 28, repeats along the street
-    const r = [[0, 0, 96, 28, c.sky]];
-    if (!night) r.push([8, 3, 9, 2, c.cloud], [10, 2, 5, 1, c.cloud], [56, 5, 11, 2, c.cloud], [59, 4, 6, 1, c.cloud]);
-    [[2, 11, 12, c.far], [15, 7, 10, c.bld], [27, 13, 13, c.far], [51, 9, 9, c.bld], [61, 14, 15, c.far], [79, 10, 11, c.bld]].forEach((b, k) => {
-      r.push([b[0], b[1], b[2], 22 - b[1], b[3]]);
-      for (let y = b[1] + 2; y < 20; y += 3) for (let x = b[0] + 2; x < b[0] + b[2] - 1; x += 3) if (!night || (x * 7 + y * 3 + k) % 3) r.push([x, y, 1, 2, c.win]);
-    });
-    r.push([0, 22, 96, 2, c.grass], [0, 24, 96, 4, c.road]);
+  // The Sonoran desert, since the warehouse is in Phoenix (owner 11/14: the first
+  // street was a city skyline, "make it more desert"): a warm band on the
+  // horizon, far mountains, red-rock buttes, saguaros, sand, the road.
+  function pxTile(c, night) {     // 96 x 28, repeats along the road; nothing crosses the tile's edge
+    const r = [[0, 0, 96, 28, c.sky], [0, 15, 96, 7, c.glow]];
+    if (!night) r.push([44, 3, 9, 2, c.cloud], [46, 2, 5, 1, c.cloud]);
+    // far mountains: one humped like Camelback, one low ridge
+    r.push([3, 19, 24, 3, c.far], [6, 17, 17, 2, c.far], [9, 15, 9, 2, c.far], [16, 16, 5, 1, c.far], [11, 14, 4, 1, c.far]);
+    r.push([50, 19, 28, 3, c.far], [55, 17, 18, 2, c.far], [60, 16, 9, 1, c.far]);
+    // red-rock buttes: flat tops, a banded face, the right side in shade
+    r.push([28, 18, 20, 4, c.mesa], [31, 10, 14, 8, c.mesa], [31, 13, 14, 1, c.shade], [31, 16, 14, 1, c.shade], [42, 10, 3, 8, c.shade], [45, 18, 3, 4, c.shade]);
+    r.push([79, 19, 13, 3, c.mesa], [81, 13, 9, 6, c.mesa], [81, 16, 9, 1, c.shade], [88, 13, 2, 6, c.shade]);
+    r.push([0, 22, 96, 2, c.sand]);
+    [[5, 23], [14, 22], [37, 23], [53, 22], [63, 23], [76, 22], [93, 23]].forEach(d => r.push([d[0], d[1], 2, 1, c.sand2]));
+    r.push([0, 24, 96, 4, c.road]);
     for (let x = 2; x < 96; x += 8) r.push([x, 26, 4, 1, c.line]);
-    r.push([44, 17, 2, 5, c.trunk], [41, 11, 8, 6, c.tree], [42, 9, 6, 2, c.tree], [42, 12, 3, 2, c.tree2]);
-    r.push([72, 11, 1, 11, c.lamp], [71, 10, 3, 1, c.lamp]);
-    if (night) r.push([70, 11, 5, 2, c.glow]);
+    // saguaros: a tall one with both arms up, a younger one, a barrel cactus, a shrub
+    r.push([20, 10, 2, 12, c.cac], [20, 10, 1, 12, c.cac2], [17, 13, 1, 5, c.cac], [17, 17, 3, 1, c.cac], [24, 11, 1, 5, c.cac], [22, 15, 3, 1, c.cac]);
+    r.push([68, 14, 2, 8, c.cac], [68, 14, 1, 8, c.cac2], [66, 16, 1, 3, c.cac], [66, 18, 2, 1, c.cac], [71, 15, 1, 3, c.cac], [70, 17, 2, 1, c.cac]);
+    r.push([49, 20, 3, 2, c.cac], [50, 19, 1, 1, c.cac2], [58, 21, 2, 1, c.shade], [8, 20, 3, 2, c.shrub], [9, 19, 2, 1, c.shrub], [93, 20, 2, 2, c.shrub]);
     return pxUri(96, 28, PXR(r));
   }
   function pxWarehouse(c) {       // ours, at the left end

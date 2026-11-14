@@ -19,7 +19,7 @@ from the GitHub repo).
 | `spapi.js` | Amazon Selling Partner API client: LWA tokens, reports, settlements, FBA inventory, sales velocity, prices, catalog, inbound shipments/fees, hazmat, and `findInboundShipment` (one shipment's destination address and items, for 2D Production). |
 | `keepa.js` | Keepa API client (market data, tracked ASINs, Product Finder for Brand Finder). |
 | `index.html` | The entire front end: one large file with inline CSS/JS, served at `/`. |
-| `dash2.js` | The Admin dashboard: sales panel, Top 50 sellers, the sales update card with its pixel-street loading bar. → `docs/screens.md` |
+| `dash2.js` | The Admin dashboard: sales panel, Top 50 sellers, the sales update card with its pixel desert-road loading bar. → `docs/screens.md` |
 | `onhand2.js` | On Hand's cards and table (drawing only; `renderOnhand` in index.html still filters and sorts). → `docs/screens.md` |
 | `look2.css` | The "new look" for every other screen, under `html.nl`. Styling only. → `docs/screens.md` |
 | `look3.css`, `theme3.js` | The Bold look (`html.n3`, the default) and dark mode (`html.n3.dk`). Styling only. Fix a dark colour by its role in theme3.js's `MAP` or with a token in look3.css, never per screen in index.html. → `docs/screens.md` |
