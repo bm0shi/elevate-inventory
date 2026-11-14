@@ -248,6 +248,9 @@ html.n3 .oh2-ids span, html.n3 .oh2-tag { border: 0; background: var(--b-chip); 
 html.n3 .d2 { color: var(--k-ink); }
 html.n3 .d2-card { border: 0; border-radius: 26px; background: var(--b-card); box-shadow: var(--k-shadow); }
 html.n3 .d2-side { border-radius: 26px; }
+/* the sales update bar: the dashboard's dark teal fill disappears on the dark card */
+html.n3 .d2-pulltrack.det i { background: var(--b-grad); }
+html.n3 .d2-pull-pct { color: var(--b-teal); }
 
 /* ---------- Dark: the few things theme3.js can't know ---------- */
 html.n3.dk img:not([src^="data:image/svg"]) { filter: brightness(.92); }
