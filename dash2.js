@@ -1018,7 +1018,6 @@
     [3, 11, 4, 4, '#20262d'], [4, 12, 2, 2, '#9aa6b1'], [16, 11, 4, 4, '#20262d'], [17, 12, 2, 2, '#9aa6b1']]) + '</svg>';
   const CHASE_COIN = '<svg viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.5" fill="#ffc93c" stroke="#d99a00" stroke-width="2"/>'
     + '<circle cx="13" cy="13" r="8" fill="none" stroke="#f0b21b" stroke-width="1.2"/><text x="13" y="18.2" text-anchor="middle" font-size="15" font-weight="900" font-family="Arial,sans-serif" fill="#9a6a00">$</text></svg>';
-  const coinAt = pct => pct;      // kept for paintPull; the lens sits on the edge itself
   function chaseHtml(pct, won) {
     return '<div class="d2-lane' + (won ? ' won' : '') + '" data-nodark style="--p:' + pct.toFixed(1) + '" title="Tap the truck to make it hop. Tap the lens to cash the coin.">'
       + '<div class="d2-sky night" style=\'background-image:' + pxBg('night') + '\'></div><div class="d2-sky day" style=\'background-image:' + pxBg('day') + '\'></div>'
@@ -1071,7 +1070,7 @@
     }
     const set = (q, t) => { const e = bar.querySelector(q); if (e && e.textContent !== t) e.textContent = t; };
     set('.d2-pull-t', title); set('.d2-sub', sub); set('.d2-pull-pct', Math.round(v.pct) + '%');
-    const lane = bar.querySelector('.d2-lane'); lane.style.setProperty('--p', v.pct.toFixed(1)); lane.style.setProperty('--c', coinAt(v.pct).toFixed(1));
+    const lane = bar.querySelector('.d2-lane'); lane.style.setProperty('--p', v.pct.toFixed(1));
     const st = bar.querySelector('.d2-pull-steps'); if (st.innerHTML !== stepsHtml) st.innerHTML = stepsHtml;
     // keep the bar and clock moving between server checks
     state.pullTick = setInterval(() => { if (state.pullJob && document.getElementById('d2pull')) paintPull(state.pullJob); else { clearInterval(state.pullTick); state.pullTick = null; } }, 1000);
