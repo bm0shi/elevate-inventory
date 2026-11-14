@@ -93,7 +93,11 @@
   // the original text instead (a later declaration wins), and light mode puts
   // the original text back.
   const elText = new WeakMap();         // element → [original style text, text with the dark colours added]
+  // A drawing whose colours ARE the picture (the sales bar's box and coin) opts
+  // out with data-nodark on itself or a parent: turned dark, the coin lost its $.
+  const keep = el => !!(el.closest && el.closest('[data-nodark]'));
   function paintEl(el) {
+    if (keep(el)) return;
     const cur = el.getAttribute('style'); if (cur == null) return;
     const t = elText.get(el); if (t && t[1] === cur) return;
     const add = paint(el.style, true); if (!add || !add.length) return;
@@ -145,6 +149,7 @@
   // SVG charts carry colours as attributes (fill="#45545f").
   const svgSeen = new WeakMap();
   function paintSvg(el) {
+    if (keep(el)) return;
     for (const a of ['fill', 'stroke']) {
       const cur = el.getAttribute(a); if (!cur || cur === 'none' || cur === 'currentColor' || cur.indexOf('url(') === 0) continue;
       const rec = svgSeen.get(el) || {}; if (rec[a] && rec[a][1] === cur) continue;
