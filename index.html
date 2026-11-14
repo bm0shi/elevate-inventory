@@ -2864,7 +2864,6 @@ function doLogin() {
 }
 
 // Forget this device. Next load shows the login screen again.
-function forgetDevice(){ localStorage_set('appPw',''); sessionStorage_set('adminUnlocked',''); sessionStorage_set('adminPw',''); location.reload(); }
 
 document.getElementById('pw').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 
@@ -3366,22 +3365,6 @@ function doBulkShip(allowAppend){
 
 // ==================== DATA TABS ====================
 let OWNER_PW = '';
-function ownerUnlock(which){
-  const fieldId = which==='velocity'?'ownerPwVel':(which==='market'?'ownerPwMkt':'ownerPwVal');
-  const pw = document.getElementById(fieldId).value;
-  fetch('/api/owner-login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
-    .then(r=>r.json()).then(d=>{
-      if(d.ok){ OWNER_PW=pw;
-        document.getElementById(which+'Gate').style.display='none';
-        document.getElementById(which+'Content').style.display='block';
-        toast('Unlocked');
-        // auto-load the data now that we're unlocked
-        if(which==='value'){ if(window._valData) renderValue(); else loadValCache(); }
-        if(which==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); }
-        if(which==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
-      } else toast('Wrong owner password',true);
-    });
-}
 // For a warehouse-screen action that needs the owner (wiping the prep log,
 // deleting a checked-in invoice): try it, and if the server asks for the
 // owner, prompt for the password for this one request (not remembered
@@ -4802,14 +4785,6 @@ function loadMarket(){
     body.innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700;font-size:16px">Pulling Keepa data…</div><div id="mktProgress" class="hint" style="margin-top:6px">starting…</div><div class="hint" style="margin-top:10px;color:#9db0c9">This runs in the background and can take several minutes for a large catalog. You can switch tabs — it keeps running.</div></div>';
     pollMarketJob();
   }).catch(err=>{ btn.textContent='↻ Refresh Market Data'; btn.disabled=false; body.innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not start: '+(esc(err.message||err))+'</div>'; });
-}
-function mktJobSummary(j){
-  const bits=[];
-  if(j.pulled) bits.push(j.pulled+' pulled');
-  if(j.skippedCheap) bits.push(j.skippedCheap+' skipped (under price floor)');
-  if(j.skippedFresh) bits.push(j.skippedFresh+' skipped (still fresh)');
-  if(j.failed && j.failed.length) bits.push('<b style="color:#c0392b">'+j.failed.length+' batch(es) failed — run again to fill the gaps</b>');
-  return bits.length?'<div class="hint" style="margin-top:6px">'+bits.join(' · ')+'</div>':'';
 }
 function pollMarketJob(){
   ownerApi('/api/market-data/status').then(j=>{
@@ -7881,18 +7856,6 @@ function addInvoiceMulti(){
       document.getElementById('invoiceText').value='';
       loadInvoiceList();
     } else { toast(d.error||'Failed',true); alert(d.error||'Failed'); }
-  });
-}
-function addInvoice(){
-  const text=document.getElementById('invoiceText').value.trim();
-  if(!text){toast('Paste an invoice first',true);return;}
-  api('/api/invoices/add',{method:'POST',body:JSON.stringify({text})}).then(d=>{
-    if(d.ok){
-      toast('Invoice '+d.orderNumber+' added ('+d.mapped+'/'+d.items+' mapped)');
-      if(d.unmapped && d.unmapped.length) alert('These items need a Cosmoprof#→product mapping (assign them once):\n\n'+d.unmapped.join('\n')+'\n\nYou can still receive the rest.');
-      document.getElementById('invoiceText').value='';
-      loadInvoiceList();
-    } else toast(d.error||'Failed',true);
   });
 }
 function loadInvoiceList(){
@@ -11844,12 +11807,6 @@ function drawShipments(list,b){
   }
 }
 
-function linkShipFee(feeId, shipId){
-  if(!shipId) return;
-  ownerApi('/api/shipment-costs/link',{method:'POST',body:JSON.stringify({fee_id:feeId, shipment_id:shipId})})
-    .then(d=>{ if(d&&d.error){toast(d.error,true);return;} toast('Attached as '+(d.kind||'cost')); renderShipments(); })
-    .catch(()=>toast('Could not attach',true));
-}
 
 // Admin → In Transit: one table of every open shipment (Amazon's list from
 // the last update, merged with the app's own in-transit records), so a
@@ -12630,10 +12587,6 @@ let _scanState = { In: {last:'', time:0}, Out: {last:'', time:0}, Recon: {last:'
 window._resetScan = function(which){ if(_scanState[which]){ _scanState[which].last=''; _scanState[which].time=0; } };
 
 // Master reset — return a scanner to a clean, ready state for the NEXT item.
-function hardClearBox(which){
-  const m=document.getElementById('match'+which);
-  if(m){ m.className='matched'; m.innerHTML=''; }
-}
 function resetScanner(which){
   const cap = which; // 'In' or 'Out'
   document.getElementById('scan'+cap).value = '';
