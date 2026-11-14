@@ -249,7 +249,9 @@ html.n3 .d2 { color: var(--k-ink); }
 html.n3 .d2-card { border: 0; border-radius: 26px; background: var(--b-card); box-shadow: var(--k-shadow); }
 html.n3 .d2-side { border-radius: 26px; }
 /* the sales update bar: the dashboard's dark teal fill disappears on the dark card */
-html.n3 .d2-pulltrack.det i { background: var(--b-grad); }
+html.n3 .d2-pulltrack.det i, html.n3 .d2-lane > i { background: var(--b-grad); }
+html.n3 .d2-lane { background: var(--b-chip); }
+html.n3 .d2-pullbar.ok .d2-lane > i { background: #1e8449; }
 html.n3 .d2-pull-pct { color: var(--b-teal); }
 
 /* ---------- Dark: the few things theme3.js can't know ---------- */

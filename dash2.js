@@ -208,47 +208,61 @@
   .d2-pull-ic{width:28px;height:28px;flex:0 0 28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;color:#fff;background:#1e8449}
   .d2-pullbar.bad .d2-pull-ic{background:${C.crit}}
   /* THE CHASE (owner 11/14: "a cool interactive loading bar … chasing the money
-     sign … something cool and fun"). Our own mascot, a shipping box on legs,
-     runs along the bar after a gold dollar coin; the box is where the bar has
-     got to, and the coin stays a little ahead until the end. Tap the box and it
-     jumps, tap the coin and it pays out. Everything is visible at rest; the
-     motion is decoration and stops under Reduce Motion. */
-  .d2-chase{position:relative;height:66px;margin-top:6px;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
-  .d2-chase .d2-pulltrack{position:absolute;left:0;right:0;bottom:0;margin:0}
-  .d2-chase .d2-pulltrack.det i{transition:width 1s linear}
+     sign … something cool and fun"; then "instead of on top of the bar … make
+     the animation the bar and make the entire box smaller"). The bar IS the
+     scene: a lane of small gold coins, and our own money guy (green suit,
+     shades, tie flying; nobody else's character) running down it at the bar's
+     leading edge after one big dollar coin. The fill follows him and covers the
+     coins he has passed. Tap him and he jumps; tap the big coin and it pays
+     out. Everything is visible at rest; motion stops under Reduce Motion.
+     --p = how far the bar has got (0–100), --c = where the big coin is. */
+  .d2-pullbar.mini{padding:9px 14px 9px}
+  .d2-pullbar.mini .d2-pull-head{gap:9px}
+  .d2-pullbar.mini .d2-pull-tx{flex:1;min-width:0;display:flex;gap:2px 10px;align-items:baseline;flex-wrap:wrap}
+  .d2-pullbar.mini .d2-pull-tx b{font-size:15px}
+  .d2-pullbar.mini .d2-sub{font-size:13px;margin:0}
+  .d2-pullbar.mini .d2-spin{width:16px;height:16px;flex:0 0 16px;border-width:2px}
+  .d2-pullbar.mini .d2-pull-ic{width:20px;height:20px;flex:0 0 20px;font-size:12px}
+  .d2-pullbar.mini .d2-pull-pct{font-size:16px;min-width:40px}
+  .d2-pullbar.mini .d2-pull-steps{margin-top:6px;font-size:11.5px;gap:5px}
+  .d2-pullbar.mini .d2-pull-steps span{padding:1px 8px}
+  .d2-lane{--p:0;--c:10;position:relative;height:30px;margin-top:8px;border-radius:15px;background:#dcebef;cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent}
+  .d2-lane::before{content:"";position:absolute;inset:0 6px 0 26px;border-radius:15px;background:radial-gradient(circle,#ffc93c 0 2.4px,#c98e00 2.4px 3.4px,transparent 3.9px) 0 50%/24px 100% repeat-x}
+  .d2-lane>i{position:absolute;left:0;top:0;bottom:0;width:calc((100% - 36px) * var(--p) / 100 + 14px);border-radius:15px;background:linear-gradient(90deg,${C.brand},#1d8a9c);transition:width 1s linear;overflow:hidden}
+  .d2-lane>i::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.35),transparent);animation:d2shine 1.4s linear infinite}
   .d2-runner,.d2-coin{position:absolute;transition:left 1s linear;will-change:left}
-  .d2-runner{bottom:5px;width:54px;height:54px;transform:translateX(-82%)}
-  .d2-coin{bottom:15px;width:32px;height:32px;transform:translateX(-50%)}
+  .d2-runner{bottom:0;left:calc((100% - 36px) * var(--p) / 100 + 2px);width:34px;height:34px}
+  .d2-coin{top:4px;left:calc((100% - 36px) * var(--c) / 100 + 10px);width:22px;height:22px}
   .d2-rj{display:block;width:100%;height:100%}
-  .d2-rj.jump{animation:d2jump .55s cubic-bezier(.3,.7,.4,1)}
-  .d2-runner svg{display:block;width:100%;height:100%;overflow:visible;animation:d2bob .28s ease-in-out infinite alternate}
-  .d2-runner .leg{transform-box:fill-box;transform-origin:50% 0;animation:d2leg .28s ease-in-out infinite alternate}
+  .d2-rj.jump{animation:d2jump .5s cubic-bezier(.3,.7,.4,1)}
+  .d2-runner svg{display:block;width:100%;height:100%;overflow:visible;animation:d2bob .26s ease-in-out infinite alternate}
+  .d2-runner .leg{transform-box:fill-box;transform-origin:50% 0;animation:d2leg .26s ease-in-out infinite alternate}
   .d2-runner .leg.b{animation-direction:alternate-reverse}
-  .d2-runner .arm{transform-box:fill-box;transform-origin:0 100%;animation:d2arm .28s ease-in-out infinite alternate}
-  .d2-runner .dust{position:absolute;left:-4px;bottom:1px;width:8px;height:8px;border-radius:50%;background:#b9c8cd;opacity:0;animation:d2dust .56s ease-out infinite}
-  .d2-runner .dust.b{animation-delay:.28s;left:-9px}
+  .d2-runner .arm{transform-box:fill-box;transform-origin:0 100%;animation:d2arm .26s ease-in-out infinite alternate}
+  .d2-runner .tie{transform-box:fill-box;transform-origin:100% 0;animation:d2tie .2s ease-in-out infinite alternate}
   .d2-coin svg{display:block;width:100%;height:100%;animation:d2coin 1.1s ease-in-out infinite}
   .d2-coin.hit svg{animation:d2flip .5s ease-out}
-  .d2-plus{position:absolute;bottom:46px;transform:translateX(-50%);font-size:14px;font-weight:900;color:#b7791f;pointer-events:none;animation:d2plus .8s ease-out forwards}
-  .d2-chase.won .d2-runner{left:100%!important}
-  .d2-chase.won .d2-runner svg,.d2-chase.won .d2-runner .leg,.d2-chase.won .d2-runner .arm{animation:none}
-  .d2-chase.won .d2-runner .dust{display:none}
-  .d2-chase.won .d2-coin{left:100%!important;bottom:54px;transform:translateX(-128%);transition:none}
-  .d2-chase.won .d2-coin svg{animation:d2win .6s cubic-bezier(.3,1.6,.5,1) backwards}
-  .d2-chase.won .d2-rj{animation:d2jump .55s cubic-bezier(.3,.7,.4,1) 2}
-  .d2-burst{position:absolute;right:30px;bottom:52px;width:0;height:0;pointer-events:none}
-  .d2-burst b{position:absolute;width:9px;height:9px;border-radius:50%;background:#ffc93c;border:1.5px solid #d99a00;animation:d2burst .9s ease-out forwards;animation-delay:.15s;opacity:0}
-  @keyframes d2bob{from{transform:translateY(0)}to{transform:translateY(-2.5px)}}
-  @keyframes d2leg{from{transform:rotate(-34deg)}to{transform:rotate(34deg)}}
-  @keyframes d2arm{from{transform:rotate(-10deg)}to{transform:rotate(14deg)}}
-  @keyframes d2dust{0%{opacity:.7;transform:translate(0,0) scale(.5)}100%{opacity:0;transform:translate(-14px,-7px) scale(1.5)}}
-  @keyframes d2coin{0%,100%{transform:translateY(0) scaleX(1)}25%{transform:translateY(-5px) scaleX(.25)}50%{transform:translateY(-8px) scaleX(1)}75%{transform:translateY(-5px) scaleX(.25)}}
-  @keyframes d2flip{0%{transform:translateY(0) rotate(0)}50%{transform:translateY(-16px) rotate(180deg)}100%{transform:translateY(0) rotate(360deg)}}
-  @keyframes d2jump{0%,100%{transform:translateY(0)}45%{transform:translateY(-24px) rotate(-8deg)}}
-  @keyframes d2plus{0%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-26px)}}
-  @keyframes d2win{from{transform:translate(18px,26px) scale(.6)}to{transform:none}}
+  .d2-plus{position:absolute;top:-6px;transform:translateX(-50%);font-size:13px;font-weight:900;color:#b7791f;pointer-events:none;animation:d2plus .8s ease-out forwards}
+  .d2-pullbar.ok .d2-lane>i{background:#1e8449}.d2-pullbar.ok .d2-lane>i::after{display:none}
+  .d2-lane.won::before{display:none}
+  .d2-lane.won .d2-runner{left:calc(100% - 62px);transition:none}
+  .d2-lane.won .d2-coin{left:calc(100% - 28px);transition:none}
+  .d2-lane.won .d2-runner svg,.d2-lane.won .d2-runner .leg,.d2-lane.won .d2-runner .arm,.d2-lane.won .d2-runner .tie{animation:none}
+  .d2-lane.won .d2-rj{animation:d2jump .5s cubic-bezier(.3,.7,.4,1) 2}
+  .d2-lane.won .d2-coin svg{animation:d2win .6s cubic-bezier(.3,1.6,.5,1) backwards,d2coin 1.1s ease-in-out .6s infinite}
+  .d2-burst{position:absolute;right:16px;top:12px;width:0;height:0;pointer-events:none}
+  .d2-burst b{position:absolute;width:7px;height:7px;border-radius:50%;background:#ffc93c;border:1.5px solid #d99a00;animation:d2burst .9s ease-out forwards;animation-delay:.15s;opacity:0}
+  @keyframes d2bob{from{transform:translateY(0)}to{transform:translateY(-1.5px)}}
+  @keyframes d2leg{from{transform:rotate(-36deg)}to{transform:rotate(36deg)}}
+  @keyframes d2arm{from{transform:rotate(-12deg)}to{transform:rotate(16deg)}}
+  @keyframes d2tie{from{transform:rotate(-10deg)}to{transform:rotate(12deg)}}
+  @keyframes d2coin{0%,100%{transform:scaleX(1)}25%,75%{transform:scaleX(.25)}50%{transform:scaleX(1)}}
+  @keyframes d2flip{0%{transform:translateY(0) rotate(0)}50%{transform:translateY(-12px) rotate(180deg)}100%{transform:translateY(0) rotate(360deg)}}
+  @keyframes d2jump{0%,100%{transform:translateY(0)}45%{transform:translateY(-13px) rotate(-8deg)}}
+  @keyframes d2plus{0%{opacity:1;transform:translate(-50%,0)}100%{opacity:0;transform:translate(-50%,-20px)}}
+  @keyframes d2win{from{transform:translateX(-20px) scale(.5)}to{transform:none}}
   @keyframes d2burst{0%{opacity:1;transform:translate(0,0) scale(1)}100%{opacity:0;transform:translate(var(--x),var(--y)) scale(.4)}}
-  @media (prefers-reduced-motion:reduce){.d2-chase *{animation:none!important}.d2-runner,.d2-coin{transition:none}}
+  @media (prefers-reduced-motion:reduce){.d2-lane *,.d2-lane>i::after{animation:none!important}.d2-runner,.d2-coin,.d2-lane>i{transition:none}}
   .d2-btn.busy{opacity:.6;cursor:progress}
   @keyframes d2slide{0%{left:-30%}100%{left:100%}}
   @media (prefers-reduced-motion:reduce){.d2 *,.d2 *::before{animation-duration:1ms!important;animation-delay:0ms!important;transition:none!important}}
@@ -968,33 +982,33 @@
     const before = exp.slice(0, i).reduce((a, b) => a + b, 0);
     return { steps, i, pct: Math.max(3, Math.min(99, 100 * (before + within * exp[i]) / total)), waitedInStep: Date.now() - state.pullStep.at };
   }
-  // The chase's two drawings. The box is ours (a kraft shipping box with a strip
-  // of tape, eyes on the coin, one arm out); nothing borrowed from a board game.
-  const CHASE_BOX = '<svg viewBox="0 0 44 44" width="44" height="44" aria-hidden="true">'
-    + '<g class="leg a"><path d="M18 30v11h5" fill="none" stroke="#7a5326" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></g>'
-    + '<g class="leg b"><path d="M26 30v11h5" fill="none" stroke="#7a5326" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></g>'
-    + '<path class="arm" d="M35 21l8-5" fill="none" stroke="#a8743a" stroke-width="3.2" stroke-linecap="round"/>'
-    + '<rect x="7" y="9" width="29" height="23" rx="4.5" fill="#dba865" stroke="#a8743a" stroke-width="2"/>'
-    + '<path d="M7 16.5h29" stroke="#a8743a" stroke-width="2"/><rect x="18.5" y="9" width="6" height="10" rx="1" fill="#f6dfb4" stroke="#a8743a" stroke-width="1.2"/>'
-    + '<circle cx="27" cy="23.5" r="2.1" fill="#3a2a17"/><circle cx="32.5" cy="23.5" r="2.1" fill="#3a2a17"/>'
-    + '<path d="M26.5 28q3.2 2.6 6.4 0" fill="none" stroke="#3a2a17" stroke-width="1.8" stroke-linecap="round"/></svg>';
-  const CHASE_COIN = '<svg viewBox="0 0 26 26" width="26" height="26" aria-hidden="true"><circle cx="13" cy="13" r="11.5" fill="#ffc93c" stroke="#d99a00" stroke-width="2"/>'
-    + '<circle cx="13" cy="13" r="8" fill="none" stroke="#f0b21b" stroke-width="1.2"/><text x="13" y="18" text-anchor="middle" font-size="14" font-weight="900" font-family="Arial,sans-serif" fill="#9a6a00">$</text></svg>';
-  // the coin keeps a lead that closes as the bar fills
-  const coinAt = pct => Math.min(97.5, pct + 4 + 9 * (1 - pct / 100));
+  // The chase's two drawings. The runner is our own money guy: green suit,
+  // shades, red tie flying back, one arm out for the coin. He is not the
+  // Monopoly man (owner asked; that character is Hasbro's, lookalikes included).
+  const CHASE_GUY = '<svg viewBox="0 0 30 30" aria-hidden="true">'
+    + '<g class="leg a"><path d="M13.5 20v7h3.2" fill="none" stroke="#8a6a45" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>'
+    + '<g class="leg b"><path d="M17 20v7h3.2" fill="none" stroke="#8a6a45" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></g>'
+    + '<path class="tie" d="M15 12.5l-8 1.6" fill="none" stroke="#e23d3d" stroke-width="2.4" stroke-linecap="round"/>'
+    + '<path class="arm" d="M19.5 14.5l7-2.6" fill="none" stroke="#1e8449" stroke-width="2.8" stroke-linecap="round"/>'
+    + '<rect x="10" y="10.5" width="10.5" height="10.5" rx="3.2" fill="#1e8449" stroke="#fff" stroke-width="1"/><path d="M15.4 11l-2.2 3.4h4.4z" fill="#fff"/>'
+    + '<circle cx="16" cy="6.2" r="4.7" fill="#f3c9a1" stroke="#fff" stroke-width="1"/><path d="M11.4 5.6a4.7 4.7 0 0 1 8.3-2.4c-2.6 0-5.4.6-8.3 2.4z" fill="#3a2a1c"/>'
+    + '<rect x="15.2" y="5.2" width="5.6" height="2.3" rx="1.1" fill="#16181b"/></svg>';
+  const CHASE_COIN = '<svg viewBox="0 0 26 26" aria-hidden="true"><circle cx="13" cy="13" r="11.5" fill="#ffc93c" stroke="#d99a00" stroke-width="2"/>'
+    + '<circle cx="13" cy="13" r="8" fill="none" stroke="#f0b21b" stroke-width="1.2"/><text x="13" y="18.2" text-anchor="middle" font-size="15" font-weight="900" font-family="Arial,sans-serif" fill="#9a6a00">$</text></svg>';
+  // the big coin keeps a lead that closes as the bar fills
+  const coinAt = pct => Math.min(100, pct + 5 + 12 * (1 - pct / 100));
   function chaseHtml(pct, won) {
-    return '<div class="d2-chase' + (won ? ' won' : '') + '" title="Tap the box to make it jump. Tap the coin to cash it.">'
-      + '<div class="d2-pulltrack det"><i style="width:' + pct.toFixed(1) + '%"></i></div>'
-      + '<div class="d2-coin" data-nodark style="left:' + coinAt(pct).toFixed(1) + '%">' + CHASE_COIN + '</div>'
-      + '<div class="d2-runner" style="left:' + pct.toFixed(1) + '%"><i class="dust"></i><i class="dust b"></i><span class="d2-rj" data-nodark>' + CHASE_BOX + '</span></div>'
-      + (won ? '<div class="d2-burst">' + [[-34, -30], [-12, -44], [14, -40], [34, -22], [-44, -6], [40, 4], [-22, 16], [20, 18]].map(v => '<b style="--x:' + v[0] + 'px;--y:' + v[1] + 'px"></b>').join('') + '</div>' : '')
+    return '<div class="d2-lane' + (won ? ' won' : '') + '" style="--p:' + pct.toFixed(1) + ';--c:' + coinAt(pct).toFixed(1) + '" title="Tap the runner to make him jump. Tap the coin to cash it.">'
+      + '<i></i><div class="d2-coin" data-nodark>' + CHASE_COIN + '</div>'
+      + '<div class="d2-runner"><span class="d2-rj" data-nodark>' + CHASE_GUY + '</span></div>'
+      + (won ? '<div class="d2-burst">' + [[-22, -18], [-8, -24], [10, -22], [22, -12], [-28, 2], [26, 6]].map(v => '<b style="--x:' + v[0] + 'px;--y:' + v[1] + 'px"></b>').join('') + '</div>' : '')
       + '</div>';
   }
   function chaseTap(e) {
     const ch = e.currentTarget, coin = e.target.closest('.d2-coin');
     if (coin) {   // the coin flips and pays out
       coin.classList.remove('hit'); void coin.offsetWidth; coin.classList.add('hit');
-      const p = document.createElement('span'); p.className = 'd2-plus'; p.textContent = '+$'; p.style.left = coin.style.left; ch.appendChild(p);
+      const p = document.createElement('span'); p.className = 'd2-plus'; p.textContent = '+$'; p.style.left = (coin.offsetLeft + coin.offsetWidth / 2) + 'px'; ch.appendChild(p);
       setTimeout(() => p.remove(), 800); return;
     }
     const rj = ch.querySelector('.d2-rj'); if (!rj) return;
@@ -1007,9 +1021,9 @@
     if (!j) { box.innerHTML = ''; state.pullJob = null; state.pullStart = null; return; }
     if (j.doneView) {   // finished: a full bar and what happened, then it goes away
       // done well: the box has the coin; a failure keeps the plain red bar
-      box.innerHTML = '<div class="d2-pullbar pro ' + (j.ok ? 'ok' : 'bad') + '"><div class="d2-pull-head"><span class="d2-pull-ic">' + (j.ok ? '✓' : '!') + '</span><div style="flex:1;min-width:0"><b>' + E(j.title) + '</b><div class="d2-sub">' + E(j.text || '') + '</div></div></div>'
+      box.innerHTML = '<div class="d2-pullbar pro ' + (j.ok ? 'ok mini' : 'bad') + '"><div class="d2-pull-head"><span class="d2-pull-ic">' + (j.ok ? '✓' : '!') + '</span><div class="d2-pull-tx" style="flex:1;min-width:0"><b>' + E(j.title) + '</b><div class="d2-sub">' + E(j.text || '') + '</div></div></div>'
         + (j.ok ? chaseHtml(100, true) : '<div class="d2-pulltrack det"><i style="width:100%"></i></div>') + '</div>';
-      const won = box.querySelector('.d2-chase'); if (won) won.addEventListener('click', chaseTap);
+      const won = box.querySelector('.d2-lane'); if (won) won.addEventListener('click', chaseTap);
       state.pullJob = null; state.pullStart = null;
       if (j.ok) setTimeout(() => { if (!state.pullJob && box.querySelector('.d2-pullbar.ok')) box.innerHTML = ''; }, 6000);
       return;
@@ -1027,16 +1041,14 @@
     // (as it used to) would restart the chase's animation each time.
     let bar = box.querySelector('.d2-pullbar.run');
     if (!bar) {
-      box.innerHTML = '<div class="d2-pullbar pro run" role="status" aria-live="polite"><div class="d2-pull-head"><div class="d2-spin"></div><div style="flex:1;min-width:0"><b class="d2-pull-t"></b><div class="d2-sub"></div></div><div class="d2-pull-pct"></div></div>'
+      box.innerHTML = '<div class="d2-pullbar pro run mini" role="status" aria-live="polite"><div class="d2-pull-head"><div class="d2-spin"></div><div class="d2-pull-tx"><b class="d2-pull-t"></b><div class="d2-sub"></div></div><div class="d2-pull-pct"></div></div>'
         + chaseHtml(v.pct, false) + '<div class="d2-pull-steps"></div></div>';
       bar = box.querySelector('.d2-pullbar.run');
-      bar.querySelector('.d2-chase').addEventListener('click', chaseTap);
+      bar.querySelector('.d2-lane').addEventListener('click', chaseTap);
     }
     const set = (q, t) => { const e = bar.querySelector(q); if (e && e.textContent !== t) e.textContent = t; };
     set('.d2-pull-t', title); set('.d2-sub', sub); set('.d2-pull-pct', Math.round(v.pct) + '%');
-    bar.querySelector('.d2-pulltrack i').style.width = v.pct.toFixed(1) + '%';
-    bar.querySelector('.d2-runner').style.left = v.pct.toFixed(1) + '%';
-    bar.querySelector('.d2-coin').style.left = coinAt(v.pct).toFixed(1) + '%';
+    const lane = bar.querySelector('.d2-lane'); lane.style.setProperty('--p', v.pct.toFixed(1)); lane.style.setProperty('--c', coinAt(v.pct).toFixed(1));
     const st = bar.querySelector('.d2-pull-steps'); if (st.innerHTML !== stepsHtml) st.innerHTML = stepsHtml;
     // keep the bar and clock moving between server checks
     state.pullTick = setInterval(() => { if (state.pullJob && document.getElementById('d2pull')) paintPull(state.pullJob); else { clearInterval(state.pullTick); state.pullTick = null; } }, 1000);
