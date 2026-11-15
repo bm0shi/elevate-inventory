@@ -222,3 +222,40 @@
   window.addEventListener('beforeprint', () => { if (on) { printing = true; dark(false); } });
   window.addEventListener('afterprint', () => { if (printing) { printing = false; dark(true); } });
 })();
+
+// Stat tiles that fit their numbers (owner 11/15, Inventory Value: "$1,212,349"
+// and "$1,838,47…" were cut off). The Bold look draws tile numbers at 44px; a
+// row of seven narrow tiles with seven-figure dollar amounts doesn't have the
+// room. Each row of tiles (.cards) steps its numbers down TOGETHER, so a row
+// stays even, until the longest one fits; rows with short numbers keep the big
+// size. The step is a data-fit attribute read by look3.css, never an inline
+// style (theme3 above remembers inline style text for dark mode).
+(function () {
+  const root = document.documentElement;
+  const MAX = 6;
+  function fitRow(row) {
+    const ns = row.querySelectorAll(':scope > .card > .n');
+    if (!ns.length) return;
+    const over = () => [...ns].some(n => n.scrollWidth > n.clientWidth + 1);
+    row.removeAttribute('data-fit');
+    let k = 0;
+    while (k < MAX && over()) row.setAttribute('data-fit', String(++k));
+  }
+  let queued = false;
+  function fitAll() {
+    if (queued) return; queued = true;
+    requestAnimationFrame(() => {
+      queued = false;
+      if (!root.classList.contains('n3') || !document.body) return;
+      document.querySelectorAll('.cards').forEach(r => { if (r.offsetParent !== null) fitRow(r); });
+    });
+  }
+  window.fitStatTiles = fitAll;
+  // Screens redraw their tiles (childList) and switching screens shows hidden
+  // ones (a click), so both re-fit; so do a resize and a rotate.
+  new MutationObserver(fitAll).observe(root, { subtree: true, childList: true });
+  window.addEventListener('resize', fitAll);
+  document.addEventListener('click', () => setTimeout(fitAll, 60), true);
+  document.addEventListener('DOMContentLoaded', fitAll);
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitAll);
+})();
