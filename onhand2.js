@@ -68,6 +68,18 @@
   .oh2-tbl td.bw{box-shadow:inset 0 0 0 999px rgba(15,118,110,.045)}
   .oh2-tbl td.ba{box-shadow:inset 0 0 0 999px rgba(29,100,200,.05)}
   .oh2-tbl td.bs{box-shadow:inset 0 0 0 999px rgba(109,63,192,.045)}
+  .oh2-tbl td.bp{box-shadow:inset 0 0 0 999px rgba(13,68,80,.04)}
+  .oh2-tbl th.gp{color:${K.brand};box-shadow:inset 0 -2px 0 ${K.brand}}
+  .oh2-tbl td.z{color:${K.muted}}
+  .oh2-rs{min-width:900px}
+  .oh2-rs-head{display:flex;justify-content:space-between;align-items:center;gap:10px 20px;flex-wrap:wrap;margin:4px 2px 12px;font-size:15px;color:${K.ink2}}
+  .oh2-rs-head b{color:${K.ink}}
+  .oh2-rs-head input{width:64px;padding:5px 8px;border:1px solid ${K.line};border-radius:8px;font:inherit;font-weight:800;text-align:center}
+  .oh2-rs-sum{font-size:15px}
+  .oh2-rs-kind{display:inline-block;font-size:10.5px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;padding:1px 6px;border-radius:5px;margin-right:7px;background:#eef3f6;color:${K.ink2};vertical-align:2px}
+  .oh2-rs-kind.duo{background:#fdecea;color:#c0392b}
+  .oh2-rs-foot{font-size:13px;color:${K.muted};margin:8px 2px 0}
+  @media (max-width:760px){.oh2-rs{min-width:820px}.oh2-rs col.c1{width:170px!important}.oh2-rs td:first-child .t{font-size:14px}.oh2-rs .big{font-size:17px}}
   .oh2-tbl td.g1,.oh2-tbl th.g1{border-left:1px solid ${K.line}}
   .oh2-tbl tr td:first-child{position:sticky;left:0;z-index:1;background:#fff}
   .oh2-tbl thead th:first-child{position:sticky;left:0;z-index:4}
@@ -316,7 +328,7 @@
       '<div class="oh2-bar" id="oh2Bar"><div class="oh2-search">' + searchIco + '<input id="oh2Q" type="search" placeholder="Search name or ASIN" autocomplete="off"><kbd>/</kbd></div>' +
       '<div class="oh2-chips" id="oh2Chips">' + FILTERS.map(f => '<button class="oh2-chip" data-f="' + f[0] + '">' + f[1] + '</button>').join('') + '</div>' +
       '<select class="oh2-sel" id="oh2Sort" title="Sort">' + sortOpts + '</select>' +
-      '<span class="oh2-seg" id="oh2Lay"><button data-lay="cards">Cards</button><button data-lay="table">Table</button></span>' +
+      '<span class="oh2-seg" id="oh2Lay"><button data-lay="cards">Cards</button><button data-lay="table">Table</button><button data-lay="restock" title="What each listing needs to reach a target number of days at Amazon">Restock</button></span>' +
       '<span class="oh2-seg" id="oh2Den" title="Row height in the table"><button data-den="roomy">Roomy</button><button data-den="compact">Compact</button></span></div>' +
       '<div class="oh2-count" id="oh2Count"></div>';
     // the classic "add product" box moves up here while the new look is on
@@ -604,6 +616,94 @@
     return '<div class="oh2-grid">' + c.repeat(6) + '</div>';
   }
 
+  // ---------- Restock view (owner 11/16) ----------
+  // "When it says FBA cover … it might be easier to read if it shows just what's
+  // at Amazon and in transit, so I know how much more we need to add … make it a
+  // separate view." One row per Amazon listing (a single, or a duo, once even
+  // when both its bottles are in the list): what Amazon has and has inbound
+  // (Amazon's own count, the same figures FBA cover uses), the best-estimate
+  // sales rate (demandRate, the number Send Next plans with), the cover, and
+  // what it takes to reach the target: Need = rate × target days − (at Amazon +
+  // inbound); Still to add = Need − what's already in Pending Prep or Prepped
+  // for that listing. Free = what could still be prepped now (a duo: duos
+  // buildable from free bottles; a bottle a single and its duo share is counted
+  // under both). Display only: nothing here moves stock.
+  const RS_COLS = [['Listing', 'name'], ['At Amazon', 'at', 'ba g1'], ['Inbound', 'way', 'ba'], ['FBA cover', 'cover', 'ba'],
+    ['Selling / mo', 'mo', 'bs g1'], ['Need', 'need', 'bp g1'], ['In prep', 'prep', 'bp'], ['Still to add', 'add', 'bp'], ['Free on shelf', 'free', 'bw g1']];
+  function rsTarget() { const v = Number(store.get('ohTarget')); return v >= 7 && v <= 365 ? Math.round(v) : 60; }
+  function restockRows(list) {
+    const byAsin = a => (products || []).find(x => x.asin === a) || null;
+    const freeOf = a => { const x = byAsin(a); return x ? Math.max(0, (x.onhand || 0) - (x.pending_prep || 0) - (x.prepped || 0)) : 0; };
+    const days = rsTarget(), out = [], seen = new Set();
+    for (const p of list) {
+      for (const r of (typeof listingRows === 'function' ? listingRows(p) : [])) {
+        if (seen.has(r.asin)) continue; seen.add(r.asin);
+        const duo = r.label === 'Duo', own = byAsin(r.asin);
+        const R = typeof demandRate === 'function' ? demandRate(r.asin, r.sold) : { mo: 0 };
+        const tot = (r.at || 0) + (r.way || 0), mo = R.mo || 0;
+        const need = mo > 0 ? Math.max(0, Math.ceil(mo / 30 * days - tot)) : null;
+        let prep, free;
+        if (duo) {
+          prep = own ? (own.pending_as_duo || 0) + (own.prepped_single || 0) : 0;
+          const comp = (typeof _bundles !== 'undefined' && _bundles || []).find(b => b.bundle_asin === r.asin);
+          free = comp && comp.components && comp.components.length ? Math.min(...comp.components.map(c => Math.floor(freeOf(c.asin) / (c.qty || 1)))) : null;
+        } else {
+          prep = (p.pending_single || 0) + (p.prepped_single || 0);
+          free = freeOf(r.asin);
+        }
+        out.push({ asin: r.asin, duo, name: duo ? (r.name || (own && own.name) || 'Duo ' + r.asin) : p.name, at: r.at || 0, way: r.way || 0,
+          cover: mo > 0 ? tot / (mo / 30) : null, mo, est: !!R.est, note: R.note || '', need, prep, add: need == null ? null : Math.max(0, need - prep), free });
+      }
+    }
+    const st = (() => { try { return JSON.parse(store.get('ohRsSort') || '') || {}; } catch (e) { return {}; } })();
+    const k = st.k || 'add', dir = st.dir || (k === 'name' || k === 'cover' ? 1 : -1);
+    out.sort((a, b) => {
+      if (k === 'name') return dir * String(a.name).localeCompare(String(b.name));
+      const x = a[k], y = b[k];
+      if (x == null && y == null) return 0; if (x == null) return 1; if (y == null) return -1;
+      return dir * (x - y);
+    });
+    return { rows: out, k, dir, days };
+  }
+  window.ohRsSort = function (e) {
+    const th = e.target.closest('th[data-rs]'); if (!th) return;
+    const k = th.dataset.rs; let st = {}; try { st = JSON.parse(store.get('ohRsSort') || '') || {}; } catch (x) {}
+    const first = (k === 'name' || k === 'cover') ? 1 : -1;
+    store.set('ohRsSort', JSON.stringify({ k, dir: st.k === k ? -(st.dir || first) : first }));
+    renderOnhand();
+  };
+  window.ohRsTarget = function (v) {
+    v = Math.round(Number(v)); if (!(v >= 7 && v <= 365)) { toast('Pick a target from 7 to 365 days', true); return; }
+    store.set('ohTarget', String(v)); renderOnhand();
+  };
+  function restockView(list) {
+    const { rows, k, dir, days } = restockRows(list);
+    const sum = f => rows.reduce((n, r) => n + (r[f] || 0), 0);
+    const toAdd = rows.filter(r => r.add > 0);
+    const head = '<div class="oh2-rs-head"><div><b>Restock</b> · what each listing needs to reach ' +
+      '<input id="ohRsDays" type="number" min="7" max="365" value="' + days + '" aria-label="Target days" onchange="ohRsTarget(this.value)" onkeydown="if(event.key===\'Enter\')ohRsTarget(this.value)"> days at Amazon</div>' +
+      '<div class="oh2-rs-sum">' + (toAdd.length ? '<b>' + n0(toAdd.length) + '</b> listing' + (toAdd.length === 1 ? '' : 's') + ' to add to · <b>' + n0(sum('add')) + '</b> units' : 'Every listing here reaches ' + days + ' days') + '</div></div>';
+    const num = (v, cls, title) => '<td class="' + cls + (v == null || v === 0 ? ' z' : '') + '"' + (title ? ' title="' + E(title) + '"' : '') + '>' + (v == null ? '—' : n0(v)) + '</td>';
+    const tr = r => {
+      const short = r.add > 0 && r.free != null && r.free < r.add;
+      return '<tr><td><div class="t"><span class="oh2-rs-kind' + (r.duo ? ' duo' : '') + '">' + (r.duo ? 'Duo' : 'Single') + '</span>' +
+        (typeof amzLinkSized === 'function' ? amzLinkSized(r.asin, r.name) : E(r.name)) +
+        '<div style="font-size:13px;color:' + K.muted + ';margin-top:2px"><span class="oh2-mono" onclick="copyText(\'' + q1(r.asin) + '\')">' + E(r.asin) + '</span></div></div></td>' +
+        num(r.at, 'ba g1') + num(r.way, 'ba', 'Amazon’s own inbound count for this listing') +
+        '<td class="ba ' + heat(r.cover) + '">' + coverBadge(r.cover) + '</td>' +
+        '<td class="bs g1"' + (r.note ? ' title="' + E(r.note) + '"' : '') + '>' + (r.mo > 0 ? '~' + n0(Math.round(r.mo)) + (r.est ? '*' : '') : '—') + '</td>' +
+        num(r.need, 'bp g1', 'Selling rate × ' + days + ' days, less what Amazon has and has inbound') +
+        num(r.prep, 'bp', 'Already in Pending Prep or Prepped & Ready for this listing') +
+        '<td class="bp' + (r.add ? '' : ' z') + '"><span class="big"' + (r.add ? ' style="color:' + K.brand + '"' : '') + '>' + (r.add == null ? '—' : n0(r.add)) + '</span></td>' +
+        '<td class="bw g1' + (r.free ? '' : ' z') + '"' + (short ? ' style="color:' + K.crit + ';font-weight:800" title="Not enough free on the shelf for all of it"' : '') + '>' + (r.free == null ? '—' : n0(r.free)) + '</td></tr>';
+    };
+    const th = ([t, key, c]) => { const on = key === k; return '<th class="' + [c || '', 'srt', on ? 'on' : ''].join(' ').trim() + '" data-rs="' + key + '" title="Sort">' + t + (on ? (dir > 0 ? ' ▲' : ' ▼') : '') + '</th>'; };
+    return head + '<div class="oh2-tblwrap"><table class="oh2-tbl oh2-rs" onclick="ohRsSort(event)"><colgroup><col class="c1" style="width:30%"><col><col><col><col><col><col><col><col></colgroup>' +
+      '<thead><tr class="grp"><th></th><th colspan="3" class="ga g1">At Amazon</th><th class="gs g1">Sales</th><th colspan="3" class="gp g1">To reach ' + days + ' days</th><th class="gw g1">Warehouse</th></tr>' +
+      '<tr class="cols">' + RS_COLS.map(th).join('') + '</tr></thead><tbody>' + (rows.length ? rows.map(tr).join('') : '<tr><td colspan="9" style="text-align:center;color:' + K.muted + '">No listings in this list</td></tr>') + '</tbody></table></div>' +
+      '<div class="oh2-rs-foot">Inbound is Amazon’s own count. Selling / mo is the best estimate Send Next uses (* = rough, no estimate yet). The list follows the search and filter above.</div>';
+  }
+
   // ---------- render (called by renderOnhand with its filtered, sorted list) ----------
   function render(body, list, ctx) {
     injectCss();
@@ -614,7 +714,7 @@
     paintTiles(filter);
     document.querySelectorAll('#oh2Chips .oh2-chip').forEach(b => b.classList.toggle('on', b.dataset.f === filter));
     const s = document.getElementById('oh2Sort'), ss = document.getElementById('sortOnhand'); if (s && ss && s.value !== ss.value) s.value = ss.value;
-    const lay = store.get('ohLayout') === 'table' ? 'table' : 'cards';
+    const lay = ['table', 'restock'].includes(store.get('ohLayout')) ? store.get('ohLayout') : 'cards';
     document.querySelectorAll('#oh2Lay button').forEach(b => b.classList.toggle('on', b.dataset.lay === lay));
     const den = store.get('ohDensity') === 'compact' ? 'compact' : 'roomy', dn = document.getElementById('oh2Den');
     if (dn) { dn.style.display = lay === 'table' ? '' : 'none'; dn.querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.den === den)); }
@@ -624,6 +724,7 @@
     if (cnt) cnt.textContent = 'Showing ' + n0(list.length) + ' of ' + n0((products || []).length) + ' products';
     const pre = ctx.pickBar || '';
     if (!list.length) { body.innerHTML = pre + '<div class="oh2-grid">' + emptyState(filter, q) + '</div>'; return; }
+    if (lay === 'restock') { body.innerHTML = pre + restockView(list); return; }
     if (lay === 'table') {
       body.innerHTML = pre + '<div class="oh2-tblwrap"><table class="oh2-tbl' + (store.get('ohDensity') === 'compact' ? ' compact' : '') + '" onclick="ohTblSort(event)"><colgroup><col style="width:23%"><col style="width:7%"><col style="width:9%"><col style="width:6%"><col style="width:6%"><col style="width:7%"><col style="width:7%"><col style="width:8%"><col style="width:7%"><col style="width:7%"><col style="width:13%"></colgroup>' +
         '<thead><tr class="grp"><th></th><th colspan="4" class="gw g1">In the warehouse</th><th colspan="2" class="ga g1">Amazon</th><th class="gt g1">Everything</th><th colspan="2" class="gs g1">Sales &amp; health</th><th></th></tr>' +
