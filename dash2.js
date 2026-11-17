@@ -92,6 +92,14 @@
   .d2-tip.on{opacity:1;transform:none}
   .d2-tip .r{display:flex;align-items:center;gap:7px}.d2-tip .r i{width:8px;height:8px;border-radius:2px}
   .d2-tip b{font-weight:800}
+  .d2-best{display:flex;gap:8px 10px;flex-wrap:wrap;margin:0 0 12px}
+  .d2-best:empty{display:none}
+  .d2-best-p{display:inline-flex;align-items:baseline;gap:5px;flex-wrap:wrap;background:#fff7e8;border:1px solid #f6dfb1;border-radius:999px;padding:6px 14px;font-size:14.5px;color:${C.ink2}}
+  .d2-best-p b{color:${C.ink};font-weight:800}
+  .d2-best-p b.v{font-size:16px}
+  .d2-best-p .new{color:#1e8449;font-weight:800}
+  .d2-best-p .gap{color:${C.muted}}
+  .d2-best-p + .d2-best-p{background:#f3f6f8;border-color:#e3e9ee}
   .d2-keys{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;color:${C.ink2};font-weight:650}
   .d2-keys span{display:inline-flex;align-items:center;gap:6px}.d2-keys i{width:10px;height:3px;border-radius:2px;display:inline-block}
   .d2-keys i.sq{height:10px;width:10px;border-radius:3px}
@@ -465,7 +473,7 @@
       '<section id="d2-overview" class="d2-card s12" style="--d:40ms"><div class="d2-ch"><div><h3>Gross sales</h3><div class="d2-sub">Ordered product sales, like Amazon’s app · Pacific time · pending orders included · history refreshes itself every morning</div></div>' +
       '<div style="display:flex;gap:10px;align-items:center"><span class="d2-meta" id="d2sasof"></span><button class="d2-btn ghost" data-act="sales-quick" id="d2squick">' + svg('refresh', ' style="width:13px;height:13px;vertical-align:-2px;margin-right:5px"') + 'Update today</button></div></div>' +
       '<div id="d2periods" class="d2-periods">' + [0, 1, 2, 3, 4, 5].map(() => '<div class="d2-per" style="cursor:default">' + sk(12, '60%') + sk(24, '75%', 8) + sk(16, '55%', 8) + '</div>').join('') + '</div>' +
-      '<div id="d2pull"></div><div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div id="d2top10"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
+      '<div id="d2pull"></div><div id="d2snote"></div><div id="d2metrics" class="d2-metrics"></div><div id="d2top10"></div><div id="d2best" class="d2-best"></div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:10px;flex-wrap:wrap"><div class="d2-sub" id="d2stitle"></div><div class="d2-keys" id="d2skeys"></div></div><div class="d2-chart" id="d2sales">' + skChart(240) + '</div></section>' +
       // overview: hero
       '<section id="d2-value" class="d2-card d2-hero s12" style="--d:90ms"><div><div class="d2-eyebrow">Total retail value</div><div class="d2-hval" id="d2hv">' + sk(52, '70%') + '</div><div class="d2-hsub" id="d2hs">' + sk(14, '60%') + '</div><div id="d2spark" style="margin-top:14px;height:46px">' + sk(46) + '</div></div>' +
       '<div><div style="display:flex;justify-content:space-between;align-items:baseline"><div class="d2-eyebrow">Where every unit is</div><div class="d2-meta" id="d2pipeat"></div></div><div id="d2pipe">' + sk(16, '100%', 10) + '<div class="d2-legend" style="margin-top:18px">' + [1, 2, 3, 4, 5].map(() => '<div>' + sk(12, '70%') + sk(22, '80%', 8) + sk(11, '60%', 6) + '</div>').join('') + '</div></div></div></section>' +
@@ -743,7 +751,7 @@
         job && job.running ? (job.progress || 'This takes a few minutes. It keeps going if you leave the page.') : 'One pull reads your orders and returns back to January last year, so every period can be compared. It takes a few minutes and runs in the background.',
         job && job.running ? null : { go: '', label: 'Pull sales history' });
       const btn = per.querySelector('[data-go]'); if (btn) { btn.removeAttribute('data-go'); btn.dataset.act = 'sales-full'; }
-      ['d2sales', 'd2stitle', 'd2skeys'].forEach(id => document.getElementById(id).innerHTML = '');
+      ['d2sales', 'd2stitle', 'd2skeys', 'd2best'].forEach(id => document.getElementById(id).innerHTML = '');
       return;
     }
     per.style.display = '';
@@ -913,10 +921,42 @@
     }
   }
 
+  // Best day (owner 11/17: "top sales day number for whatever i select: 7 day,
+  // 30 day, mtd, ytd, custom … show the date and the sales … so we know what
+  // the current record is"): the period's highest gross-sales day, counted
+  // like every other figure here (inv_sales_daily, ordered product sales), and
+  // the all-time record over every saved day, so a period's best can be read
+  // against it. Today has no "best day" of its own: it shows the record and how
+  // far today is from it. Only fully saved days count (measure needs the day).
+  function paintBest(p) {
+    const box = document.getElementById('d2best'); if (!box) return;
+    const D = p.D; if (!D || !D.M) { box.innerHTML = ''; return; }
+    const day = d => { const m = measure(D, [d]); return m.sales != null ? { d, sales: m.sales, orders: m.orders } : null; };
+    const top = days => days.map(day).filter(Boolean).reduce((b, x) => (!b || x.sales > b.sales ? x : b), null);
+    const nowY = new Date().getFullYear();
+    const when = d => { const t = new Date(d + 'T12:00:00'); return t.toLocaleDateString('en-US', { weekday: 'short' }) + ', ' + dShort(d) + (t.getFullYear() !== nowY ? ', ' + t.getFullYear() : ''); };
+    const amt = v => '$' + Math.round(v).toLocaleString();
+    const rec = top(Object.keys(D.M).sort());
+    if (!rec) { box.innerHTML = ''; return; }
+    const pill = (lbl, x, extra) => '<span class="d2-best-p"><b>' + lbl + '</b> ' + E(when(x.d)) + ' · <b class="v">' + amt(x.sales) + '</b>' + (x.orders ? ' · ' + x.orders.toLocaleString() + ' orders' : '') + (extra || '') + '</span>';
+    let h = '';
+    if (p.k === 'today') {
+      const t = day(p.curDays && p.curDays[p.curDays.length - 1] || '');
+      h = pill('🏆 Record day', rec, t && t.sales >= rec.sales && t.d === rec.d ? ' · <span class="new">today!</span>' : '');
+    } else {
+      const best = top(p.curDays || []);
+      if (best) h = pill('🏆 Best day', best, best.d === rec.d ? ' · <span class="new">all-time record</span>' : '');
+      if (best && best.d !== rec.d) h += pill('Record', rec, ' <span class="gap">(' + Math.round(100 * best.sales / rec.sales) + '% of it)</span>');
+      if (!best) h = pill('🏆 Record day', rec);
+    }
+    box.innerHTML = h;
+  }
+
   // Bars: this period beside the previous one. Today by hour; long ranges
   // (Year to date, a custom range over 3 months) by month.
   function drawSales(p, mt) {
     const box = document.getElementById('d2sales'), title = document.getElementById('d2stitle'), keys = document.getElementById('d2skeys');
+    paintBest(p);
     // this period in Amazon orange (owner), the previous one gray
     const GRAY = '#b4bec7', CUR = '#ff9900', D = p.D;
     box._draw = null;
