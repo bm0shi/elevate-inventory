@@ -111,3 +111,14 @@ test('pages of two shipments under one order number keep both SHP#s', () => {
     'FOR ORDER NUMBER: 262106088', 'SHP# 262114389', '570303 B LITER 2 1.00 1 1.00 N'].join('\n')).get('262106088');
   assert.deepStrictEqual(o.shps, ['262100001', '262114389']);
 });
+
+test('ordered and shipped are kept apart; the shipped (billed) quantity is the one checked in (owner 11/17)', () => {
+  const text = ['FOR ORDER NUMBER: 666666666', 'ITEM DESCRIPTION ORDERED PRICE SHIPPED EXTENDED',
+    '575394 PM TEA TREE GROOMING POMADE 3 OZ 55 9.10 50 455.00 N',
+    '570131 AWAPUHI SHAMPOO 6 12.50'].join('\n');
+  const [a, b] = parseInvoiceText(text).get('666666666').items;
+  assert.equal(a.qty_ordered, 55);
+  assert.equal(a.qty_shipped, 50);   // billed for 50: 5 are a backorder, not a shortage
+  assert.equal(b.qty_ordered, 6);
+  assert.equal(b.qty_shipped, 0);    // ordered, nothing shipped, nothing billed
+});

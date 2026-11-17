@@ -159,8 +159,8 @@ async function writeInvoiceLines(base, date, items, opts = {}) {
       if (p) p.received = 0;   // a Cosmo # listed twice carries its count once
       if (received) carried++;
       if (asin) mapped++; else unmapped.push(it.cosmo_num + ' (' + it.description + ')');
-      await c.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost) VALUES($1,$2,$3,$4,$5,$6,$7)`,
-        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, received, it.unit_cost || null]);
+      await c.query(`INSERT INTO inv_invoice_items(order_number, cosmo_num, description, asin, qty_expected, qty_received, unit_cost, qty_ordered) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [orderNumber, it.cosmo_num, it.description, asin, it.qty_shipped, received, it.unit_cost || null, Number.isInteger(it.qty_ordered) ? it.qty_ordered : null]);
       // NOTE: deliberately NOT overwriting inv_products.unit_cost here. A sale
       // invoice would overwrite the regular cost permanently. Cost is recorded
       // as a lot at check-in completion and blended in recomputeCosts().
@@ -186,7 +186,7 @@ async function processInvoiceText(text) {
     let mergedCount = 0;
     for (const it of o.items) {
       const prev = mergedMap.get(it.cosmo_num);
-      if (prev) { prev.qty_shipped += it.qty_shipped; mergedCount++; }
+      if (prev) { prev.qty_shipped += it.qty_shipped; prev.qty_ordered = Number.isInteger(prev.qty_ordered) && Number.isInteger(it.qty_ordered) ? prev.qty_ordered + it.qty_ordered : null; mergedCount++; }
       else mergedMap.set(it.cosmo_num, Object.assign({}, it));
     }
     const items = [...mergedMap.values()];
@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'order-report-1181';
+const BUILD_ID = 'short-labels-1182';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -650,6 +650,12 @@ async function initDb() {
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS qty_owed INTEGER NOT NULL DEFAULT 0;
     -- What Cosmoprof credited instead of sending, kept for the Shortages history.
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS credited_qty INTEGER NOT NULL DEFAULT 0;
+    -- What was ORDERED, for reference only (owner 11/17: "we only get charged
+    -- for shipped qty … for credit purposes it needs to go off shipped qty").
+    -- qty_expected stays the invoice's SHIPPED (billed) quantity, which is what
+    -- check-in counts against and what Shortages asks credit for; a backorder
+    -- (ordered, not shipped) is never owed. NULL = the invoice didn't say.
+    ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS qty_ordered INTEGER;
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ;
     -- Replies to stock-changing requests, keyed by the client's action id, so
     -- a retried or double-sent action is answered from here instead of
@@ -6500,7 +6506,7 @@ app.post('/api/invoices/:orderNumber/clear-owed', auth, async (req, res) => {
 app.get('/api/shortages', auth, async (req, res) => {
   const { rows } = await pool.query(
     `SELECT ii.id, ii.order_number, i.invoice_date, i.completed_at, ii.cosmo_num, ii.description, ii.asin,
-            p.name, ii.qty_expected, ii.qty_received, ii.qty_owed, ii.credited_qty, ii.credited_at
+            p.name, ii.qty_ordered, ii.qty_expected, ii.qty_received, ii.qty_owed, ii.credited_qty, ii.credited_at
      FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number = ii.order_number
      LEFT JOIN inv_products p ON p.asin = ii.asin
      WHERE i.status = 'received' AND (ii.qty_owed > 0 OR ii.credited_qty > 0)
