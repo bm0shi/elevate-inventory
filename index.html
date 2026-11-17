@@ -4326,19 +4326,26 @@ function renderBrands(){
     rows.sort((a,b)=>(b.qualifies?1:0)-(a.qualifies?1:0)||(val(a,s.col)<val(b,s.col)?-1:val(a,s.col)>val(b,s.col)?1:0)*(s.col==='brand'?s.dir:-s.dir));
     const M=d.marks||{potential:[],removed:[]}, pot=new Set(M.potential), rem=new Set(M.removed), keyOf=r=>String(r.brand).toLowerCase();
     // the filters (not applied to Potential: what the owner picked always shows)
-    const F=_bfF, passes=r=>{
-      if(F.show==='qual'&&!r.qualifies) return false;
-      if(F.show==='not'&&r.qualifies) return false;
-      if(F.amazon==='no'&&(r.error||r.amazonOn>0)) return false;
-      if(F.amazon==='yes'&&(r.error||!r.amazonOn)) return false;
-      if(F.brand==='no'&&(r.error||r.brandSells!==false)) return false;
-      if(F.brand==='yes'&&(r.error||r.brandSells!==true)) return false;
-      if(F.ours==='new'&&ours.has(keyOf(r))) return false;
-      if(F.ours==='ours'&&!ours.has(keyOf(r))) return false;
-      if(F.minDay!==''&&!(Number(r.openPerDay)>=Number(F.minDay))) return false;
-      if(F.q&&!keyOf(r).includes(String(F.q).toLowerCase())) return false;
-      return true;
-    };
+    // Why a brand is hidden (owner 11/17: "its not showing me brands sometimes",
+    // REDAVID checked and then nowhere: "0 of 1 brands qualify · showing 0").
+    // The filters used to drop a brand without a word, and also hid one Keepa
+    // didn't find or whose sellers weren't read, which is the brand that needs
+    // its ✎ Amazon name. Now every hidden brand is listed under the table with
+    // the filter that hid it, and a name typed in Find a brand shows that brand
+    // whatever the other filters say.
+    const F=_bfF, hiddenBy=r=>{
+      const w=[];
+      if(F.show==='qual'&&!r.qualifies) w.push('not qualifying');
+      if(F.show==='not'&&r.qualifies) w.push('qualifies');
+      if(F.amazon==='no'&&(r.error||r.amazonOn>0)) w.push(r.error?'not read':'Amazon sells');
+      if(F.amazon==='yes'&&(r.error||!r.amazonOn)) w.push(r.error?'not read':'Amazon not selling');
+      if(F.brand==='no'&&(r.error||r.brandSells!==false)) w.push(r.brandSells===true?'brand sells itself':'brand\'s own selling not read');
+      if(F.brand==='yes'&&(r.error||r.brandSells!==true)) w.push(r.brandSells===false?'brand not selling itself':'brand\'s own selling not read');
+      if(F.ours==='new'&&ours.has(keyOf(r))) w.push('already selling');
+      if(F.ours==='ours'&&!ours.has(keyOf(r))) w.push('a new brand');
+      if(F.minDay!==''&&!(Number(r.openPerDay)>=Number(F.minDay))) w.push(r.found===0?'not found on Amazon':'under '+F.minDay+' a day'+(floor?' at $'+floor+' and up':''));
+      return w;
+    }, passes=r=>F.q ? keyOf(r).includes(String(F.q).toLowerCase()) : !hiddenBy(r).length;
     const potRows=rows.filter(r=>pot.has(keyOf(r))), remRows=rows.filter(r=>rem.has(keyOf(r)));
     const listRows=rows.filter(r=>!pot.has(keyOf(r))&&!rem.has(keyOf(r))), shown=listRows.filter(passes);
     const q=listRows.filter(r=>r.qualifies), th=(c,t)=>prodTh('<a href="#" onclick="bfSortBy(\''+c+'\');return false" style="color:inherit;text-decoration:none">'+t+(s.col===c?(s.dir<0?' ▼':' ▲'):'')+'</a>');
@@ -4381,8 +4388,16 @@ function renderBrands(){
       +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0">'+head;
     for(const r of shown){ h+=rowHtml(r,'list');
     }
-    if(!shown.length) h+='<tr><td colspan="10" class="hint" style="padding:14px;text-align:center">No brands match these filters.</td></tr>';
-    h+='</table></div>';
+    const hidden=F.q?[]:listRows.filter(r=>!passes(r));
+    if(!shown.length) h+='<tr><td colspan="10" class="hint" style="padding:14px;text-align:center">'+(hidden.length?'Every brand here is hidden by the filters above. They\'re listed below with the reason.':'No brands match these filters.')+'</td></tr>';
+    h+='</table>';
+    if(hidden.length){
+      h+='<details'+(shown.length?'':' open')+' style="margin-top:10px"><summary style="cursor:pointer;font-weight:800;color:#b45309">'+hidden.length+' brand'+(hidden.length===1?'':'s')+' hidden by your filters <span class="hint" style="font-weight:600">· <a href="#" onclick="_bfF=Object.assign(_bfF,{show:\'all\',amazon:\'any\',brand:\'any\',ours:\'any\',minDay:\'\'});bfFilter(\'q\',\'\');return false" style="color:#008296">show everything</a></span></summary>'
+        +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0">'+head
+        +hidden.map(r=>rowHtml(r,'list')+'<tr><td></td><td colspan="9" style="padding:0 8px 10px;font-size:12px;color:#b45309;font-weight:700">Hidden by: '+esc(hiddenBy(r).join(' · '))+'</td></tr>').join('')
+        +'</table></details>';
+    }
+    h+='</div>';
     if(remRows.length) h+='<details class="box" style="overflow-x:auto"><summary style="cursor:pointer;font-weight:800">✕ Removed · '+remRows.length+' brand'+(remRows.length===1?'':'s')+' with no potential <span class="hint" style="font-weight:600">— not checked again; Restore puts one back</span></summary>'
       +'<table style="width:100%;border-collapse:collapse;margin-top:8px;box-shadow:none;border-radius:0">'+head+remRows.map(r=>rowHtml(r,'removed')).join('')+'</table></details>';
   }

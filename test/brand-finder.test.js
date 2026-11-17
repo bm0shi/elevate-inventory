@@ -78,3 +78,15 @@ test('price floor: a brand recounted without its cheap listings stops qualifying
   assert.strictEqual(c.cheapOut, 1); assert.strictEqual(c.medianPrice, 30);
   assert.strictEqual(B.priceCut(s, 0), s);
 });
+
+test('an all-caps brand from Cosmoprof is also searched the way Amazon writes it (REDAVID, owner 11/17)', () => {
+  const v = B.brandVariants('REDAVID');
+  assert.ok(v.includes('REDAVID') && v.includes('Redavid'), v.join(' | '));
+  const j = B.brandVariants('JOHN PAUL MITCHELL SYSTEMS');
+  assert.equal(j[1], 'John Paul Mitchell Systems');
+  assert.ok(j.includes('Paul Mitchell') && !j.includes('JOHN'), j.join(' | '));
+  assert.ok(B.brandVariants('ACTIIV Recovery').includes('ACTIIV'));
+  // a coded name keeps its capitals and gets no title-case twin
+  assert.ok(!B.brandVariants('K18').includes('K18'.toLowerCase()));
+  assert.deepEqual(B.brandVariants('Redken'), ['Redken']);
+});
