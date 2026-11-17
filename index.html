@@ -6127,13 +6127,14 @@ function renderOrders(boxId, mode){
   shown.sort((a,c)=>{ const x=get(a), y=get(c); if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1; return (x<y?-1:x>y?1:0)*dir; });
   const rowsAll=rows; 
   window._orderRows=shown.filter(r=>r.qty>0||(isSS&&r.recQty>0));
+  window._orderCtx={st, lead, horizon, pf, selCols, isSS};
   const total=shown.reduce((n,r)=>n+(r.cost||0),0), units=shown.reduce((n,r)=>n+r.qty,0), noCost=shown.filter(r=>r.qty>0&&r.cost==null).length;
   const byListing=st.ordView==='listing';
   const td='padding:6px 8px;border-top:1px solid #eef2f6;text-align:right';
   const money=v=>v==null?'—':'$'+v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
   let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center"><div><b style="font-size:16px">'+(isSS?'🥧 Smart Scout Suggested Orders':'🧾 Suggested Orders (CosmoProf)')+'</b>'
     +'<div class="hint">What to buy so every bottle lasts through the '+lead+'-day lead time plus '+st.target+' days. <b>'+units.toLocaleString()+'</b> bottles · <b>'+money(total)+'</b>'+(noCost?' (+'+noCost+' without a cost)':'')+'</div></div>'
-    +(units?'<button class="action" onclick="ordersCsv()" style="background:#0d4450">⬇ Download order list</button>':'')+'</div>'
+    +(units?'<span style="display:inline-flex;gap:8px;flex-wrap:wrap"><button class="action" onclick="orderReport()" style="background:#6d3fc0" title="A page to present: summary, charts and every line, with quantities you can change. Save it as a PDF from there.">📊 Order report (PDF)</button><button class="action" onclick="ordersCsv()" style="background:#0d4450" title="For Excel or Google Sheets: every number, plus formulas for the days a quantity covers">⬇ Download order list</button></span>':'')+'</div>'
     +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center">'+(isSS?ssTargetPicker(st):planBasisPicker(st))+planNum('planPct','Plan on % of expected sales',st)+planNum('target','Target days',st)+planNum('cosmoDays','Cosmoprof delivery days',st)+planNum('prepDays','Prep days',st)+planNum('amazonDays','Amazon check-in days'+(_plan&&_plan.checkIn&&_plan.checkIn.typical!=null?(st.amazonDaysManual?' (yours: '+Math.round(_plan.checkIn.typical)+')':' (your real typical)'):''),st)+planNum('packOf','Round up to',st)+'</div>'
     +'<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;align-items:center;background:#f7f9fb;border-radius:8px;padding:8px 10px"><b class="hint" style="color:#0d4450">FILTER</b>'
       +'<label class="hint">Hide unit cost under $<input type="number" min="0" step="0.5" value="'+(st.minUnitCost||'')+'" placeholder="0" onchange="planSave(\'minUnitCost\',Math.max(0,parseFloat(this.value)||0))" style="width:70px;padding:6px"></label>'
@@ -6776,15 +6777,162 @@ function ilPrint(){
   // wait for the photos before printing
   const imgs=[...w.document.images]; Promise.all(imgs.map(i=>i.complete?1:new Promise(r=>{i.onload=i.onerror=r;}))).then(()=>w.print());
 }
+// The order list to share (owner 11/17: "add more data … so i can share it
+// with our partner and he can clearly see what's going on … 3p avg sold/mo,
+// revenue / mo, days covered and a formula that shows, if you order 60
+// units, you will get this many days of coverage … order and rec order, what's
+// the diff? very confusing … maybe a PDF with graphs, so it looks
+// professional"). One set of numbers per bottle feeds both the download and
+// the report, worked out the same way as the screen:
+//   Planned sales / day = the screen's demand × "Plan on %" (Order's basis),
+//   Days covered = (warehouse + at Amazon + on the way) ÷ that,
+//   Order = SmartScout basis, Rec. order = the learned blend (recBlend), each
+//   enough for the lead time + target days, less what we have.
+//   3P avg / mo = the other sellers' average (their SmartScout files), in
+//   bottles; Revenue / mo = per listing, that average × its price, a duo's
+//   split between its bottles.
+function orderShareRows(){
+  const C=window._orderCtx||{}, pf=C.pf||1, others=(C.selCols||[]).filter(c=>!c.isUs);
+  const avgOf=sel=>{ const v=others.map(c=>(sel||{})[c.abbr]).filter(x=>x!=null); return v.length?v.reduce((a,b)=>a+b,0)/v.length:null; };
+  return (window._orderRows||[]).map(r=>{
+    let rev=null;
+    for(const ln of (r.lines||[])){
+      const l=ln.l, a=avgOf(l.ssSellers); if(a==null||l.price==null) continue;
+      const tot=(l.components||[]).reduce((n,c)=>n+(c.per||1),0)||1;
+      rev=(rev||0)+a*l.price*(ln.per||1)/tot;
+    }
+    const recDay=r.recPerDay||null;
+    return { r, cosmo:(r.cosmo||[]).join(' / '), name:r.name||r.asin, asin:r.asin, price:r.price, profit:r.profit, unitCost:r.unitCost,
+      avg3:avgOf(r.sel), ours:r.pace!=null?r.pace*30:null, rev, wh:r.onhand||0, amz:r.atAmz||0, way:r.way||0, have:r.have,
+      perDay:r.perDay, planMo:r.perDay*30, recDay, cover:r.cover, qty:r.qty, rec:r.recQty,
+      afterQty:r.perDay>0?(r.have+r.qty)/r.perDay:null, afterRec:recDay&&r.recQty!=null?(r.have+r.recQty)/recDay:null };
+  });
+}
+const ORDER_EXPLAIN=[
+  'Order = enough to last the lead time plus the target days, if this listing sells the SmartScout way (the share you picked on the screen).',
+  'Rec. order = the same, but with the app\'s best estimate: a blend of our own sales, Keepa × our Buy Box share and an even split of the listing, weighted by which has been most accurate.',
+  'Both plan on the "Plan on %" of expected sales and take off what we already have (warehouse + at Amazon + on the way).',
+  'Days covered = units we have ÷ planned sales per day. Days with N more units = (units we have + N) ÷ planned sales per day.'];
 function ordersCsv(){
   const q=v=>/[",\n]/.test(String(v))?'"'+String(v).replace(/"/g,'""')+'"':String(v);
-  const hasRec=(window._orderRows||[]).some(r=>r.recQty!=null);
-  const lines=[['Cosmo #','Product','ASIN','Order qty'].concat(hasRec?['Rec. order qty']:[],['Unit cost','Line cost']).join(',')]
-    .concat((window._orderRows||[]).map(r=>[q(r.cosmo.join(' / ')),q(r.name||''),r.asin,r.qty].concat(hasRec?[r.recQty==null?'':r.recQty]:[],[r.unitCost!=null?r.unitCost.toFixed(2):'',r.cost!=null?r.cost.toFixed(2):'']).join(',')));
+  const R=orderShareRows(), C=window._orderCtx||{}, st=C.st||{};
+  const f2=v=>v==null?'':Number(v).toFixed(2), f0=v=>v==null?'':Math.round(v);
+  const cols=['Cosmo #','Product','ASIN','Price','Net profit / unit','Unit cost','3P avg sold / mo','Our sales / mo','Revenue / mo (3P avg)',
+    'Warehouse','At Amazon','On the way','Total stock','Planned sales / day','Days covered now','Order qty','Days after Order','Rec. order qty','Days after Rec. order',
+    'Days with +60','Days with +120','Your qty','Days with your qty','Cost of your qty'];
+  const L=n=>{ let s=''; n++; while(n>0){ const m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26); } return s; };
+  const col=k=>L(cols.indexOf(k));
+  const lines=[cols.map(q).join(',')];
+  R.forEach((x,i)=>{
+    const row=i+2, tot=col('Total stock')+row, rate=col('Planned sales / day')+row, yours=col('Your qty')+row;
+    const days=add=>'=IFERROR(ROUND(('+tot+'+'+add+')/'+rate+',0),"")';
+    lines.push([q(x.cosmo),q(x.name),x.asin,f2(x.price),f2(x.profit),f2(x.unitCost),f0(x.avg3),f0(x.ours),f0(x.rev),
+      x.wh,x.amz,x.way,x.have,x.perDay>0?x.perDay.toFixed(3):'',f0(x.cover),x.qty,f0(x.afterQty),x.rec==null?'':x.rec,f0(x.afterRec),
+      q(days(60)),q(days(120)),x.qty,q(days(yours)),q(x.unitCost!=null?'=ROUND('+yours+'*'+col('Unit cost')+row+',2)':'')].join(','));
+  });
+  const last=R.length+1;
+  lines.push(['','TOTAL','','','','','','',q('=SUM('+col('Revenue / mo (3P avg)')+'2:'+col('Revenue / mo (3P avg)')+last+')'),'','','','','','',q('=SUM('+col('Order qty')+'2:'+col('Order qty')+last+')'),'',q('=SUM('+col('Rec. order qty')+'2:'+col('Rec. order qty')+last+')'),'','','',q('=SUM('+col('Your qty')+'2:'+col('Your qty')+last+')'),'',q('=SUM('+col('Cost of your qty')+'2:'+col('Cost of your qty')+last+')')].join(','));
+  lines.push('');
+  lines.push(q('Lead time '+(C.lead||'?')+' days (Cosmoprof '+st.cosmoDays+' + prep '+st.prepDays+' + Amazon check-in '+st.amazonDays+') + target '+st.target+' days; planned on '+(st.planPct||100)+'% of expected sales.'));
+  lines.push(q('Change "Your qty" on any line: "Days with your qty" and "Cost of your qty" update by themselves.'));
+  ORDER_EXPLAIN.forEach(t=>lines.push(q(t)));
   const a=document.createElement('a');
-  a.href=URL.createObjectURL(new Blob([lines.join('\r\n')],{type:'text/csv'}));
+  a.href=URL.createObjectURL(new Blob(['﻿'+lines.join('\r\n')],{type:'text/csv'}));
   a.download='cosmoprof-order-'+new Date().toISOString().slice(0,10)+'.csv';
   document.body.appendChild(a); a.click(); a.remove();
+}
+// The report: a page of its own (new window) to present or save as a PDF.
+// Quantities can be changed on it (and set to Order or Rec. order in one tap);
+// days covered, cost, the totals and the chart follow. Nothing is saved.
+function orderReport(){
+  const R=orderShareRows(); if(!R.length){ toast('Nothing to order in this list',true); return; }
+  const C=window._orderCtx||{}, st=C.st||{};
+  const w=window.open('','_blank'); if(!w){ alert('Allow pop-ups to open the report.'); return; }
+  // Short name + size (owner's rule: never cut a name before its size); the
+  // charts shorten the name part only.
+  const parts=x=>{ const full=String(x.name||x.asin), size=listingSize(full); let sh=full.split(',')[0].trim(); if(sh.length<12) sh=full; return {sh, size:size&&!sh.includes(size)?size:''}; };
+  const data=R.map(x=>({cosmo:x.cosmo,name:parts(x).sh+(parts(x).size?' · '+parts(x).size:''),short:parts(x).sh,size:parts(x).size,asin:x.asin,price:x.price,profit:x.profit,unitCost:x.unitCost,avg3:x.avg3,ours:x.ours,rev:x.rev,have:x.have,wh:x.wh,amz:x.amz,way:x.way,perDay:x.perDay,cover:x.cover,qty:x.qty,rec:x.rec}));
+  const meta={date:new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'}),lead:C.lead,target:st.target,cosmo:st.cosmoDays,prep:st.prepDays,amazon:st.amazonDays,pct:st.planPct||100,horizon:C.horizon};
+  const json=JSON.stringify({data,meta,explain:ORDER_EXPLAIN}).replace(/</g,'\\u003c');
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Cosmoprof order · '+esc(meta.date)+'</title><meta name="viewport" content="width=device-width,initial-scale=1">'
+    +'<style>'+ORDER_REPORT_CSS+'</style></head><body><div id="app"></div><script>window.__R='+json+';<\/script><script>('+orderReportPage.toString()+')();<\/script></body></html>');
+  w.document.close(); w.focus();
+}
+const ORDER_REPORT_CSS=`
+*{box-sizing:border-box}body{margin:0;background:#eef2f5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:#0b1f24}
+.pg{max-width:1180px;margin:24px auto;background:#fff;border-radius:18px;padding:34px 38px;box-shadow:0 10px 30px -18px rgba(13,68,80,.35)}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;border-bottom:3px solid #0d4450;padding-bottom:16px}
+.brand{display:flex;gap:12px;align-items:center}.mark{width:44px;height:44px;border-radius:11px;background:#f59e0b;color:#0d4450;font-weight:900;font-size:24px;display:grid;place-items:center}
+h1{margin:0;font-size:26px;letter-spacing:-.4px}.sub{color:#5a6472;font-size:14px;margin-top:3px}
+.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.seg{display:inline-flex;background:#eef2f5;border-radius:999px;padding:3px}.seg button{border:0;background:none;padding:7px 14px;border-radius:999px;font-weight:700;cursor:pointer;color:#4a5a66}.seg button.on{background:#0d4450;color:#fff}
+.btn{border:0;border-radius:999px;padding:9px 16px;font-weight:800;cursor:pointer;background:#6d3fc0;color:#fff}
+.tiles{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:20px 0}
+.tile{background:#f5f8fa;border-radius:14px;padding:14px 16px}.tile .k{font-size:11.5px;font-weight:800;letter-spacing:.7px;color:#5a6472;text-transform:uppercase}.tile .v{font-size:26px;font-weight:850;margin-top:4px;letter-spacing:-.5px}.tile .x{font-size:12px;color:#8a97a6;margin-top:2px}
+.t1{background:#e7f4f2}.t2{background:#e8f0fc}.t3{background:#f1ebfa}.t4{background:#fff5e0}
+.grid2{display:grid;grid-template-columns:1.25fr 1fr;gap:18px;margin-bottom:18px}
+.card{border:1px solid #e3e9ee;border-radius:14px;padding:16px 18px}.card h2{font-size:15px;margin:0 0 4px}.card .hint{font-size:12.5px;color:#8a97a6;margin-bottom:10px}
+.how{background:#f7f9fb;border-radius:14px;padding:14px 18px;margin-bottom:18px;font-size:13.5px;line-height:1.55;color:#33424c}.how b{color:#0b1f24}.how ul{margin:6px 0 0;padding-left:18px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}th{font-size:10px;letter-spacing:.4px;text-transform:uppercase;color:#5a6472;padding:7px 4px;border-bottom:2px solid #0d4450;text-align:center;vertical-align:bottom;line-height:1.25}
+th:first-child,td:first-child{text-align:left}td{padding:7px 6px;border-bottom:1px solid #eef2f5;text-align:center;font-variant-numeric:tabular-nums}
+th:first-child{width:23%}th:last-child{width:7.5%}td:last-child{white-space:nowrap}td.nm b{display:block;font-size:12.5px}td.nm span{color:#8a97a6;font-size:11px}
+tr.tot td{font-weight:850;border-top:2px solid #0d4450;border-bottom:0;background:#f5f8fa}
+input.q{width:70px;padding:5px;border:1.5px solid #cfd8df;border-radius:8px;text-align:center;font:inherit;font-weight:800}
+.d{display:inline-block;min-width:44px;padding:2px 7px;border-radius:999px;font-weight:800}.d.r{background:#fdecea;color:#c0392b}.d.a{background:#fff5e0;color:#b45309}.d.g{background:#e7f6ec;color:#1e8449}
+.foot{font-size:11.5px;color:#8a97a6;margin-top:14px}
+@media (max-width:900px){.tiles{grid-template-columns:repeat(2,1fr)}.grid2{grid-template-columns:1fr}.pg{padding:20px}}
+@media print{@page{size:landscape;margin:10mm}body{background:#fff}.pg{box-shadow:none;margin:0;max-width:none;padding:0}.tools{display:none}
+ input.q{border:0;padding:0;width:auto;max-width:60px}.card,.how,.tiles,tr{break-inside:avoid}}
+`;
+// Runs inside the report window (no access to the app's functions).
+function orderReportPage(){
+  const {data,meta,explain}=window.__R, el=document.getElementById('app');
+  const n0=v=>v==null||!isFinite(v)?'—':Math.round(v).toLocaleString(), $=v=>v==null||!isFinite(v)?'—':'$'+Math.round(v).toLocaleString(), $2=v=>v==null?'—':'$'+Number(v).toFixed(2);
+  const E=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  let plan='qty'; data.forEach(x=>x.mine=x.qty);
+  const days=(x,add)=>x.perDay>0?(x.have+add)/x.perDay:null;
+  const badge=d=>d==null?'—':'<span class="d '+(d<meta.lead?'r':d<meta.horizon?'a':'g')+'">'+n0(d)+'d</span>';
+  function bars(rows, val, max, color, label, extra){
+    const W=560, rowH=22, H=rows.length*rowH+24, x0=230;
+    const lbl=x=>{ const tail=x.size?' · '+x.size:'', room=40-tail.length; return (x.short.length>room?x.short.slice(0,Math.max(8,room-1))+'…':x.short)+tail; };
+    const sx=v=>x0+(W-x0-46)*Math.min(1,(v||0)/(max||1));
+    let g='<svg viewBox="0 0 '+W+' '+H+'" width="100%" role="img" aria-label="'+E(label)+'" style="font-family:inherit">';
+    if(extra) g+=extra(sx,H);
+    rows.forEach((x,i)=>{ const y=i*rowH+4, v=val(x);
+      g+='<text x="'+(x0-8)+'" y="'+(y+14)+'" text-anchor="end" font-size="11" fill="#33424c">'+E(lbl(x))+'</text>';
+      if(Array.isArray(v)){ g+='<rect x="'+x0+'" y="'+(y+3)+'" width="'+Math.max(1,sx(v[1])-x0)+'" height="14" rx="4" fill="#b9d2f3"/><rect x="'+x0+'" y="'+(y+3)+'" width="'+Math.max(1,sx(v[0])-x0)+'" height="14" rx="4" fill="'+color+'"/><text x="'+(sx(v[1])+5)+'" y="'+(y+14)+'" font-size="11" font-weight="700" fill="#0b1f24">'+n0(v[1])+'d</text>'; }
+      else { g+='<rect x="'+x0+'" y="'+(y+3)+'" width="'+Math.max(1,sx(v)-x0)+'" height="14" rx="4" fill="'+color+'"/><text x="'+(sx(v)+5)+'" y="'+(y+14)+'" font-size="11" font-weight="700" fill="#0b1f24">'+$(v)+'</text>'; }
+    });
+    return g+'</svg>';
+  }
+  function paint(){
+    const units=data.reduce((a,x)=>a+(x.mine||0),0), cost=data.reduce((a,x)=>a+(x.unitCost!=null?x.mine*x.unitCost:0),0), noCost=data.filter(x=>x.mine>0&&x.unitCost==null).length;
+    const rev=data.reduce((a,x)=>a+(x.rev||0),0), lines=data.filter(x=>x.mine>0).length;
+    const after=data.filter(x=>x.perDay>0&&x.mine>0).map(x=>days(x,x.mine)), med=after.length?after.sort((a,b)=>a-b)[Math.floor(after.length/2)]:null;
+    const covRows=data.filter(x=>x.perDay>0).sort((a,b)=>(a.cover||0)-(b.cover||0)).slice(0,14);
+    const maxD=Math.max(meta.horizon*1.3, ...covRows.map(x=>days(x,x.mine)||0));
+    const revRows=data.filter(x=>x.rev>0).sort((a,b)=>b.rev-a.rev).slice(0,10), maxR=Math.max(1,...revRows.map(x=>x.rev));
+    const line=(sx,H)=>'<line x1="'+sx(meta.horizon)+'" x2="'+sx(meta.horizon)+'" y1="0" y2="'+(H-14)+'" stroke="#1e8449" stroke-dasharray="4 3"/><text x="'+sx(meta.horizon)+'" y="'+(H-2)+'" text-anchor="middle" font-size="10" fill="#1e8449">goal '+meta.horizon+'d</text>';
+    el.innerHTML='<div class="pg"><div class="top"><div class="brand"><div class="mark">E</div><div><h1>Cosmoprof order</h1><div class="sub">Elevate · '+E(meta.date)+' · lead time '+meta.lead+' days + target '+meta.target+' days · planned on '+meta.pct+'% of expected sales</div></div></div>'
+      +'<div class="tools"><span class="seg"><button data-p="qty" class="'+(plan==='qty'?'on':'')+'">Use Order</button><button data-p="rec" class="'+(plan==='rec'?'on':'')+'">Use Rec. order</button><button data-p="mine" class="'+(plan==='mine'?'on':'')+'">My numbers</button></span><button class="btn" onclick="window.print()">⬇ Save as PDF</button></div></div>'
+      +'<div class="tiles"><div class="tile t1"><div class="k">Units to order</div><div class="v">'+n0(units)+'</div><div class="x">'+lines+' products</div></div>'
+      +'<div class="tile t2"><div class="k">Order cost</div><div class="v">'+$(cost)+'</div><div class="x">'+(noCost?noCost+' without a cost':'at our unit cost')+'</div></div>'
+      +'<div class="tile t3"><div class="k">Revenue / month</div><div class="v">'+$(rev)+'</div><div class="x">these products, at the 3P average</div></div>'
+      +'<div class="tile t4"><div class="k">Typical cover after</div><div class="v">'+(med==null?'—':n0(med)+' days')+'</div><div class="x">goal: '+meta.horizon+' days</div></div>'
+      +'<div class="tile"><div class="k">Lead time</div><div class="v">'+meta.lead+' days</div><div class="x">Cosmoprof '+meta.cosmo+' · prep '+meta.prep+' · Amazon '+meta.amazon+'</div></div></div>'
+      +'<div class="grid2"><div class="card"><h2>Days of stock: now and after this order</h2><div class="hint">Lowest cover first. Dark = what we have now, light = after the order. The dashed line is the goal (lead time + target).</div>'+bars(covRows,x=>[x.cover||0,days(x,x.mine)||0],maxD,'#1d64c8','Days covered now and after',line)+'</div>'
+      +'<div class="card"><h2>Top revenue per month</h2><div class="hint">What each product sells for a month at the 3P sellers\' average × its price.</div>'+(revRows.length?bars(revRows,x=>x.rev,maxR,'#6d3fc0','Revenue per month'):'<div class="hint">No 3P averages yet.</div>')+'</div></div>'
+      +'<div class="how"><b>How to read this</b><ul>'+explain.map(t=>'<li>'+E(t)+'</li>').join('')+'<li><b>+60 / +120</b> = the days of stock we\'d have if we ordered 60 or 120 units instead. Change any quantity in the table: everything on this page follows.</li></ul></div>'
+      +'<table><thead><tr><th>Product</th><th>Price</th><th>Net / unit</th><th>3P avg / mo</th><th>Our sales / mo</th><th>Revenue / mo</th><th>Stock now</th><th>Days now</th><th>+60</th><th>+120</th><th>Order</th><th>Rec. order</th><th>This order</th><th>Days after</th><th>Cost</th></tr></thead><tbody>'
+      +data.map((x,i)=>'<tr><td class="nm"><b>'+E(x.name)+'</b><span>'+E(x.asin)+(x.cosmo?' · Cosmo # '+E(x.cosmo):'')+'</span></td><td>'+$2(x.price)+'</td><td>'+$2(x.profit)+'</td><td>'+n0(x.avg3)+'</td><td>'+n0(x.ours)+'</td><td>'+$(x.rev)+'</td>'
+        +'<td title="Warehouse '+x.wh+' · at Amazon '+x.amz+' · on the way '+x.way+'">'+n0(x.have)+'</td><td>'+badge(x.cover)+'</td><td>'+badge(days(x,60))+'</td><td>'+badge(days(x,120))+'</td><td>'+n0(x.qty)+'</td><td>'+n0(x.rec)+'</td>'
+        +'<td><input class="q" type="number" min="0" data-i="'+i+'" value="'+(x.mine||0)+'"></td><td>'+badge(days(x,x.mine))+'</td><td>'+(x.unitCost!=null?$(x.mine*x.unitCost):'—')+'</td></tr>').join('')
+      +'<tr class="tot"><td>Total</td><td></td><td></td><td></td><td></td><td>'+$(rev)+'</td><td></td><td></td><td></td><td></td><td>'+n0(data.reduce((a,x)=>a+(x.qty||0),0))+'</td><td>'+n0(data.reduce((a,x)=>a+(x.rec||0),0))+'</td><td>'+n0(units)+'</td><td></td><td>'+$(cost)+'</td></tr></tbody></table>'
+      +'<div class="foot">Days: red = runs out before this order can arrive and be checked in ('+meta.lead+' days); amber = short of the goal; green = covered. Stock now = warehouse + at Amazon + on the way. Revenue counts a duo\'s sales half to each bottle. Prepared by Elevate.</div></div>';
+    el.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{ plan=b.dataset.p; if(plan!=='mine') data.forEach(x=>x.mine=plan==='rec'?(x.rec||0):x.qty); paint(); });
+    el.querySelectorAll('input.q').forEach(inp=>inp.onchange=()=>{ const v=Math.max(0,Math.round(Number(inp.value)||0)); data[+inp.dataset.i].mine=v; plan='mine'; paint(); });
+  }
+  paint();
 }
 
 // ---- CYCLE COUNT ----
