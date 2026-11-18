@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'short-labels-1182';
+const BUILD_ID = 'ship-names-1183';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -3067,7 +3067,7 @@ app.post('/api/inbound/plans', auth, async (req, res) => {
   }
   // Prep owner is worked out per product (Amazon's prep data, planPart1); NONE is only the default.
   const prep = b.prepOwner === 'SELLER' ? 'SELLER' : 'NONE';
-  const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner, ship_from) VALUES($1,$2,$3,$4) RETURNING id', [String(b.name || '').trim().slice(0, 40) || null, JSON.stringify(items), prep, JSON.stringify(from)]);
+  const r = await pool.query('INSERT INTO inv_inbound_plans(name, items, prep_owner, ship_from) VALUES($1,$2,$3,$4) RETURNING id', [String(b.name || '').trim().slice(0, 40) || await defaultPlanName(), JSON.stringify(items), prep, JSON.stringify(from)]);
   const id = r.rows[0].id;
   runPlanJob(id, 'Starting…', (step) => planPart1(id, step));
   res.json({ ok: true, id });
@@ -3158,6 +3158,54 @@ app.get('/api/inbound/prep-categories', auth, (req, res) => res.json({ ok: true,
 // Seller Central after its destination was confirmed (Cancel here refuses
 // then, since it would call Amazon). No Amazon call, no stock change; its
 // shipments stay in 2D Production (delete them there if wanted).
+// Plan names (owner 11/18: "the names are funky, shipment 28?"): a plan
+// created with no name showed as "Plan <id>" (the database row number) and
+// its shipments as "App shipment (1/2)". A blank name now becomes the day it
+// was made, in Arizona, the way the owner names them by hand ("11/5/2026"),
+// with " #2", " #3" for a second plan that day; any plan can be renamed (✎),
+// and its shipments in Shipment Production take the new name, keeping their
+// "(1/2)". Plans saved before this get their date once at start.
+const azDay = t => new Date(t || Date.now()).toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', timeZone: 'America/Phoenix' });
+async function defaultPlanName(at, db = pool) {
+  const day = azDay(at);
+  const { rows } = await db.query("SELECT name FROM inv_inbound_plans WHERE name = $1 OR name LIKE $2", [day, day + ' #%']);
+  const used = new Set(rows.map(r => r.name));
+  if (!used.has(day)) return day;
+  let n = 2;
+  while (used.has(day + ' #' + n)) n++;
+  return day + ' #' + n;
+}
+async function renamePlanShipments(db, planId, name) {
+  // the " (1/2)" a split plan's shipments carry stays on the end
+  await db.query(`UPDATE inv_pack_shipments SET name = $2 || COALESCE(substring(name from $3), '')
+    WHERE amz->>'planRow' = $1::text`, [String(planId), name, ' \\(\\d+/\\d+\\)$']);
+}
+async function nameUnnamedPlans() {
+  try {
+    const { rows } = await pool.query("SELECT id, created_at FROM inv_inbound_plans WHERE name IS NULL OR btrim(name) = '' ORDER BY id");
+    for (const p of rows) {
+      await withTx(async (db) => {
+        const name = await defaultPlanName(p.created_at, db);
+        await db.query('UPDATE inv_inbound_plans SET name=$2 WHERE id=$1', [p.id, name]);
+        await renamePlanShipments(db, p.id, name);
+      });
+    }
+    if (rows.length) console.log('[Inbound] named ' + rows.length + ' unnamed plan(s) by date');
+  } catch (e) { console.error('[Inbound] naming plans failed (non-fatal):', e.message); }
+}
+app.post('/api/inbound/plans/:id/name', auth, async (req, res) => {
+  const id = parseInt(req.params.id, 10) || 0;
+  const name = String((req.body && req.body.name) || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  if (!name) return res.status(400).json({ ok: false, error: 'Type a name.' });
+  const out = await withTx(async (db) => {
+    const r = await db.query('UPDATE inv_inbound_plans SET name=$2, updated_at=now() WHERE id=$1 RETURNING id', [id, name]);
+    if (!r.rowCount) return null;
+    await renamePlanShipments(db, id, name);
+    return true;
+  });
+  if (!out) return res.status(404).json({ ok: false, error: 'Plan not found.' });
+  res.json({ ok: true, name });
+});
 app.post('/api/inbound/plans/:id/remove', auth, async (req, res) => {
   const id = parseInt(req.params.id, 10) || 0;
   if (planJobs.has(id)) return res.status(409).json({ ok: false, error: 'Amazon is still working on this plan — wait for it to finish.' });
@@ -10929,6 +10977,7 @@ initDb().then(() => {
   loadOwnerKeys();
   // Fees of shipments booked in the app before they were saved on the shipment.
   setTimeout(backfillBookedCosts, 30 * 1000);
+  setTimeout(nameUnnamedPlans, 20 * 1000);
   // The P&L's estimate needs the money events back to the last settlement.
   // The table started empty (10/29) and the dashboard's Update today only
   // reads two days, so October's estimate had just 10/28–10/29 until the next
