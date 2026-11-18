@@ -1346,10 +1346,12 @@ function prodHome(d){
       +'<button class="action" id="prodStartBtn" onclick="prodStart()" style="background:#008296;font-size:17px;padding:14px 26px;border-radius:10px">Load from Amazon →</button>'
       +'<button class="action" onclick="nsOpen()" style="background:#0d4450;font-size:17px;padding:14px 26px;border-radius:10px">➕ New shipment (no Send to Amazon)</button>'
       +'<button class="action" onclick="skuCheckOpen()" style="background:#eef2f6;color:#1f2733;font-size:15px;padding:14px 18px;border-radius:10px" title="ASINs with more than one SKU at Amazon (old SKUs), or an app SKU Amazon doesn\'t list">🔎 SKU check</button></div></div>'
-      +'<div id="nsPlans"></div><div id="nsFreight"></div>';
+      ;
   // The floor's section: where boxes are built and 2D labels printed. Big
-  // and outlined so a new employee knows this is the one to tap (the plans
-  // box above is the main shipment page: destination and freight setup).
+  // and outlined so a new employee knows this is the one to tap. It comes
+  // FIRST, right under the shipment box (owner 11/18: "move shipment
+  // production screen to the top, it's buried at the bottom"); the plans
+  // (destination and freight setup) and Freight so far follow it.
   h+='<div class="box" style="padding:0;overflow:hidden;border:2px solid #008296;box-shadow:0 0 0 4px rgba(0,130,150,0.15),0 12px 30px rgba(11,15,26,0.10)"><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;padding:20px 24px;border-bottom:1px solid #d5d9d9;background:linear-gradient(180deg,#f2fafb,#f0f2f2)">'
     +'<div><div style="font-family:Montserrat,sans-serif;font-size:26px;font-weight:900;color:#002f36;letter-spacing:1px">SHIPMENT PRODUCTION SCREEN 📦</div><div style="font-family:Montserrat,sans-serif;font-size:16px;font-weight:800;color:#006e7f;margin-top:4px;letter-spacing:0.3px">(FINISH GENERATING BOX LABELS) <span style="color:#5f6675;font-weight:700">— tap a shipment to build boxes &amp; print its 2D labels</span></div><div class="hint" style="margin-top:4px">Status from Amazon, updated '+ago(d&&d.statusAt)+(d&&d.statusError?' · <span style="color:#c0392b">Amazon: '+esc(d.statusError).slice(0,120)+'</span>':'')+'</div></div>'
     +'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">'+Object.values(counts).map(c=>'<span style="font-size:12px;font-weight:800;color:'+c.st.c+';background:'+c.st.bg+';padding:4px 10px;border-radius:999px">'+c.n+' '+c.st.t.toLowerCase()+'</span>').join('')
@@ -1369,6 +1371,7 @@ function prodHome(d){
   else h+=table(list);
   h+='</div>';
   if(cancelled.length) h+='<details class="box" style="padding:0;overflow:hidden"><summary style="cursor:pointer;padding:14px 20px;font-size:15px;font-weight:800;color:#5a6472">Cancelled shipments ('+cancelled.length+')</summary>'+table(cancelled)+'</details>';
+  h+='<div id="nsPlans"></div><div id="nsFreight"></div>';
   h+='</div>';
   el.innerHTML=h;
   const inp=document.getElementById('prodSidIn'); if(inp) inp.focus();
@@ -1423,14 +1426,33 @@ function nsFreightBox(){
     el.innerHTML=h;
   }).catch(()=>{});
 }
+// ✎ beside a plan's name (owner 11/18, "the names are funky, shipment 28?"):
+// renames the plan and its shipments in Shipment Production.
+function nsRenameBtn(p){
+  return '<button title="Rename this shipment" onclick="event.stopPropagation();nsRename('+p.id+',this)" data-name="'+esc(p.name||'')+'" style="border:0;background:#eef2f6;color:#0d4450;border-radius:999px;padding:3px 9px;font-size:12px;font-weight:800;cursor:pointer;vertical-align:3px">✎</button>';
+}
+function nsRename(id, btn){
+  const cur=(btn&&btn.dataset.name)||'';
+  const v=prompt('Name this shipment (its shipments in Shipment Production take the name too):', cur);
+  if(v==null) return; const name=v.replace(/\s+/g,' ').trim();
+  if(!name){ toast('Type a name',true); return; }
+  if(name===cur) return;
+  api('/api/inbound/plans/'+id+'/name',{method:'POST',body:JSON.stringify({name})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Not renamed',true); return; }
+    toast('Renamed to '+d.name);
+    // on Shipment Production's home: redraw it (the floor list carries the name too); on the plan's own page: redraw that
+    if(document.getElementById('prodHome')) api('/api/pack/list').then(prodHome).catch(()=>nsPlansBox());
+    else nsPlan(id);
+  }).catch(e=>toast('Not renamed: '+e.message,true));
+}
 function nsPlansBox(){
   nsFreightBox();
   const el=document.getElementById('nsPlans'); if(!el) return;
   ownerApi('/api/inbound/plans').then(d=>{
     if(!d||!d.ok||!d.plans.length){ el.innerHTML=''; return; }
-    el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:20px 24px;border-bottom:1px solid #d5d9d9"><div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#002f36;letter-spacing:1px">SHIPMENT CREATED – MAIN PAGE</div><div style="font-family:Montserrat,sans-serif;font-size:15px;font-weight:800;color:#007185;margin-top:4px;letter-spacing:1px">DESTINATION AND FREIGHT SETUP</div><div class="hint" style="margin-top:2px">Boxes and labels are built in the Shipment Production Screen below.</div></div>'
+    el.innerHTML='<div class="box" style="padding:0;overflow:hidden"><div style="padding:20px 24px;border-bottom:1px solid #d5d9d9"><div style="font-family:Montserrat,sans-serif;font-size:24px;font-weight:900;color:#002f36;letter-spacing:1px">SHIPMENT CREATED – MAIN PAGE</div><div style="font-family:Montserrat,sans-serif;font-size:15px;font-weight:800;color:#007185;margin-top:4px;letter-spacing:1px">DESTINATION AND FREIGHT SETUP</div><div class="hint" style="margin-top:2px">Boxes and labels are built in the Shipment Production Screen above.</div></div>'
       +'<table style="width:100%;border-collapse:collapse;box-shadow:none;border-radius:0"><tr>'+prodTh('NAME','left')+prodTh('PRODUCTS')+prodTh('UNITS')+prodTh('CREATED')+prodTh('STATUS')+prodTh('')+'</tr>'
-      +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b style="font-size:18px">'+esc(p.name||('Plan '+p.id))+'</b>'+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd('<b style="font-size:17px">'+p.skus+'</b>')+prodTd('<b style="font-size:18px">'+p.units.toLocaleString()+'</b>')
+      +d.plans.map(p=>'<tr style="cursor:pointer" onclick="nsPlan('+p.id+')">'+prodTd('<b style="font-size:18px">'+esc(p.name||('Plan '+p.id))+'</b> '+nsRenameBtn(p)+(p.step?'<div class="hint">'+esc(p.step)+'</div>':''),'left')+prodTd('<b style="font-size:17px">'+p.skus+'</b>')+prodTd('<b style="font-size:18px">'+p.units.toLocaleString()+'</b>')
         +prodTd(new Date(p.created_at).toLocaleDateString('en-US',{month:'short',day:'numeric'}),'center','color:#5a6472;font-size:15px;font-weight:700')+prodTd(p.floor_done?'<span style="display:inline-block;padding:6px 13px;border-radius:999px;font-family:Montserrat,sans-serif;font-size:12px;font-weight:900;letter-spacing:0.6px;color:#0f1111;background:linear-gradient(180deg,#ffc05a,#ff9900)">▶ NEXT: SEND BOX INFO</span>':nsPill(p.status))
         +prodTd('<button onclick="event.stopPropagation();nsRemove('+p.id+')" title="Remove from the app (nothing sent to Amazon)" style="cursor:pointer;border:1px solid #d5d9d9;background:#fff;color:#8a8f9a;border-radius:999px;width:32px;height:32px;font-weight:900">✕</button>')+'</tr>').join('')+'</table></div>';
   }).catch(()=>{});
@@ -1686,7 +1708,7 @@ function nsPlan(id){
     const stepRow=(ok,t,sub)=>'<div style="display:flex;gap:12px;align-items:center;padding:9px 0;border-top:1px solid #eef2f6"><span style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:900;background:'+(ok?'#1e8449':'#e2e8f0')+';color:'+(ok?'#fff':'#8a97a6')+'">'+(ok?'✓':'•')+'</span><div><b>'+t+'</b>'+(sub?'<div class="hint">'+sub+'</div>':'')+'</div></div>';
     const units=p.items.reduce((t,i)=>t+i.qty,0);
     const openBtn=f=>'<button class="action" onclick="clearTimeout(_nsPoll);prodLoad(\''+esc(f)+'\')" style="background:#008296">Open in Shipment Production →</button>';
-    let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+(p.status==='building'&&floorDone?'<span style="display:inline-block;padding:6px 13px;border-radius:999px;font-family:Montserrat,sans-serif;font-size:12px;font-weight:900;letter-spacing:0.6px;color:#0f1111;background:linear-gradient(180deg,#ffc05a,#ff9900)">▶ NEXT: SEND BOX INFO</span>':nsPill(p.status))
+    let h='<div class="box" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><div><b style="font-size:20px">'+esc(p.name||('Plan '+p.id))+'</b> '+nsRenameBtn(p)+' '+(p.status==='building'&&floorDone?'<span style="display:inline-block;padding:6px 13px;border-radius:999px;font-family:Montserrat,sans-serif;font-size:12px;font-weight:900;letter-spacing:0.6px;color:#0f1111;background:linear-gradient(180deg,#ffc05a,#ff9900)">▶ NEXT: SEND BOX INFO</span>':nsPill(p.status))
       +'<div class="hint">'+p.items.length+' products · '+units.toLocaleString()+' units'+(p.plan_id?' · Amazon plan '+esc(p.plan_id):'')+'</div></div>'
       +'<div style="display:flex;gap:6px"><button class="action" onclick="clearTimeout(_nsPoll);_ns=null;prodOpen()" style="background:#5a6472">← Back</button>'
       +'<button class="action" onclick="nsCancel('+p.id+')" style="background:#fdecea;color:#c0392b">Cancel plan</button></div></div>';
