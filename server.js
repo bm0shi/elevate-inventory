@@ -7,7 +7,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const fs = require('fs');
 const path = require('path');
-const { getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, getListingPrice, getOfferSellers, inbound: amzInbound } = require('./spapi');
+const { searchCatalogByCode, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, getListingPrice, getOfferSellers, inbound: amzInbound } = require('./spapi');
 const keepa = require('./keepa');
 const multer = require('multer');
 const pdfParse = require('pdf-parse');
@@ -470,7 +470,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'best-month-1184';
+const BUILD_ID = 'price-check-1185';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -7460,6 +7460,67 @@ app.get('/api/products-to-add', ownerAuth, async (req, res) => {
 // Products to Add: ASINs the owner hid (crossed out, left out of the totals;
 // unhiding brings them back). Owner-only, like the screen.
 // ---------- BRAND FINDER (owner 11/8) ----------
+// Price List Check (owner 11/20: an Ardell volume price list, "are you able to
+// use our brand finder to find some opportunity for us here after amazon
+// fees"). Admin → Planning. A distributor's price list (Excel or CSV) is read
+// (lib/price-list.js: its UPCs and every cost column), each UPC is matched to
+// its Amazon listings (Catalog Items search by UPC, no tokens), the listings
+// are read from Keepa as Brand Finder reads them (price, referral %, FBA fee,
+// monthly sales, sellers; about 1 token each) and every row gets profit per
+// unit after Amazon's fees for each cost column. One saved run (inv_cache
+// 'price_check'); costs and margins, so owner only.
+const priceList = require('./lib/price-list');
+let priceJob = { running: false, step: '', done: 0, total: 0, error: null, startedAt: null, tokensLeft: null };
+app.post('/api/price-check/read', ownerAuth, upload.single('file'), async (req, res) => {
+  let parsed;
+  try {
+    if (req.file) parsed = priceList.readPriceList(req.file.buffer, req.file.originalname);
+    else if (req.body && req.body.text) parsed = priceList.parseTable(priceList.readDelimited(String(req.body.text)));
+    else return res.status(400).json({ ok: false, error: 'Pick a price list (Excel .xlsx or .csv), or paste it.' });
+  } catch (e) { return res.status(400).json({ ok: false, error: e.message }); }
+  if (!parsed.rows.length) return res.status(400).json({ ok: false, error: 'No rows with a UPC under the header.' });
+  if (parsed.rows.length > 2000) return res.status(400).json({ ok: false, error: 'Up to 2,000 items at a time (this list has ' + parsed.rows.length + ').' });
+  res.json({ ok: true, ...parsed, name: String((req.file && req.file.originalname) || 'Pasted list').replace(/\.(xlsx|csv|txt)$/i, '').slice(0, 80) });
+});
+app.post('/api/price-check/start', ownerAuth, async (req, res) => {
+  if (priceJob.running) return res.json({ ok: true, already: true });
+  if (!keepa.keyOk()) return res.status(400).json({ ok: false, error: 'KEEPA_API_KEY is not set on the server.' });
+  const b = req.body || {};
+  const rows = (Array.isArray(b.rows) ? b.rows : []).slice(0, 2000).map(r => ({
+    upc: priceList.normUpc(r.upc), name: String(r.name || '').slice(0, 160), item: String(r.item || '').slice(0, 40), section: String(r.section || '').slice(0, 120),
+    casePack: parseInt(r.casePack, 10) || null, inner: parseInt(r.inner, 10) || null,
+    costs: Object.fromEntries(Object.entries(r.costs || {}).slice(0, 8).map(([k, v]) => [String(k).slice(0, 40), Number(v)]).filter(([, v]) => isFinite(v) && v > 0)),
+  })).filter(r => r.upc);
+  if (!rows.length) return res.status(400).json({ ok: false, error: 'No rows with a UPC.' });
+  const other = Math.max(0, Math.min(50, Number(b.other) || 0));
+  const name = String(b.name || 'Price list').slice(0, 80), costCols = (Array.isArray(b.costCols) ? b.costCols : []).map(x => String(x).slice(0, 40)).slice(0, 8);
+  priceJob = { running: true, step: 'Starting…', done: 0, total: rows.length, error: null, startedAt: new Date().toISOString(), tokensLeft: null };
+  res.json({ ok: true, started: true, total: rows.length });
+  (async () => {
+    try {
+      priceJob.step = 'Finding each UPC on Amazon…';
+      const byCode = await searchCatalogByCode(rows.map(r => r.upc), t => { priceJob.step = t; });
+      const asins = [...new Set(Object.values(byCode).flat().map(l => l.asin))];
+      priceJob.step = `Reading ${asins.length} Amazon listings (price, fees, sales, sellers)…`;
+      const k = asins.length ? await keepa.getProducts(asins, t => { priceJob.step = 'Keepa: ' + t; }, null, { buybox: false }) : { products: [], tokensLeft: null, failed: [] };
+      priceJob.tokensLeft = k.tokensLeft;
+      const kp = Object.fromEntries((k.products || []).map(p => [p.asin, p]));
+      const out = rows.map(r => {
+        const listings = (byCode[r.upc] || []).map(l => ({ ...l, k: kp[l.asin] }));
+        return { ...r, ...priceList.scoreRow(r, listings, other), onAmazon: (byCode[r.upc] || []).length };
+      });
+      priceJob.done = rows.length;
+      await saveCache('price_check', { at: new Date().toISOString(), name, costCols, other, rows: out, keepaFailed: (k.failed || []).length });
+      priceJob.step = 'Done';
+    } catch (e) { priceJob.error = e.message; priceJob.step = 'Stopped'; }
+    finally { priceJob.running = false; }
+  })();
+});
+app.get('/api/price-check', ownerAuth, async (req, res) => {
+  const d = ((await pool.query("SELECT data FROM inv_cache WHERE cache_key='price_check'")).rows[0] || {}).data || null;
+  res.json({ ok: true, data: d, job: priceJob });
+});
+
 // Cosmoprof brands worth adding: listings open to 3+ third-party sellers,
 // 100+ a day between them (lib/brand-finder.js). The brand list is pasted
 // (Cosmoprof needs the owner's login; Claude in Chrome on their computer can
