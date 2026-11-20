@@ -100,6 +100,9 @@
   .d2-best-p .new{color:#1e8449;font-weight:800}
   .d2-best-p .gap{color:${C.muted}}
   .d2-best-p + .d2-best-p{background:#f3f6f8;border-color:#e3e9ee}
+  .d2-best-br{flex-basis:100%;height:0}
+  .d2-best-p.mo{background:#f1ebfa;border-color:#ddd0f3}
+  .d2-best-p.mo + .d2-best-p.mo{background:#f3f6f8;border-color:#e3e9ee}
   .d2-keys{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;color:${C.ink2};font-weight:650}
   .d2-keys span{display:inline-flex;align-items:center;gap:6px}.d2-keys i{width:10px;height:3px;border-radius:2px;display:inline-block}
   .d2-keys i.sq{height:10px;width:10px;border-radius:3px}
@@ -711,9 +714,16 @@
                curLbl: 'so far', prevLbl: ok ? 'yesterday by ' + hourLbl((h + 1) % 24) : 'yesterday', est: ok && D.M[T] ? D.M[T].est : 0 });
     out.push(mk('7', '7 days', span(addD(T, -7), Y), span(addD(T, -14), addD(T, -8)), 'through yesterday', 'the 7 days before'));
     out.push(mk('30', '30 days', span(addD(T, -30), Y), span(addD(T, -60), addD(T, -31)), 'through yesterday', 'the 30 days before'));
+    // Month and Year to date run through today once today has a saved day;
+    // before that (the small hours, before the first order is pulled) through
+    // yesterday. They needed every day, today included, so at 1:39 AM both read
+    // "—" / "no comparison yet" (owner's screenshot 11/20). The period before is
+    // cut to the same number of days.
+    const EN = D.M[T] ? T : Y, ed = +EN.slice(8), thru = EN === T ? 'through today' : 'through yesterday';
     const m1 = T.slice(0, 8) + '01', pm1 = addD(m1, -1).slice(0, 8) + '01', pmEnd = addD(m1, -1);
-    out.push(mk('mtd', 'Month to date', span(m1, T), span(pm1, pm1.slice(0, 8) + String(Math.min(td, +pmEnd.slice(8))).padStart(2, '0')), 'through today', 'same days last month'));
-    out.push(mk('ytd', 'Year to date', span(ty + '-01-01', T), span((ty - 1) + '-01-01', (ty - 1) + '-' + T.slice(5, 7) + '-' + (T.slice(5) === '02-29' ? '28' : T.slice(8))), 'through today', 'same stretch last year'));
+    out.push(mk('mtd', 'Month to date', EN >= m1 ? span(m1, EN) : [], EN >= m1 ? span(pm1, pm1.slice(0, 8) + String(Math.min(ed, +pmEnd.slice(8))).padStart(2, '0')) : [], thru, 'same days last month'));
+    const y1 = ty + '-01-01', yE = EN.slice(5) === '02-29' ? '28' : EN.slice(8);
+    out.push(mk('ytd', 'Year to date', EN >= y1 ? span(y1, EN) : [], EN >= y1 ? span((ty - 1) + '-01-01', (ty - 1) + '-' + EN.slice(5, 7) + '-' + yE) : [], thru, 'same stretch last year'));
     // Custom: any from/to; compared with the same number of days just before
     let cf = store.get('d2From'), ct = store.get('d2To');
     if (!(cf && ct && cf <= ct)) { ct = Y; cf = addD(T, -14); }
@@ -940,6 +950,19 @@
     if (!rec) { box.innerHTML = ''; return; }
     const pill = (lbl, x, extra) => '<span class="d2-best-p"><b>' + lbl + '</b> ' + E(when(x.d)) + ' · <b class="v">' + amt(x.sales) + '</b>' + (x.orders ? ' · ' + x.orders.toLocaleString() + ' orders' : '') + (extra || '') + '</span>';
     let h = '';
+    // Best month (owner 11/20: "best month ytd and best month ever"): every
+    // saved day's gross sales added up by calendar month; this month counts so
+    // far. A month the history only partly covers counts what's saved.
+    const mon = {};
+    for (const d of Object.keys(D.M)) { const v = +D.M[d].sales; if (isFinite(v)) mon[d.slice(0, 7)] = (mon[d.slice(0, 7)] || 0) + v; }
+    const topM = keys => keys.reduce((b, k) => (!b || mon[k] > mon[b] ? k : b), null);
+    const curM = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' }).slice(0, 7);
+    const mName = k => { const [y, m] = k.split('-'); return new Date(+y, +m - 1, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) + (k === curM ? ' (so far)' : ''); };
+    const mAll = topM(Object.keys(mon)), mYtd = topM(Object.keys(mon).filter(k => k.slice(0, 4) === String(nowY)));
+    const mPill = (lbl, k, extra) => '<span class="d2-best-p mo"><b>' + lbl + '</b> ' + E(mName(k)) + ' · <b class="v">' + amt(mon[k]) + '</b>' + (extra || '') + '</span>';
+    let months = '';
+    if (mYtd && mYtd === mAll) months = mPill('📅 Best month this year', mYtd, ' · <span class="new">best ever</span>');
+    else { if (mYtd) months += mPill('📅 Best month this year', mYtd); if (mAll) months += mPill('Best month ever', mAll, mYtd ? ' <span class="gap">(this year\'s is ' + Math.round(100 * mon[mYtd] / mon[mAll]) + '% of it)</span>' : ''); }
     if (p.k === 'today') {
       const t = day(p.curDays && p.curDays[p.curDays.length - 1] || '');
       h = pill('🏆 Record day', rec, t && t.sales >= rec.sales && t.d === rec.d ? ' · <span class="new">today!</span>' : '');
@@ -949,7 +972,7 @@
       if (best && best.d !== rec.d) h += pill('Record', rec, ' <span class="gap">(' + Math.round(100 * best.sales / rec.sales) + '% of it)</span>');
       if (!best) h = pill('🏆 Record day', rec);
     }
-    box.innerHTML = h;
+    box.innerHTML = h + (months ? '<span class="d2-best-br"></span>' + months : '');
   }
 
   // Bars: this period beside the previous one. Today by hour; long ranges
