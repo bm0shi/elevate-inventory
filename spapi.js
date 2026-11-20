@@ -740,6 +740,44 @@ async function getCatalogItems(asins, onProgress) {
   return out;
 }
 
+// Amazon listings per UPC / EAN (Catalog Items search by identifier, 20 a
+// call), for Price List Check (owner 11/20). Each item comes back with its own
+// identifiers, so a code maps to exactly the listings that carry it (a UPC can
+// be on several: a single and a seller's bundle). → { code: [{asin, title,
+// brand}] }; a code Amazon doesn't know is left out; a failed call throws.
+async function searchCatalogByCode(codes, onProgress) {
+  const out = {}, list = [...new Set((codes || []).filter(Boolean))];
+  const norm = v => { let d = String(v || '').replace(/[^0-9]/g, ''); if (d.length === 13 && d[0] === '0') d = d.slice(1); if (d.length === 14 && d.startsWith('00')) d = d.slice(2); return d; };
+  for (let i = 0; i < list.length; i += 20) {
+    const batch = list.slice(i, i + 20);
+    if (onProgress) onProgress(`finding listings ${Math.min(i + 20, list.length)} of ${list.length} UPCs…`);
+    // 12-digit codes are UPCs; anything else is asked for as an EAN
+    for (const [type, codesOfType] of [['UPC', batch.filter(c => c.length === 12)], ['EAN', batch.filter(c => c.length !== 12)]]) {
+      if (!codesOfType.length) continue;
+      const want = new Set(codesOfType.map(norm));
+      const url = `${SP_API_BASE}/catalog/2022-04-01/items?marketplaceIds=${MARKETPLACE_ID}&identifiersType=${type}&identifiers=${codesOfType.map(encodeURIComponent).join(',')}&includedData=identifiers,summaries&pageSize=20`;
+      let resp, tries = 0;
+      for (;;) {
+        try { const token = await getAccessToken(); resp = await http.get(url, { headers: { 'x-amz-access-token': token } }); break; }
+        catch (e) {
+          if (e.response?.status === 429 && tries++ < 5) { await sleep(3000 * tries); continue; }
+          throw new Error('Amazon catalog search: ' + (e.response?.data?.errors?.[0]?.message || e.message));
+        }
+      }
+      for (const it of (resp.data.items || [])) {
+        const ids = (it.identifiers || []).flatMap(g => g.identifiers || []).map(x => norm(x.identifier));
+        const sum = (it.summaries || [])[0] || {};
+        for (const c of ids) if (want.has(c)) {
+          const arr = out[c] = out[c] || [];
+          if (!arr.some(x => x.asin === it.asin)) arr.push({ asin: it.asin, title: sum.itemName || '', brand: sum.brand || '' });
+        }
+      }
+      await sleep(600);   // searchCatalogItems: 2 requests a second
+    }
+  }
+  return out;
+}
+
 // Package / item dimensions per ASIN (Catalog Items `dimensions`), for FBA
 // capacity (lib/capacity.js turns them into cubic feet). Returns
 // { asin: { dimensions } | { error } } — an error is kept per ASIN, never
@@ -1399,4 +1437,4 @@ async function ownsBuyBox(asin, sellerId) {
   }
 }
 
-module.exports = { getOfferSellers, getListingPrice, setListingPrice, ownsBuyBox, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };
+module.exports = { searchCatalogByCode, getOfferSellers, getListingPrice, setListingPrice, ownsBuyBox, getOrderRecords, getReturnRecords, getReimbursementBodies, getSnapshotReport, getFinancialEvents, getInboundPipeline, getInboundFees, listSettlementReports, downloadReportDocument, getHazmatStatus, getReceivedShipments, getShipmentReceivedItems, getFbaInventory, getSalesVelocity, getRestockReport, getMyPrices, getCatalogImages, getCatalogItems, getItemDimensions, getLiveOffers, findInboundShipment, getShipmentStatuses, getShipmentsInfo, inbound };

@@ -818,7 +818,7 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
           <div class="subcard"><div class="subgroup-label">📦 Data</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="market" onclick="showSubTab('market',event)">Market Data</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="velocity" onclick="showSubTab('velocity',event)">Velocity</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="value" onclick="showSubTab('value',event)">Inventory Value</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="fbainv" onclick="showSubTab('fbainv',event)">FBA Inventory</button></div></div>
           <div class="subcard"><div class="subgroup-label">🚚 Shipments</div><div class="subgroup-btns"><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="transit" onclick="showSubTab('transit',event)">In Transit</button><button class="subtab amz" title="Pulls data from Amazon — refresh it now and then" data-sub="shipments" onclick="showSubTab('shipments',event)">Shipments</button></div></div>
           <div class="subcard"><div class="subgroup-label">🏷️ Prices</div><div class="subgroup-btns"><button class="subtab amz" title="Night price drop: lower prices in time slots, put them back after" data-sub="reprice" onclick="showSubTab('reprice',event)">Repricer</button></div></div>
-          <div class="subcard"><div class="subgroup-label">🧭 Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button><button class="subtab" data-sub="brands" onclick="showSubTab('brands',event)">Brand Finder</button></div></div>
+          <div class="subcard"><div class="subgroup-label">🧭 Planning</div><div class="subgroup-btns"><button class="subtab" data-sub="smartscout" onclick="showSubTab('smartscout',event)">Smart Scout</button><button class="subtab" data-sub="ssorders" onclick="showSubTab('ssorders',event)">Smart Scout Orders</button><button class="subtab" data-sub="toadd" onclick="showSubTab('toadd',event)">Products to Add</button><button class="subtab" data-sub="brands" onclick="showSubTab('brands',event)">Brand Finder</button><button class="subtab" data-sub="pricecheck" onclick="showSubTab('pricecheck',event)">Price List Check</button></div></div>
           <div class="subcard"><div class="subgroup-label">✅ Checks</div><div class="subgroup-btns"><button class="subtab" data-sub="status" onclick="showSubTab('status',event)">App status<span id="statusDot" class="fresh-tag" style="display:none"></span></button><button class="subtab" data-sub="history" onclick="showSubTab('history',event)">Received Log</button><button class="subtab" data-sub="shortages" onclick="showSubTab('shortages',event)">Shortages<span id="shortBadge" class="fresh-tag stale" style="display:none"></span></button><button class="subtab" data-sub="bundles" onclick="showSubTab('bundles',event)">Bundles</button><button class="subtab" data-sub="audit" onclick="showSubTab('audit',event)">Stock Audit</button><button class="subtab" data-sub="maphealth" onclick="showSubTab('maphealth',event)">Mapping Health</button><button class="subtab" data-sub="hzstore" onclick="showSubTab('hzstore',event)" title="Cubic feet per ASIN for a dangerous-goods storage increase request">Hazmat storage</button></div></div>
           <div class="subcard"><div class="subgroup-label">📍 Item locations</div><div class="subgroup-btns"><button class="subtab" data-sub="itemlocs" onclick="showSubTab('itemlocs',event)">Item Locations</button></div></div>
           <div class="subcard"><div class="subgroup-label">🧪 Beta testing</div><div class="subgroup-btns"><button class="subtab betatoggle" id="betaToggle" onclick="toggleBeta()">Show ▸</button><span id="betaBtns" style="display:none;gap:5px;flex-wrap:wrap"><button class="subtab" data-sub="restock" onclick="showSubTab('restock',event)">Restock Plan</button><button class="subtab" data-sub="sendnext" onclick="showSubTab('sendnext',event)">Send Next</button><button class="subtab" data-sub="orders" onclick="showSubTab('orders',event)">Suggested Orders (CosmoProf)</button><button class="subtab" data-sub="count" onclick="showSubTab('count',event)">Cycle Count</button></span></div></div>
@@ -1068,6 +1068,7 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
     <div id="restockBody"></div>
   </div>
 <div id="sub-brands" class="subpanel"><div id="brandsBody"><div class="hint" style="padding:20px;text-align:center">Loading…</div></div></div>
+<div id="sub-pricecheck" class="subpanel"><div id="pcBody"><div class="hint" style="padding:20px;text-align:center">Loading…</div></div></div>
 <div id="sub-toadd" class="subpanel">
     <div class="box">
       <div style="font-weight:700">Products to Add — Expansion Roadmap</div>
@@ -4308,6 +4309,114 @@ function loadBrands(){
   ownerApi('/api/brand-finder').then(d=>{ if(!d||d.ok===false){ document.getElementById('brandsBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">'+esc((d&&d.error)||'Could not load')+'</div>'; return; }
     window._bf=d; renderBrands(); if(d.job&&d.job.running) bfPoll(); }).catch(e=>{ document.getElementById('brandsBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not load: '+esc(e.message)+'</div>'; });
 }
+// ---- PRICE LIST CHECK (owner 11/20) ----
+// A distributor's price list (Excel or CSV) → every item's Amazon listing and
+// its profit per unit after Amazon's fees, for each of the list's cost columns
+// (dealer / salon / volume…). The server matches UPCs to listings (Amazon's
+// catalog) and reads them from Keepa (about 1 token a listing); the result is
+// saved, and the cost column, extra cost and filters change here with no new run.
+let _pc=null, _pcRead=null, _pcPoll=null;
+const _pcF=(()=>{ const d={cost:'',minProfit:'',minRoi:'',hideNotFound:true,hideAmz:false,q:''}; try{ return Object.assign(d, JSON.parse(localStorage_get('pcFilters')||'{}')); }catch(e){ return d; } })();
+function pcSave(){ try{ localStorage_set('pcFilters', JSON.stringify(_pcF)); }catch(e){} }
+function loadPriceCheck(){
+  ownerApi('/api/price-check').then(d=>{ if(!d||d.ok===false){ document.getElementById('pcBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">'+esc((d&&d.error)||'Could not load.')+'</div>'; return; }
+    _pc=d; renderPriceCheck(); if(d.job&&d.job.running) pcPollOn(); }).catch(e=>{ document.getElementById('pcBody').innerHTML='<div class="hint" style="color:#c0392b;padding:16px">Could not load: '+esc(e.message)+'</div>'; });
+}
+function pcPollOn(){ clearTimeout(_pcPoll); _pcPoll=setTimeout(()=>ownerApi('/api/price-check').then(d=>{ if(d&&d.ok){ _pc=d; renderPriceCheck(); if(d.job&&d.job.running) pcPollOn(); else if(d.job&&d.job.error) toast('Price check stopped: '+d.job.error,true); else toast('Price check done'); } }).catch(()=>pcPollOn()), 3000); }
+function pcReadFile(inp){
+  const f=inp&&inp.files&&inp.files[0]; if(!f) return;
+  const fd=new FormData(); fd.append('file', f);
+  document.getElementById('pcReadOut').innerHTML='<span class="hint">Reading '+esc(f.name)+'…</span>';
+  ownerApi('/api/price-check/read',{method:'POST',body:fd}).then(pcGotRead).catch(e=>toast('Could not read: '+e.message,true));
+}
+function pcReadPaste(){
+  const t=(document.getElementById('pcPaste')||{}).value||''; if(!t.trim()){ toast('Paste the price list first',true); return; }
+  ownerApi('/api/price-check/read',{method:'POST',body:JSON.stringify({text:t})}).then(pcGotRead).catch(e=>toast('Could not read: '+e.message,true));
+}
+function pcGotRead(d){
+  const el=document.getElementById('pcReadOut');
+  if(!d||d.ok===false){ el.innerHTML='<span style="color:#c0392b;font-weight:700">'+esc((d&&d.error)||'Could not read the list.')+'</span>'; _pcRead=null; return; }
+  _pcRead=d;
+  el.innerHTML='<div style="padding:10px 12px;border-radius:10px;background:#eef7f2;margin-top:8px"><b>'+d.rows.length.toLocaleString()+' items with a UPC</b> in “'+esc(d.name)+'” · cost columns: '+d.costCols.map(c=>'<b>'+esc(c)+'</b>').join(', ')
+    +'<div class="hint" style="margin-top:4px">Each UPC is found on Amazon first (free), then each listing found is read from Keepa: about 1 token a listing, so roughly '+d.rows.length.toLocaleString()+'–'+Math.round(d.rows.length*1.5).toLocaleString()+' tokens. Keepa waits for tokens when it runs low; it keeps going if you leave the page.</div>'
+    +'<div style="margin-top:8px"><button class="action" onclick="pcStart()" style="background:#008296">Check on Amazon →</button></div></div>';
+}
+function pcStart(){
+  if(!_pcRead) return;
+  const other=(document.getElementById('pcOther')||{}).value||0;
+  ownerApi('/api/price-check/start',{method:'POST',body:JSON.stringify({rows:_pcRead.rows, name:_pcRead.name, costCols:_pcRead.costCols, other})}).then(d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not start',true); return; }
+    toast(d.already?'A check is already running':'Checking '+d.total+' items on Amazon…'); _pcRead=null; loadPriceCheck();
+  }).catch(e=>toast('Could not start: '+e.message,true));
+}
+function pcSet(k,v){ _pcF[k]=v; pcSave(); renderPriceCheck(); }
+function pcRows(){
+  const d=(_pc&&_pc.data)||{}, col=_pcF.cost&&(d.costCols||[]).includes(_pcF.cost)?_pcF.cost:(d.costCols||[])[(d.costCols||[]).length-1];
+  const rows=(d.rows||[]).map(r=>Object.assign({},r,{cost:(r.costs||{})[col], p:(r.byCost||{})[col]||null}));
+  return {d, col, rows};
+}
+function pcShown(rows){
+  const minP=_pcF.minProfit===''?null:Number(_pcF.minProfit), minR=_pcF.minRoi===''?null:Number(_pcF.minRoi)/100, q=String(_pcF.q||'').toLowerCase();
+  return rows.filter(r=>{
+    if(_pcF.hideNotFound && !r.found) return false;
+    if(_pcF.hideAmz && r.amazonSelling) return false;
+    if(minP!=null && !(r.p && r.p.profit>=minP)) return false;
+    if(minR!=null && !(r.p && r.p.roi>=minR)) return false;
+    if(q && !((r.name+' '+(r.title||'')+' '+r.upc+' '+(r.asin||'')+' '+(r.section||'')).toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+function renderPriceCheck(){
+  const el=document.getElementById('pcBody'); if(!el) return;
+  const J=(_pc&&_pc.job)||{}, {d, col, rows}=pcRows();
+  const m2=v=>v==null?'—':(v<0?'−$':'$')+Math.abs(v).toFixed(2), n0=v=>v==null?'—':Math.round(v).toLocaleString(), pct=v=>v==null?'—':Math.round(v*100)+'%';
+  let h='<div class="box"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><b style="font-size:18px">🧾 Price List Check</b><span class="hint">A distributor\'s price list → each item on Amazon, and the profit per unit after Amazon\'s fees</span></div>'
+    +'<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-top:12px">'
+    +'<label style="font-size:12px;font-weight:800;color:#5a6472">1. PRICE LIST (EXCEL .XLSX OR .CSV)<input type="file" accept=".xlsx,.csv,.txt" onchange="pcReadFile(this)" style="display:block;margin-top:4px"></label>'
+    +'<label style="font-size:12px;font-weight:800;color:#5a6472" title="Your own cost per unit on top of the list price: prep, labels, shipping it in. Applied on the next check.">EXTRA COST PER UNIT $<input id="pcOther" type="number" min="0" step="0.05" value="'+esc(String((d&&d.other)||0))+'" style="display:block;width:90px;margin-top:4px;padding:7px"></label>'
+    +'</div><details style="margin-top:8px"><summary class="hint" style="cursor:pointer">…or paste it from Excel</summary><textarea id="pcPaste" rows="5" style="width:100%;box-sizing:border-box;margin-top:6px;padding:8px;font-size:13px" placeholder="Copy the whole sheet in Excel (with its header row) and paste here"></textarea><button class="action" onclick="pcReadPaste()" style="background:#5a6472;margin-top:6px">Read pasted list</button></details>'
+    +'<div id="pcReadOut"></div>';
+  if(J.running) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#eef4fb;font-weight:700;color:#0d4450">⏳ '+esc(J.step||'')+(J.tokensLeft!=null?' · '+J.tokensLeft+' Keepa tokens left':'')+'<div class="hint" style="font-weight:600">Keeps going on the server. This page updates by itself.</div></div>';
+  else if(J.error) h+='<div style="margin-top:10px;padding:10px 12px;border-radius:10px;background:#fdecea;color:#c0392b;font-weight:700">Stopped: '+esc(J.error)+'</div>';
+  h+='</div>';
+  if(d&&d.rows&&d.rows.length){
+    const found=rows.filter(r=>r.found), shown=pcShown(rows), good=found.filter(r=>r.p&&r.p.profit>0);
+    const st=sortState('pc','pmo',-1), get={name:r=>String(r.title||r.name||'').toLowerCase(), cost:r=>r.cost, price:r=>r.price, fees:r=>r.p?r.price-r.p.profit-r.cost:null, profit:r=>r.p?r.p.profit:null, margin:r=>r.p?r.p.margin:null, roi:r=>r.p?r.p.roi:null, mo:r=>r.perMo, sellers:r=>r.sellers, our:r=>r.ourMo, pmo:r=>r.p?r.p.profitMo:null, rank:r=>r.rank};
+    const list=sortRows('pc', shown, get), T=(c,l,cls)=>sortTh('pc',c,l,'renderPriceCheck',cls);
+    h+='<div class="box" style="overflow-x:auto"><div style="display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:baseline"><b style="font-size:16px">'+esc(d.name||'Price list')+' · '+found.length+' of '+rows.length+' on Amazon · '+good.length+' profitable at '+esc(col||'')+'</b><span class="hint">checked '+new Date(d.at).toLocaleString()+(d.other?' · +$'+Number(d.other).toFixed(2)+' a unit of your own costs':'')+(d.keepaFailed?' · <span style="color:#b45309">'+d.keepaFailed+' Keepa batch(es) failed: check again</span>':'')+'</span></div>'
+      +'<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:10px">'
+      +'<label class="hint" style="font-weight:800">COST <select onchange="pcSet(\'cost\',this.value)" style="padding:6px 8px;font-weight:700">'+(d.costCols||[]).map(c=>'<option'+(c===col?' selected':'')+'>'+esc(c)+'</option>').join('')+'</select></label>'
+      +'<label class="hint" style="font-weight:800">PROFIT ≥ $<input type="number" step="0.5" value="'+esc(_pcF.minProfit)+'" placeholder="any" onchange="pcSet(\'minProfit\',this.value)" style="width:84px;padding:6px"></label>'
+      +'<label class="hint" style="font-weight:800">ROI ≥ <input type="number" step="5" value="'+esc(_pcF.minRoi)+'" placeholder="any" onchange="pcSet(\'minRoi\',this.value)" style="width:84px;padding:6px">%</label>'
+      +'<label class="hint"><input type="checkbox" '+(_pcF.hideNotFound?'checked':'')+' onchange="pcSet(\'hideNotFound\',this.checked)"> Hide not on Amazon</label>'
+      +'<label class="hint"><input type="checkbox" '+(_pcF.hideAmz?'checked':'')+' onchange="pcSet(\'hideAmz\',this.checked)"> Hide where Amazon sells</label>'
+      +'<input placeholder="Find…" value="'+esc(_pcF.q)+'" oninput="_pcF.q=this.value;clearTimeout(window._pcQ);window._pcQ=setTimeout(()=>{pcSave();renderPriceCheck();},300)" style="flex:1;min-width:140px;padding:6px 10px">'
+      +'<button class="mini" onclick="pcCopyAsins()">📋 Copy '+list.filter(r=>r.asin).length+' ASINs</button><button class="mini" onclick="pcCsv()">⬇ CSV</button></div>'
+      +'<table style="width:100%;border-collapse:collapse;margin-top:10px;font-size:13px"><thead><tr>'+T('name','Item')+'<th>UPC / ASIN</th>'+T('cost',esc(col||'Cost'))+T('price','Amazon price')+T('fees',d.other?'Fees + your $'+Number(d.other).toFixed(2):'Amazon fees')+T('profit','Profit / unit')+T('margin','Margin')+T('roi','ROI')+T('mo','Sells / mo')+T('sellers','Sellers')+T('our','Our share / mo')+T('pmo','Profit / mo')+T('rank','Rank')+'</tr></thead><tbody>'
+      +list.map(r=>{
+        const pr=r.p, pc=pr?(pr.profit>0?'#1e8449':'#c0392b'):'#8a97a6';
+        const why=!r.found?'not on Amazon':r.price==null?'no price on Amazon':r.fba==null?'no FBA fee from Keepa':'';
+        return '<tr style="border-top:1px solid #eef2f6">'
+          +'<td style="padding:7px 6px;text-align:left;max-width:340px"><div style="font-weight:700">'+(r.found?amzLinkSized(r.asin, r.title||r.name):esc(r.name))+'</div><div class="hint" style="font-size:11.5px">List: '+esc(r.name)+(r.section?' · '+esc(r.section):'')+(r.casePack?' · case '+r.casePack:'')+'</div>'
+            +(r.pack>1?'<div style="font-size:11.5px;color:#b45309;font-weight:700">⚠ Listing looks like a pack of '+r.pack+': the cost is per unit</div>':'')+(r.others?'<div class="hint" style="font-size:11.5px">+'+r.others+' other listing'+(r.others===1?'':'s')+' with this UPC</div>':'')+(r.amazonSelling?'<div style="font-size:11.5px;color:#b45309;font-weight:700">Amazon sells it</div>':'')+'</td>'
+          +'<td style="padding:7px 6px;text-align:center;font-family:monospace;font-size:11.5px">'+esc(r.upc)+(r.asin?'<br><span class="idchip" style="cursor:pointer;color:#008296" onclick="copyText(\''+esc(r.asin)+'\')" title="Copy">'+esc(r.asin)+'</span>':'')+'</td>'
+          +'<td style="text-align:center">'+m2(r.cost)+'</td><td style="text-align:center">'+m2(r.price)+'</td>'
+          +'<td style="text-align:center" title="'+(r.found&&r.price!=null?esc('Referral '+(r.referralPct||15)+'% '+(r.refEst?'(est.) ':'')+'= $'+(r.referral||0).toFixed(2)+(r.fba!=null?' · FBA $'+r.fba.toFixed(2):' · FBA fee unknown')+(d.other?' · your own $'+Number(d.other).toFixed(2):'')):'')+'">'+(pr?m2(r.price-pr.profit-r.cost):(why?'<span class="hint">'+esc(why)+'</span>':'—'))+'</td>'
+          +'<td style="text-align:center;font-weight:900;color:'+pc+'">'+(pr?m2(pr.profit):'—')+'</td><td style="text-align:center">'+(pr?pct(pr.margin):'—')+'</td><td style="text-align:center">'+(pr?pct(pr.roi):'—')+'</td>'
+          +'<td style="text-align:center">'+n0(r.perMo)+(r.perMoEst?'<span class="hint"> ≈</span>':'')+'</td><td style="text-align:center">'+n0(r.sellers)+'</td><td style="text-align:center">'+n0(r.ourMo)+'</td>'
+          +'<td style="text-align:center;font-weight:800">'+(pr&&pr.profitMo!=null?m2(pr.profitMo):'—')+'</td><td style="text-align:center" class="hint">'+n0(r.rank)+'</td></tr>';
+      }).join('')+(list.length?'':'<tr><td colspan="13" class="hint" style="padding:14px;text-align:center">Nothing matches these filters.</td></tr>')+'</tbody></table>'
+      +'<div class="hint" style="margin-top:8px">Amazon price = the lowest FBA offer now, else the Buy Box / lowest new offer. Amazon fees = the listing\'s referral % (15% if unknown, at least $0.30) + its FBA fee (Keepa)'+(d.other?' + your extra cost':'')+'. Sells / mo = Amazon\'s "bought in past month" (a floor), ≈ = from sales-rank drops. Our share = an even split with the sellers already there, plus us; Profit / mo = that × profit per unit. Check the pack size before buying: a UPC can sit on a multipack listing.</div></div>';
+  }
+  el.innerHTML=h;
+}
+function pcCopyAsins(){ const {rows}=pcRows(); const a=[...new Set(pcShown(rows).map(r=>r.asin).filter(Boolean))]; if(!a.length){ toast('No ASINs to copy'); return; } copyText(a.join('\n')); }
+function pcCsv(){
+  const {d, col, rows}=pcRows(), q=v=>{ v=v==null?'':String(v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }, f=v=>v==null?'':Number(v).toFixed(2);
+  const L=[['Item (list)','Section','UPC','ASIN','Amazon title','Case pack',col,'Amazon price','Referral','FBA fee','Profit / unit','Margin %','ROI %','Sells / mo','Sellers','Amazon sells','Our share / mo','Profit / mo','Rank'].map(q).join(',')];
+  for(const r of pcShown(rows)) L.push([r.name,r.section,r.upc,r.asin||'',r.title||'',r.casePack||'',f(r.cost),f(r.price),f(r.referral),f(r.fba),r.p?f(r.p.profit):'',r.p?Math.round(r.p.margin*100):'',r.p?Math.round(r.p.roi*100):'',r.perMo==null?'':Math.round(r.perMo),r.sellers==null?'':r.sellers,r.found?(r.amazonSelling?'yes':'no'):'',r.ourMo==null?'':Math.round(r.ourMo),r.p&&r.p.profitMo!=null?f(r.p.profitMo):'',r.rank||''].map(q).join(','));
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob(['﻿'+L.join('\r\n')],{type:'text/csv'})); a.download=(d.name||'price-list')+' - Amazon check.csv'; document.body.appendChild(a); a.click(); a.remove();
+}
 function bfPoll(){ clearTimeout(_bfPoll); _bfPoll=setTimeout(()=>{ ownerApi('/api/brand-finder').then(d=>{ if(d&&d.ok){ window._bf=d; renderBrands(); if(d.job&&d.job.running) bfPoll(); else toast(d.job&&d.job.error?'Brand Finder stopped: '+d.job.error:'Brand Finder done',!!(d.job&&d.job.error)); } }).catch(()=>bfPoll()); }, 4000); }
 function bfStart(recheck){
   const v=id=>(document.getElementById(id)||{}).value;
@@ -5147,6 +5256,7 @@ function showSubTab(name, ev){
   if(name==='itemlocs') loadItemLocs();
   if(name==='toadd'){ if(window._toaddData) renderToAdd(); else loadToAdd(); }
   if(name==='brands') loadBrands();
+  if(name==='pricecheck') loadPriceCheck();
   if(name==='market'){ if(window._mktData) renderMarket(); else loadMktCache(); checkMarketJobOnOpen(); }
   if(name==='velocity'){ if(window._velData) renderVelocity(); else loadVelCache(); }
   if(name==='value'){ if(window._valData) renderValue(); else loadValCache(); ownerApi('/api/inventory-value/status').then(j=>{ if(j&&j.running){ document.getElementById('valueBody').innerHTML='<div class="box" style="text-align:center;padding:24px"><div style="font-weight:700">Price pull in progress…</div><div id="valProgress" class="hint" style="margin-top:6px">'+(j.progress||'')+'</div></div>'; pollValJob(); } }).catch(()=>{}); }
