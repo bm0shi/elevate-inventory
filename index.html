@@ -574,7 +574,7 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
         <select id="invSupplier" onchange="invSupplierPick(this)" style="flex:1;min-width:180px;padding:10px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;font-weight:700;background:#fff"><option value="">Cosmoprof</option></select></div>
       <div class="hint" id="invSupplierHint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
       <input type="file" id="pdfFile" accept="application/pdf" style="display:none" onchange="uploadPdf()">
-      <button class="action full" onclick="document.getElementById('pdfFile').click()" id="uploadPdfBtn" style="background:#008296">📄 Upload Cosmoprof PDF</button>
+      <button class="action full" onclick="document.getElementById('pdfFile').click()" id="uploadPdfBtn" style="background:#008296;white-space:normal;overflow-wrap:anywhere;line-height:1.25">📄 Upload Cosmoprof PDF</button>
       <input type="file" id="photoInvFile" accept="application/pdf,image/*" multiple style="display:none" onchange="readPhotoInvoice([...this.files]);this.value=''">
       <button class="action full" onclick="document.getElementById('photoInvFile').click()" id="photoInvBtn" style="background:#2563a8;margin-top:8px">📷 Paper invoice (photo or scan)</button>
       <div class="hint" style="margin-top:4px">For paper slips: take a photo or pick a scanned PDF (several pages at once is fine). You'll see what was read before anything is added.</div>
@@ -4197,7 +4197,7 @@ function invSupplierPick(sel){
 }
 function invSupplierPaint(){
   const s=curSupplier(), b=document.getElementById('uploadPdfBtn'), h=document.getElementById('invSupplierHint'), pw=document.getElementById('invPasteWrap');
-  if(b) b.textContent=s?'📄 Upload '+s+' invoice or packing slip (PDF)':'📄 Upload Cosmoprof PDF';
+  if(b) b.textContent=s?'📄 Upload '+s+' PDF':'📄 Upload Cosmoprof PDF';
   if(h) h.innerHTML=s?'Invoices and packing slips from <b>'+esc(s)+'</b> are read like a paper invoice: you see what was read before anything is added. Its item numbers are kept apart from Cosmoprof\'s; link each item to its product once and it\'s remembered.':'Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won\'t read, use the paste box below as a backup.';
   if(pw) pw.style.display=s?'none':'';
 }
@@ -7809,7 +7809,7 @@ const NL_HEADS = {
   pendingprep: [1, 'Pending Prep', 'What needs to be prepped. Add items from On Hand (Prep on each card). Start a job, and as items are scanned into Prepped & Ready they clear here by themselves.'],
   prep:        [2, 'Prepped & Ready', 'Scan each FNSKU label as you prep and enter the quantity. It waits here for the next FBA shipment; On Hand only drops when it ships. A duo scan stages one of each bottle.'],
   ship:        [4, 'Ship to FBA', 'Post a shipment from Amazon\'s plan file or a pack slip. Units move to On the way, and clear by themselves when Amazon checks them in.'],
-  reconcile:   [0, 'Order Check-In', 'Cosmoprof invoices: upload the PDF, then check each order in as the boxes arrive.'],
+  reconcile:   [0, 'Order Check-In', 'Supplier invoices and packing slips: upload the PDF or a photo, then check each order in as the boxes arrive.'],
   receive:     [0, 'Receiving', 'Scan anything that came in without an invoice.'],
   log:         [0, 'Activity', 'Who prepped what and how fast, and every stock move, newest first.'],
 };

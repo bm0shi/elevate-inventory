@@ -474,7 +474,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'suppliers-1186';
+const BUILD_ID = 'reader-key-1187';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -6941,13 +6941,23 @@ app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req,
   const params = { model: 'claude-opus-5-5', max_tokens: 16000, messages: [{ role: 'user', content }],
     output_config: { effort: 'medium', format: { type: 'json_schema', schema: other ? invoicePhoto.SCHEMA_ANY : invoicePhoto.SCHEMA } },
     betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' };
+  // A refused key used to reach the screen as Anthropic's raw 401 JSON (owner 11/23, reading a Pro
+  // Beauty Shops slip): say what it means and where to fix it, like Ask Elevate does.
+  const keyRefused = e => e && (e.status === 401 || e.status === 403);
+  const keyMsg = 'The invoice reader\'s Anthropic API key was refused. Make a new key at platform.claude.com (API keys) and set ANTHROPIC_API_KEY in Railway (Ask Elevate uses the same key).';
   let msg;
-  try { msg = await client.beta.messages.create(params); }
-  catch (e) {
-    // the refusal fallback is a beta option: if the API refuses the option itself, ask without it
-    if (!(e && e.status === 400 && /fallback/i.test(e.message || ''))) throw e;
-    const { betas, fallbacks, ...plain } = params;
-    msg = await client.messages.create(plain);
+  try {
+    try { msg = await client.beta.messages.create(params); }
+    catch (e) {
+      // the refusal fallback is a beta option: if the API refuses the option itself, ask without it
+      if (!(e && e.status === 400 && /fallback/i.test(e.message || ''))) throw e;
+      const { betas, fallbacks, ...plain } = params;
+      msg = await client.messages.create(plain);
+    }
+  } catch (e) {
+    if (keyRefused(e)) return res.status(400).json({ ok: false, error: keyMsg });
+    if (e && (e.status === 429 || e.status === 529)) return res.status(503).json({ ok: false, error: 'The invoice reader is busy right now. Try again in a minute.' });
+    throw e;
   }
   if (msg.stop_reason === 'refusal') return res.status(422).json({ ok: false, error: 'The invoice reader declined this file. Use the emailed PDF or type the lines.' });
   if (msg.stop_reason === 'max_tokens') return res.status(422).json({ ok: false, error: 'That was too much to read at once. Send fewer pages at a time.' });
