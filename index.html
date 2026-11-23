@@ -569,18 +569,20 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
 
   <div id="reconcile" class="panel">
     <div class="box">
-      <div style="font-weight:700;margin-bottom:4px">Add Cosmoprof Invoice(s)</div>
-      <div class="hint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
+      <div style="font-weight:700;margin-bottom:4px">Add an invoice</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px"><label for="invSupplier" style="font-weight:800;font-size:13px">SUPPLIER</label>
+        <select id="invSupplier" onchange="invSupplierPick(this)" style="flex:1;min-width:180px;padding:10px;border:2px solid #e2e8f0;border-radius:8px;font-size:15px;font-weight:700;background:#fff"><option value="">Cosmoprof</option></select></div>
+      <div class="hint" id="invSupplierHint" style="margin-bottom:10px">Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won't read, use the paste box below as a backup.</div>
       <input type="file" id="pdfFile" accept="application/pdf" style="display:none" onchange="uploadPdf()">
       <button class="action full" onclick="document.getElementById('pdfFile').click()" id="uploadPdfBtn" style="background:#008296">📄 Upload Cosmoprof PDF</button>
       <input type="file" id="photoInvFile" accept="application/pdf,image/*" multiple style="display:none" onchange="readPhotoInvoice([...this.files]);this.value=''">
       <button class="action full" onclick="document.getElementById('photoInvFile').click()" id="photoInvBtn" style="background:#2563a8;margin-top:8px">📷 Paper invoice (photo or scan)</button>
       <div class="hint" style="margin-top:4px">For paper slips: take a photo or pick a scanned PDF (several pages at once is fine). You'll see what was read before anything is added.</div>
       <div id="photoInvBox"></div>
-      <div style="text-align:center;color:#9db0c9;font-size:12px;margin:12px 0">— or paste text as backup —</div>
+      <div id="invPasteWrap"><div style="text-align:center;color:#9db0c9;font-size:12px;margin:12px 0">— or paste text as backup —</div>
       <textarea id="invoiceText" placeholder="Paste Cosmoprof invoice text here (backup option)..."></textarea>
       <div style="height:10px"></div>
-      <button class="action full" onclick="addInvoiceMulti()" style="background:#5a6472">Add from Pasted Text</button>
+      <button class="action full" onclick="addInvoiceMulti()" style="background:#5a6472">Add from Pasted Text</button></div>
     </div>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Cosmoprof# → Product Mapping (bulk)</div>
@@ -4168,15 +4170,47 @@ function importCosmoMap(){
     document.getElementById('cosmoBulk').value='';
   });
 }
+// ---- Suppliers (owner 11/23: "not all invoices are from Cosmoprof") ----
+// Cosmoprof (blank) reads as always. Any other supplier's PDF, scan or photo
+// goes to the reader in its general mode, and its item / order numbers are
+// kept under its own key ("AII:67867"), shown without it (itemNo).
+function curSupplier(){ const s=document.getElementById('invSupplier'); return s&&s.value!=='__new'?s.value:''; }
+function itemNo(c){ c=String(c==null?'':c); const i=c.indexOf(':'); return i>0?c.slice(i+1):c; }
+function itemLbl(c){ c=String(c==null?'':c); const i=c.indexOf(':'); return i>0?c.slice(0,i)+' item # '+c.slice(i+1):'Cosmo# '+c; }
+function loadSuppliers(){
+  const sel=document.getElementById('invSupplier'); if(!sel) return;
+  api('/api/suppliers').then(d=>{
+    const list=(d&&d.suppliers)||[], keep=localStorage_get('invSupplier')||'';
+    if(keep&&!list.includes(keep)) list.unshift(keep);
+    sel.innerHTML='<option value="">Cosmoprof</option>'+list.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+'<option value="__new">+ Another supplier…</option>';
+    sel.value=keep; invSupplierPaint();
+  }).catch(()=>{});
+}
+function invSupplierPick(sel){
+  if(sel.value==='__new'){
+    const n=(prompt('Supplier name (e.g. AII, Pro Beauty Shops):')||'').replace(/\s+/g,' ').trim().slice(0,60);
+    if(!n||/^cosmo\s*prof/i.test(n)){ sel.value=''; }
+    else { if(![...sel.options].some(o=>o.value===n)){ const o=document.createElement('option'); o.value=n; o.textContent=n; sel.insertBefore(o, sel.options[sel.options.length-1]); } sel.value=n; }
+  }
+  try{ localStorage_set('invSupplier', sel.value); }catch(e){}
+  invSupplierPaint();
+}
+function invSupplierPaint(){
+  const s=curSupplier(), b=document.getElementById('uploadPdfBtn'), h=document.getElementById('invSupplierHint'), pw=document.getElementById('invPasteWrap');
+  if(b) b.textContent=s?'📄 Upload '+s+' invoice or packing slip (PDF)':'📄 Upload Cosmoprof PDF';
+  if(h) h.innerHTML=s?'Invoices and packing slips from <b>'+esc(s)+'</b> are read like a paper invoice: you see what was read before anything is added. Its item numbers are kept apart from Cosmoprof\'s; link each item to its product once and it\'s remembered.':'Upload the Cosmoprof PDF — multiple orders in one file are split automatically. If a PDF ever looks different and won\'t read, use the paste box below as a backup.';
+  if(pw) pw.style.display=s?'none':'';
+}
 function uploadPdf(){
   const f=document.getElementById('pdfFile').files[0];
   if(!f)return;
+  if(curSupplier()){ document.getElementById('pdfFile').value=''; readPhotoInvoice([f]); return; }
   const btn=document.getElementById('uploadPdfBtn');
   btn.textContent='Reading PDF...'; btn.disabled=true;
   const fd=new FormData(); fd.append('pdf', f);
   fetch('/api/invoices/upload-pdf',{method:'POST',headers:{'x-app-password':PW},body:fd})
     .then(r=>r.json()).then(d=>{
-      btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false;
+      btn.disabled=false; invSupplierPaint();
       document.getElementById('pdfFile').value='';
       if(d.ok){
         let msg=d.created.map(c=>`#${c.orderNumber}${c.laterDelivery?' (later delivery of #'+c.base+')':''}: ${c.items} items${c.pages>1?' across '+c.pages+' pages':''} (${c.mapped} mapped${c.unmapped?', '+c.unmapped+' need linking':''})${c.merged?' · '+c.merged+' duplicate line(s) merged':''}${c.rejected?' · ⚠ '+c.rejected+' line(s) did NOT parse':''}`).join('\n');
@@ -4188,7 +4222,7 @@ function uploadPdf(){
         // a scan: no text at all, or a scanner app's own text in a layout we can't parse. Read it as a picture instead
         toast('This PDF is a scan. Reading it as a paper invoice…'); readPhotoInvoice([f]);
       } else { toast(d.error||'PDF failed',true); alert(d.error||'Could not read PDF'); }
-    }).catch(e=>{ btn.textContent='📄 Upload Cosmoprof PDF'; btn.disabled=false; toast('Upload error',true); });
+    }).catch(e=>{ btn.disabled=false; invSupplierPaint(); toast('Upload error',true); });
 }
 // ---- Snap an invoice (paper slips from a photo or scan) ----
 // Photos are shrunk in the browser first (the reader takes images up to 5 MB;
@@ -4212,6 +4246,7 @@ async function readPhotoInvoice(files){
   box.innerHTML='<div class="box" style="margin-top:10px;text-align:center">Reading '+files.length+' file'+(files.length===1?'':'s')+'… this takes about half a minute.</div>';
   const fd=new FormData();
   for(const f of files) fd.append('files', await shrinkPhoto(f));
+  if(curSupplier()) fd.append('supplier', curSupplier());
   fetch('/api/invoices/read-photo',{method:'POST',headers:{'x-app-password':PW},body:fd}).then(r=>r.json()).then(d=>{
     btn.disabled=false; btn.textContent='📷 Paper invoice (photo or scan)';
     if(!d||d.ok===false){ box.innerHTML='<div class="box" style="margin-top:10px;color:#b42d2d">'+esc((d&&d.error)||'Could not read it')+'</div>'; return; }
@@ -4228,7 +4263,8 @@ function paintPhotoInvoice(){
   for(const p of (d.problems||[])) h+='<div style="color:#b42d2d;margin:4px 0">⚠ '+esc(p)+'</div>';
   const canAdd=d.invoices.some(i=>i.slips.some(x=>x.state!=='refused'&&x.state!=='same'));
   for(const inv of d.invoices){
-    h+='<div style="margin:14px 0 4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:16px">Invoice #'+esc(inv.orderNumber)+'</b><span class="hint">'+esc(inv.date||'no date')+' · '+inv.slips.length+' slip'+(inv.slips.length===1?'':'s')+'</span></div>';
+    h+='<div style="margin:14px 0 4px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b style="font-size:16px">'+(inv.supplier?esc(inv.supplier)+' · ':'')+'Invoice #'+esc(inv.orderNumber)+'</b><span class="hint">'+esc(inv.date||'no date')+' · '+inv.slips.length+' slip'+(inv.slips.length===1?'':'s')+(inv.printedSupplier?' · printed by '+esc(inv.printedSupplier):'')+'</span></div>'
+      +((inv.backordered||[]).length?'<div style="background:#fff8ec;border:1px solid #f3c98b;border-radius:8px;padding:6px 10px;margin:4px 0;font-size:14px">⏳ Backordered, not in this delivery: '+inv.backordered.map(b=>esc(b.item)+' '+esc(b.description)+' × '+b.qty).join(' · ')+'</div>':'');
     for(const w of inv.warnings) h+='<div style="background:#fff8ec;border:1px solid #f3c98b;border-radius:8px;padding:6px 10px;margin:4px 0;font-size:14px">⚠ '+esc(w)+'</div>';
     for(const sl of inv.slips){
       const st=STATE[sl.state]||STATE.refused;
@@ -4236,7 +4272,7 @@ function paintPhotoInvoice(){
         +'<span style="font-size:13px;font-weight:800;padding:3px 10px;border-radius:999px;background:'+st[1]+';color:'+st[2]+'">'+st[0]+'</span></div>';
       if(sl.note) h+='<div style="color:#7a4600;font-size:14px;margin:2px 0 4px">'+esc(sl.note)+'</div>';
       h+='<table class="photoInvT" style="width:100%;table-layout:fixed"><colgroup><col class="pc" style="width:90px"><col><col class="pq" style="width:90px"></colgroup><tr><th>Item #</th><th style="text-align:left">Paper · app</th><th>Qty</th></tr>'
-        +sl.lines.map(l=>'<tr><td style="text-align:center;font-family:monospace">'+esc(l.cosmo_num)+'</td><td>'+esc(l.description)
+        +sl.lines.map(l=>'<tr><td style="text-align:center;font-family:monospace">'+esc(itemNo(l.cosmo_num))+'</td><td>'+esc(l.description)
           +'<div style="font-size:13px;margin-top:2px">'+(l.asin?amzLinkSized(l.asin,l.name||l.asin):'<span style="color:#b7791f">not linked yet. You’ll link it when you scan it</span>')+'</div></td><td style="text-align:center;font-weight:800">'+l.qty+'</td></tr>').join('')+'</table>';
     }
   }
@@ -8158,7 +8194,8 @@ function loadInvoiceList(){
     const sel=document.getElementById('invoicePick');
     const pending=list.filter(i=>i.status==='pending');
     sel.innerHTML='<option value="">— pick an invoice —</option>'+
-      pending.map(i=>`<option value="${i.order_number}">#${i.order_number} · ${esc(i.invoice_date)} · ${i.received}/${i.expected} received</option>`).join('');
+      pending.map(i=>`<option value="${esc(i.order_number)}">${i.supplier?esc(i.supplier)+' ':''}#${esc(i.order_number)} · ${esc(i.invoice_date)} · ${i.received}/${i.expected} received</option>`).join('');
+    loadSuppliers();
     const mgr=document.getElementById('invManager');
     if(mgr && mgr.style.display!=='none') renderInvoiceManager();
   });
@@ -8448,7 +8485,7 @@ function handleBindUnmapped(d, code, qty){
     if(isNaN(idx) || idx<0 || idx>=cands.length){ toast('Nothing selected',true); return; }
     pick=cands[idx];
   } else {
-    if(!confirm('📷 '+d.scanned.name+'\n\nLink this barcode to invoice line:\n  #'+pick.cosmo_num+'  '+pick.description+'\n\nSaved permanently and marked barcode-verified.\n\nOK = link and count '+qty+'\nCancel = choose a different line')){
+    if(!confirm('📷 '+d.scanned.name+'\n\nLink this barcode to invoice line:\n  #'+itemNo(pick.cosmo_num)+'  '+pick.description+'\n\nSaved permanently and marked barcode-verified.\n\nOK = link and count '+qty+'\nCancel = choose a different line')){
       let msg='Which invoice line is this?\n\n';
       cands.forEach((c,i)=>{ msg+=lineLabel(c,i)+'\n'; });
       const ans=prompt(msg,'1');
@@ -8463,7 +8500,7 @@ function handleBindUnmapped(d, code, qty){
   if(pick.warnings && pick.warnings.length){
     const w=pick.warnings.map(x=>'  ⚠ '+x.message).join('\n');
     if(!confirm('⚠ STOP — this does not look right\n\nYou scanned:\n  '+d.scanned.name
-      +'\n\nYou picked invoice line:\n  #'+pick.cosmo_num+'  '+pick.description
+      +'\n\nYou picked invoice line:\n  #'+itemNo(pick.cosmo_num)+'  '+pick.description
       +'\n\n'+w+'\n\nLinking this wrong puts stock on the wrong product, permanently.\n\nOK = I have checked the bottle, link it anyway\nCancel = go back')) return;
   }
 
@@ -8491,10 +8528,10 @@ function handleMappingMismatch(d, code){
   const msg =
     '⚠ MAPPING MISMATCH\n\n'+
     'You scanned:\n  '+d.scanned.name+'\n  '+d.scanned.asin+'\n\n'+
-    'But invoice line #'+d.suspect.cosmo_num+'\n  "'+d.suspect.description+'"\n'+
+    'But invoice line #'+itemNo(d.suspect.cosmo_num)+'\n  "'+d.suspect.description+'"\n'+
     'is currently linked to:\n  '+(d.suspect.mapped_name||d.suspect.mapped_asin||'nothing')+'\n\n'+
     'The barcode is physical proof; the link is a guess.\n\n'+
-    'OK = repoint #'+d.suspect.cosmo_num+' to what you scanned (and mark it verified)\n'+
+    'OK = repoint #'+itemNo(d.suspect.cosmo_num)+' to what you scanned (and mark it verified)\n'+
     'Cancel = leave it alone';
   if(!confirm(msg)){ toast('Left unchanged',true); return; }
   api('/api/cosmo-map/fix',{method:'POST',body:JSON.stringify({
@@ -8565,7 +8602,7 @@ function doAssignNewUpc(asin, name, code, pc){
     const b=pc.best;
     const w=(b && b.warnings||[]).map(x=>'  ⚠ '+x.message).join('\n');
     if(!confirm('⚠ STOP — this does not match anything on the invoice\n\nYou picked:\n  '+name
-      +'\n\nClosest invoice line:\n  #'+(b?b.cosmo_num:'?')+'  '+(b?b.description:'')
+      +'\n\nClosest invoice line:\n  #'+(b?itemNo(b.cosmo_num):'?')+'  '+(b?b.description:'')
       +'\n\n'+w+'\n\nEvery line on this invoice disagrees with this product on type or size. '
       +'Check the bottle label before continuing — a wrong barcode here poisons everything downstream.'
       +'\n\nOK = I have checked the bottle, assign anyway\nCancel = go back')) return;
@@ -11297,7 +11334,7 @@ function loadMappingHealth(){
           +'<div style="font-family:monospace;font-size:11px;color:#2563a8;margin-top:2px">'+c.asin+'</div></div></div>';
         for(const nm of c.numbers){
           h+='<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-top:1px solid #f7eceb;flex-wrap:wrap">'
-            +'<span style="font-family:monospace;font-weight:800;font-size:12.5px;min-width:60px">'+nm.cosmo_num+'</span>'
+            +'<span style="font-family:monospace;font-weight:800;font-size:12.5px;min-width:60px">'+esc(itemLbl(nm.cosmo_num).replace(/^Cosmo# /,''))+'</span>'
             +'<span style="flex:1;min-width:140px;font-size:12px;color:#5a6472">'+(esc(nm.description)||'<i>no invoice description yet</i>')+'</span>'
             +'<button onclick="unlinkCosmo(\''+nm.cosmo_num+'\')" style="padding:5px 10px;font-size:11px;font-weight:700;background:#c0392b;color:#fff;border:none;border-radius:5px;cursor:pointer">Unlink</button>'
             +'</div>';
@@ -11339,7 +11376,7 @@ function loadMappingHealth(){
       return '<div style="display:flex;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #eef2f6">'
         +img
         +'<div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px;line-height:1.3">'+(esc(r.name)||'<span style="color:#c0392b">NOT IN CATALOG</span>')+'</div>'
-        +'<div style="font-size:11px;color:#8a97a6;margin-top:2px">Cosmo# '+r.cosmo_num+' · <span style="font-family:monospace;color:#2563a8">'+(r.asin||'—')+'</span>'
+        +'<div style="font-size:11px;color:#8a97a6;margin-top:2px">'+esc(itemLbl(r.cosmo_num))+' · <span style="font-family:monospace;color:#2563a8">'+(r.asin||'—')+'</span>'
         +(r.is_component?' · <b style="color:#c0392b">DUO COMPONENT</b>':'')+'</div></div>'
         +'<span style="white-space:nowrap;font-size:11px;font-weight:800;padding:3px 9px;border-radius:5px;background:'+(r.verified?'#eafaf1':'#fdeceb')+';color:'+(r.verified?'#1e8449':'#c0392b')+'">'+(r.verified?'✅ VERIFIED':'⚠ GUESS')+'</span>'
         +'</div>';
@@ -11458,7 +11495,7 @@ function renderReconLines(){
         const cands=l.candidates||[];
         locBlock='<div style="margin-top:9px;padding:11px;background:#fff;border:1px solid #e8dcc0;border-radius:6px">'
           +'<div style="font-size:12.5px;font-weight:800;color:#b7791f">Link this to a product</div>'
-          +'<div class="hint" style="margin:3px 0 8px">Cosmo# '+l.cosmo_num+' — pick the match below. No need to open a case. Saved permanently.</div>'
+          +'<div class="hint" style="margin:3px 0 8px">'+esc(itemLbl(l.cosmo_num))+' — pick the match below. No need to open a case. Saved permanently.</div>'
           +(cands.length
               ? '<div style="padding:8px 10px;background:#eafaf1;border:1px solid #cdebdb;border-radius:6px;color:#1e8449;font-size:12px;font-weight:700;margin-bottom:2px">Near-certain match found. Check the name and size, open the ASIN if unsure, then Link.</div>'
                 + cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,true,c.image)).join('')
@@ -11512,7 +11549,7 @@ function renderReconLines(){
         return `<div class="box" ${cls} style="margin-bottom:6px;padding:12px">
         <div style="font-weight:700;font-size:13px">${esc(nm)}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px">
-          <span class="pmeta">Cosmo# ${esc(l.cosmo_num)}${l.asin?' · <span style="font-family:monospace">'+l.asin+'</span>':''}</span>
+          <span class="pmeta">${esc(itemLbl(l.cosmo_num))}${l.asin?' · <span style="font-family:monospace">'+l.asin+'</span>':''}</span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${rec} / ${exp} &nbsp; ${status}</span>
         </div>
         ${locBlock}
@@ -11528,7 +11565,7 @@ function renderReconLines(){
       return `<div class="box" ${cls} id="rline_${l.id}" style="margin-bottom:6px;padding:12px">
         <div style="font-weight:700;font-size:13px">${esc(nm)}${tags}</div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;gap:8px;flex-wrap:wrap">
-          <span class="pmeta">Cosmo# ${l.cosmo_num} · exp: <input type="number" class="qtyin" inputmode="numeric" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:84px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:14px;text-align:center">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
+          <span class="pmeta">${esc(itemLbl(l.cosmo_num))} · exp: <input type="number" class="qtyin" inputmode="numeric" value="${exp}" data-cosmo="${l.cosmo_num}" data-asin="${l.asin||''}" onchange="updateExpected(this)" style="width:84px;padding:4px;border:1px solid #e2e8f0;border-radius:4px;font-size:14px;text-align:center">${l.asin?` · <a href="https://www.amazon.com/dp/${l.asin}" target="_blank" rel="noopener" style="font-family:monospace;font-size:12px;font-weight:700;color:#2563a8;text-decoration:none;border-bottom:1px dotted #2563a8" title="Open on Amazon to verify">${l.asin} ↗</a>`:''}</span>
           <span style="font-weight:700;font-size:15px;white-space:nowrap">${recBox} &nbsp; <span id="rstat_${l.id}">${status}</span></span>
         </div>
         ${locBlock}
@@ -11717,7 +11754,7 @@ function runCompleteInvoice(c, force, skipStock){
     if(d && d.ok===false && d.error==='already_completed'){ alert(d.message); return; }
     // HARD STOP — unlinked lines would be silently lost, so the server refuses.
     if(d && d.ok===false && d.error==='unmapped_lines'){
-      const list=(d.unmapped||[]).map(u=>'  • #'+u.cosmo_num+'  '+String(u.description||'').slice(0,44)+'  ('+(u.qty_received||u.qty_expected||0)+' units)').join('\n');
+      const list=(d.unmapped||[]).map(u=>'  • #'+itemNo(u.cosmo_num)+'  '+String(u.description||'').slice(0,44)+'  ('+(u.qty_received||u.qty_expected||0)+' units)').join('\n');
       const go=confirm('STOP — '+d.unmapped.length+' line'+(d.unmapped.length===1?' is':'s are')+' not linked to a product:\n\n'+list
         +'\n\nThese '+d.unmappedUnits+' units would be DISCARDED and never reach On Hand.\n\nOK = discard them anyway\nCancel = go back and link them (recommended)');
       if(go) completeInvoice(true, skipStock);
@@ -11751,7 +11788,7 @@ function shortTable(rows, credited){
     +'<th style="'+th+';width:72px">'+(credited?'Credited':'Short')+'</th><th style="'+th+';width:'+(credited?'90':'190')+'px">'+(credited?'Credited on':'')+'</th></tr></thead><tbody>'
     +rows.map(r=>'<tr><td style="'+td+';font-weight:700">'+esc(r.order_number)+'</td>'
       +'<td style="'+td+'">'+esc(r.invoice_date||'—')+'</td>'
-      +'<td style="'+td+';font-family:monospace">'+esc(r.cosmo_num||'')+'</td>'
+      +'<td style="'+td+';font-family:monospace">'+esc(itemNo(r.cosmo_num||''))+(r.supplier?'<div style="font-family:inherit;font-size:11px;color:#5a6472">'+esc(r.supplier)+'</div>':'')+'</td>'
       +'<td style="'+td+';text-align:left;line-height:1.3">'+esc(r.description||r.name||'')+'</td>'
       +'<td style="'+td+';color:#8a97a6">'+(r.qty_ordered!=null?r.qty_ordered+(r.qty_ordered>r.qty_expected?'<div style="font-size:10.5px">'+(r.qty_ordered-r.qty_expected)+' backordered</div>':''):'—')+'</td>'
       +'<td style="'+td+';font-weight:700">'+r.qty_expected+'</td>'
@@ -11814,8 +11851,8 @@ function copyShortages(){
   // For Cosmoprof: what their invoice says shipped (and billed), what arrived,
   // and the difference. The old headings read "Ordered / Shipped", which told
   // Cosmoprof they shipped what we counted (owner 11/17).
-  const lines=[['Invoice #','Invoice date','Cosmo #','Product','Shipped per invoice','Received','Short'].join('\t')]
-    .concat(rows.map(r=>[r.order_number, r.invoice_date||'', r.cosmo_num||'', r.description||r.name||'', r.qty_expected, r.qty_received, r.qty_owed].join('\t')));
+  const lines=[['Supplier','Invoice #','Invoice date','Item #','Product','Shipped per invoice','Received','Short'].join('\t')]
+    .concat(rows.map(r=>[r.supplier||'Cosmoprof', r.order_number, r.invoice_date||'', itemNo(r.cosmo_num||''), r.description||r.name||'', r.qty_expected, r.qty_received, r.qty_owed].join('\t')));
   const txt=lines.join('\n');
   const done=()=>toast('Copied '+rows.length+' line'+(rows.length===1?'':'s')+' — paste into the email or a spreadsheet');
   if(navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done).catch(()=>prompt('Copy this:',txt));
@@ -11829,8 +11866,8 @@ function printShortages(){
   const td='padding:6px;border:1px solid #ccc;text-align:center';
   w.document.write('<!doctype html><meta charset="utf-8"><title>Cosmoprof shortages</title><body style="font-family:Arial,sans-serif;font-size:12px;margin:24px">'
     +'<h2 style="margin:0 0 4px">Shortages: credit request</h2><div style="margin-bottom:12px">'+new Date().toLocaleDateString('en-US')+' · '+units+' units short · '+rows.length+' lines</div>'
-    +'<table style="width:100%;border-collapse:collapse"><thead><tr>'+['Invoice #','Invoice date','Cosmo #','Product','Shipped per invoice','Received','Short'].map(h=>'<th style="'+td+';background:#eee">'+h+'</th>').join('')+'</tr></thead><tbody>'
-    +rows.map(r=>'<tr><td style="'+td+'">'+esc(r.order_number)+'</td><td style="'+td+'">'+esc(r.invoice_date||'')+'</td><td style="'+td+'">'+esc(r.cosmo_num||'')+'</td>'
+    +'<table style="width:100%;border-collapse:collapse"><thead><tr>'+['Supplier','Invoice #','Invoice date','Item #','Product','Shipped per invoice','Received','Short'].map(h=>'<th style="'+td+';background:#eee">'+h+'</th>').join('')+'</tr></thead><tbody>'
+    +rows.map(r=>'<tr><td style="'+td+'">'+esc(r.supplier||'Cosmoprof')+'</td><td style="'+td+'">'+esc(r.order_number)+'</td><td style="'+td+'">'+esc(r.invoice_date||'')+'</td><td style="'+td+'">'+esc(itemNo(r.cosmo_num||''))+'</td>'
       +'<td style="'+td+';text-align:left">'+esc(r.description||r.name||'')+'</td><td style="'+td+'">'+r.qty_expected+'</td><td style="'+td+'">'+r.qty_received+'</td><td style="'+td+';font-weight:700">'+r.qty_owed+'</td></tr>').join('')
     +'</tbody></table></body>');
   w.document.close(); w.focus(); w.print();

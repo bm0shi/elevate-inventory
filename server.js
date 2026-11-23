@@ -138,6 +138,7 @@ async function writeInvoiceLines(base, date, items, opts = {}) {
       [orderNumber, date || '', orderNumber === String(base) ? null : String(base)]);
     if (keys.length) await c.query('UPDATE inv_invoices SET photo_slips=$2 WHERE order_number=$1', [orderNumber, keys]);
     if (opts.oms) await c.query('UPDATE inv_invoices SET oms_id=$2 WHERE order_number=$1', [orderNumber, opts.oms]);
+    if (opts.supplier) await c.query('UPDATE inv_invoices SET supplier=$2 WHERE order_number=$1', [orderNumber, String(opts.supplier).slice(0, 60)]);
 
     const prev = new Map();
     const old = await c.query('SELECT cosmo_num, asin, qty_received FROM inv_invoice_items WHERE order_number=$1', [orderNumber]);
@@ -154,7 +155,10 @@ async function writeInvoiceLines(base, date, items, opts = {}) {
       const c6 = (it.cosmo_num.length === 7 && it.cosmo_num[0] === '1') ? it.cosmo_num.slice(1) : it.cosmo_num;
       const mm = await c.query('SELECT asin FROM inv_cosmo_map WHERE cosmo_num=$1 OR cosmo_num=$2', [it.cosmo_num, c6]);
       const p = prev.get(it.cosmo_num);
-      const asin = (p && p.asin) || mm.rows[0]?.asin || null;
+      let asin = (p && p.asin) || mm.rows[0]?.asin || null;
+      // Another supplier's document may print the UPC: a code the catalog
+      // knows links the line by itself (still checked by the barcode scan).
+      if (!asin && it.upc) asin = (await c.query('SELECT asin FROM inv_upcs WHERE upc_norm=$1 LIMIT 1', [normCode(it.upc)])).rows[0]?.asin || null;
       const received = p ? p.received : 0;
       if (p) p.received = 0;   // a Cosmo # listed twice carries its count once
       if (received) carried++;
@@ -470,7 +474,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'price-check-1185';
+const BUILD_ID = 'suppliers-1186';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -656,6 +660,9 @@ async function initDb() {
     -- check-in counts against and what Shortages asks credit for; a backorder
     -- (ordered, not shipped) is never owed. NULL = the invoice didn't say.
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS qty_ordered INTEGER;
+    -- Who the invoice is from (owner 11/23, other suppliers): NULL = Cosmoprof.
+    -- Another supplier's item and order numbers carry its key (lib/invoice-photo.js).
+    ALTER TABLE inv_invoices ADD COLUMN IF NOT EXISTS supplier TEXT;
     ALTER TABLE inv_invoice_items ADD COLUMN IF NOT EXISTS credited_at TIMESTAMPTZ;
     -- Replies to stock-changing requests, keyed by the client's action id, so
     -- a retried or double-sent action is answered from here instead of
@@ -4215,13 +4222,13 @@ app.post('/api/invoices/add', auth, async (req, res) => {
 // List invoices (pending + recent)
 app.get('/api/invoices', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT i.order_number, i.invoice_date, i.status, i.created_at,
+    `SELECT i.order_number, i.invoice_date, i.status, i.created_at, i.supplier,
             COUNT(ii.id)::int AS lines,
             COALESCE(SUM(ii.qty_expected),0)::int AS expected,
             COALESCE(SUM(ii.qty_received),0)::int AS received,
             COALESCE(SUM(ii.qty_owed),0)::int AS owed
      FROM inv_invoices i LEFT JOIN inv_invoice_items ii ON ii.order_number = i.order_number
-     GROUP BY i.order_number, i.invoice_date, i.status, i.created_at
+     GROUP BY i.order_number, i.invoice_date, i.status, i.created_at, i.supplier
      ORDER BY i.created_at DESC LIMIT 100`);
   res.json(rows);
 });
@@ -6549,11 +6556,18 @@ app.post('/api/invoices/:orderNumber/clear-owed', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// The suppliers invoices have come from (owner 11/23), for Order Check-In's
+// picker. Cosmoprof is the default and isn't stored on its invoices.
+app.get('/api/suppliers', auth, async (req, res) => {
+  const { rows } = await pool.query("SELECT supplier, COUNT(*)::int AS n FROM inv_invoices WHERE supplier IS NOT NULL AND supplier <> '' GROUP BY supplier ORDER BY MAX(created_at) DESC");
+  res.json({ ok: true, suppliers: rows.map(r => r.supplier) });
+});
+
 // Shortages tab: every line Cosmoprof still owes, plus what they credited,
 // for following up on credits. Units only (no cost), so warehouse login.
 app.get('/api/shortages', auth, async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT ii.id, ii.order_number, i.invoice_date, i.completed_at, ii.cosmo_num, ii.description, ii.asin,
+    `SELECT ii.id, ii.order_number, i.invoice_date, i.completed_at, i.supplier, ii.cosmo_num, ii.description, ii.asin,
             p.name, ii.qty_ordered, ii.qty_expected, ii.qty_received, ii.qty_owed, ii.credited_qty, ii.credited_at
      FROM inv_invoice_items ii JOIN inv_invoices i ON i.order_number = ii.order_number
      LEFT JOIN inv_products p ON p.asin = ii.asin
@@ -6918,11 +6932,14 @@ app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req,
     } else return res.status(400).json({ ok: false, error: `${f.originalname}: send a PDF or a JPG / PNG photo.` });
   }
   if (total > 24 * 1024 * 1024) return res.status(400).json({ ok: false, error: 'Those files are too big together. Send fewer at a time.' });
-  content.push({ type: 'text', text: invoicePhoto.PROMPT });
+  // Cosmoprof (no supplier, or Cosmoprof) reads as before; any other supplier
+  // reads with the general invoice / packing-slip schema, under its own key.
+  const supplier = String((req.body && req.body.supplier) || '').trim().slice(0, 60), other = !!invoicePhoto.supplierKey(supplier);
+  content.push({ type: 'text', text: other ? invoicePhoto.promptAny(supplier) : invoicePhoto.PROMPT });
   const Anthropic = require('@anthropic-ai/sdk');
   const client = Anthropic.default ? new Anthropic.default() : new Anthropic();
   const params = { model: 'claude-opus-5-5', max_tokens: 16000, messages: [{ role: 'user', content }],
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema: invoicePhoto.SCHEMA } },
+    output_config: { effort: 'medium', format: { type: 'json_schema', schema: other ? invoicePhoto.SCHEMA_ANY : invoicePhoto.SCHEMA } },
     betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' };
   let msg;
   try { msg = await client.beta.messages.create(params); }
@@ -6937,13 +6954,13 @@ app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req,
   let data;
   try { data = JSON.parse(msg.content.filter(b => b.type === 'text').map(b => b.text).join('')); }
   catch (e) { return res.status(502).json({ ok: false, error: 'The invoice reader sent back something unreadable. Try again.' }); }
-  const r = invoicePhoto.toInvoices(data);
+  const r = other ? invoicePhoto.toInvoicesAny(data, supplier) : invoicePhoto.toInvoices(data);
   // Each slip is one delivery, saved on its own (lib/invoice-parts.js): the
   // first under the invoice number, a later one as 262106088-2 …
   const slips = [];
   for (const inv of r.invoices) for (const k of inv.slips) {
     const items = (inv.bySlip && inv.bySlip[k]) || [];
-    if (items.length) slips.push({ orderNumber: inv.orderNumber, date: inv.date, key: k.startsWith('noshp:') ? '' : k, items });
+    if (items.length) slips.push({ orderNumber: inv.orderNumber, date: inv.date, key: k.startsWith('noshp:') ? '' : k, items, supplier: other ? supplier : null });
   }
   const token = crypto.randomBytes(12).toString('hex');
   await pool.query("DELETE FROM inv_cache WHERE cache_key LIKE 'photoinv:%' AND updated_at < now() - interval '1 day'");
@@ -6968,15 +6985,16 @@ app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req,
       }
       const lines = [];
       for (const it of sl.items) {
-        const m = (await pool.query(`SELECT m.asin, p.name FROM inv_cosmo_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.cosmo_num=$1 LIMIT 1`, [it.cosmo_num])).rows[0];
+        let m = (await pool.query(`SELECT m.asin, p.name FROM inv_cosmo_map m LEFT JOIN inv_products p ON p.asin=m.asin WHERE m.cosmo_num=$1 LIMIT 1`, [it.cosmo_num])).rows[0];
+        if (!m && it.upc) m = (await pool.query(`SELECT u.asin, p.name FROM inv_upcs u LEFT JOIN inv_products p ON p.asin=u.asin WHERE u.upc_norm=$1 LIMIT 1`, [normCode(it.upc)])).rows[0];
         lines.push({ cosmo_num: it.cosmo_num, description: it.description, qty: it.qty_shipped, asin: m ? m.asin : null, name: m ? m.name : null });
       }
       rows.push({ slip: sl.key, target: plan.orderNumber, state, note: plan.write ? '' : invoiceParts.refusalText(plan, inv.orderNumber, sl.key), lines });
     }
-    out.push({ orderNumber: inv.orderNumber, date: inv.date, warnings: inv.warnings, slips: rows });
+    out.push({ orderNumber: inv.orderNumber, date: inv.date, warnings: inv.warnings, slips: rows, supplier: other ? supplier : null, printedSupplier: inv.printedSupplier || null, backordered: inv.backordered || [] });
   }
   const u = msg.usage || {};
-  res.json({ ok: true, token, invoices: out, problems: r.problems });
+  res.json({ ok: true, token, invoices: out, problems: r.problems, supplier: other ? supplier : null });
   console.log(`[Photo invoice] read ${files.length} file(s): ${r.invoices.length} invoice(s), ${slips.length} slip(s), ${u.input_tokens || 0} in / ${u.output_tokens || 0} out tokens.`);
 });
 // Save what was read (after the screen showed it): each slip becomes its
@@ -6990,7 +7008,7 @@ app.post('/api/invoices/add-photo', auth, async (req, res) => {
   const created = [], errors = [];
   for (const sl of c.data || []) {
     if (!sl || !Array.isArray(sl.items)) { errors.push('That reading is from an older version. Read the invoice again.'); break; }
-    const w = await writeInvoiceLines(sl.orderNumber, sl.date, sl.items, { key: sl.key || '', seedUnitCost: true });
+    const w = await writeInvoiceLines(sl.orderNumber, sl.date, sl.items, { key: sl.key || '', seedUnitCost: true, supplier: sl.supplier || null });
     if (w.refused) { errors.push(w.refused); continue; }
     created.push({ orderNumber: w.orderNumber, base: sl.orderNumber, laterDelivery: w.orderNumber !== String(sl.orderNumber),
       items: sl.items.length, mapped: w.mapped, unmapped: w.unmapped.length });
