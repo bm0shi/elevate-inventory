@@ -6944,7 +6944,7 @@ app.post('/api/invoices/read-photo', auth, upload.array('files', 8), async (req,
   // A refused key used to reach the screen as Anthropic's raw 401 JSON (owner 11/23, reading a Pro
   // Beauty Shops slip): say what it means and where to fix it, like Ask Elevate does.
   const keyRefused = e => e && (e.status === 401 || e.status === 403);
-  const keyMsg = 'The invoice reader\'s Anthropic API key was refused. Make a new key at console.anthropic.com and set ANTHROPIC_API_KEY in Railway (Ask Elevate uses the same key).';
+  const keyMsg = 'The invoice reader\'s Anthropic API key was refused. Make a new key at platform.claude.com (API keys) and set ANTHROPIC_API_KEY in Railway (Ask Elevate uses the same key).';
   let msg;
   try {
     try { msg = await client.beta.messages.create(params); }
