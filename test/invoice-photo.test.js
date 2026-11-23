@@ -47,3 +47,32 @@ test('each slip keeps its own lines, so it can be saved as its own delivery', ()
   assert.deepStrictEqual(inv.bySlip['262135324'].map(i => [i.cosmo_num, i.qty_shipped]), [['575394', 36]]);
   assert.deepStrictEqual(inv.bySlip['262131920'].map(i => [i.cosmo_num, i.qty_shipped]), [['037622', 60]]);
 });
+
+// Other suppliers (owner 11/23): AII's packing slip for a Pro Beauty Shops order.
+test('another supplier: its own keyed item / order numbers, backorders kept apart, Cosmoprof unchanged', () => {
+  const P = require('../lib/invoice-photo');
+  assert.equal(P.supplierKey('Cosmoprof'), null);
+  assert.equal(P.supplierKey(' cosmo prof '), null);
+  assert.equal(P.supplierKey('AII'), 'AII');
+  assert.equal(P.supplierKey('Pro Beauty Shops'), 'PROBEAUTYSHOPS');
+  const slip = { documents: [{ supplier_name: 'American International Industries', document_type: 'packing slip', document_number: '006819282-1', date: '11/20/2026', shipment_number: '', unclear: '', lines: [
+    { item_number: '67867', upc: '', description: 'HF 1PR SIZE 2 COVERUPS LI', qty_ordered: 112, qty_backordered: 0, qty_shipped: 112, each_price: 0, extended_price: 0 },
+    { item_number: '277000EC', upc: '', description: 'CL 4oz PWDR ORIGINAL', qty_ordered: 312, qty_backordered: 275, qty_shipped: 37, each_price: 0, extended_price: 0 },
+    { item_number: '61010', upc: '0-74764-61567-1', description: 'ARD LASH 1PR NATURAL 110', qty_ordered: 112, qty_backordered: 0, qty_shipped: 112, each_price: 1.99, extended_price: 222.88 },
+    { item_number: '99999', upc: '', description: 'ALL BACKORDERED', qty_ordered: 10, qty_backordered: 10, qty_shipped: 0, each_price: 0, extended_price: 0 },
+  ] }] };
+  const r = P.toInvoicesAny(slip, 'AII');
+  assert.equal(r.invoices.length, 1);
+  const inv = r.invoices[0];
+  assert.equal(inv.orderNumber, 'AII-006819282-1');
+  assert.equal(inv.date, '11/20/26');
+  assert.deepEqual(inv.items.map(i => [i.cosmo_num, i.qty_shipped, i.qty_ordered]), [['AII:67867', 112, 112], ['AII:277000EC', 37, 312], ['AII:61010', 112, 112]]);
+  assert.equal(inv.items[0].unit_cost, null, 'a packing slip has no prices');
+  assert.equal(inv.items[2].unit_cost, 1.99);
+  assert.equal(inv.items[2].upc, '074764615671');
+  assert.deepEqual(inv.backordered.map(b => [b.item, b.qty]), [['277000EC', 275], ['99999', 10]]);
+  assert.equal(P.itemShown('AII:277000EC'), '277000EC');
+  assert.equal(P.itemShown('037622'), '037622');
+  // the Cosmoprof reader still pads a dropped zero; the AII number above stays 67867
+  assert.equal(P.sku('67867'), '067867');
+});
