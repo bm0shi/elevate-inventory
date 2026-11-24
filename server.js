@@ -474,7 +474,7 @@ async function buildLocationContext(asins) {
 
 // Stamped at build time so the running code can be identified from the log
 // and from the UI — 'is my deploy actually live' should never be a guess.
-const BUILD_ID = 'reader-key-1187';
+const BUILD_ID = 'packs-1188';
 
 // ---- Postgres ----
 const pool = new Pool({
@@ -4107,6 +4107,12 @@ app.post('/api/bundles/bulk', auth, async (req, res) => {
   let done = 0, errors = [];
   for (const line of lines) {
     const parts = line.split(/[,\t]+/).map(x => x.trim()).filter(Boolean);
+    // a pack: "packASIN, singleASIN, 3" (owner 11/24)
+    if (parts.length >= 3 && /^\d+$/.test(parts[2])) {
+      const r = await definePack(parts[1], parts[0], parseInt(parts[2], 10));
+      if (r.status === 200) done++; else errors.push(line.trim() + ' — ' + r.body.error);
+      continue;
+    }
     if (parts.length < 3) { if(line.trim()) errors.push(line.trim() + ' (need 3 ASINs)'); continue; }
     const [dASIN, c1, c2] = parts;
     // verify all three exist
@@ -4118,12 +4124,69 @@ app.post('/api/bundles/bulk', auth, async (req, res) => {
     await pool.query('INSERT INTO inv_bundles(bundle_asin, component_asin, qty) VALUES($1,$2,1),($1,$3,1) ON CONFLICT DO NOTHING', [dASIN, c1, c2]);
     done++;
   }
+  if (done) { try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend after bundles failed (non-fatal):', e.message); } }
   res.json({ ok: true, done, errors });
 });
 
 app.post('/api/bundles/delete', auth, async (req, res) => {
   await pool.query('DELETE FROM inv_bundles WHERE bundle_asin=$1', [req.body.bundle_asin]);
   res.json({ ok: true });
+});
+
+// Packs (owner 11/24: "some of these new items are coming in as singles from
+// distributor however when i list them on amazon a lot of them will be packs of
+// 2, pack of 3"). A pack listing is a bundle of ONE item × n, so everything that
+// already counts a duo by its bottles (Pending Prep's shelf check, Duos I can
+// build, prep scans, shipping, On the way, cost, freight) counts a pack as n of
+// the single. The single is what's received and counted on the shelf; the pack
+// is only ever built, prepped and shipped. Adds the pack listing to the catalog
+// when it isn't there (Amazon's title and picture when Amazon answers) and never
+// redefines a listing that is already a bundle of something else.
+async function definePack(singleIn, packIn, nIn, nameIn) {
+  const single = String(singleIn || '').trim().toUpperCase(), pack = String(packIn || '').trim().toUpperCase();
+  const n = Number(nIn), bad = error => ({ status: 400, body: { ok: false, error } });
+  if (!/^[A-Z0-9]{10}$/.test(pack)) return bad('The pack\'s ASIN is 10 letters and numbers, like B07DXL29H6 (from the pack\'s Amazon listing).');
+  if (pack === single) return bad('The pack has its own Amazon listing with its own ASIN, different from the single\'s.');
+  if (!Number.isInteger(n) || n < 2 || n > 24) return bad('A pack holds 2 to 24 of the item.');
+  const sp = (await pool.query('SELECT asin, name FROM inv_products WHERE asin=$1', [single])).rows[0];
+  if (!sp) return bad('Add the single to the catalog first.');
+  let name = String(nameIn || '').trim().slice(0, 300), image = null, amazon = 'not_checked';
+  const creds = (process.env.AMAZON_REFRESH_TOKEN_FM || process.env.AMAZON_REFRESH_TOKEN) && (process.env.AMAZON_CLIENT_ID_FM || process.env.AMAZON_CLIENT_ID);
+  const known = (await pool.query('SELECT 1 FROM inv_products WHERE asin=$1', [pack])).rows.length > 0;
+  if (creds && !known) {
+    try {
+      const live = (await getCatalogItems([pack]))[pack];
+      if (live && live.name) { name = live.name; image = live.image || null; amazon = 'found'; }
+      else if (live && live.error && /not found|NOT_FOUND|404|invalid/i.test(live.error)) return bad(`Amazon has no product ${pack}. Check the ASIN on the pack's listing.`);
+      else amazon = 'unreachable';
+    } catch (e) { amazon = 'unreachable'; }
+  }
+  if (!name) name = `${sp.name || single} (Pack of ${n})`;
+  return withTx(async (db) => {
+    await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', ['bundle:' + pack]);
+    if ((await db.query('SELECT 1 FROM inv_bundles WHERE bundle_asin=$1 LIMIT 1', [single])).rows.length)
+      return { status: 400, body: { ok: false, error: `${single} is itself a duo or pack. Pick the single item.` } };
+    if ((await db.query('SELECT 1 FROM inv_bundles WHERE component_asin=$1 LIMIT 1', [pack])).rows.length)
+      return { status: 400, body: { ok: false, error: `${pack} is a bottle inside a duo, so it can't also be a pack.` } };
+    const cur = (await db.query(`SELECT b.component_asin, b.qty, p.name FROM inv_bundles b LEFT JOIN inv_products p ON p.asin=b.component_asin WHERE b.bundle_asin=$1`, [pack])).rows;
+    if (cur.length) {
+      const same = cur.length === 1 && cur[0].component_asin === single && Number(cur[0].qty) === n;
+      if (same) return { status: 200, body: { ok: true, already: true, pack, name, n } };
+      return { status: 409, body: { ok: false, error: `${pack} is already set up as ${cur.map(c => (c.qty || 1) + '× ' + String(c.name || c.component_asin).slice(0, 50)).join(' + ')}. Remove it in Admin → Bundles first if that's wrong.` } };
+    }
+    await db.query('INSERT INTO inv_products(asin, name, sku, image) VALUES($1,$2,$3,$4) ON CONFLICT (asin) DO NOTHING', [pack, name, '', image]);
+    await db.query('INSERT INTO inv_stock(asin) VALUES($1) ON CONFLICT (asin) DO NOTHING', [pack]);
+    await db.query('INSERT INTO inv_bundles(bundle_asin, component_asin, qty) VALUES($1,$2,$3)', [pack, single, n]);
+    const nm = (await db.query('SELECT name FROM inv_products WHERE asin=$1', [pack])).rows[0];
+    return { status: 200, body: { ok: true, pack, name: (nm && nm.name) || name, n, amazon } };
+  });
+}
+app.post('/api/packs', auth, async (req, res) => {
+  const b = req.body || {};
+  const out = await definePack(b.single_asin, b.pack_asin, parseInt(b.n, 10), b.name);
+  // the pack's cost is n × the single's (recomputeCosts blends bundles from their bottles)
+  if (out.status === 200 && !out.body.already) { try { await recomputeCosts(); } catch (e) { console.error('[Costs] reblend after pack failed (non-fatal):', e.message); } }
+  res.status(out.status).json(out.body);
 });
 
 // ---- RECONCILE / INVOICES ----
