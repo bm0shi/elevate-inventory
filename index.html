@@ -553,7 +553,7 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
         <option value="outstock">Out of stock only</option>
         <option value="lowstock">Low stock only (1–20)</option>
         <option value="duoonly">Duo items only</option>
-        <option value="duobuildable">🧴 Duos I can build now (one-tap prep)</option>
+        <option value="duobuildable">🧴 Duos &amp; packs I can build now (one-tap prep)</option>
         <option value="sspicks">⭐ Smart Scout selections</option>
       </select>
       <span class="viewtoggle" id="vt_onhand"><button onclick="setView('onhand',false)">Compact</button><button onclick="setView('onhand',true)">Big</button></span>
@@ -1204,6 +1204,20 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
   </div>
 <div id="sub-bundles" class="subpanel">
     <div class="box">
+      <div style="font-weight:700;margin-bottom:4px">Pack of the same item (Pack of 2, 3…)</div>
+      <div class="hint" style="margin-bottom:12px">For items that arrive as singles but sell on Amazon as a pack. Receive the singles as usual; the pack listing is built from them. Prep, Duos &amp; packs I can build, and shipping take that many singles off the shelf per pack, and its cost is that many singles.</div>
+      <label>The single (what the supplier sends)</label>
+      <input type="text" id="packSinglePick" placeholder="Search the single by name or ASIN..." oninput="filterPackSingle()" autocomplete="off">
+      <div class="picker" id="packSingleList" style="display:none"></div>
+      <div id="packSingleChosen" class="pmeta" style="margin:4px 0 12px"></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <div style="flex:2;min-width:170px"><label>The pack's ASIN (from its Amazon listing)</label><input type="text" id="packAsin" placeholder="B0XXXXXXXX" autocapitalize="characters" autocomplete="off"></div>
+        <div style="flex:1;min-width:90px"><label>Pack of</label><input type="number" id="packN" min="2" max="24" value="2" inputmode="numeric"></div>
+      </div>
+      <div style="height:10px"></div>
+      <button class="action full" id="packSaveBtn" onclick="savePack()">Save pack</button>
+    </div>
+    <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Define a Duo / Bundle</div>
       <div class="hint" style="margin-bottom:12px">Pick the duo, then its two component singles. When the duo ships, the app deducts the singles instead. Set once per duo.</div>
       <label>Duo / Bundle product</label>
@@ -1224,7 +1238,7 @@ try { var _lk = localStorage.getItem('appLook'); if (_lk !== 'classic' && _lk !=
     </div>
     <div class="box">
       <div style="font-weight:700;margin-bottom:4px">Bulk Import (fastest)</div>
-      <div class="hint" style="margin-bottom:10px">Paste one duo per line: <b>duoASIN, shampooSingleASIN, conditionerSingleASIN</b>. Example:<br><code>B07T5TQ269, B000MD65FO, B000AQI2EK</code></div>
+      <div class="hint" style="margin-bottom:10px">Paste one duo per line: <b>duoASIN, shampooSingleASIN, conditionerSingleASIN</b>. Example:<br><code>B07T5TQ269, B000MD65FO, B000AQI2EK</code><br>A pack: <b>packASIN, singleASIN, how many</b>, e.g. <code>B0PACKOF3X, B0SINGLE01, 3</code></div>
       <textarea id="bulkBundles" placeholder="B07T5TQ269, B000MD65FO, B000AQI2EK&#10;B07T1KSY2N, B000W5K1E8, B001Q1YFE4"></textarea>
       <div style="height:10px"></div>
       <button class="action full" onclick="bulkImportBundles()">Import All</button>
@@ -4176,11 +4190,15 @@ function importCosmoMap(){
 // kept under its own key ("AII:67867"), shown without it (itemNo).
 function curSupplier(){ const s=document.getElementById('invSupplier'); return s&&s.value!=='__new'?s.value:''; }
 function itemNo(c){ c=String(c==null?'':c); const i=c.indexOf(':'); return i>0?c.slice(i+1):c; }
-function itemLbl(c){ c=String(c==null?'':c); const i=c.indexOf(':'); return i>0?c.slice(0,i)+' item # '+c.slice(i+1):'Cosmo# '+c; }
+// a keyed item number reads with the supplier's own name ("Pro Beauty Shops item # 67867", not PROBEAUTYSHOPS)
+const _supByKey={};
+const supKey=n=>String(n||'').toUpperCase().replace(/[^A-Z0-9]/g,'').slice(0,16);
+function itemLbl(c){ c=String(c==null?'':c); const i=c.indexOf(':'); return i>0?(_supByKey[c.slice(0,i)]||c.slice(0,i))+' item # '+c.slice(i+1):'Cosmo# '+c; }
 function loadSuppliers(){
   const sel=document.getElementById('invSupplier'); if(!sel) return;
   api('/api/suppliers').then(d=>{
     const list=(d&&d.suppliers)||[], keep=localStorage_get('invSupplier')||'';
+    list.concat(keep?[keep]:[]).forEach(x=>{ _supByKey[supKey(x)]=x; });
     if(keep&&!list.includes(keep)) list.unshift(keep);
     sel.innerHTML='<option value="">Cosmoprof</option>'+list.map(x=>'<option value="'+esc(x)+'">'+esc(x)+'</option>').join('')+'<option value="__new">+ Another supplier…</option>';
     sel.value=keep; invSupplierPaint();
@@ -8424,20 +8442,61 @@ function newProdForm(cosmo){
     +'<label style="font-size:12px">ASIN (from the Amazon listing)</label><input type="text" id="npA_'+esc(cosmo)+'" placeholder="B07DXL29H6" autocomplete="off" autocapitalize="characters" style="width:100%">'
     +'<label style="font-size:12px;margin-top:8px;display:block">Name with size (Amazon\'s title replaces it when Amazon answers)</label><input type="text" id="npN_'+esc(cosmo)+'" value="'+esc(l.description||'')+'" autocomplete="off" style="width:100%">'
     +'<label style="font-size:12px;margin-top:8px;display:block">Barcode (optional: scan a bottle)</label><input type="text" id="npU_'+esc(cosmo)+'" inputmode="numeric" autocomplete="off" style="width:100%">'
-    +'<button id="npB_'+esc(cosmo)+'" onclick="newProdSave(\''+esc(cosmo)+'\')" style="margin-top:10px;width:100%;padding:11px;font-size:14px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer">Add to catalog & link Cosmo# '+esc(cosmo)+'</button></div>';
+    // packs (owner 11/24): the line arrives as singles; the listings we sell may be packs of 2, 3…
+    +'<div style="margin-top:10px;padding:9px 10px;background:#fff;border:1px dashed #b7dcc6;border-radius:6px">'
+      +'<div style="font-size:12.5px;font-weight:800;color:#1e8449">Sold on Amazon as a pack? (optional)</div>'
+      +'<div class="hint" style="margin:2px 0 6px">The ASIN above is the single (Amazon\'s listing for one, even if you only sell packs). Check in singles. For each pack listing, add its ASIN and how many singles are in it.</div>'
+      +'<div id="npPacks_'+esc(cosmo)+'"></div>'
+      +'<button type="button" onclick="npAddPack(\''+esc(cosmo)+'\')" style="margin-top:4px;padding:6px 12px;font-size:12.5px;font-weight:700;background:#eafaf1;color:#1e8449;border:1px solid #b7dcc6;border-radius:6px;cursor:pointer">+ Add a pack listing</button>'
+    +'</div>'
+    +'<button id="npB_'+esc(cosmo)+'" onclick="newProdSave(\''+esc(cosmo)+'\')" style="margin-top:10px;width:100%;padding:11px;font-size:14px;font-weight:800;background:#1e8449;color:#fff;border:none;border-radius:6px;cursor:pointer">Add to catalog & link '+esc(itemLbl(cosmo))+'</button></div>';
   const a=document.getElementById('npA_'+cosmo); if(a) a.focus();
+}
+function npAddPack(cosmo){
+  const box=document.getElementById('npPacks_'+cosmo); if(!box) return;
+  const row=document.createElement('div'); row.className='npPack'; row.style.cssText='display:flex;gap:8px;align-items:flex-end;margin-bottom:6px';
+  row.innerHTML='<div style="flex:2;min-width:0"><label style="font-size:11px">Pack\'s ASIN</label><input type="text" class="npPA" placeholder="B0XXXXXXXX" autocapitalize="characters" autocomplete="off" style="width:100%"></div>'
+    +'<div style="flex:1;min-width:70px"><label style="font-size:11px">Pack of</label><input type="number" class="npPN" min="2" max="24" value="'+(box.children.length?3:2)+'" inputmode="numeric" style="width:100%"></div>'
+    +'<button type="button" onclick="this.parentNode.remove()" title="Remove" style="padding:8px 10px;background:none;border:1px solid #e2e8f0;border-radius:6px;cursor:pointer">✕</button>';
+  box.appendChild(row); row.querySelector('.npPA').focus();
+}
+function npPacksOf(cosmo){
+  const box=document.getElementById('npPacks_'+cosmo); if(!box) return [];
+  return [...box.querySelectorAll('.npPack')].map(r=>({ pack_asin:(r.querySelector('.npPA').value||'').trim().toUpperCase(), n:parseInt(r.querySelector('.npPN').value,10) })).filter(x=>x.pack_asin);
+}
+// the single is added first; then each pack, one at a time (a bad pack ASIN
+// leaves the single added and linked, and says which pack to fix)
+async function npSavePacks(single, packs){
+  const ok=[], bad=[];
+  for(const p of packs){
+    try{ const d=await api('/api/packs',{method:'POST',body:JSON.stringify({single_asin:single, pack_asin:p.pack_asin, n:p.n})});
+      if(!d||d.ok===false) bad.push(p.pack_asin+': '+((d&&d.error)||'could not save')); else ok.push((d.name||p.pack_asin)+' = '+d.n+' singles'); }
+    catch(e){ bad.push(p.pack_asin+': '+(e.message||'could not save')); }
+  }
+  return { ok, bad };
 }
 function newProdSave(cosmo){
   const v=id=>(document.getElementById(id+cosmo)||{}).value||'';
   const asin=v('npA_').trim().toUpperCase(), name=v('npN_').trim(), upc=v('npU_').trim();
   if(!/^[A-Z0-9]{10}$/.test(asin)){ toast('An ASIN is 10 letters and numbers, like B07DXL29H6',true); return; }
+  const packs=npPacksOf(cosmo);
+  for(const p of packs){
+    if(!/^[A-Z0-9]{10}$/.test(p.pack_asin)){ toast('A pack\'s ASIN is 10 letters and numbers: '+p.pack_asin,true); return; }
+    if(p.pack_asin===asin){ toast('The pack has its own ASIN, different from the single\'s',true); return; }
+    if(!(p.n>=2&&p.n<=24)){ toast('A pack holds 2 to 24',true); return; }
+  }
   const b=document.getElementById('npB_'+cosmo); if(b){ b.disabled=true; b.textContent='Checking with Amazon…'; }
-  api('/api/invoices/new-product',{method:'POST',body:JSON.stringify({asin,name,upc,cosmo_num:cosmo})}).then(d=>{
-    if(!d||d.ok===false){ toast((d&&d.error)||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to catalog & link Cosmo# '+cosmo; } return; }
+  api('/api/invoices/new-product',{method:'POST',body:JSON.stringify({asin,name,upc,cosmo_num:cosmo})}).then(async d=>{
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to catalog & link '+itemLbl(cosmo); } return; }
     toast('Added '+String(d.name||asin).slice(0,40)+' and linked');
     if(d.amazon==='unreachable') alert('Added and linked. Amazon didn\'t answer, so the name you typed was kept. Double-check the ASIN on the listing.');
+    if(packs.length){
+      const r=await npSavePacks(d.asin||asin, packs);
+      if(r.bad.length) alert('The single was added and linked'+(r.ok.length?', and these packs were set up:\n'+r.ok.join('\n'):'.')+'\n\nNot set up:\n'+r.bad.join('\n')+'\n\nFix the pack in Admin → Bundles → Pack of the same item.');
+      else toast('Packs set up: '+r.ok.length);
+    }
     loadLocations().then(renderReconLines); if(typeof loadProducts==='function') loadProducts();
-  }).catch(e=>{ toast(e.message||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to catalog & link Cosmo# '+cosmo; } });
+  }).catch(e=>{ toast(e.message||'Could not add',true); if(b){ b.disabled=false; b.textContent='Add to catalog & link '+itemLbl(cosmo); } });
 }
 function mapCosmo(cosmoNum, asin, name){
   if(!confirm('Link Cosmoprof #'+cosmoNum+' to:\n\n'+name+'\n\nSaved permanently — future invoices recognise it automatically.')) return;
@@ -11501,7 +11560,7 @@ function renderReconLines(){
                 + cands.map(c=>candBtn(l.cosmo_num,c.asin,c.name,true,c.image)).join('')
               : '<div style="padding:10px;background:#fdf6e3;border:1px solid #e8dcc0;border-radius:6px;color:#b7791f;font-size:12.5px;font-weight:700;margin-bottom:2px">'
                 + '📷 No reliable match — scan a bottle of this item.<br>'
-                + '<span style="font-weight:500;font-size:12px">The barcode identifies it exactly and links it permanently. Guessing from the description is unreliable for near-identical Paul Mitchell names, so nothing is suggested here on purpose. If you cannot open a case, search the catalog below and verify on Amazon before linking.</span></div>')
+                + '<span style="font-weight:500;font-size:12px">The barcode identifies it exactly and links it permanently. '+(String(l.cosmo_num).includes(':')?'New to the app? Use + Add product to catalog below.':'Guessing from the description is unreliable for near-identical Paul Mitchell names, so nothing is suggested here on purpose.')+' If you cannot open a case, search the catalog below and verify on Amazon before linking.</span></div>')
           +'<input type="text" placeholder="Search all products…" oninput="searchMapCandidates(this,\''+l.cosmo_num+'\')" style="width:100%;margin-top:9px;padding:9px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:13px">'
           +'<div id="mapres_'+l.cosmo_num+'"></div>'
           // brand-new product: add it to the catalog and link this line in one step
@@ -11917,6 +11976,36 @@ function saveBundle(){
       renderBundles();
     } else toast('Save failed',true);
   });
+}
+// Pack of the same item (owner 11/24): /api/packs adds the pack listing if
+// needed and defines it as n × the single.
+let packSingle=null;
+function filterPackSingle(){
+  const q=(document.getElementById('packSinglePick').value||'').toLowerCase().trim(), el=document.getElementById('packSingleList');
+  if(!q){ el.style.display='none'; return; }
+  el.style.display='block';
+  el.innerHTML=products.filter(p=>(p.name||'').toLowerCase().includes(q)||(p.asin||'').toLowerCase().includes(q)).slice(0,30)
+    .map(p=>`<div class="picker-item" onclick="pickPackSingle('${esc(p.asin)}')">${esc(p.name)} <span style="color:#9db0c9">${esc(p.asin)}</span></div>`).join('');
+}
+function pickPackSingle(asin){
+  const p=products.find(x=>x.asin===asin); if(!p) return; packSingle=asin;
+  document.getElementById('packSinglePick').value=p.name;
+  document.getElementById('packSingleList').style.display='none';
+  document.getElementById('packSingleChosen').textContent='✓ '+p.name+' ('+p.asin+')';
+}
+function savePack(){
+  const pack=(document.getElementById('packAsin').value||'').trim().toUpperCase(), n=parseInt(document.getElementById('packN').value,10);
+  if(!packSingle){ toast('Pick the single first',true); return; }
+  if(!/^[A-Z0-9]{10}$/.test(pack)){ toast('The pack\'s ASIN is 10 letters and numbers',true); return; }
+  if(!(n>=2&&n<=24)){ toast('A pack holds 2 to 24',true); return; }
+  const b=document.getElementById('packSaveBtn'); b.disabled=true; b.textContent='Checking with Amazon…';
+  api('/api/packs',{method:'POST',body:JSON.stringify({single_asin:packSingle,pack_asin:pack,n})}).then(d=>{
+    b.disabled=false; b.textContent='Save pack';
+    if(!d||d.ok===false){ toast((d&&d.error)||'Could not save',true); return; }
+    toast(d.already?'Already set up: '+String(d.name||pack).slice(0,40):'Saved: '+String(d.name||pack).slice(0,40)+' = '+d.n+' singles');
+    packSingle=null; ['packSinglePick','packAsin'].forEach(id=>document.getElementById(id).value=''); document.getElementById('packSingleChosen').textContent='';
+    _bundles=null; renderBundles(); if(typeof loadProducts==='function') loadProducts();
+  }).catch(e=>{ b.disabled=false; b.textContent='Save pack'; toast(e.message||'Could not save',true); });
 }
 function renderBundles(){
   api('/api/bundles').then(list=>{

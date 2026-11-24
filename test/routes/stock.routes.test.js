@@ -730,3 +730,37 @@ test('a single prep job past the free shelf count is refused (Detangler: 60 aske
   assert.strictEqual((await post('/api/pending-prep/set', { id, qty: 20 })).status, 200);
   assert.strictEqual(await pend(), 20);
 });
+
+test('a pack of 3: set up once, refused past the shelf (3 singles each), prepped and shipped as 3 singles', { skip }, async () => {
+  await pool.query(`INSERT INTO inv_products(asin, name, sku) VALUES ('B0TSTSING1','Test Lash Single','SKU-SING') ON CONFLICT (asin) DO NOTHING`);
+  await pool.query(`INSERT INTO inv_stock(asin, onhand) VALUES ('B0TSTSING1', 10) ON CONFLICT (asin) DO UPDATE SET onhand=10`);
+  // bad input, then the real one twice at once (one pack listing, one definition)
+  assert.strictEqual((await post('/api/packs', { single_asin: 'B0TSTSING1', pack_asin: 'B0TSTSING1', n: 3 })).status, 400);
+  assert.strictEqual((await post('/api/packs', { single_asin: 'B0TSTSING1', pack_asin: 'B0TSTPACK3', n: 1 })).status, 400);
+  assert.strictEqual((await post('/api/packs', { single_asin: 'B0NOTTHERE', pack_asin: 'B0TSTPACK3', n: 3 })).status, 400);
+  const [a, b] = await Promise.all([
+    post('/api/packs', { single_asin: 'B0TSTSING1', pack_asin: 'b0tstpack3', n: 3 }),
+    post('/api/packs', { single_asin: 'B0TSTSING1', pack_asin: 'B0TSTPACK3', n: 3 })]);
+  assert.deepStrictEqual([a.status, b.status], [200, 200], JSON.stringify([a.body, b.body]));
+  const def = (await pool.query(`SELECT component_asin, qty FROM inv_bundles WHERE bundle_asin='B0TSTPACK3'`)).rows;
+  assert.deepStrictEqual(def, [{ component_asin: 'B0TSTSING1', qty: 3 }]);
+  assert.strictEqual((await one(`SELECT name FROM inv_products WHERE asin='B0TSTPACK3'`)).name, 'Test Lash Single (Pack of 3)');
+  // a different count for the same listing is refused, never silently redefined
+  assert.strictEqual((await post('/api/packs', { single_asin: 'B0TSTSING1', pack_asin: 'B0TSTPACK3', n: 2 })).status, 409);
+  // 10 singles on the shelf: 4 packs (12) is refused, 3 packs (9) is fine, then 1 more single is all that's left
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'B0TSTSING1', qty: 4, isDuo: true, duoAsin: 'B0TSTPACK3' })).status, 400);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'B0TSTSING1', qty: 3, isDuo: true, duoAsin: 'B0TSTPACK3' })).status, 200);
+  assert.strictEqual((await post('/api/pending-prep/add', { asin: 'B0TSTSING1', qty: 2 })).status, 400);
+  const job = await one(`SELECT id, qty FROM inv_pending_prep WHERE asin='B0TSTPACK3'`);
+  assert.strictEqual((await post('/api/pending-prep/complete', { id: job.id, qty: job.qty, completedBy: 'Tester' })).status, 200);
+  assert.strictEqual(await prepped('B0TSTPACK3'), 3);
+  // shipping 3 packs takes 9 singles off the shelf into transit, once
+  const r = await post('/api/bulk-ship', { shipmentId: 'FBAPACK1', shipmentName: 'Pack ship', items: [{ code: 'B0TSTPACK3', qty: 3 }] });
+  assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+  assert.deepStrictEqual(await stock('B0TSTSING1'), { onhand: 1, transit: 9 });
+  assert.strictEqual(await prepped('B0TSTPACK3'), 0);
+  // bulk import takes a pack line too
+  const bulk = await post('/api/bundles/bulk', { text: 'B0TSTPACK2, B0TSTSING1, 2' });
+  assert.strictEqual(bulk.body.done, 1, JSON.stringify(bulk.body));
+  assert.strictEqual((await one(`SELECT qty FROM inv_bundles WHERE bundle_asin='B0TSTPACK2'`)).qty, 2);
+});
